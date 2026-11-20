@@ -218,6 +218,22 @@ class ApplySimRegionTest(_Base, TestCase):
     def setUp(self):
         self.start('sr-apply')
 
+    def test_the_company_lock_does_not_block_rows_that_only_reference_the_company(self):
+        # Review of #371: FOR UPDATE on the company deadlocked against a model save that then wrote a row
+        # referencing the company (FOR KEY SHARE). NO KEY UPDATE serialises the approvals and blocks nothing else.
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        rows = [row('a', 'Teléfono X', 128, 'negro', sim='chip', region='LL/A')]
+        approve = self.everything(self.plan(rows)['plan'])
+        with CaptureQueriesContext(connection) as captured:
+            self.assertEqual(self.apply(rows, approve).status_code, 200)
+        company_locks = [q['sql'] for q in captured.captured_queries
+                         if 'FOR' in q['sql'] and '"store_company"' in q['sql'].split('FOR')[0]
+                         and 'UPDATE' in q['sql'].split('FOR')[-1]]
+        self.assertTrue(company_locks)
+        self.assertTrue(all('FOR NO KEY UPDATE' in sql for sql in company_locks), company_locks)
+
     def test_a_new_variant_with_existing_options_is_created_hidden_without_stock(self):
         rows = [row('a', 'Teléfono X', 128, 'negro', sim='chip', region='LL/A')]
         body = self.plan(rows)

@@ -99,6 +99,8 @@ class _Plan:
                                ProductModel.objects.filter(company=company).exclude(reference_key='')}
         self.options: dict[str, dict] = {}       # reference_key -> what happens to that option (shared by models)
         self._new_labels: dict[tuple[str, str], str] = {}
+        # Review of #371: which reference key each EXISTING option is taken for in this plan. Two keys never share one.
+        self._claimed: dict[int, str] = {}
         self.items = [self._item(found[k]) for k in keys]
 
     # -- attributes ------------------------------------------------------------
@@ -141,7 +143,14 @@ class _Plan:
                                  reason=f'«{match.label}» ya representa otra opción de referencia '
                                         f'({match.reference_key}).')
             if match is not None and entry['status'] != 'conflict':
-                entry.update(status='reused', option_id=match.pk, label=match.label, link=not match.reference_key)
+                claimed = self._claimed.setdefault(match.pk, reference_key)
+                if claimed != reference_key:
+                    entry.update(status='conflict', option_id=match.pk, label=match.label,
+                                 reason=f'«{match.label}» sería la opción de dos referencias ({claimed} y '
+                                        f'{reference_key}): renombra una de ellas o únelas a mano.')
+                else:
+                    entry.update(status='reused', option_id=match.pk, label=match.label,
+                                 link=not match.reference_key)
         if entry['status'] == 'new':
             alias = option_alias_holding(self.company, label)
             claimed = self._new_labels.setdefault((role, _fold(label)), reference_key)
@@ -221,7 +230,7 @@ class _Plan:
             'state': state, 'model_status': found['model_status'],
             'model_id': model.pk if model is not None else None, 'model_name': model.name if model is not None else '',
             'link_model': found['link'], 'reason': ' '.join(reasons),
-            'warnings': self._warnings(model, found),
+            'warnings': self._warnings(model, found, entries),
             'attributes_new': attributes_new,
             'options': [{k: e[k] for k in ('reference_key', 'role', 'label', 'status', 'option_id', 'reason')}
                         for e in entries],
@@ -237,14 +246,33 @@ class _Plan:
         real = {(e['key'], e['region_key']) for e in ref.sim_entries}
         return [(s.reference_key, r.reference_key) for s in sims for r in regions if (s.key, r.key) not in real]
 
-    def _warnings(self, model, found):
+    def _warnings(self, model, found, entries):
+        """
+        A reused model with variants: what the import changes for them. Nothing is rewritten, but a palette without
+        the roles the import adds leaves those variants «incompleta» and asks every new variant for those roles.
+        """
         if model is None or found['model_status'] != 'reused':
             return []
         count = model.variants.count()
-        if count and not ModelOption.objects.filter(model=model).exists():
+        if not count:
+            return []
+        covered = set(ModelOption.objects.filter(model=model, company=self.company)
+                      .values_list('option__attribute_id', flat=True))
+        if not covered:
             return [f'«{model.name}» tiene {count} variante(s) y aún no tiene paleta: las que no encajen se informarán '
                     '«fuera de paleta» o «incompleta»; ninguna se modifica.']
-        return []
+        added = []
+        for role in ROLES:
+            if not any(e['role'] == role for e in entries):
+                continue
+            attribute = self.attributes[role]['attribute']
+            if attribute is None or attribute.pk not in covered:
+                added.append(ROLE_NAMES[role])
+        if not added:
+            return []
+        roles = ', '.join(added)
+        return [f'La paleta de «{model.name}» no tiene {roles}: al importar, sus {count} variante(s) quedarán '
+                f'«incompleta» hasta que lleven {roles} (no se modifican) y cada variante nueva deberá llevarlos.']
 
     # -- answer ------------------------------------------------------------------
     def payload(self) -> dict:
@@ -292,7 +320,8 @@ def apply(*, company, keys, approve=None, idempotency_key='', actor, request=Non
     key = clean_idempotency_key(idempotency_key)
     with transaction.atomic():
         # One apply at a time per company (the lock of `catalog_proposal.apply`); the plan is read AFTER it.
-        Company.objects.select_for_update().get(pk=company.pk)
+        # NO KEY UPDATE: rows that only reference the company are not blocked (no deadlock against a model save).
+        Company.objects.select_for_update(no_key=True).get(pk=company.pk)
         fingerprint = request_fingerprint({'reference_keys': sorted(keys), 'approve': sorted(approve)})
         prior = replay(company, APPLIED, key, fingerprint)
         if prior is not None:
@@ -378,12 +407,20 @@ def _execute(plan, *, actor, request) -> dict:
         current = set(ModelOption.objects.filter(model=model, company=company).values_list('option_id', flat=True))
         missing = [pk for pk in wanted if pk not in current]
         if missing:
-            if current:
-                palette_added += model_palette.add_to_palette(model, option_ids=missing, actor=actor,
-                                                              request=request)['added']
-            else:
-                palette_added += model_palette.set_palette(model, option_ids=wanted, actor=actor,
-                                                           request=request)['added']
+            try:
+                if current:
+                    palette_added += model_palette.add_to_palette(model, option_ids=missing, actor=actor,
+                                                                  request=request)['added']
+                else:
+                    # Review of #371: `current` was read without the model's lock. `expected_option_ids` makes
+                    # `set_palette` refuse (stale) a palette somebody saved in between: it only ever grows.
+                    palette_added += model_palette.set_palette(model, option_ids=wanted, expected_option_ids=[],
+                                                               actor=actor, request=request)['added']
+            except device_catalog.CatalogError as exc:
+                if exc.code != 'stale':
+                    raise
+                raise BadProposal(f'Otra persona cambió la paleta de «{model.name}» mientras se importaba: vuelve a '
+                                  'previsualizar e inténtalo de nuevo.', code='stale', status=409) from None
         if item['_pairs']:
             pairs = [(option_ids[a], option_ids[b]) for a, b in item['_pairs']]
             exclusions_added += model_palette.add_exclusions(model, pairs=pairs, actor=actor,

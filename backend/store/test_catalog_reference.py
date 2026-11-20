@@ -92,6 +92,30 @@ class ValidatorTest(SimpleTestCase):
         base = {'key': 'nano-sim-esim', 'regions': 'default', 'config': 'nano-SIM + eSIM'}
         self.assertRejected(dataset(model(sim=[{**base, 'label_en': 'x'}])), 'unknown field')
 
+    def test_one_key_reads_alike_in_every_model_of_a_file(self):
+        # Review of #371: the company's option is shared by key across models, so one key has one Spanish label.
+        colour = model()['colors'][0]
+        other = model(key='phone-2', name='Phone 2', model_numbers=[{'number': 'X2001', 'regions': None}],
+                      colors=[{**colour, 'label_es': 'Gris mate'}])
+        self.assertRejected(dataset(model(), other), 'label_es')
+        sim = {'key': 'nano-sim-esim', 'regions': 'default', 'config': 'x', 'label_es': 'nano-SIM y eSIM',
+               'region_label_es': 'Internacional'}
+        first = model(sim=[sim])
+        second = model(key='phone-2', name='Phone 2', model_numbers=[{'number': 'X2001', 'regions': None}],
+                       sim=[{**sim, 'label_es': 'Chip y eSIM'}])
+        self.assertRejected(dataset(first, second), 'label_es')
+        third = model(key='phone-2', name='Phone 2', model_numbers=[{'number': 'X2001', 'regions': None}],
+                      sim=[{**sim, 'regions': 'default (another source)', 'region_label_es': 'Resto del mundo'}])
+        self.assertRejected(dataset(first, third), 'region_label_es')
+        same = model(key='phone-2', name='Phone 2', model_numbers=[{'number': 'X2001', 'regions': None}], sim=[sim])
+        self.assertEqual(self.errors(dataset(first, same)), [])
+
+    def test_a_region_group_is_the_one_the_loader_derives(self):
+        # «Country-A» and «Country A» are one region key for the loader: one label.
+        sims = [{'key': 'esim-only', 'regions': 'Country-A', 'config': 'eSIM', 'region_label_es': 'País A'},
+                {'key': 'nano-sim', 'regions': 'Country A', 'config': 'nano', 'region_label_es': 'A'}]
+        self.assertRejected(dataset(model(sim=sims)), 'region_label_es')
+
     def test_one_sim_key_or_one_region_group_reads_alike_inside_a_model(self):
         sims = [{'key': 'esim-only', 'regions': 'Country A', 'config': 'eSIM', 'label_es': 'Solo eSIM',
                  'region_label_es': 'País A'},
@@ -237,6 +261,29 @@ class SpanishSimLabelsInFilesTest(SimpleTestCase):
                 for field in ('label_es', 'region_label_es'):
                     with self.subTest(model=m['key'], sim=entry['key'], field=field):
                         self.assertTrue(isinstance(entry.get(field), str) and entry[field].strip())
+
+
+class OneLabelPerKeyInFilesTest(SimpleTestCase):
+    """Review of #371: in each committed file a colour, SIM or region key has one Spanish label in every model."""
+
+    def test_every_key_has_one_spanish_label(self):
+        for path in sorted(DATA_DIR.glob('*.json')):
+            labels = {}
+            for m in ref.load(path)['models']:
+                for c in m['colors']:
+                    labels.setdefault(('color', c['key']), set()).add(c['label_es'])
+                for s in m['sim']:
+                    labels.setdefault(('sim', s['key']), set()).add(s.get('label_es'))
+                    labels.setdefault(('region', ref.region_key(s['regions'])), set()).add(s.get('region_label_es'))
+            with self.subTest(path.name):
+                self.assertEqual({k: v for k, v in labels.items() if len(v) > 1}, {})
+
+    def test_the_matte_black_of_the_seven_reads_black_and_keeps_its_official_strings(self):
+        models = {m['key']: m for m in ref.load(DATA_DIR / 'apple-iphone.json')['models']}
+        for key in ('iphone-7', 'iphone-7-plus'):
+            black = next(c for c in models[key]['colors'] if c['key'] == 'black')
+            self.assertEqual(black['label_es'], 'Negro')
+            self.assertEqual(black['official']['es_419'], 'Negro mate')
 
 
 class PhoneFileFactsTest(SimpleTestCase):

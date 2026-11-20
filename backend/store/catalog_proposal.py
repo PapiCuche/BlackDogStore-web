@@ -558,8 +558,10 @@ def apply(*, company, rows, approve, prices=None, category_id=None, without_imei
     models_ok, variants_ok, options_ok = _refs(approve)
     key = clean_idempotency_key(idempotency_key)
     with transaction.atomic():
-        # One approval at a time per company: the plan below is read AFTER this lock.
-        Company.objects.select_for_update().get(pk=company.pk)
+        # One approval at a time per company: the plan below is read AFTER this lock. NO KEY UPDATE (review of #371):
+        # rows that only reference the company (an audit entry written under a model lock) are never blocked by it,
+        # so a screen holding a model and this approval waiting for that model cannot deadlock.
+        Company.objects.select_for_update(no_key=True).get(pk=company.pk)
         category = None
         category_id = parse_id(category_id, label='categoría')
         if category_id is not None:

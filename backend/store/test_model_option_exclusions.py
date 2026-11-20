@@ -86,6 +86,29 @@ class ExclusionRuleTest(_Shop, TestCase):
                                                 option_a=row.option_b, option_b=row.option_a)
 
 
+class ExcludedVariantCountsTest(_Shop, TestCase):
+    """Review of #371: a variant that already is an excluded combination is counted apart, never as offered."""
+
+    def setUp(self):
+        self.start('excl-counts')
+        self.make(self.gb128, self.blue, self.chip, self.lla)      # will fall on the excluded pair
+        self.make(self.gb128, self.blue, self.chip, self.ja)       # stays a valid combination
+        model_palette.add_exclusions(self.model, pairs=[(self.chip.pk, self.lla.pk)], actor=self.staff)
+
+    def test_the_summary_counts_are_consistent(self):
+        summary = model_palette.payload(self.model)['summary']
+        self.assertEqual(summary['combinations'], 12)
+        self.assertEqual(summary['existing'], 1)
+        self.assertEqual(summary['excluded_existing'], 1)
+        self.assertEqual(summary['valid_without_variant'], summary['combinations'] - summary['existing'])
+
+    def test_a_model_without_exclusions_has_no_such_count(self):
+        ModelOptionExclusion.objects.filter(model=self.model).delete()
+        summary = model_palette.payload(self.model)['summary']
+        self.assertNotIn('excluded_existing', summary)
+        self.assertEqual(summary['existing'], 2)
+
+
 class ExclusionWriterTest(_Shop, TestCase):
     def setUp(self):
         self.start('excl-writer')

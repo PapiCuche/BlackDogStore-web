@@ -489,6 +489,11 @@ def payload(model) -> dict:
 
     # Counted over the variants, not over the (possibly cut) list of combinations.
     existing_keys = {variant_key(r['option_ids']) for r in variants if r['status'] == STATUS_EXISTING}
+    # Review of #371: a variant that already is an EXCLUDED combination is not one of the offered ones; it is counted
+    # apart (only for a model with exclusions), so `existing` + `valid_without_variant` = `combinations`.
+    excluded_keys = {variant_key(r['option_ids']) for r in variants if r['status'] == STATUS_EXISTING
+                     and any(pair <= set(r['option_ids']) for pair in excluded)} if excluded else set()
+    existing_keys -= excluded_keys
     # A1b-2: the roles the company has attributes for that the palette does not cover (empty without a
     # palette: nothing is «missing» from a model that admits anything). In reading order.
     roles_missing = []
@@ -498,6 +503,7 @@ def payload(model) -> dict:
                     and attribute.role not in roles_missing:
                 roles_missing.append(attribute.role)
     extra = {'excluded_pairs': sorted(sorted(pair) for pair in excluded)} if excluded else {}
+    excluded_count = {'excluded_existing': len(excluded_keys)} if excluded else {}
     return {
         **extra,
         'model_id': model.pk, 'model_name': model.name,
@@ -518,6 +524,7 @@ def payload(model) -> dict:
             'pending_drafts': sum(1 for r in variants if r['draft_pending']),
             'needs_review': sum(1 for r in variants if _needs_review(r)),
             'roles_missing': roles_missing,
+            **excluded_count,
         },
         'truncated': total > len(combinations),
     }

@@ -348,6 +348,81 @@ class ExistingCatalogTest(_Shop, TestCase):
         self.assertEqual(item['state'], 'conflict')
 
 
+class ReviewFindingsTest(_Shop, TestCase):
+    """What the independent review of #371 found, held by a test each."""
+
+    def setUp(self):
+        self.start('ref-review')
+
+    def test_two_references_reaching_one_unlinked_option_by_label_are_a_conflict(self):
+        # An existing colour «Tinta», not linked yet; two reference keys of two models read as «Tinta».
+        colour = device_catalog.create_attribute(company=self.company, name='Color', kind='color', role='color')
+        ink = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Tinta',
+                                           swatch_hex='#111111')
+        data = dataset()
+        data['models'][1]['colors'][0] = {'key': 'deep-ink', 'label_en': 'Deep Ink', 'label_es': 'Tinta',
+                                          'official': {'en': 'Deep Ink', 'es_419': 'Tinta', 'es_es': 'Tinta'}}
+        loader.load(data)
+        items = self.plan(['phone-9', 'phone-9-pro'])
+        self.assertNotEqual(items['phone-9']['state'], 'conflict')
+        self.assertEqual(items['phone-9-pro']['state'], 'conflict')
+        statuses = {o['reference_key']: o['status'] for o in items['phone-9-pro']['options']}
+        self.assertEqual(statuses['color:deep-ink'], 'conflict')
+        # Applied alone, the first links it; the second is then a conflict too (never reused without its link).
+        self.applied(['phone-9'])
+        ink.refresh_from_db()
+        self.assertEqual(ink.reference_key, 'color:ink')
+        self.assertEqual(self.plan(['phone-9-pro'])['phone-9-pro']['state'], 'conflict')
+
+    def test_an_attribute_the_palette_lacks_is_warned_when_the_model_has_variants(self):
+        capacity = device_catalog.create_attribute(company=self.company, name='Capacidad', role='capacity')
+        gb128 = device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label='128 GB')
+        model = device_catalog.create_model(company=self.company, name='Phone 9')
+        model_palette.set_palette(model, option_ids=[gb128.pk])
+        product = _prod(self.company, 'Phone 9 128', 'p9-128', price='10.00', inventory=0)
+        device_catalog.set_variant(product, model_id=model.pk, condition_line='new', option_ids=[gb128.pk])
+        item = self.plan(['phone-9'])['phone-9']
+        self.assertEqual(item['state'], 'reused')
+        warning = ' '.join(item['warnings'])
+        for role in ('Color', 'SIM', 'Región'):
+            self.assertIn(role, warning)
+        self.assertIn('incompleta', warning)
+
+    def test_no_warning_when_the_reused_model_has_no_variants(self):
+        device_catalog.create_model(company=self.company, name='Phone 9')
+        self.assertEqual(self.plan(['phone-9'])['phone-9']['warnings'], [])
+
+    def test_a_palette_saved_in_between_is_never_overwritten(self):
+        # The plan read an empty palette; somebody saves one before the import writes: 409, nothing replaced.
+        model = device_catalog.create_model(company=self.company, name='Phone 9')
+        capacity = device_catalog.create_attribute(company=self.company, name='Capacidad', role='capacity')
+        mine = device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label='64 GB')
+        real = model_palette.set_palette
+
+        def saved_in_between(target, **kwargs):
+            ModelOption.objects.get_or_create(company=self.company, model=target, option=mine)
+            return real(target, **kwargs)
+
+        from unittest import mock
+
+        with mock.patch.object(model_palette, 'set_palette', saved_in_between):
+            response = self.apply(['phone-9'])
+        self.assertEqual((response.status_code, response.json()['code']), (409, 'stale'))
+        self.assertEqual(list(ModelOption.objects.filter(model=model).values_list('option_id', flat=True)), [])
+
+    def test_the_company_lock_does_not_block_rows_that_only_reference_the_company(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as captured:
+            self.applied(['phone-9'])
+        company_locks = [q['sql'] for q in captured.captured_queries
+                         if 'FOR' in q['sql'] and '"store_company"' in q['sql'].split('FOR')[0]
+                         and 'UPDATE' in q['sql'].split('FOR')[-1]]
+        self.assertTrue(company_locks)
+        self.assertTrue(all('FOR NO KEY UPDATE' in sql for sql in company_locks), company_locks)
+
+
 class TenancyAndPermissionsTest(_Shop, TestCase):
     def setUp(self):
         self.start('ref-ten')
@@ -424,6 +499,59 @@ class ApplyAtOnceTest(_Shop, TransactionTestCase):
         self.assertEqual(VariantOption.objects.filter(company=self.company, reference_key='color:ink').count(), 1)
         self.assertEqual(sorted(len(r.json()['created']['models']) for r in results), [0, 2])
         self.assertEqual(self.stock(), stock)
+
+
+class ApplyAgainstAModelLockTest(_Shop, TransactionTestCase):
+    """
+    Review of #371 (deadlock): a screen that locks a model and then writes a row referencing the company (an audit
+    entry) must not deadlock against an import that holds the company lock and then needs that model.
+    """
+
+    def setUp(self):
+        self.start('ref-deadlock')
+
+    def test_an_import_and_a_model_save_both_finish(self):
+        import time
+
+        from django.db import transaction
+
+        self.applied(['phone-9'])
+        model = self.tenant_model('phone-9')
+        ids = sorted(ModelOption.objects.filter(model=model).values_list('option_id', flat=True))
+        model_palette.set_palette(model, option_ids=ids[1:])   # a re-import must lock the model to add it back
+        locked, results = threading.Event(), {}
+
+        def screen():
+            try:
+                with transaction.atomic():
+                    ProductModel.objects.select_for_update().get(pk=model.pk)
+                    locked.set()
+                    time.sleep(1.5)
+                    AdminAuditLog.log(actor=None, action='screen_save', target_type='product_model',
+                                      target_id=model.pk, company=self.company)
+                results['screen'] = 'ok'
+            except Exception as failed:  # noqa: BLE001 — the outcome under test
+                results['screen'] = repr(failed)[:200]
+            finally:
+                db_connection.close()
+
+        def apply():
+            try:
+                locked.wait(10)
+                importer.apply(company=self.company, keys=['phone-9'], actor=self.staff)
+                results['import'] = 'ok'
+            except Exception as failed:  # noqa: BLE001 — the outcome under test
+                results['import'] = repr(failed)[:200]
+            finally:
+                db_connection.close()
+
+        threads = [threading.Thread(target=screen), threading.Thread(target=apply)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=60)
+        self.assertEqual(results, {'screen': 'ok', 'import': 'ok'})
+        self.assertEqual(sorted(ModelOption.objects.filter(model=model).values_list('option_id', flat=True)), ids)
 
 
 class CommittedFileImportTest(TestCase):

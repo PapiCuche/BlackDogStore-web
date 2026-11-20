@@ -22,7 +22,7 @@ MODEL_FIELDS = {'key', 'name', 'line', 'generation', 'announced', 'capacities_gb
                 'model_numbers', 'sources', 'verified_at', 'completeness', 'missing', 'notes'}
 COLOUR_FIELDS = {'key', 'label_en', 'label_es', 'official'}
 #: `label_es` / `region_label_es` (optional, PR B): how the SIM configuration and the region group read in Spanish
-#: for staff and customers. One SIM key, or one region group, reads alike within a model.
+#: for staff and customers. One key reads alike in every model of the file (`_label_errors`).
 SIM_FIELDS = {'key', 'regions', 'config', 'label_es', 'region_label_es'}
 NUMBER_FIELDS = {'number', 'regions'}
 
@@ -132,21 +132,10 @@ def _model_errors(m, hosts):
         _unknown(f'{where} sim', s, SIM_FIELDS, errors)
         if not (_slug(s.get('key')) and _text(s.get('config')) and _text(s.get('regions'))):
             errors.append(f'{where}: each sim entry needs a slug key, regions and config')
-    sim_labels, region_labels = {}, {}
     for s in sims:
         for field in ('label_es', 'region_label_es'):
             if field in s and not _text(s.get(field)):
                 errors.append(f'{where}: sim {s.get("key")!r} {field} must be non-empty text when present')
-        if _text(s.get('label_es')) and isinstance(s.get('key'), str):
-            sim_labels.setdefault(s['key'], set()).add(s['label_es'])
-        if _text(s.get('region_label_es')) and isinstance(s.get('regions'), str):
-            region_labels.setdefault(region_text(s['regions']), set()).add(s['region_label_es'])
-    for key, labels in sim_labels.items():
-        if len(labels) > 1:
-            errors.append(f'{where}: sim {key!r} has more than one label_es')
-    for group, labels in region_labels.items():
-        if len(labels) > 1:
-            errors.append(f'{where}: region group {group!r} has more than one region_label_es')
     for dup in _duplicates((s.get('key'), s.get('regions')) for s in sims
                            if isinstance(s.get('key'), str) and isinstance(s.get('regions'), str)):
         errors.append(f'{where}: duplicate sim entry {dup!r}')
@@ -216,7 +205,33 @@ def validate(data):
                for n in m['model_numbers'] if isinstance(n, dict)]
     for dup in _duplicates(numbers):
         errors.append(f'model number {dup!r} appears more than once')
+    errors.extend(_label_errors(good))
     return errors
+
+
+def _label_errors(models):
+    """
+    One key, one Spanish label in the WHOLE file (review of #371): a company's option is shared by key across models,
+    so a colour key, a SIM key or a region group (grouped by `region_key`, exactly as the loader derives it) that reads
+    differently in two models would take whichever came first. Only labels that are present and are text count.
+    """
+    labels = {}
+
+    def add(kind, key, field, value):
+        if isinstance(key, str) and _text(value):
+            labels.setdefault((kind, key, field), set()).add(value)
+
+    for m in models:
+        for c in (m.get('colors') if isinstance(m.get('colors'), list) else []):
+            if isinstance(c, dict):
+                add('colour', c.get('key'), 'label_es', c.get('label_es'))
+        for e in (m.get('sim') if isinstance(m.get('sim'), list) else []):
+            if isinstance(e, dict):
+                add('sim', e.get('key'), 'label_es', e.get('label_es'))
+                if isinstance(e.get('regions'), str):
+                    add('region group', region_key(e['regions']), 'region_label_es', e.get('region_label_es'))
+    return [f'{kind} {key!r} has more than one {field}: {", ".join(sorted(values))}'
+            for (kind, key, field), values in sorted(labels.items()) if len(values) > 1]
 
 
 def summary(data):
