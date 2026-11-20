@@ -20,7 +20,7 @@ import { LINE_NEW, LINE_USED, modelFixture, reply } from './support/device-comme
  *    consultas (UTM) y el ancla. Next 16 lo integra en su router, así que
  *    `useSearchParams` ve el valor nuevo;
  *  · al entrar no se reescribe nada;
- *  · la V3 no toca la dirección.
+ *  · la ficha pública `/modelo` hace lo mismo desde CATALOG-REFERENCE-01 · PR D (antes no la tocaba).
  */
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
@@ -189,20 +189,22 @@ describe('selectionForVariant', () => {
   });
 });
 
-describe('la V3 no cambia', () => {
-  it('elegir una opción en la ficha V3 no toca la dirección', async () => {
+describe('la ficha pública (/modelo, el configurador V4 en su bloque desde PR D)', () => {
+  it('elegir una opción escribe ?variante= sin navegar y conserva lo demás', async () => {
     setUrl('/modelo/equipo-x?utm_source=ig');
     render(<ModelDetail slug="equipo-x" />);
     await screen.findByRole('heading', { level: 1, name: 'Equipo X' });
     fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Capacidad' })).getByRole('radio', { name: /512 GB/ }));
-    expect(rewrites).not.toHaveBeenCalled();
+    expect(rewrites).toHaveBeenCalledTimes(1);
     expectNoNavigation();
-    expect(window.location.search).toBe('?utm_source=ig');
+    const params = new URLSearchParams(window.location.search);
+    expect(window.location.pathname).toBe('/modelo/equipo-x');
+    expect(params.get('variante')).toBe('equipo-x-45');
+    expect(params.get('utm_source')).toBe('ig');
   });
 
-  it('ni la ficha V3 ni su página leen ?variante=', () => {
-    for (const file of ['app/components/ModelDetail.tsx', 'app/modelo/[slug]/page.tsx']) {
-      expect(fs.readFileSync(path.join(process.cwd(), file), 'utf8')).not.toMatch(/variante|initialVariant/);
-    }
+  it('la página la abre con la variante que nombra la dirección, comparada con los slugs del modelo', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'app/modelo/[slug]/page.tsx'), 'utf8');
+    expect(source).toMatch(/initialVariant=\{requestedVariant\(initialModel, variante\)\}/);
   });
 });

@@ -14,6 +14,11 @@ import { LINE_NEW, LINE_USED, modelFixture, reply } from './support/device-comme
  * a ninguna variante se VE deshabilitado, no desaparece; lo agotado se puede
  * elegir y dice «Agotado» (SUPPLIER-DEVICE-FLOW-02). Línea de seminuevos:
  * cada tarjeta es un equipo, y comprarlo manda ese equipo.
+ *
+ * CATALOG-REFERENCE-01 · PR D — la ficha pública es el configurador V4 en su
+ * bloque (`ModelDetail`): las líneas son un grupo de radios «Condición», un
+ * color de otra capacidad se puede elegir (mueve la capacidad) y los
+ * seminuevos se eligen en una lista y se compran desde el resumen.
  */
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
@@ -34,8 +39,11 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
-const price = () => screen.getByTestId('model-price').textContent;
-const mainImage = () => within(screen.getByTestId('model-main-image')).getByRole('img');
+const price = () => screen.getByTestId('v4-price').textContent;
+const mainImage = () => within(screen.getByTestId('v4-stage')).getByRole('img');
+const availability = () =>
+  within(screen.getByTestId('v4-summary')).getByText('Disponibilidad', { selector: 'dt' }).nextElementSibling;
+const lines = () => screen.getByRole('radiogroup', { name: 'Condición' });
 const capacity = () => screen.getByRole('radiogroup', { name: 'Capacidad' });
 const colour = () => screen.getByRole('radiogroup', { name: /^Color/ });
 
@@ -51,7 +59,7 @@ describe('selección de variante', () => {
     expect(within(colour()).getByRole('radio', { name: 'Azul' })).toHaveAttribute('aria-checked', 'true');
     expect(price()).toBe('S/ 3999.00');
     expect(mainImage()).toHaveAttribute('src', 'http://localhost/azul-128.png');
-    expect(screen.getByTestId('model-availability')).toHaveTextContent('En stock');
+    expect(availability()).toHaveTextContent('En stock');
   });
 
   it('el precio y la galería cambian con la capacidad', async () => {
@@ -64,13 +72,14 @@ describe('selección de variante', () => {
     expect(mainImage()).toHaveAttribute('src', 'http://localhost/azul-256-b.png');
   });
 
-  it('una combinación inexistente se ve deshabilitada; una agotada se elige y lo dice', async () => {
+  it('un color de otra capacidad se elige y mueve la capacidad; una agotada se elige y lo dice', async () => {
     await renderPage();
-    // Rojo no existe en 128 GB.
-    const rojo = within(colour()).getByRole('radio', { name: 'Rojo, no disponible' });
-    expect(rojo).toHaveAttribute('aria-disabled', 'true');
+    // Rojo no existe en 128 GB: se puede elegir y la capacidad pasa a 512 GB (PR D).
+    const rojo = within(colour()).getByRole('radio', { name: 'Rojo' });
+    expect(rojo).not.toHaveAttribute('aria-disabled');
     fireEvent.click(rojo);
-    expect(price()).toBe('S/ 3999.00');
+    expect(within(capacity()).getByRole('radio', { name: '512 GB' })).toHaveAttribute('aria-checked', 'true');
+    expect(price()).toBe('S/ 5499.00');
 
     // Blanco 256 GB existe pero está agotado: se elige, muestra su precio y no se compra.
     fireEvent.click(within(capacity()).getByRole('radio', { name: '256 GB' }));
@@ -93,7 +102,7 @@ describe('selección de variante', () => {
   it('los colores son muestras con nombre accesible, y el elegido se escribe', async () => {
     await renderPage();
     const swatches = within(colour()).getAllByRole('radio');
-    expect(swatches.map((s) => s.getAttribute('aria-label'))).toEqual(['Azul', 'Blanco', 'Rojo, no disponible']);
+    expect(swatches.map((s) => s.textContent)).toEqual(['Azul', 'Blanco', 'Rojo']);
     expect(colour()).toHaveAccessibleName('Color Azul');
     fireEvent.click(within(colour()).getByRole('radio', { name: 'Blanco' }));
     expect(colour()).toHaveAccessibleName('Color Blanco');
@@ -110,14 +119,15 @@ describe('selección de variante', () => {
     expect(radios[1]).toHaveFocus();
     expect(price()).toBe('S/ 4499.00');
 
-    // In 256 GB, Blanco is sold out (reachable) and Rojo does not exist (skipped).
+    // In 256 GB, Blanco is sold out (reachable); Rojo exists only in 512 GB: reachable too, it moves the capacity.
     const colours = within(colour()).getAllByRole('radio');
     colours[0].focus();
     fireEvent.keyDown(colours[0], { key: 'ArrowRight' });
     expect(colours[1]).toHaveAttribute('aria-checked', 'true');
     fireEvent.keyDown(colours[1], { key: 'ArrowRight' });
-    expect(colours[0]).toHaveAttribute('aria-checked', 'true');
-    expect(colours[2]).toHaveAttribute('aria-checked', 'false');
+    expect(within(colour()).getByRole('radio', { name: 'Rojo' })).toHaveAttribute('aria-checked', 'true');
+    expect(within(colour()).getByRole('radio', { name: 'Rojo' })).toHaveFocus();
+    expect(within(capacity()).getByRole('radio', { name: '512 GB' })).toHaveAttribute('aria-checked', 'true');
   });
 
   it('«Agregar al carrito» manda la variante elegida, sin equipo', async () => {
@@ -151,11 +161,11 @@ describe('selección de variante', () => {
 });
 
 describe('las dos líneas', () => {
-  it('se ofrecen como pestañas con el nombre que les da la empresa', async () => {
+  it('se ofrecen con el nombre que les da la empresa', async () => {
     await renderPage();
-    const tabs = screen.getAllByRole('tab');
-    expect(tabs.map((t) => t.textContent)).toEqual([LINE_NEW, LINE_USED]);
-    expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
+    const options = within(lines()).getAllByRole('radio');
+    expect(options.map((t) => t.textContent)).toEqual([LINE_NEW, LINE_USED]);
+    expect(options[0]).toHaveAttribute('aria-checked', 'true');
     expect(screen.queryByText('Nuevos')).toBeNull();
     expect(screen.queryByText('Seminuevos')).toBeNull();
   });
@@ -164,23 +174,25 @@ describe('las dos líneas', () => {
     model.lines.used.count = 0;
     model.used_units = [];
     await renderPage();
-    expect(screen.queryByRole('tab')).toBeNull();
+    expect(screen.queryByRole('radiogroup', { name: 'Condición' })).toBeNull();
     expect(screen.getByRole('radiogroup', { name: 'Capacidad' })).toBeInTheDocument();
   });
 
   it('`?line=used` abre la de seminuevos', async () => {
     await renderPage('used');
-    expect(screen.getByRole('tab', { name: LINE_USED })).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getAllByRole('button', { name: 'Comprar este equipo' })).toHaveLength(2);
+    expect(within(lines()).getByRole('radio', { name: LINE_USED })).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getAllByRole('button', { pressed: false, name: /GB/ }).length
+      + screen.getAllByRole('button', { pressed: true, name: /GB/ }).length).toBe(2);
+    expect(screen.getByRole('button', { name: 'Comprar este equipo' })).toBeInTheDocument();
   });
 });
 
 describe('línea de seminuevos', () => {
   it('comprar un equipo manda ESE equipo', async () => {
     await renderPage();
-    fireEvent.click(screen.getByRole('tab', { name: LINE_USED }));
-    const card = screen.getByRole('article', { name: '256 GB · Rojo' });
-    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Comprar este equipo' })); });
+    fireEvent.click(within(lines()).getByRole('radio', { name: LINE_USED }));
+    fireEvent.click(screen.getByRole('button', { name: /256 GB · Rojo/ }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Comprar este equipo' })); });
     const body = JSON.parse(String(send.mock.calls[0][1]?.body));
     expect(body).toMatchObject({ product: 53, quantity: 1, unit: '0b4c7a52-2222-4a6e-9b1c-000000000002' });
   });
@@ -189,17 +201,18 @@ describe('línea de seminuevos', () => {
     send.mockResolvedValueOnce(reply({ detail: 'Este equipo acaba de ser reservado por otra persona.', code: 'unit_taken' }, 409));
     await renderPage('used');
     expect(reads).toHaveBeenCalledTimes(1);
-    const card = screen.getByRole('article', { name: '128 GB · Azul' });
-    await act(async () => { fireEvent.click(within(card).getByRole('button', { name: 'Comprar este equipo' })); });
+    fireEvent.click(screen.getByRole('button', { name: /128 GB · Azul/ }));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Comprar este equipo' })); });
     expect(await screen.findByRole('alert')).toHaveTextContent('Este equipo acaba de ser reservado por otra persona.');
     await waitFor(() => expect(reads).toHaveBeenCalledTimes(2));
   });
 
   it('los filtros por opción dejan sólo lo que coincide', async () => {
     await renderPage('used');
-    fireEvent.change(screen.getByLabelText('Color'), { target: { value: 'Rojo' } });
-    expect(screen.getAllByRole('article')).toHaveLength(1);
-    expect(screen.getByRole('article', { name: '256 GB · Rojo' })).toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Color' })).getByRole('radio', { name: 'Rojo' }));
+    const listed = within(screen.getByRole('list', { name: 'Equipos' })).getAllByRole('button');
+    expect(listed).toHaveLength(1);
+    expect(listed[0]).toHaveAccessibleName(/256 GB · Rojo/);
   });
 
   it('sin equipos, lo dice', async () => {

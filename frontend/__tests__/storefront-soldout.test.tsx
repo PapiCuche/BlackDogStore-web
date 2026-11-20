@@ -55,7 +55,9 @@ const attributes = () => sortedAttributes(modelFixture().attributes as ModelAttr
 const variants = () => modelFixture().variants as Variant[];
 const capacity = () => screen.getByRole('radiogroup', { name: 'Capacidad' });
 const colour = () => screen.getByRole('radiogroup', { name: /^Color/ });
-const mainImage = () => within(screen.getByTestId('model-main-image')).getByRole('img');
+const mainImage = () => within(screen.getByTestId('v4-stage')).getByRole('img');
+const availability = () =>
+  within(screen.getByTestId('v4-summary')).getByText('Disponibilidad', { selector: 'dt' }).nextElementSibling;
 
 async function renderModel() {
   render(<ModelDetail slug="equipo-x" />);
@@ -102,9 +104,9 @@ describe('página de un modelo', () => {
     fireEvent.click(blanco);
     expect(blanco).toHaveAttribute('aria-checked', 'true');
     expect(colour()).toHaveAccessibleName('Color Blanco');
-    expect(screen.getByTestId('model-price')).toHaveTextContent('S/ 4499.00');
+    expect(screen.getByTestId('v4-price')).toHaveTextContent('S/ 4499.00');
     expect(mainImage()).toHaveAttribute('src', 'http://localhost/blanco-256.png');
-    expect(screen.getByTestId('model-availability')).toHaveTextContent('Agotado');
+    expect(availability()).toHaveTextContent('Agotado');
     const action = screen.getByRole('button', { name: 'Agotado' });
     expect(action).toBeDisabled();
     await act(async () => { fireEvent.click(action); });
@@ -119,7 +121,7 @@ describe('página de un modelo', () => {
     expect(screen.getByRole('button', { name: 'Agregar al carrito' })).toBeEnabled();
   });
 
-  it('las flechas pasan por lo agotado y saltan lo que no existe', async () => {
+  it('las flechas pasan por lo agotado; un color de otra capacidad también se alcanza (PR D)', async () => {
     await renderModel();
     fireEvent.click(within(capacity()).getByRole('radio', { name: '256 GB' }));
     const colours = within(colour()).getAllByRole('radio');
@@ -127,8 +129,9 @@ describe('página de un modelo', () => {
     fireEvent.keyDown(colours[0], { key: 'ArrowRight' });
     expect(colours[1]).toHaveAttribute('aria-checked', 'true');
     fireEvent.keyDown(colours[1], { key: 'ArrowRight' });
-    // Rojo 256 GB does not exist: the arrow wraps to Azul.
-    expect(colours[0]).toHaveAttribute('aria-checked', 'true');
+    // Rojo 256 GB does not exist, but Rojo 512 GB does: the arrow reaches it and the capacity moves (PR D).
+    expect(within(colour()).getByRole('radio', { name: 'Rojo' })).toHaveAttribute('aria-checked', 'true');
+    expect(within(capacity()).getByRole('radio', { name: '512 GB' })).toHaveAttribute('aria-checked', 'true');
   });
 
   it('un modelo sin nada que vender se ve con su foto y «Agotado», sin acción de compra', async () => {
@@ -139,7 +142,7 @@ describe('página de un modelo', () => {
     await renderModel();
     expect(screen.getByTestId('model-sold-out')).toHaveTextContent('Agotado');
     // Still a page to look at: options and last price.
-    expect(screen.getByTestId('model-price')).toHaveTextContent('S/ 3999.00');
+    expect(screen.getByTestId('v4-price')).toHaveTextContent('S/ 3999.00');
     expect(screen.getByRole('button', { name: 'Agotado' })).toBeDisabled();
   });
 

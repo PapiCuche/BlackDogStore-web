@@ -411,3 +411,67 @@ describe('V4: los colores salen de la marca', () => {
     expect(at('--v4-focus')).not.toEqual(at('--v4-accent'));
   });
 });
+
+// ---------------------------------------------------------------------------
+// CATALOG-REFERENCE-01 · PR D — el bloque del configurador en la ficha pública
+// ---------------------------------------------------------------------------
+
+/**
+ * En `/modelo/<slug>` el configurador lleva los tokens del Manual V4 sólo dentro de su bloque
+ * (`[data-design="v4"][data-v4-scope="block"]`), y el bloque SIGUE el tema del visitante, porque la cabecera y el
+ * pie de la V3 lo siguen: en oscuro, los neutros del manual (negro, carbón y el blanco cálido de la marca) salen de
+ * los colores oscuros de cada empresa. Se mide igual que la V4 clara.
+ */
+const BLOCK_DARK = '[data-design="v4"][data-v4-scope="block"]:where([data-theme="dark"] *) {';
+
+function v4BlockDarkTokens(): Record<string, string> {
+  const start = V4_CSS.indexOf(BLOCK_DARK);
+  if (start < 0) throw new Error('no encuentro el bloque oscuro del configurador');
+  const open = V4_CSS.indexOf('{', start);
+  const close = V4_CSS.indexOf('\n}', open);
+  const out: Record<string, string> = {};
+  for (const line of V4_CSS.slice(open + 1, close).replace(/\/\*[\s\S]*?\*\//g, '').split(';')) {
+    const m = line.match(/(--[\w-]+)\s*:\s*([\s\S]+)/);
+    if (m) out[m[1]] = m[2].trim().replace(/\s+/g, ' ');
+  }
+  return out;
+}
+
+describe.each(SCENARIOS)('contraste del configurador en la ficha pública, tema oscuro — %s', (_name, brand) => {
+  const scope: Record<string, string> = {
+    ...tokensIn(':root {'), ...brand, ...tokensIn(':root[data-theme="dark"]'), ...v4Tokens(), ...v4BlockDarkTokens(),
+  };
+  const at = (token: string) => resolve(scope[token], scope);
+  const grounds = [['fondo', '--v4-canvas'], ['superficie', '--v4-surface']] as const;
+
+  it('el fondo es oscuro: sigue al tema como la cabecera y el pie', () => {
+    expect(luminance(at('--v4-canvas'))).toBeLessThan(0.2);
+  });
+
+  it.each(grounds)('el texto principal y el secundario se leen sobre %s', (_l, bg) => {
+    expect(contrast(at('--v4-ink'), at(bg))).toBeGreaterThanOrEqual(AA_NORMAL);
+    expect(contrast(at('--v4-muted'), at(bg))).toBeGreaterThanOrEqual(AA_NORMAL);
+  });
+
+  it.each(grounds)('el foco y el borde de un selector alcanzan 3:1 sobre %s', (_l, bg) => {
+    expect(contrast(at('--v4-focus'), at(bg))).toBeGreaterThanOrEqual(UI_MIN);
+    expect(contrast(at('--v4-line-strong'), at(bg))).toBeGreaterThanOrEqual(UI_MIN);
+  });
+
+  it('el botón principal y su estado al pasar se leen', () => {
+    expect(contrast(at('--v4-on-ink'), at('--v4-ink'))).toBeGreaterThanOrEqual(AA_NORMAL);
+    expect(contrast(at('--v4-on-ink'), at('--v4-charcoal'))).toBeGreaterThanOrEqual(AA_NORMAL);
+  });
+
+  it('los estados (error, aviso, éxito) se leen sobre el fondo y su superficie', () => {
+    for (const token of ['--danger', '--warning', '--success']) {
+      expect(contrast(at(token), at('--v4-canvas'))).toBeGreaterThanOrEqual(AA_NORMAL);
+      expect(contrast(at(token), at(`${token}-surface`))).toBeGreaterThanOrEqual(AA_NORMAL);
+    }
+  });
+
+  it('el dorado sigue siendo sólo acento: ni texto ni foco', () => {
+    expect(at('--v4-focus')).not.toEqual(at('--v4-accent'));
+    expect(at('--v4-ink')).not.toEqual(at('--v4-accent'));
+  });
+});

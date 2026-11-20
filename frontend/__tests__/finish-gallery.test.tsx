@@ -134,13 +134,17 @@ describe('V4 configurator', () => {
   });
 });
 
-describe('V3 model page', () => {
+describe('public model page (the V4 configurator in its block since PR D)', () => {
   it('a finish without pictures shows the neutral marker in the photo box', async () => {
-    render(<ModelDetail slug="equipo-x" />);
+    render(
+      <StorefrontProvider config={NEUTRAL_CONFIG}>
+        <ModelDetail slug="equipo-x" />
+      </StorefrontProvider>,
+    );
     await screen.findByRole('heading', { level: 1, name: 'Equipo X' });
-    expect(screen.getByTestId('model-main-image').querySelector('img')).not.toBeNull();
+    expect(screen.getByTestId('v4-stage').querySelector('img')).not.toBeNull();
     fireEvent.click(within(colour()).getByRole('radio', { name: /^Blanco/ }));
-    const box = screen.getByTestId('model-main-image');
+    const box = screen.getByTestId('v4-stage');
     expect(within(box).getByTestId('image-pending')).toBeInTheDocument();
     expect(box.querySelector('img')).toBeNull();
   });

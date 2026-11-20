@@ -6,10 +6,11 @@ import type { CatalogModel } from '@/app/lib/catalog-models';
 import { modelFixture, reply } from './support/device-commerce-fixtures';
 
 /**
- * SEO-AUDIT #2 — la ficha V3 recibe el modelo leído en el servidor (`initialModel`).
+ * SEO-AUDIT #2 — la ficha pública recibe el modelo leído en el servidor (`initialModel`). Desde
+ * CATALOG-REFERENCE-01 · PR D es el configurador V4 en su bloque.
  *
  * Lo que se ve tras hidratar no cambia: con el primer dato, el marcado es EXACTAMENTE el de la ficha cargada
- * por el navegador (las instantáneas de `model-detail-v3-markup.test.tsx` siguen valiendo). No hay esqueleto
+ * por el navegador. No hay esqueleto
  * ni parpadeo, y el navegador sigue releyendo el modelo en silencio: precios y stock cambian mientras alguien
  * mira.
  */
@@ -52,9 +53,9 @@ describe('ModelDetail con el modelo del servidor', () => {
     fresh.variants[0].price = '3899.00';
     reads.mockResolvedValue(reply(fresh));
     render(<ModelDetail slug="equipo-x" initialModel={fixture()} />);
-    expect(screen.getByTestId('model-price')).toHaveTextContent('S/ 3999.00');
+    expect(screen.getByTestId('v4-price')).toHaveTextContent('S/ 3999.00');
     await act(async () => {});
-    await waitFor(() => expect(screen.getByTestId('model-price')).toHaveTextContent('S/ 3899.00'));
+    await waitFor(() => expect(screen.getByTestId('v4-price')).toHaveTextContent('S/ 3899.00'));
     expect(reads).toHaveBeenCalledTimes(1);
     expect(String(reads.mock.calls[0][0])).toContain('/catalog/models/equipo-x');
   });
