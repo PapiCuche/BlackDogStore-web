@@ -59,6 +59,9 @@ Migraciones aditivas `0181`–`0184`. Nada desplegado ni importado en producció
 - (PR G) El carrito y el resumen del checkout muestran la foto del color elegido, o «Imagen pendiente», y ya no la inicial del nombre.
 - (PR G) Un equipo nuevo en el carrito ya no dice «Batería: no informado».
 - (PR G) En el teléfono, el carrito y el checkout ya no se salen de la pantalla con un nombre de variante largo.
+- (PR G, revisión de #377) Una foto demostrativa en el carrito se rotula «Imagen referencial», como en la ficha.
+- (PR G, revisión de #377) El gris neutro ya no se muestra como color en ningún chip, tampoco en los colores creados desde listas de proveedor.
+- (PR G, revisión de #377) Tras «Guardar muestra», el foco queda en el color, y el negro también se puede elegir.
 - (PR G) Los colores importados ya no se ven todos con el mismo punto gris. Cada chip muestra la foto de su color, si no la muestra que puso la tienda, y si no sólo su nombre. El panel avisa «Muestra sin configurar» y permite elegirla.
 
 ## 2026-11-19 — Borde de la tienda listo para el CRM (en PR)
