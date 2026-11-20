@@ -22,6 +22,7 @@ documentación real, sin reemplazar su historial.
   - `python manage.py load_reference_catalog --file … [--dry-run]`: valida primero, carga por clave (la segunda vez, 0 cambios), nunca borra (lo que salió del archivo queda `in_dataset=False` y se informa como candidato a retirar), auditado sin empresa.
   - Importar a UNA empresa: `GET /api/admin/catalog/reference/models/`, `POST …/reference/preview/` y `…/reference/apply/` (nuevo / reutilizado / conflicto / pendiente de revisión; huella, `Idempotency-Key` y candado de empresa de `catalog_proposal`). Crea modelo oculto, atributos por rol que falten, opciones (por `reference_key`, luego por etiqueta; un renombre de la empresa se respeta), paleta y exclusiones SIM × región. Nunca crea variantes, stock ni unidades. Un modelo `partial` sólo con aprobación expresa.
   - `check_variant` y la matriz del panel respetan las exclusiones; un modelo sin exclusiones se comporta igual que antes.
+  - Las opciones de SIM y región se crean con etiquetas en español del archivo (`label_es` y `region_label_es` en cada entrada `sim`: «nano-SIM y eSIM», «Solo eSIM», «Internacional (otros países)», «EE. UU. y Puerto Rico»…); las claves no cambian.
   - Falta: pantallas del panel (PR E). No se carga ni importa nada en producción sin GO.
 
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)

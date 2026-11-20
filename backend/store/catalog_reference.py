@@ -21,7 +21,9 @@ HEADER_FIELDS = {'schema_version', 'manufacturer', 'family', 'dataset_version', 
 MODEL_FIELDS = {'key', 'name', 'line', 'generation', 'announced', 'capacities_gb', 'colors', 'sim',
                 'model_numbers', 'sources', 'verified_at', 'completeness', 'missing', 'notes'}
 COLOUR_FIELDS = {'key', 'label_en', 'label_es', 'official'}
-SIM_FIELDS = {'key', 'regions', 'config'}
+#: `label_es` / `region_label_es` (optional, PR B): how the SIM configuration and the region group read in Spanish
+#: for staff and customers. One SIM key, or one region group, reads alike within a model.
+SIM_FIELDS = {'key', 'regions', 'config', 'label_es', 'region_label_es'}
 NUMBER_FIELDS = {'number', 'regions'}
 
 _SLUG = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*')
@@ -130,6 +132,21 @@ def _model_errors(m, hosts):
         _unknown(f'{where} sim', s, SIM_FIELDS, errors)
         if not (_slug(s.get('key')) and _text(s.get('config')) and _text(s.get('regions'))):
             errors.append(f'{where}: each sim entry needs a slug key, regions and config')
+    sim_labels, region_labels = {}, {}
+    for s in sims:
+        for field in ('label_es', 'region_label_es'):
+            if field in s and not _text(s.get(field)):
+                errors.append(f'{where}: sim {s.get("key")!r} {field} must be non-empty text when present')
+        if _text(s.get('label_es')) and isinstance(s.get('key'), str):
+            sim_labels.setdefault(s['key'], set()).add(s['label_es'])
+        if _text(s.get('region_label_es')) and isinstance(s.get('regions'), str):
+            region_labels.setdefault(region_text(s['regions']), set()).add(s['region_label_es'])
+    for key, labels in sim_labels.items():
+        if len(labels) > 1:
+            errors.append(f'{where}: sim {key!r} has more than one label_es')
+    for group, labels in region_labels.items():
+        if len(labels) > 1:
+            errors.append(f'{where}: region group {group!r} has more than one region_label_es')
     for dup in _duplicates((s.get('key'), s.get('regions')) for s in sims
                            if isinstance(s.get('key'), str) and isinstance(s.get('regions'), str)):
         errors.append(f'{where}: duplicate sim entry {dup!r}')
@@ -220,10 +237,11 @@ def summary(data):
 # Role vocabulary: `VariantAttribute.ROLE_*` (capacity, color, sim, region), written here as plain strings so this
 # module stays free of the ORM. SIM and region (ADR §4, PR B decision): the file has no region list of its own;
 # each `sim` entry says which configuration exists in which regions, in the maker's words. So:
-#   * one SIM option per distinct `sim.key` of the model (label = the key in words; the exact configuration texts
-#     go to `official`);
+#   * one SIM option per distinct `sim.key` of the model (Spanish label = the entry's `label_es`, else the key in
+#     words; the exact configuration texts go to `official`);
 #   * one REGION option per distinct region group of the model: the entry's `regions` text up to its first
-#     parenthesis (the rest is a citation), with a key derived from it (`region_key`), the full texts in `official`;
+#     parenthesis (the rest is a citation), with a key derived from it (`region_key`), the full texts in `official`
+#     and the Spanish label from the entry's `region_label_es` when the file gives it;
 #   * each `sim` entry is one SIM × region pair that exists (`pairs_of`); every other pair of the model is impossible.
 # Model numbers keep their own `regions` text, for reference only (the file does not tie a number to a SIM entry).
 
@@ -293,17 +311,22 @@ def options_of(model) -> list[dict]:
         out.append({'role': 'color', 'key': colour['key'], 'label_en': colour['label_en'],
                     'label_es': colour['label_es'], 'official': dict(colour.get('official') or {}),
                     'capacity_gb': None, 'sort_order': n})
-    sims, regions = {}, {}
+    sims, regions, sim_es, region_es = {}, {}, {}, {}
     for entry in model.get('sim') or []:
         sims.setdefault(entry['key'], []).append(entry['config'])
-        regions.setdefault(region_key(entry['regions']), []).append(entry['regions'])
+        group = region_key(entry['regions'])
+        regions.setdefault(group, []).append(entry['regions'])
+        if entry.get('label_es'):
+            sim_es.setdefault(entry['key'], entry['label_es'].strip())
+        if entry.get('region_label_es'):
+            region_es.setdefault(group, entry['region_label_es'].strip())
     for n, (key, configs) in enumerate(sims.items()):
         label = sim_label(key)
-        out.append({'role': 'sim', 'key': key, 'label_en': label, 'label_es': label,
+        out.append({'role': 'sim', 'key': key, 'label_en': label, 'label_es': sim_es.get(key, label)[:LABEL_MAX],
                     'official': {'config': list(dict.fromkeys(configs))}, 'capacity_gb': None, 'sort_order': n})
     for n, (key, texts) in enumerate(regions.items()):
         label = region_label(texts[0])
-        out.append({'role': 'region', 'key': key, 'label_en': label, 'label_es': label,
+        out.append({'role': 'region', 'key': key, 'label_en': label, 'label_es': region_es.get(key, label)[:LABEL_MAX],
                     'official': {'regions': list(dict.fromkeys(texts))}, 'capacity_gb': None, 'sort_order': n})
     return out
 

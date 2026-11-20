@@ -125,6 +125,20 @@ class DerivationTest(SimpleTestCase):
         self.assertNotEqual(key, ref.region_key(text + ', Country 99'))
         self.assertLessEqual(len(ref.region_label(text)), 60)
 
+    def test_the_spanish_labels_of_a_sim_entry_name_the_sim_and_region_options(self):
+        sims = [{'key': 'esim-only', 'regions': 'Country A, Country B', 'config': 'eSIM only',
+                 'label_es': 'Solo eSIM', 'region_label_es': 'Países A y B'},
+                {'key': 'nano-sim-esim', 'regions': 'default (other countries)', 'config': 'nano-SIM + eSIM',
+                 'label_es': 'nano-SIM y eSIM', 'region_label_es': 'Internacional (otros países)'}]
+        options = {(o['role'], o['key']): o for o in ref.options_of(model(sim=sims))}
+        self.assertEqual(options[('sim', 'esim-only')]['label_es'], 'Solo eSIM')
+        self.assertEqual(options[('sim', 'nano-sim-esim')]['label_es'], 'nano-SIM y eSIM')
+        self.assertEqual(options[('region', 'country-a-country-b')]['label_es'], 'Países A y B')
+        self.assertEqual(options[('region', 'default')]['label_es'], 'Internacional (otros países)')
+        # The keys do not change: links and re-imports stay stable.
+        self.assertEqual(set(options), {(o['role'], o['key']) for o in ref.options_of(model(
+            sim=[{k: v for k, v in e.items() if 'label' not in k} for e in sims]))})
+
     def test_a_sim_key_reads_as_words(self):
         self.assertEqual(ref.sim_label('nano-sim-esim'), 'nano sim esim')
 

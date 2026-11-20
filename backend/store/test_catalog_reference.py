@@ -74,6 +74,34 @@ class ValidatorTest(SimpleTestCase):
     def test_a_sim_entry_names_its_configuration(self):
         self.assertRejected(dataset(model(sim=[{'key': 'x', 'regions': 'default', 'config': ''}])), 'sim')
 
+    def test_a_sim_entry_may_carry_spanish_labels_for_the_sim_and_the_region_group(self):
+        entry = {'key': 'nano-sim-esim', 'regions': 'default', 'config': 'nano-SIM + eSIM',
+                 'label_es': 'nano-SIM y eSIM', 'region_label_es': 'Internacional'}
+        self.assertEqual(self.errors(dataset(model(sim=[entry]))), [])
+        # Both are optional.
+        self.assertEqual(self.errors(dataset(model(sim=[{k: v for k, v in entry.items() if 'label' not in k}]))), [])
+
+    def test_spanish_sim_labels_when_present_are_non_empty_text(self):
+        base = {'key': 'nano-sim-esim', 'regions': 'default', 'config': 'nano-SIM + eSIM'}
+        for field in ('label_es', 'region_label_es'):
+            for bad in ('', '   ', None, 3, ['x'], {'es': 'x'}):
+                with self.subTest(field=field, value=bad):
+                    self.assertRejected(dataset(model(sim=[{**base, field: bad}])), field)
+
+    def test_a_sim_entry_still_refuses_unknown_fields(self):
+        base = {'key': 'nano-sim-esim', 'regions': 'default', 'config': 'nano-SIM + eSIM'}
+        self.assertRejected(dataset(model(sim=[{**base, 'label_en': 'x'}])), 'unknown field')
+
+    def test_one_sim_key_or_one_region_group_reads_alike_inside_a_model(self):
+        sims = [{'key': 'esim-only', 'regions': 'Country A', 'config': 'eSIM', 'label_es': 'Solo eSIM',
+                 'region_label_es': 'País A'},
+                {'key': 'esim-only', 'regions': 'Country B', 'config': 'eSIM', 'label_es': 'eSIM',
+                 'region_label_es': 'País B'}]
+        self.assertRejected(dataset(model(sim=sims)), 'label_es')
+        sims = [{'key': 'esim-only', 'regions': 'Country A (source 1)', 'config': 'eSIM', 'region_label_es': 'País A'},
+                {'key': 'nano-sim', 'regions': 'Country A (source 2)', 'config': 'nano', 'region_label_es': 'A'}]
+        self.assertRejected(dataset(model(sim=sims)), 'region_label_es')
+
     def test_sources_are_https_pages_of_the_official_hosts_only(self):
         self.assertRejected(dataset(model(sources=['https://blog.example/specs'])), 'official')
         self.assertRejected(dataset(model(sources=['http://support.maker.test/specs'])), 'official')
@@ -197,6 +225,18 @@ class FilesTest(SimpleTestCase):
         for path in self.files():
             summary = ref.summary(ref.load(path))
             self.assertEqual(sum(summary['by_completeness'].values()), summary['models'])
+
+
+class SpanishSimLabelsInFilesTest(SimpleTestCase):
+    """Staff and customers read the SIM and region options in Spanish: every entry of the iPhone file carries both."""
+
+    def test_every_sim_entry_of_the_phone_file_has_both_spanish_labels(self):
+        data = ref.load(DATA_DIR / 'apple-iphone.json')
+        for m in data['models']:
+            for entry in m['sim']:
+                for field in ('label_es', 'region_label_es'):
+                    with self.subTest(model=m['key'], sim=entry['key'], field=field):
+                        self.assertTrue(isinstance(entry.get(field), str) and entry[field].strip())
 
 
 class PhoneFileFactsTest(SimpleTestCase):

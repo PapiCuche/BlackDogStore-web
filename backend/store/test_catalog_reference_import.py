@@ -163,6 +163,18 @@ class ApplyTest(_Shop, TestCase):
         self.assertEqual(body['created']['models'][0]['model_id'], model.pk)
         self.assertTrue(AdminAuditLog.objects.filter(company=self.company, action='catalog_reference_applied').exists())
 
+    def test_sim_and_region_options_take_the_spanish_labels_of_the_reference(self):
+        data = dataset()
+        for entry in data['models'][0]['sim']:
+            entry['label_es'] = 'SIM ' + entry['key'].upper()
+            entry['region_label_es'] = 'Región ' + entry['regions'][:9]
+        loader.load(data)
+        self.applied(['phone-9'])
+        self.assertEqual(self.option('sim:esim-only').label, 'SIM ESIM-ONLY')
+        self.assertEqual(self.option('region:default').label, 'Región default (')
+        self.assertEqual(ReferenceOption.objects.get(model__key='phone-9', role='sim', key='esim-only').label_es,
+                         'SIM ESIM-ONLY')
+
     def test_each_model_keeps_its_own_colours_and_capacities(self):
         self.applied(['phone-9', 'phone-9-pro'])
         nine, nine_pro = self.tenant_model('phone-9'), self.tenant_model('phone-9-pro')
