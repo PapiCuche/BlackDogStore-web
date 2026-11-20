@@ -508,14 +508,26 @@ def payload(model) -> dict:
     attributes.sort(key=attribute_sort_key)
     labels = {}
     attribute_rows = []
+    pictures = None
     for attribute in attributes:
         chosen = palette.get(attribute.pk, set())
+        colour = attribute.kind == VariantAttribute.KIND_COLOR or attribute.role == VariantAttribute.ROLE_COLOR
+        if colour and pictures is None:
+            from .finish_media import chip_pictures
+
+            pictures = chip_pictures(model)
         options = []
         for option in attribute.options.all():
             if option.company_id == model.company_id:
                 labels[option.pk] = option.label
-            options.append({'id': option.pk, 'label': option.label, 'swatch_hex': option.swatch_hex,
-                            'sort_order': option.sort_order, 'in_palette': option.pk in chosen})
+            row = {'id': option.pk, 'label': option.label, 'swatch_hex': option.swatch_hex,
+                   'sort_order': option.sort_order, 'in_palette': option.pk in chosen}
+            if colour:
+                # G (owner's visual order 4): the chip's picture, and whether the swatch is the company's.
+                from .device_catalog import swatch_is_set
+
+                row.update(swatch_set=swatch_is_set(option), thumbnail=pictures.get(option.pk))
+            options.append(row)
         attribute_rows.append({'id': attribute.pk, 'name': attribute.name, 'kind': attribute.kind,
                                'role': attribute.role, 'sort_order': attribute.sort_order, 'options': options})
 

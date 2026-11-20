@@ -1335,6 +1335,64 @@ def _public_options(options: dict) -> list[dict]:
     return [{k: v for k, v in row.items() if k != '_rank'} for row in rows]
 
 
+#: The neutral swatch the reference import (and a supplier list) gives a NEW colour, because a colour option must
+#: carry one (`_clean_swatch`). It is the importer's placeholder, not a colour of the product.
+NEUTRAL_SWATCH = '#9CA3AF'
+
+
+def swatch_is_set(option) -> bool:
+    """
+    G (owner's visual order 4): whether a colour's swatch is the COMPANY's. Derived, without a column: a colour of the
+    reference catalogue (`reference_key` set) still holding the importer's neutral default is «Muestra sin
+    configurar». A colour made by hand keeps whatever swatch the company gave it, grey included; a company that sets
+    any other swatch on an imported colour has configured it. (Setting exactly the neutral value on an imported
+    colour reads as unset: documented in ADR §4.6, D-PRG-6.)
+    """
+    value = (option.swatch_hex or '').upper()
+    if not value:
+        return False
+    return not (option.reference_key and value == NEUTRAL_SWATCH)
+
+
+def shown_swatch(option) -> str:
+    """The swatch a chip may draw: the company's, or '' (a name-only chip, never the neutral grey dot)."""
+    return option.swatch_hex if swatch_is_set(option) else ''
+
+
+def variant_picture(product) -> tuple[str, bool]:
+    """
+    The picture a NEW variant opens on, by `public_model`'s rule, for a surface that shows ONE line (the cart):
+    `(address, pending)`.
+
+    Its own pictures (its gallery, else its own address) → else the first picture of its colour's finish (model + its
+    option of the company's colour dimension, D-PRC-8) → else the model's cover only on a COLOURLESS model → else
+    `('', True)`: the pending marker. Never another colour's photo and never the cover of a model with colours.
+    `test_finish_images.CartPictureTest` keeps it equal to the first picture of the variant's `gallery` on the page.
+    """
+    from .finish_media import colour_attribute_ids
+    from .models import ModelFinishImage
+
+    own = product.images.all().first()
+    if own is not None:
+        return own.image_url, False
+    if product.image_url:
+        return product.image_url, False
+    model = product.product_model if product.product_model_id else None
+    if model is None:
+        return '', True
+    colour = (ProductVariantOption.objects.filter(product=product, attribute_id__in=colour_attribute_ids(product.company_id))
+              .values_list('option_id', flat=True).first())
+    if colour is not None:
+        finish = (ModelFinishImage.objects.filter(model=model, company_id=model.company_id, color_option_id=colour)
+                  .order_by('sort_order', 'pk').values_list('image_url', flat=True).first())
+        return (finish, False) if finish else ('', True)
+    colourless = not ProductVariantOption.objects.filter(product__product_model=model).filter(
+        Q(attribute__role=VariantAttribute.ROLE_COLOR) | Q(attribute__kind=VariantAttribute.KIND_COLOR)).exists()
+    if model.image_url and colourless:
+        return model.image_url, False
+    return '', True
+
+
 def public_model(model, branch) -> dict:
     """
     A model as the shop shows it: its options, its NEW variants with price,
@@ -1410,7 +1468,7 @@ def public_model(model, branch) -> dict:
                 'sort_order': attribute.sort_order, 'options': {},
             })
             entry['options'][link.option.pk] = {
-                'id': link.option.pk, 'label': link.option.label, 'swatch_hex': link.option.swatch_hex,
+                'id': link.option.pk, 'label': link.option.label, 'swatch_hex': shown_swatch(link.option),
                 'sort_order': link.option.sort_order, '_rank': link.model_rank,
             }
             selection[str(attribute.pk)] = link.option.pk

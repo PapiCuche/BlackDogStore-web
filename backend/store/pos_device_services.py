@@ -42,7 +42,7 @@ from itertools import product as cartesian
 from django.db import connection, transaction
 from django.db.models import Count, Q, Sum
 
-from . import device_catalog, device_identity, inventory_services, model_palette, pos_payloads, supply_services
+from . import device_catalog, device_identity, finish_media, inventory_services, model_palette, pos_payloads, supply_services
 from . import registration_services as registration
 from .models import (
     AdminAuditLog, BranchStock, ModelOption, OrderItem, OrderUnit, Product, ProductModel, ProductVariantOption,
@@ -209,6 +209,9 @@ def configurations(company, model, branch, authority: Authority) -> dict:
             if chosen:
                 allowed[attribute.pk] = chosen
     columns, attribute_rows = [], []
+    # G (owner's visual order 4): a colour chip shows its finish's authorized picture, else the company's swatch,
+    # else only its name — never the importer's neutral grey as if it were the colour.
+    pictures = None
     for attribute in attributes:
         if attribute.pk not in allowed:
             continue
@@ -224,6 +227,12 @@ def configurations(company, model, branch, authority: Authority) -> dict:
             'varies': len(options) > 1 or not carried_by_all,
             'options': [{'id': o.pk, 'label': o.label, 'swatch_hex': o.swatch_hex} for o in options],
         })
+        if attribute.role == VariantAttribute.ROLE_COLOR or attribute.kind == VariantAttribute.KIND_COLOR:
+            if pictures is None:
+                pictures = finish_media.chip_pictures(model)
+            attribute_rows[-1]['options'] = [
+                {'id': o.pk, 'label': o.label, 'swatch_hex': device_catalog.shown_swatch(o),
+                 'thumbnail': pictures.get(o.pk)} for o in options]
     every_option = {pk for column in columns for pk in column}
     excluded = [pair for pair in (palette.excluded if palette else set()) if pair <= every_option]
 

@@ -59,7 +59,7 @@ MAX_ROWS = text_preview_match.MAX_CANDIDATES
 MAX_PRICE = Decimal('99999999.99')
 PLACEHOLDER_PRICE = Decimal('0.00')
 #: A colour created from a list has no real swatch yet: neutral grey, to adjust in the catalogue.
-PLACEHOLDER_SWATCH = '#9CA3AF'
+PLACEHOLDER_SWATCH = device_catalog.NEUTRAL_SWATCH
 #: Hints beside the match fields. Neither is an identifier or a cost.
 EXTRA_FIELDS = {'price'}
 #: SIM and region: the row field -> the attribute ROLE it is read against.
