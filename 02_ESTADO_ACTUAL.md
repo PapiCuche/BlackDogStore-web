@@ -17,6 +17,13 @@ documentación real, sin reemplazar su historial.
   - `backend/catalog_reference/apple-iphone.json` con 55 modelos (49 `complete`, 6 `partial`), cada uno con sus fuentes oficiales de Apple y verificado el 2026-11-20;
   - validador puro `store/catalog_reference.py`, que no nombra ningún fabricante (lo vigila un test).
 - **Nada cambia en la base, la tienda ni la caja.** El catálogo todavía no se carga en ninguna empresa (PR B). No se despliega ni se importa nada sin un GO del propietario.
+- **PR B (rama `feat/catalog-reference-import`, apilada sobre PR A; sin push, sin desplegar):** importador y paletas por modelo.
+  - Migración aditiva `0181_catalog_reference`: tablas de plataforma `ReferenceModel`, `ReferenceOption`, `ReferenceModelNumber` (sin empresa); `ProductModel.reference_key` y `VariantOption.reference_key` (`db_default=''`, únicos parciales por empresa); `ModelOptionExclusion` (pares imposibles por modelo). Los PR #367/#368 también usan `0181_label_printing`: el segundo en fusionarse añade una migración de fusión.
+  - `python manage.py load_reference_catalog --file … [--dry-run]`: valida primero, carga por clave (la segunda vez, 0 cambios), nunca borra (lo que salió del archivo queda `in_dataset=False` y se informa como candidato a retirar), auditado sin empresa.
+  - Importar a UNA empresa: `GET /api/admin/catalog/reference/models/`, `POST …/reference/preview/` y `…/reference/apply/` (nuevo / reutilizado / conflicto / pendiente de revisión; huella, `Idempotency-Key` y candado de empresa de `catalog_proposal`). Crea modelo oculto, atributos por rol que falten, opciones (por `reference_key`, luego por etiqueta; un renombre de la empresa se respeta), paleta y exclusiones SIM × región. Nunca crea variantes, stock ni unidades. Un modelo `partial` sólo con aprobación expresa.
+  - `check_variant` y la matriz del panel respetan las exclusiones; un modelo sin exclusiones se comporta igual que antes.
+  - Las opciones de SIM y región se crean con etiquetas en español del archivo (`label_es` y `region_label_es` en cada entrada `sim`: «nano-SIM y eSIM», «Solo eSIM», «Internacional (otros países)», «EE. UU. y Puerto Rico»…); las claves no cambian.
+  - Falta: pantallas del panel (PR E). No se carga ni importa nada en producción sin GO.
 
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 

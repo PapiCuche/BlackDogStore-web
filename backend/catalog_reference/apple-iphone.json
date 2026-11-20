@@ -46,7 +46,9 @@
     {
      "key": "esim-only",
      "regions": "all regions (support.apple.com/108044: 'There is no SIM tray'; dual eSIM confirmed on en-us, en-gb, en-hk, zh-cn Tech Specs and apple.com/la)",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "Todas las regiones"
     }
    ],
    "model_numbers": [
@@ -147,17 +149,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU., Canadá, Japón, México y otros"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim-or-esim",
      "regions": "China mainland",
-     "config": "Dual SIM: two nano-SIM cards, or one nano-SIM and one eSIM, or two active eSIMs [translated from zh-cn Tech Specs: 双卡 (两个 nano-SIM 卡，或一个 nano-SIM 卡和一个 eSIM，或激活两个 eSIM)]"
+     "config": "Dual SIM: two nano-SIM cards, or one nano-SIM and one eSIM, or two active eSIMs [translated from zh-cn Tech Specs: 双卡 (两个 nano-SIM 卡，或一个 nano-SIM 卡和一个 eSIM，或激活两个 eSIM)]",
+     "label_es": "Dual nano-SIM o eSIM",
+     "region_label_es": "China continental"
     }
    ],
    "model_numbers": [
@@ -260,17 +268,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU., Canadá, Japón, México y otros"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim-or-esim",
      "regions": "China mainland",
-     "config": "Dual SIM: two nano-SIM cards, or one nano-SIM and one eSIM, or two active eSIMs [translated from zh-cn Tech Specs: 双卡 (两个 nano-SIM 卡，或一个 nano-SIM 卡和一个 eSIM，或激活两个 eSIM)]"
+     "config": "Dual SIM: two nano-SIM cards, or one nano-SIM and one eSIM, or two active eSIMs [translated from zh-cn Tech Specs: 双卡 (两个 nano-SIM 卡，或一个 nano-SIM 卡和一个 eSIM，或激活两个 eSIM)]",
+     "label_es": "Dual nano-SIM o eSIM",
+     "region_label_es": "China continental"
     }
    ],
    "model_numbers": [
@@ -361,17 +375,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU., Canadá, Japón, México y otros"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "nano-sim-esim",
      "regions": "China mainland",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support [translated from zh-cn Tech Specs: 双卡 (nano-SIM 卡和 eSIM), 支持双 eSIM]"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support [translated from zh-cn Tech Specs: 双卡 (nano-SIM 卡和 eSIM), 支持双 eSIM]",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "China continental"
     }
    ],
    "model_numbers": [
@@ -467,7 +487,9 @@
     {
      "key": "esim-only",
      "regions": "all regions (support.apple.com/108044: 'There's no SIM tray'; dual eSIM confirmed on en-us, en-gb, en-hk, zh-cn Tech Specs and apple.com/la)",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "Todas las regiones"
     }
    ],
    "model_numbers": [
@@ -557,17 +579,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU., Canadá, Japón, México y otros"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental"
     }
    ],
    "model_numbers": [
@@ -658,17 +686,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU., Canadá, Japón, México y otros"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental"
     }
    ],
    "model_numbers": [
@@ -778,17 +812,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU., Canadá, Japón, México y otros"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental"
     }
    ],
    "model_numbers": [
@@ -868,17 +908,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental"
     }
    ],
    "model_numbers": [
@@ -978,17 +1024,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -1092,17 +1144,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -1215,17 +1273,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -1338,17 +1402,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -1451,17 +1521,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -1563,17 +1639,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -1684,17 +1766,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -1805,17 +1893,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
-     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -1917,17 +2011,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)"
+     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM; dual eSIM supported"
+     "config": "nano-SIM + eSIM; dual eSIM supported",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -2027,17 +2127,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)"
+     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM; dual eSIM supported"
+     "config": "nano-SIM + eSIM; dual eSIM supported",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -2156,17 +2262,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)"
+     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM; dual eSIM supported"
+     "config": "nano-SIM + eSIM; dual eSIM supported",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -2285,17 +2397,23 @@
     {
      "key": "esim-only",
      "regions": "United States, Puerto Rico",
-     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)"
+     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)",
+     "label_es": "Solo eSIM",
+     "region_label_es": "EE. UU. y Puerto Rico"
     },
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM; dual eSIM supported"
+     "config": "nano-SIM + eSIM; dual eSIM supported",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -2384,17 +2502,23 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM; dual eSIM supported"
+     "config": "nano-SIM + eSIM; dual eSIM supported",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "nano-sim",
      "regions": "China mainland",
-     "config": "single nano-SIM"
+     "config": "single nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "China continental"
     },
     {
      "key": "nano-sim-esim",
      "regions": "Hong Kong, Macao",
-     "config": "nano-SIM + eSIM; dual eSIM supported"
+     "config": "nano-SIM + eSIM; dual eSIM supported",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -2512,17 +2636,23 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM; dual eSIM supported"
+     "config": "nano-SIM + eSIM; dual eSIM supported",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "nano-sim",
      "regions": "China mainland",
-     "config": "single nano-SIM"
+     "config": "single nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "China continental"
     },
     {
      "key": "nano-sim-esim",
      "regions": "Hong Kong, Macao",
-     "config": "nano-SIM + eSIM; dual eSIM supported"
+     "config": "nano-SIM + eSIM; dual eSIM supported",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -2631,12 +2761,16 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM; dual eSIM supported"
+     "config": "nano-SIM + eSIM; dual eSIM supported",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -2745,12 +2879,16 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM; dual eSIM supported"
+     "config": "nano-SIM + eSIM; dual eSIM supported",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -2868,12 +3006,16 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM; dual eSIM supported"
+     "config": "nano-SIM + eSIM; dual eSIM supported",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -2991,17 +3133,23 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "nano-sim",
      "regions": "China mainland",
-     "config": "single nano-SIM"
+     "config": "single nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "China continental"
     },
     {
      "key": "nano-sim-esim",
      "regions": "Hong Kong, Macao",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -3095,12 +3243,16 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -3194,12 +3346,16 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -3313,12 +3469,16 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -3402,17 +3562,23 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "nano-sim",
      "regions": "China mainland",
-     "config": "single nano-SIM"
+     "config": "single nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "China continental"
     },
     {
      "key": "nano-sim-esim",
      "regions": "Hong Kong, Macao",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -3502,12 +3668,16 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -3597,12 +3767,16 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -3712,12 +3886,16 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -3797,12 +3975,16 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -3890,17 +4072,23 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "nano-sim",
      "regions": "China mainland",
-     "config": "single nano-SIM"
+     "config": "single nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "China continental"
     },
     {
      "key": "nano-sim-esim",
      "regions": "Hong Kong, Macao",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -4018,12 +4206,16 @@
     {
      "key": "nano-sim-esim",
      "regions": "default",
-     "config": "nano-SIM + eSIM"
+     "config": "nano-SIM + eSIM",
+     "label_es": "nano-SIM y eSIM",
+     "region_label_es": "Internacional (otros países)"
     },
     {
      "key": "dual-nano-sim",
      "regions": "China mainland, Hong Kong, Macao",
-     "config": "dual nano-SIM"
+     "config": "dual nano-SIM",
+     "label_es": "Dual nano-SIM",
+     "region_label_es": "China continental, Hong Kong y Macao"
     }
    ],
    "model_numbers": [
@@ -4100,7 +4292,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -4187,7 +4381,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -4274,7 +4470,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -4349,7 +4547,7 @@
     {
      "key": "black",
      "label_en": "Black",
-     "label_es": "Negro mate",
+     "label_es": "Negro",
      "official": {
       "en": "Black",
       "es_419": "Negro mate",
@@ -4381,7 +4579,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -4456,7 +4656,7 @@
     {
      "key": "black",
      "label_en": "Black",
-     "label_es": "Negro mate",
+     "label_es": "Negro",
      "official": {
       "en": "Black",
       "es_419": "Negro mate",
@@ -4488,7 +4688,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -4576,7 +4778,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -4664,7 +4868,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -4752,7 +4958,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -4829,7 +5037,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -4907,7 +5117,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -4984,7 +5196,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -5093,7 +5307,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -5171,7 +5387,9 @@
     {
      "key": "nano-sim",
      "regions": "default",
-     "config": "nano-SIM"
+     "config": "nano-SIM",
+     "label_es": "nano-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -5239,7 +5457,9 @@
     {
      "key": "micro-sim",
      "regions": "default",
-     "config": "micro-SIM"
+     "config": "micro-SIM",
+     "label_es": "micro-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -5304,12 +5524,16 @@
     {
      "key": "micro-sim",
      "regions": "GSM model",
-     "config": "micro-SIM"
+     "config": "micro-SIM",
+     "label_es": "micro-SIM",
+     "region_label_es": "Modelo GSM"
     },
     {
      "key": "no-sim",
      "regions": "CDMA model",
-     "config": "no SIM tray"
+     "config": "no SIM tray",
+     "label_es": "Sin bandeja SIM",
+     "region_label_es": "Modelo CDMA"
     }
    ],
    "model_numbers": [
@@ -5376,7 +5600,9 @@
     {
      "key": "mini-sim",
      "regions": "default",
-     "config": "mini-SIM"
+     "config": "mini-SIM",
+     "label_es": "mini-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -5440,7 +5666,9 @@
     {
      "key": "mini-sim",
      "regions": "default",
-     "config": "mini-SIM"
+     "config": "mini-SIM",
+     "label_es": "mini-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [
@@ -5485,7 +5713,9 @@
     {
      "key": "mini-sim",
      "regions": "default",
-     "config": "mini-SIM"
+     "config": "mini-SIM",
+     "label_es": "mini-SIM",
+     "region_label_es": "Internacional (otros países)"
     }
    ],
    "model_numbers": [

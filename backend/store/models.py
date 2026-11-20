@@ -11131,6 +11131,10 @@ class ProductModel(models.Model):
     image_url = models.CharField(max_length=500, blank=True, default='', validators=[validate_asset_url])
     is_published_online = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
+    #: CATALOG-REFERENCE-01 · PR B: the `ReferenceModel.key` this model was imported from (or linked to), so a
+    #: re-import finds it even after the company renamed it. '' = not linked (every model before PR B). Written
+    #: only by `catalog_reference_import`; never shown to the public.
+    reference_key = models.CharField(max_length=64, blank=True, default='', db_default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -11141,6 +11145,10 @@ class ProductModel(models.Model):
             models.UniqueConstraint(
                 fields=['company', 'normalized_name'], condition=~models.Q(normalized_name=''),
                 name='unique_product_model_normalized_name_per_company',
+            ),
+            models.UniqueConstraint(
+                fields=['company', 'reference_key'], condition=~models.Q(reference_key=''),
+                name='unique_product_model_reference_key_per_company',
             ),
         ]
 
@@ -11227,11 +11235,18 @@ class VariantOption(models.Model):
     label = models.CharField(max_length=60)
     sort_order = models.PositiveIntegerField(default=0)
     swatch_hex = models.CharField(max_length=7, blank=True, default='', validators=[validate_swatch_hex])
+    #: CATALOG-REFERENCE-01 · PR B: `<role>:<ReferenceOption.key>` of the reference option this one IS, so a
+    #: re-import reuses it even after the company renamed it (D-REF-3). '' = not linked.
+    reference_key = models.CharField(max_length=80, blank=True, default='', db_default='')
 
     class Meta:
         ordering = ['sort_order', 'label', 'pk']
         constraints = [
             models.UniqueConstraint(fields=['attribute', 'label'], name='unique_variant_option_per_attribute'),
+            models.UniqueConstraint(
+                fields=['company', 'attribute', 'reference_key'], condition=~models.Q(reference_key=''),
+                name='unique_variant_option_reference_key_per_attribute',
+            ),
         ]
 
     def __str__(self):
@@ -11303,6 +11318,36 @@ class ModelOption(models.Model):
     def save(self, *args, **kwargs):
         if not (self.model.company_id == self.company_id == self.option.company_id):
             raise ValueError('El modelo y la opción tienen que ser de la misma empresa.')
+        return super().save(*args, **kwargs)
+
+
+class ModelOptionExclusion(models.Model):
+    """
+    CATALOG-REFERENCE-01 · PR B — «In this model these two options of the palette never go together» (a SIM
+    type that does not exist in a region). One row per unordered pair, stored with `option_a < option_b`.
+
+    The palette is still a flat set; the exclusions take impossible pairs out of it. A model without rows
+    behaves exactly as before. Read by `model_palette.check_variant` and `payload`; written ONLY by
+    `model_palette.add_exclusions` (options of the model's palette, of two different attributes, one company).
+    A variant that already is an excluded combination is never rewritten.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    model = models.ForeignKey(ProductModel, on_delete=models.CASCADE, related_name='option_exclusions')
+    option_a = models.ForeignKey(VariantOption, on_delete=models.CASCADE, related_name='+')
+    option_b = models.ForeignKey(VariantOption, on_delete=models.CASCADE, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['model', 'option_a', 'option_b'], name='unique_model_option_exclusion'),
+            models.CheckConstraint(condition=models.Q(option_a__lt=models.F('option_b')),
+                                   name='model_option_exclusion_ordered_pair'),
+        ]
+
+    def save(self, *args, **kwargs):
+        if not (self.model.company_id == self.company_id == self.option_a.company_id == self.option_b.company_id):
+            raise ValueError('El modelo y las opciones tienen que ser de la misma empresa.')
         return super().save(*args, **kwargs)
 
 
@@ -11405,6 +11450,99 @@ class CatalogAlias(models.Model):
         if target is not None and target.company_id != self.company_id:
             raise ValueError('El alias y su destino tienen que ser de la misma empresa.')
         return super().save(*args, **kwargs)
+
+
+class ReferenceModel(models.Model):
+    """
+    CATALOG-REFERENCE-01 · PR B — one model of the manufacturers' REFERENCE catalogue (ADR §4, AGENTS §2 second
+    exception). PLATFORM data: no company, read-only for tenants. Written ONLY by `catalog_reference_load` (the
+    `load_reference_catalog` command, audited), from a file of `backend/catalog_reference/` that
+    `catalog_reference.validate` accepted. Every name lives in that file, never in code.
+
+    `sim_entries` keeps the file's `sim` entries as they are, each with the region key derived from its text
+    (`catalog_reference.region_key`): each entry is one SIM × region pair that EXISTS for this model, and the
+    importer excludes every other pair. A row that left the file is never deleted: `in_dataset` goes False and the
+    load reports it as a candidate to retire.
+    """
+
+    COMPLETENESS_CHOICES = [('complete', 'Completo'), ('partial', 'Parcial'), ('pending_review', 'Pendiente de revisión')]
+
+    key = models.SlugField(max_length=64, unique=True)
+    manufacturer = models.CharField(max_length=60)
+    family = models.CharField(max_length=60)
+    name = models.CharField(max_length=160)
+    line = models.CharField(max_length=20)
+    generation = models.CharField(max_length=40)
+    announced = models.DateField(null=True, blank=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    completeness = models.CharField(max_length=16, choices=COMPLETENESS_CHOICES)
+    missing = models.JSONField(default=list, blank=True)
+    sources = models.JSONField(default=list)
+    verified_at = models.DateField()
+    dataset_version = models.CharField(max_length=40)
+    notes = models.TextField(blank=True, default='')
+    sim_entries = models.JSONField(default=list, blank=True)
+    in_dataset = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['manufacturer', 'family', 'sort_order', 'key']
+
+    def __str__(self):
+        return self.name
+
+
+class ReferenceOption(models.Model):
+    """
+    One value a reference model is offered in: a capacity, a colour, a SIM type or a region group. `role` is the
+    vocabulary of `VariantAttribute.ROLE_*`; `key` is stable within the role (a capacity `<n>gb`, the file's colour
+    and SIM keys, a region key derived from its text). `official` keeps the exact strings of the source (a colour's
+    en / es-419 / es-ES names; a SIM's configuration texts; a region's full texts). PLATFORM data, as `ReferenceModel`.
+    """
+
+    model = models.ForeignKey(ReferenceModel, on_delete=models.CASCADE, related_name='options')
+    role = models.CharField(max_length=10, choices=VariantAttribute.ROLE_CHOICES)
+    key = models.SlugField(max_length=64)
+    label_en = models.CharField(max_length=120)
+    label_es = models.CharField(max_length=120)
+    official = models.JSONField(default=dict, blank=True)
+    capacity_gb = models.PositiveIntegerField(null=True, blank=True)
+    sort_order = models.PositiveIntegerField(default=0)
+    in_dataset = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['model', 'role', 'sort_order', 'key']
+        constraints = [
+            models.UniqueConstraint(fields=['model', 'role', 'key'], name='unique_reference_option_per_model'),
+        ]
+
+    def __str__(self):
+        return f'{self.role}:{self.key}'
+
+    @property
+    def reference_key(self) -> str:
+        """What a company's `VariantOption.reference_key` holds for this option (shared by every model)."""
+        return f'{self.role}:{self.key}'
+
+
+class ReferenceModelNumber(models.Model):
+    """A model number of a reference model and the regions the source gives it ('' when it gives none)."""
+
+    model = models.ForeignKey(ReferenceModel, on_delete=models.CASCADE, related_name='model_numbers')
+    number = models.CharField(max_length=20)
+    regions = models.TextField(blank=True, default='')
+    sort_order = models.PositiveIntegerField(default=0)
+    in_dataset = models.BooleanField(default=True)
+
+    class Meta:
+        ordering = ['model', 'sort_order', 'number']
+        constraints = [
+            models.UniqueConstraint(fields=['model', 'number'], name='unique_reference_model_number'),
+        ]
+
+    def __str__(self):
+        return self.number
 
 
 class CosmeticGrade(models.Model):

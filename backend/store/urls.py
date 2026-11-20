@@ -195,6 +195,9 @@ from .device_catalog_views import (
     AdminProductEnableSaleView,
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
 )
+from .catalog_reference_views import (
+    AdminReferenceApplyView, AdminReferenceModelListView, AdminReferencePreviewView,
+)
 from .registration_views import AdminProductRegisterView
 from .external_receipt_views import AdminOrderExternalReceiptView, AdminOrderExternalReceiptVoidView
 from .receipt_views import InventoryReceiptConfirmView, InventoryReceiptDraftView, InventoryReceiptPreviewView
@@ -379,6 +382,12 @@ urlpatterns = [
     path('admin/catalog/readiness/', AdminCatalogReadinessView.as_view(), name='admin-catalog-readiness'),
     path('admin/catalog/palette-suggestions/', AdminPaletteSuggestionsView.as_view(),
          name='admin-catalog-palette-suggestions'),
+    # CATALOG-REFERENCE-01 · PR B — the manufacturers' reference catalogue, imported into one company.
+    path('admin/catalog/reference/models/', AdminReferenceModelListView.as_view(),
+         name='admin-catalog-reference-models'),
+    path('admin/catalog/reference/preview/', AdminReferencePreviewView.as_view(),
+         name='admin-catalog-reference-preview'),
+    path('admin/catalog/reference/apply/', AdminReferenceApplyView.as_view(), name='admin-catalog-reference-apply'),
     # P2 · F5c — claims-control warnings (Manual V4 §21) while a shop text is typed. Read-only.
     path('admin/claims/check/', AdminClaimsCheckView.as_view(), name='admin-claims-check'),
     path('catalog/models/', PublicModelListView.as_view(), name='catalog-models'),
