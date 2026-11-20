@@ -134,9 +134,10 @@ export type ModelForJsonLd = Pick<CatalogModel, "slug" | "name" | "image_url" | 
 
 /**
  * CATALOG-REFERENCE-01 · PR D — a variant's pictures for its `Product`: what the page shows for it, as the SERVER
- * resolved it (`variant.gallery`, PR C D-C-3: its own, else its finish's, else none — never another colour's photo
- * nor the model's cover). An older server without `gallery`: its own pictures, as before. The rule itself is the
- * server's (and `variantGallery`'s in the browser); it is not repeated here.
+ * resolved it (`variant.gallery`, PR C D-PRC-3: its own, else its finish's, else none — never another colour's
+ * photo, and the model's cover only on a model with no colour at all, D-PRC-8). An older server without `gallery`:
+ * its own pictures, as before. The rule itself is the server's (and `variantGallery`'s in the browser); it is not
+ * repeated here.
  */
 function variantPictures(variant: Variant): string[] {
   if (Array.isArray(variant.gallery)) return variant.gallery.map((image) => image.url);

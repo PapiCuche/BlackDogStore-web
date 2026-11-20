@@ -276,9 +276,9 @@ test.describe("al desplazarse en el teléfono", () => {
       // Below the desktop breakpoint, no ancestor of the photo box is sticky or fixed: it scrolls with the page.
       const pinned = await stage(page).evaluate((el) => {
         const found: string[] = [];
-        for (let node: HTMLElement | null = el; node && node !== document.body; node = node.parentElement) {
+        for (let node: Element | null = el; node && node !== document.body; node = node.parentElement) {
           const position = getComputedStyle(node).position;
-          if (position === "sticky" || position === "fixed") found.push(`${node.tagName}.${node.className}`);
+          if (position === "sticky" || position === "fixed") found.push(`${node.tagName}.${node.getAttribute("class") ?? ""}`);
         }
         return found;
       });
@@ -307,7 +307,7 @@ test.describe("al desplazarse en el teléfono", () => {
     await mockApi(page);
     await open(page);
     const sticky = await stage(page).evaluate((el) => {
-      for (let node: HTMLElement | null = el; node && node !== document.body; node = node.parentElement) {
+      for (let node: Element | null = el; node && node !== document.body; node = node.parentElement) {
         if (getComputedStyle(node).position === "sticky") return true;
       }
       return false;
