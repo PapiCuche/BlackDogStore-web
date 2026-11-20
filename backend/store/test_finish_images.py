@@ -499,3 +499,24 @@ class LicensingReportTest(FinishApiBase):
         with CaptureQueriesContext(connection) as after:
             self.report()
         self.assertEqual(len(after.captured_queries), len(before.captured_queries))
+
+
+class NoVocabularyInFinishMediaTest(TestCase):
+    """AGENTS §2 / ADR §2: PR C's engine names no maker, model or colour (the same guard as the importer's)."""
+
+    def test_the_service_views_and_model_name_nothing(self):
+        import inspect
+        import re
+        from pathlib import Path
+
+        from store import finish_media, finish_media_views
+        from store import test_catalog_reference_import as guard
+
+        words = guard.NoVocabularyInTheEngineTest.WORDS
+        strip = guard.NoVocabularyInTheEngineTest.code
+        sources = {module.__name__: Path(module.__file__).read_text(encoding='utf-8')
+                   for module in (finish_media, finish_media_views)}
+        sources['ModelFinishImage'] = inspect.getsource(ModelFinishImage)
+        for name, source in sources.items():
+            found = re.search(words, strip(None, source), re.I)
+            self.assertIsNone(found, (name, found))
