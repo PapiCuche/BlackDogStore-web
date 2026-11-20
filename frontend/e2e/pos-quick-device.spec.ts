@@ -94,6 +94,39 @@ print('E2E_SEEDED ' + json.dumps({'model': model.pk, 'supplier': supplier.pk, 's
   return JSON.parse(line.slice("E2E_SEEDED ".length));
 }
 
+/** What the database holds for this run's model: variants, devices, Kardex by type, sold devices, shelf. */
+type Cuenta = { variants: number; units: number; available: number; sold: number; entries: number; exits: number;
+                orderUnits: number; shelf: number; serial: string | null };
+function contar(): Cuenta {
+  const codigo = `
+import json, os
+from django.db.models import Sum
+from store.models import BranchStock, OrderUnit, Product, StockMovement, StockUnit
+data = json.loads(os.environ['E2E_SEED'])
+products = Product.objects.filter(product_model__name=data['name'])
+units = StockUnit.objects.filter(product__in=products)
+moves = StockMovement.objects.filter(product__in=products)
+new = units.filter(imei=data['imei']).first()
+print('E2E_COUNT ' + json.dumps({
+    'variants': products.count(), 'units': units.count(), 'available': units.filter(status='available').count(),
+    'sold': units.filter(status='sold').count(),
+    'entries': moves.filter(movement_type=StockMovement.PURCHASE_ENTRY).count(),
+    'exits': moves.filter(movement_type=StockMovement.SALE_EXIT).count(),
+    'orderUnits': OrderUnit.objects.filter(unit__in=units).count(),
+    'shelf': BranchStock.objects.filter(product__in=products).aggregate(n=Sum('quantity'))['n'] or 0,
+    'serial': new.serial_number if new else None}))
+`;
+  const out = execFileSync("python3", ["manage.py", "shell", "-c", codigo], {
+    cwd: BACKEND_DIR, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, E2E_SEED: JSON.stringify({ name: MODELO, imei: NUEVO.imei }) },
+  }).toString();
+  const line = out.split("\n").find((row) => row.startsWith("E2E_COUNT "));
+  if (!line) throw new Error(`el conteo no terminó: ${out.slice(-400)}`);
+  return JSON.parse(line.slice("E2E_COUNT ".length));
+}
+
+const SERIE = `F2Q${RUN.toUpperCase().slice(-7)}`;
+
 async function signIn(page: Page) {
   await page.goto("/auth", { waitUntil: "networkidle" });
   const card = page.locator("section").filter({ hasText: "Accesos de desarrollo" });
@@ -181,6 +214,8 @@ test.describe("venta rápida de equipos en caja", () => {
     await expect(page.getByText(/no es válido/).first()).toBeVisible();
     await captura(page, "1280-llego-el-equipo-error");
     await page.getByLabel("IMEI 1").fill(NUEVO.imei);
+    await page.getByLabel("Serie (si la tiene)").fill(SERIE);
+    const antes = contar();
     await page.getByRole("button", { name: "Registrar y agregar a la venta" }).click();
     await expect(page.getByText(/equipo registrado y agregado a la venta/)).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText(new RegExp(`IMEI ${NUEVO.imei}`)).first()).toBeVisible();
@@ -203,6 +238,21 @@ test.describe("venta rápida de equipos en caja", () => {
     expect(equipos).toHaveLength(1);
     expect(equipos[0]).toMatchObject({ imei: NUEVO.imei, imei2: NUEVO.imei2, method: "manual", identified_by: "dev_admin" });
     expect(body.items[0].price).toBe("3999.00");
+
+    // G (owner's priority 5): what the till wrote, counted in the database before «Llegó el equipo» and after
+    // the sale — one new variant, one device with its IMEI and serial, one purchase entry and one sale exit in the
+    // Kardex, one device assigned to the order; the shelf is back where it was (in and out).
+    const despues = contar();
+    console.log(`POS e2e · antes ${JSON.stringify(antes)} · después ${JSON.stringify(despues)}`);
+    expect(despues.variants - antes.variants).toBe(1);
+    expect(despues.units - antes.units).toBe(1);
+    expect(despues.entries - antes.entries).toBe(1);
+    expect(despues.exits - antes.exits).toBe(1);
+    expect(despues.sold - antes.sold).toBe(1);
+    expect(despues.orderUnits - antes.orderUnits).toBe(1);
+    expect(despues.available).toBe(antes.available);
+    expect(despues.shelf).toBe(antes.shelf);
+    expect(despues.serial).toBe(SERIE);
   });
 
   test("en un teléfono el selector y el formulario caben sin desborde", async ({ page }) => {

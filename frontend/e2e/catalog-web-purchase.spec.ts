@@ -1,5 +1,5 @@
 import { test, expect, type Page, type Request } from "@playwright/test";
-import { TAG, shell } from "./inventory-first-support";
+import { shell } from "./inventory-first-support";
 
 /**
  * CATALOG-REFERENCE-01 · PR G — la compra web completa desde la ficha del modelo, en navegador real.
@@ -29,7 +29,7 @@ const SDK = "https://sandbox-checkout.izipay.pe/payments/v1/js/index.js";
 type Variant = { id: number; slug: string; name: string };
 type Seed = {
   slug: string; name: string; branch: number;
-  a: Variant; b: Variant; c: Variant;
+  a: Variant; b: Variant; c: Variant; d: Variant; supplier: string;
   images: { grafito: string[]; niebla: string[] };
 };
 let seed: Seed;
@@ -95,6 +95,17 @@ def variant(suffix, price, options, devices):
 a = variant('128 GB Grafito', '3299.00', [g128, grafito], data['imeis'][:2])
 b = variant('128 GB Niebla', '3399.00', [g128, niebla], [])
 c = variant('256 GB Grafito', '3799.00', [g256, grafito], data['imeis'][2:3])
+# 256 GB Niebla: no own device, a supplier offer of 37 units. The shop may sell it «bajo pedido»; the supplier's
+# quantity, cost and name are never the shop's stock and never reach the page.
+d = variant('256 GB Niebla', '3899.00', [g256, niebla], [])
+from datetime import timedelta
+from django.utils import timezone
+from store import supply_services as supply
+Product.objects.filter(pk=d['id']).update(sale_mode=Product.SALE_MODE_STOCK_OR_ORDER)
+supplier = supply.create_supplier(company=company, name='Mayorista Oculto ' + data['tag'], actor=actor)
+supply.create_offer(company=company, supplier_id=supplier.pk, product_id=d['id'], actor=actor, may_view_costs=True,
+                    agreed_cost='2811.00', commercial_price='3899.00', confirmed_quantity=37, lead_time_days=5,
+                    valid_from=timezone.localdate() - timedelta(days=1), valid_until=timezone.localdate() + timedelta(days=7))
 
 images = {}
 for key, colour, rgb in (('grafito', grafito, (59, 59, 61)), ('niebla', niebla, (201, 206, 214))):
@@ -102,7 +113,8 @@ for key, colour, rgb in (('grafito', grafito, (59, 59, 61)), ('niebla', niebla, 
                                     uploaded=SimpleUploadedFile(key + '.png', png(rgb), content_type='image/png'),
                                     provenance={'source_kind': 'own_photo'}, alt_text=name + ' ' + colour.label)
     images[key] = [placed.image_url.rstrip('/').rsplit('/', 1)[-1]]
-out({'slug': model.slug, 'name': name, 'branch': branch.pk, 'a': a, 'b': b, 'c': c, 'images': images})
+out({'slug': model.slug, 'name': name, 'branch': branch.pk, 'a': a, 'b': b, 'c': c, 'd': d,
+     'supplier': supplier.name, 'images': images})
 `, { imeis: [imei(1), imei(2), imei(3)] });
 }
 
@@ -197,6 +209,30 @@ test("compra web: ficha con ?variante= → precio y foto por variante → carrit
   await expect(stage(page).getByRole("img", { name: `${seed.name} Niebla` })).toBeVisible();
   await expect(page.getByText(/en stock/i)).toHaveCount(0);
   await shot(page, "web-01-agotado-1280");
+
+  // 3b. The same colour in 256 GB: no own stock but a purchasable offer — «Bajo pedido», the offer's price and
+  //     lead time; never «En stock», never the supplier's 37 units, cost or name (page and public API).
+  await radio(page, "Capacidad", /^256 GB/).click();
+  await expect(price(page)).toHaveText("S/ 3899.00");
+  await expect(availability(page)).toHaveText("Bajo pedido — entrega en 5 días");
+  await expect(page.getByRole("button", { name: "Pedir bajo pedido" })).toBeEnabled();
+  await expect(page.getByText(/en stock/i)).toHaveCount(0);
+  const text = await page.locator('[data-v4-scope="block"]').innerText();
+  for (const leak of ["37", "2811", seed.supplier]) expect(text, `la página dice «${leak}»`).not.toContain(leak);
+  const publicModel = await (await page.request.get(`${API}/catalog/models/${seed.slug}/`)).text();
+  // `"availability":"supplier"` is the documented kind of availability; a supplier KEY, quantity or cost is a leak.
+  for (const leak of ["2811", seed.supplier, "confirmed_quantity", "committed_quantity", "agreed_cost", "\"supplier\":", "quantity"]) {
+    expect(publicModel, `la API pública dice «${leak}»`).not.toContain(leak);
+  }
+  const onOrder = (JSON.parse(publicModel).variants as { product_id: number; on_order: Record<string, unknown> | null }[])
+    .find((row) => row.product_id === seed.d.id)!.on_order;
+  expect(onOrder, "bajo pedido: sólo plazo y precio").toEqual({ lead_time_days: 5, price: "3899.00" });
+  await shot(page, "web-01b-bajo-pedido-1280");
+  // Back to 128 GB: Niebla is sold out there, so the colour (read after the capacity) moves to the nearest one
+  // that can be bought and the page says so (D-PRD-3).
+  await radio(page, "Capacidad", /^128 GB/).click();
+  await expect(page.getByTestId("v4-choice-adjusted")).toContainText("Grafito");
+  await expect(availability(page)).toHaveText("En stock");
 
   // 4. Back to Grafito and into the real cart.
   await radio(page, /^Color/, /^Grafito/).click();
