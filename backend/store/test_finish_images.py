@@ -443,3 +443,59 @@ class PublicFinishGalleryTest(FinishApiBase):
         with CaptureQueriesContext(connection) as after:
             self.detail()
         self.assertEqual(len(after.captured_queries), len(before.captured_queries))
+
+
+class LicensingReportTest(FinishApiBase):
+    """F4 («Imágenes por reemplazar»), read-only: finishes without pictures and uploads without a checked licence."""
+
+    def report(self, api=None):
+        res = (api or self.api).get(f'/api/admin/catalog/image-sources/{self.q}')
+        self.assertEqual(res.status_code, 200, res.content)
+        return res.json()['licensing']
+
+    def test_finishes_without_pictures_are_counted_and_named(self):
+        self.uploaded(self.black)
+        data = self.report()
+        self.assertEqual(data['finishes_without_images'], 1)
+        self.assertEqual([(row['model_id'], row['option_id'], row['option_label']) for row in data['pending_finishes']],
+                         [(self.model.pk, self.blue.pk, 'Azul')])
+        red = device_catalog.create_option(company=self.company, attribute_id=self.colour.pk, label='Rojo',
+                                           swatch_hex='#B91C1C')
+        model_palette.set_palette(self.model, option_ids=[self.gb128.pk, self.black.pk, self.blue.pk, red.pk],
+                                  actor=self.staff)
+        self.assertEqual(self.report()['finishes_without_images'], 2)
+
+    def test_uploads_with_unknown_or_unverified_licence(self):
+        from store import product_media
+        product_media.add_image(product=self.new128, actor=self.staff, uploaded=SimpleUploadedFile(
+            'sin-origen.png', png_with_transparency(), content_type='image/png'))
+        supplier = self.uploaded(self.black, SUPPLIER)
+        self.uploaded(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración'})
+        self.uploaded(self.blue, OWN)
+        self.stored()   # uploaded, shown nowhere in the catalogue: not counted
+        data = self.report()['uploads']
+        self.assertEqual(data, {'total': 4, 'unknown_source': 1, 'unverified_license': 2, 'demo': 1})
+        with self.captureOnCommitCallbacks(execute=True):
+            self.api.patch(self.url(f'{supplier["id"]}/'), {'license_verified': True}, format='json')
+        self.assertEqual(self.report()['uploads']['unverified_license'], 1)
+
+    def test_another_companys_uploads_are_never_counted(self):
+        other = _p3_company('pc-lic-otra', 'Otra')
+        stranger, _ = _p2d_member(other, 'pc_lic_ajeno', ['company.view', 'products.view', 'products.manage'])
+        foreign_model = device_catalog.create_model(company=other, name='Ajeno')
+        stored = storefront_media.store(company=other, actor=stranger, raw=png_with_transparency())
+        ProductModel.objects.filter(pk=foreign_model.pk).update(image_url=stored.url)
+        self.assertEqual(self.report()['uploads']['total'], 0)
+
+    def test_the_count_of_queries_does_not_grow(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        self.uploaded(self.black, SUPPLIER)
+        with CaptureQueriesContext(connection) as before:
+            self.report()
+        for _ in range(3):
+            self.uploaded(self.blue, SUPPLIER)
+        device_catalog.create_model(company=self.company, name='Teléfono Z')
+        with CaptureQueriesContext(connection) as after:
+            self.report()
+        self.assertEqual(len(after.captured_queries), len(before.captured_queries))
