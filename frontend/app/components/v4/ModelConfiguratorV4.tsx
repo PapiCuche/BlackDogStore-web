@@ -32,6 +32,7 @@
  */
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { ImagePending } from "../ImagePending";
 import { ProductImage } from "../ProductImage";
@@ -619,13 +620,16 @@ export function ModelConfiguratorV4({
   const { model, error, reload } = useCatalogModel(slug, initialModel);
   const { offered, line, setLine } = useLineChoice(model, initialLine);
   // The last new variant chosen: switching to the used line and back starts from it, as the address says.
-  // PR D: when the server could not read the model (no `initialModel`), the browser reads it and the address's
-  // `?variante=` is read here instead (only compared with the model's own slugs, by `selectionForVariant`). Nothing
-  // of it is rendered before the model arrives, so the server's HTML and the first client render stay the same.
-  const [chosenVariant, setChosenVariant] = useState(() => initialVariant ?? (
-    initialModel === undefined && typeof window !== "undefined"
-      ? new URLSearchParams(window.location.search).get(VARIANT_PARAM) ?? undefined
-      : undefined));
+  // PR D (review of #373): the ADDRESS's `?variante=` comes first. After a choice rewrote it (`replaceState`), leaving
+  // and coming back with «Atrás» restores the page's first payload (its `initialVariant`) while the address names the
+  // variant the buyer had chosen. `useSearchParams` is the request's on the server and the address in the browser, so
+  // on a first load both agree with `initialVariant`. A slug that is not one of the model's variants is ignored; with
+  // no server read (no model yet) it is checked later, against the model, by `selectionForVariant`.
+  const fromAddress = useSearchParams()?.get(VARIANT_PARAM) ?? undefined;
+  const [chosenVariant, setChosenVariant] = useState(() => (
+    fromAddress && (!initialModel || (initialModel.variants ?? []).some((variant) => variant.slug === fromAddress))
+      ? fromAddress
+      : initialVariant));
 
   if (error && model === undefined) {
     return (

@@ -22,6 +22,12 @@ import { modelFixture, reply } from './support/device-commerce-fixtures';
  */
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
+// The browser's address, as Next's router reads it (`replaceState` included).
+jest.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: jest.fn(), push: jest.fn(), refresh: jest.fn(), back: jest.fn(), forward: jest.fn(), prefetch: jest.fn() }),
+  usePathname: () => window.location.pathname,
+  useSearchParams: () => new URLSearchParams(window.location.search),
+}));
 const send = fetchWithAuth as jest.MockedFunction<typeof fetchWithAuth>;
 
 const FINISH = (n: number) => `/api/storefront/images/${String(n).padStart(32, 'e')}`;
@@ -220,6 +226,23 @@ describe('volver a una foto después de «Imagen pendiente»', () => {
     // Only Rojo's picture (loading), never Azul's from before the pending finish.
     expect(stageImages()).toHaveLength(1);
     expect(stageImages()[0]).toHaveAttribute('alt', 'Equipo X Rojo');
+  });
+});
+
+describe('volver con «Atrás» (revisión de #373)', () => {
+  it('la variante que dice la dirección manda sobre la que el servidor leyó al principio', () => {
+    // The page was served with ?variante=equipo-x-41; the buyer chose 256 GB (replaceState), left and came back:
+    // the router restores the first payload (initialVariant 41) while the address says 43.
+    window.history.replaceState(null, '', '/modelo/equipo-x?variante=equipo-x-43');
+    renderPage({ initialVariant: 'equipo-x-41' });
+    expect(within(capacity()).getByRole('radio', { name: '256 GB' })).toHaveAttribute('aria-checked', 'true');
+    expect(row('Opción')).toHaveTextContent('Equipo X 43');
+  });
+
+  it('una dirección con una variante que no es de este modelo no cambia la del servidor', () => {
+    window.history.replaceState(null, '', '/modelo/equipo-x?variante=otra-cosa');
+    renderPage({ initialVariant: 'equipo-x-43' });
+    expect(row('Opción')).toHaveTextContent('Equipo X 43');
   });
 });
 
