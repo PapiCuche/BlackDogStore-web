@@ -161,6 +161,11 @@ def _capacity_label(gb: int) -> str:
     return f'{gb // 1024} TB' if gb >= 1024 and gb % 1024 == 0 else f'{gb} GB'
 
 
+def capacity_spellings(gb: int) -> set[str]:
+    """How a company may already write a capacity, folded by `_norm`: «256 GB», «256GB»; «1 TB», «1TB»."""
+    return {f'{gb} gb', f'{gb}gb'} | ({f'{gb // 1024} tb', f'{gb // 1024}tb'} if gb % 1024 == 0 else set())
+
+
 def _unique(attributes):
     """The only attribute of a queryset, or None when there is none or several."""
     found = list(attributes[:2])
@@ -256,7 +261,7 @@ class _Plan:
         if attribute is None:
             return None, ('El catálogo no tiene un único atributo de capacidad (almacenamiento): '
                           'créalo en Catálogo › Modelos.')
-        wanted = {f'{gb} gb', f'{gb}gb'} | ({f'{gb // 1024} tb', f'{gb // 1024}tb'} if gb % 1024 == 0 else set())
+        wanted = capacity_spellings(gb)
         for option in VariantOption.objects.filter(company=self.company, attribute=attribute).order_by('pk'):
             if _norm(option.label) in wanted:
                 return self._option(attribute, option.label, option), ''
@@ -483,8 +488,38 @@ def _fingerprint(rows, approve, prices, category_id, without_imei=()) -> str:
     }
     if options:
         data['options'] = sorted(options)
+    return request_fingerprint(data)
+
+
+# ---------------------------------------------------------------------------
+# Idempotency, shared with every «propose / apply» of the catalogue (CATALOG-REFERENCE-01 · PR B reuses it)
+# ---------------------------------------------------------------------------
+
+def request_fingerprint(data) -> str:
+    """The hash of what a request asks (JSON-able `data`): the same request, the same fingerprint."""
     body = json.dumps(data, sort_keys=True, ensure_ascii=True)
     return hashlib.sha256(body.encode()).hexdigest()
+
+
+def clean_idempotency_key(value) -> str:
+    return ' '.join(str(value or '').split())[:120]
+
+
+def replay(company, action, key, fingerprint):
+    """
+    The answer an earlier apply with this `Idempotency-Key` gave (`replayed: True`), read from its audit entry
+    (`action`, this company); None when there is none. The same key with another request is a 409. Call it under
+    the company lock, so two requests with one key never both apply.
+    """
+    if not key:
+        return None
+    prior = AdminAuditLog.objects.filter(company=company, action=action, metadata__idempotency_key=key).first()
+    if prior is None:
+        return None
+    if prior.metadata.get('fingerprint') != fingerprint:
+        raise BadProposal('Esa clave de idempotencia ya se usó con otra solicitud.',
+                          code='idempotency_conflict', status=409)
+    return {**prior.metadata['result'], 'replayed': True}
 
 
 def _new_slug(company, name):
@@ -521,7 +556,7 @@ def apply(*, company, rows, approve, prices=None, category_id=None, without_imei
     """Create what was approved. Returns the answer body; raises `BadProposal` / `CatalogError`."""
     rows = clean_rows(rows)
     models_ok, variants_ok, options_ok = _refs(approve)
-    key = ' '.join(str(idempotency_key or '').split())[:120]
+    key = clean_idempotency_key(idempotency_key)
     with transaction.atomic():
         # One approval at a time per company: the plan below is read AFTER this lock.
         Company.objects.select_for_update().get(pk=company.pk)
@@ -542,14 +577,9 @@ def apply(*, company, rows, approve, prices=None, category_id=None, without_imei
         if optional - set(plan.variants):
             raise BadProposal('Una referencia de «without_imei» no está en la lista.', code='unknown_ref')
         fingerprint = _fingerprint(rows, (models_ok, variants_ok, options_ok), price_for, category.pk if category else None, optional)
-        if key:
-            prior = AdminAuditLog.objects.filter(
-                company=company, action='catalog_proposal_applied', metadata__idempotency_key=key).first()
-            if prior is not None:
-                if prior.metadata.get('fingerprint') != fingerprint:
-                    raise BadProposal('Esa clave de idempotencia ya se usó con otra solicitud.',
-                                      code='idempotency_conflict', status=409)
-                return {**prior.metadata['result'], 'replayed': True}
+        prior = replay(company, 'catalog_proposal_applied', key, fingerprint)
+        if prior is not None:
+            return prior
         for ref in models_ok:
             if ref not in plan.models:
                 raise BadProposal('Una referencia de modelo no está en la lista.', code='unknown_ref')

@@ -10,6 +10,7 @@
   "store.test_catalog_aliases.AliasConcurrencyTest",
   "store.test_catalog_proposal.TwoApprovalsAtOnceTest",
   "store.test_catalog_proposal_simreg.SimRegionApprovalsAtOnceTest",
+  "store.test_catalog_reference_import.ApplyAtOnceTest",
   "store.test_catalog_variant_draft.EnableRaceTest",
   "store.test_client_sec.FilingAtOnceTest",
   "store.test_client_sec.TwoAtOnceTest",

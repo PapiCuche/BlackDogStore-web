@@ -211,3 +211,103 @@ def summary(data):
         'by_completeness': dict(Counter(m.get('completeness') for m in models)),
         'by_line': dict(Counter(m.get('line') for m in models)),
     }
+
+
+# ---------------------------------------------------------------------------
+# PR B — what a model of a VALID file becomes in the platform tables (pure; no database)
+# ---------------------------------------------------------------------------
+#
+# Role vocabulary: `VariantAttribute.ROLE_*` (capacity, color, sim, region), written here as plain strings so this
+# module stays free of the ORM. SIM and region (ADR §4, PR B decision): the file has no region list of its own;
+# each `sim` entry says which configuration exists in which regions, in the maker's words. So:
+#   * one SIM option per distinct `sim.key` of the model (label = the key in words; the exact configuration texts
+#     go to `official`);
+#   * one REGION option per distinct region group of the model: the entry's `regions` text up to its first
+#     parenthesis (the rest is a citation), with a key derived from it (`region_key`), the full texts in `official`;
+#   * each `sim` entry is one SIM × region pair that exists (`pairs_of`); every other pair of the model is impossible.
+# Model numbers keep their own `regions` text, for reference only (the file does not tie a number to a SIM entry).
+
+LABEL_MAX = 60
+KEY_MAX = 64
+
+
+def _slugify(text) -> str:
+    import unicodedata
+
+    folded = unicodedata.normalize('NFKD', str(text)).encode('ascii', 'ignore').decode().lower()
+    return re.sub(r'[^a-z0-9]+', '-', folded).strip('-')
+
+
+def capacity_key(gb: int) -> str:
+    return f'{gb}gb'
+
+
+def capacity_label(gb: int) -> str:
+    return f'{gb // 1024} TB' if gb >= 1024 and gb % 1024 == 0 else f'{gb} GB'
+
+
+def sim_label(key: str) -> str:
+    """The file gives no short name for a SIM configuration: its key, in words («nano sim esim»)."""
+    return ' '.join(key.split('-'))
+
+
+def region_text(regions: str) -> str:
+    """The region group as the file names it: the text before its first parenthesis (the rest cites a source)."""
+    return ' '.join(str(regions).split('(', 1)[0].split()).rstrip(' ,;:')
+
+
+def region_key(regions: str) -> str:
+    """A stable key for a region group: its slug, cut to 64 with a hash of the whole text when longer."""
+    import hashlib
+
+    text = region_text(regions)
+    slug = _slugify(text) or 'region'
+    if len(slug) <= KEY_MAX:
+        return slug
+    digest = hashlib.sha1(text.encode('utf-8')).hexdigest()[:8]
+    return f'{slug[:KEY_MAX - 9].rstrip("-")}-{digest}'
+
+
+def region_label(regions: str) -> str:
+    """The region group as a label of at most 60 characters (cut at a comma, with «…», when longer)."""
+    text = region_text(regions)
+    if len(text) <= LABEL_MAX:
+        return text
+    cut = text[:LABEL_MAX - 1]
+    if ', ' in cut:
+        cut = cut.rsplit(', ', 1)[0]
+    return cut.rstrip(' ,') + '…'
+
+
+def options_of(model) -> list[dict]:
+    """
+    Every option of one model of a valid file: {role, key, label_en, label_es, official, capacity_gb, sort_order},
+    in reading order (capacities, colours, SIM, regions; each in the file's order).
+    """
+    out = []
+    for n, gb in enumerate(model.get('capacities_gb') or []):
+        label = capacity_label(gb)
+        out.append({'role': 'capacity', 'key': capacity_key(gb), 'label_en': label, 'label_es': label,
+                    'official': {}, 'capacity_gb': gb, 'sort_order': n})
+    for n, colour in enumerate(model.get('colors') or []):
+        out.append({'role': 'color', 'key': colour['key'], 'label_en': colour['label_en'],
+                    'label_es': colour['label_es'], 'official': dict(colour.get('official') or {}),
+                    'capacity_gb': None, 'sort_order': n})
+    sims, regions = {}, {}
+    for entry in model.get('sim') or []:
+        sims.setdefault(entry['key'], []).append(entry['config'])
+        regions.setdefault(region_key(entry['regions']), []).append(entry['regions'])
+    for n, (key, configs) in enumerate(sims.items()):
+        label = sim_label(key)
+        out.append({'role': 'sim', 'key': key, 'label_en': label, 'label_es': label,
+                    'official': {'config': list(dict.fromkeys(configs))}, 'capacity_gb': None, 'sort_order': n})
+    for n, (key, texts) in enumerate(regions.items()):
+        label = region_label(texts[0])
+        out.append({'role': 'region', 'key': key, 'label_en': label, 'label_es': label,
+                    'official': {'regions': list(dict.fromkeys(texts))}, 'capacity_gb': None, 'sort_order': n})
+    return out
+
+
+def pairs_of(model) -> set[tuple[str, str]]:
+    """The SIM × region pairs that exist for one model: one per `sim` entry, as (sim key, region key)."""
+    return {(entry['key'], region_key(entry['regions'])) for entry in model.get('sim') or []}

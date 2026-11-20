@@ -18,6 +18,9 @@ Rules, and where each is held:
   * what already exists is never rewritten               `set_palette` only touches `ModelOption`;
                                                           `variant_status` REPORTS 'fuera_de_paleta'
   * catalogue changes never create stock                  nothing here touches `BranchStock`/units
+  * two options of an EXCLUDED pair never go together     `check_variant` — `ModelOptionExclusion`
+    (CATALOG-REFERENCE-01 · PR B); a model without        (written only by `add_exclusions`); the
+    exclusions behaves exactly as before                  matrix leaves those combinations out
 
 What the admin screen reads (`payload`) is the cartesian product of the
 palette, each combination with its state (ADR §8.3): `variante_existente`,
@@ -31,8 +34,11 @@ from itertools import product as cartesian
 
 from django.db import IntegrityError, transaction
 
+from django.db.models import Exists, OuterRef
+
 from .models import (
-    AdminAuditLog, ModelOption, Product, ProductModel, ProductVariantOption, VariantAttribute, VariantOption,
+    AdminAuditLog, ModelOption, ModelOptionExclusion, Product, ProductModel, ProductVariantOption, VariantAttribute,
+    VariantOption,
 )
 
 #: Statuses of a configuration, as the ADR names them (§8.3, training-lines.json).
@@ -55,13 +61,49 @@ def attribute_sort_key(attribute) -> tuple:
     return (ROLE_RANK.get(attribute.role, len(ROLE_RANK)), attribute.sort_order, attribute.name.lower(), attribute.pk)
 
 
+class Palette(dict):
+    """
+    {attribute_id: {option ids}} — a plain dict for every reader — that also knows whether the model has
+    EXCLUDED pairs (PR B). The palette query says it (an EXISTS beside each row), so a model without exclusions
+    costs no query more than before; the pairs themselves are read once, on first use, only when there are some.
+    """
+
+    def __init__(self, *args, model=None, has_exclusions=False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.model = model
+        self.has_exclusions = has_exclusions
+        self._excluded = None
+
+    @property
+    def excluded(self) -> set[frozenset]:
+        if not self.has_exclusions:
+            return set()
+        if self._excluded is None:
+            self._excluded = exclusions_of(self.model)
+        return self._excluded
+
+
 def palette_of(model) -> dict[int, set[int]]:
-    """{attribute_id: {option ids}} of `model`'s palette. Empty: the model has no palette."""
-    result: dict[int, set[int]] = {}
-    for attribute_id, option_id in (ModelOption.objects.filter(model=model, company_id=model.company_id)
-                                    .values_list('option__attribute_id', 'option_id')):
+    """{attribute_id: {option ids}} of `model`'s palette (a `Palette`). Empty: the model has no palette."""
+    result = Palette(model=model)
+    excluded = ModelOptionExclusion.objects.filter(model_id=OuterRef('model_id'))
+    for attribute_id, option_id, has_exclusions in (
+            ModelOption.objects.filter(model=model, company_id=model.company_id)
+            .annotate(has_exclusions=Exists(excluded))
+            .values_list('option__attribute_id', 'option_id', 'has_exclusions')):
         result.setdefault(attribute_id, set()).add(option_id)
+        result.has_exclusions = result.has_exclusions or has_exclusions
     return result
+
+
+def exclusions_of(model) -> set[frozenset]:
+    """The excluded pairs of `model`, each as a frozenset of two option ids. Empty: no exclusions."""
+    return {frozenset(pair) for pair in ModelOptionExclusion.objects.filter(
+        model=model, company_id=model.company_id).values_list('option_a_id', 'option_b_id')}
+
+
+def _excluded_of(model, palette) -> set[frozenset]:
+    return palette.excluded if isinstance(palette, Palette) else exclusions_of(model)
 
 
 #: Option ids one call may name (a palette, a variant): far above any real palette, below any abuse.
@@ -143,6 +185,16 @@ def check_variant(model, options, *, palette=None, complete=True) -> None:
         raise CatalogError(
             f'«{model.name}» no admite {names}: no está en las opciones de este modelo. '
             'Agrégala a la paleta del modelo o elige otra.', field='options', code='option_not_in_palette')
+    excluded = _excluded_of(model, palette) if len(options) > 1 else set()
+    if excluded:
+        by_pk = {o.pk: o for o in options}
+        for pair in excluded:
+            if pair <= by_pk.keys():
+                first, second = sorted((by_pk[pk] for pk in pair), key=lambda o: attribute_sort_key(o.attribute))
+                raise CatalogError(
+                    f'«{model.name}» no existe con «{first.label}» ({first.attribute.name}) y «{second.label}» '
+                    f'({second.attribute.name}) a la vez: esa combinación está excluida en este modelo.',
+                    field='options', code='combination_excluded')
     if complete:
         check_complete(model, [o.pk for o in options], palette=palette)
 
@@ -256,6 +308,60 @@ def add_to_palette(model, *, option_ids, actor=None, request=None) -> dict:
     return {'added': len(to_add), 'removed': 0, 'total': len(current) + len(to_add)}
 
 
+def _clean_pairs(pairs) -> set[tuple[int, int]]:
+    from .device_catalog import CatalogError
+
+    if not isinstance(pairs, (list, tuple, set)) or len(pairs) > MAX_OPTION_IDS:
+        raise CatalogError('Pares no válidos.', field='pairs')
+    out = set()
+    for pair in pairs:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            raise CatalogError('Cada par son dos opciones.', field='pairs')
+        ids = clean_option_ids(list(pair), field='pairs')
+        if len(ids) != 2:
+            raise CatalogError('Un par son dos opciones distintas.', field='pairs')
+        out.add((ids[0], ids[1]))
+    return out
+
+
+@transaction.atomic
+def add_exclusions(model, *, pairs, actor=None, request=None) -> dict:
+    """
+    CATALOG-REFERENCE-01 · PR B — ADD impossible pairs to `model` (nothing is ever taken out here). Each pair is two
+    options of the model's PALETTE, of two different attributes, of the model's company (another company's option
+    answers `not_found`, nothing written). Under the model's lock, like the palette. A pair already there is not
+    written again; audited only when something was added. A variant that already is such a combination is left as
+    it is (history is kept); new ones are refused by `check_variant`.
+    """
+    from .device_catalog import CatalogError, _audit
+
+    wanted = _clean_pairs(pairs)
+    company = model.company
+    model = type(model).objects.select_for_update().get(pk=model.pk)
+    ids = {pk for pair in wanted for pk in pair}
+    options = {o.pk: o for o in VariantOption.objects.filter(company=company, pk__in=ids).select_related('attribute')}
+    if len(options) != len(ids):
+        raise CatalogError('Alguna opción no existe.', field='pairs', code='not_found')
+    palette = set(ModelOption.objects.filter(model=model, company=company).values_list('option_id', flat=True))
+    outside = sorted(ids - palette)
+    if outside:
+        raise CatalogError(f'«{options[outside[0]].label}» no está en la paleta de «{model.name}».',
+                           field='pairs', code='option_not_in_palette')
+    for first, second in wanted:
+        if options[first].attribute_id == options[second].attribute_id:
+            raise CatalogError('Un par son opciones de dos atributos distintos.', field='pairs')
+    current = exclusions_of(model)
+    to_add = sorted(pair for pair in wanted if frozenset(pair) not in current)
+    for first, second in to_add:
+        ModelOptionExclusion.objects.create(company=company, model=model, option_a=options[first],
+                                            option_b=options[second])
+    if to_add:
+        _audit('product_model_exclusions_added', company=company, actor=actor, request=request,
+               target_type='product_model', target_id=model.pk, model_name=model.name,
+               added=[list(pair) for pair in to_add], total=len(current) + len(to_add))
+    return {'added': len(to_add), 'total': len(current) + len(to_add)}
+
+
 def _variant_rows(model):
     """
     Every variant of `model` with its option ids, sorted by attribute reading order, and (A1b-2) what
@@ -334,7 +440,30 @@ def payload(model) -> dict:
         by_key.setdefault(variant_key(row['option_ids']), []).append(row)
 
     combinations, total = [], 0
-    if palette:
+    excluded = palette.excluded if palette else set()
+    if palette and excluded:
+        # PR B: only a model WITH exclusions takes this path; the combinations that hold an excluded pair are not
+        # offered, and the total counts what is left (the whole product is walked; palettes are small).
+        columns = [[(attribute.pk, option.pk) for option in attribute.options.all()
+                    if option.pk in palette[attribute.pk]] for attribute in attributes if attribute.pk in palette]
+        for combo in cartesian(*columns):
+            ids = [option_id for _attribute_id, option_id in combo]
+            chosen = set(ids)
+            if any(pair <= chosen for pair in excluded):
+                continue
+            total += 1
+            if len(combinations) >= MAX_COMBINATIONS:
+                continue
+            key = variant_key(ids)
+            products = [{'product_id': r['product_id'], 'name': r['name'], 'condition_line': r['condition_line']}
+                        for r in by_key.get(key, [])]
+            combinations.append({
+                'key': key, 'option_ids': ids,
+                'labels': {str(attribute_id): labels[option_id] for attribute_id, option_id in combo},
+                'status': STATUS_EXISTING if products else STATUS_VALID,
+                'products': products,
+            })
+    elif palette:
         # One column per attribute, in reading order; options in the company's own order within each.
         columns = []
         for attribute in attributes:
@@ -368,7 +497,9 @@ def payload(model) -> dict:
             if attribute.role != VariantAttribute.ROLE_OTHER and attribute.pk not in palette \
                     and attribute.role not in roles_missing:
                 roles_missing.append(attribute.role)
+    extra = {'excluded_pairs': sorted(sorted(pair) for pair in excluded)} if excluded else {}
     return {
+        **extra,
         'model_id': model.pk, 'model_name': model.name,
         'has_palette': bool(palette),
         'attributes': attribute_rows,
