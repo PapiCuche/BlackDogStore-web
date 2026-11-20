@@ -252,8 +252,8 @@ class SalesNoteLogoTest(DocumentBase):
         self.assertEqual(raster(escpos.sales_note_ticket(note))[:2], (336, 112))
 
     def test_the_logo_adds_one_line_and_changes_nothing_else(self):
-        def roll():           # two notes differ in their numbers, and in the minute when a minute ends between them
-            return [re.sub(r'NV-\d+|#\d+|\d{2}/\d{2}/\d{4} \d{2}:\d{2}', '#', line)
+        def roll():           # two notes differ in their numbers, and in the Fecha minute when a minute ends between them
+            return [re.sub(r'NV-\d+|#\d+|(?<=^Fecha:)\s+\d{2}/\d{2}/\d{4} \d{2}:\d{2}$', '#', line)
                     for line in escpos_lines(self.roll())]
 
         plain = roll()
