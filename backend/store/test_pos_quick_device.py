@@ -32,7 +32,7 @@ from store import inventory_services as inventory
 from store import stock_unit_services as units
 from store import supply_services as supply
 from store.models import (
-    AdminAuditLog, BranchStock, Order, OrderItem, OrderUnit, Product, StockMovement, StockUnit,
+    AdminAuditLog, BranchStock, Order, OrderItem, OrderUnit, Product, StockMovement, StockUnit, Supplier,
 )
 from store.test_device_commerce import assert_no_amount
 from store.test_stock_units import imei
@@ -195,14 +195,44 @@ class ConfigurationsTest(QuickShop, TestCase):
     def test_what_each_caller_may_do_is_said_before_the_form_opens(self):
         seller = _api(self.seller).get(self.config_url()).json()
         self.assertEqual(seller['can'], {'receive': False, 'create_variant': False, 'set_price': False,
-                                         'view_costs': False, 'choose_supplier': False})
+                                         'view_costs': False, 'choose_supplier': False, 'open_suppliers': False})
         self.assertNotIn('suppliers', seller)
         receiver = _api(self.receiver).get(self.config_url()).json()
         self.assertEqual(receiver['can'], {'receive': True, 'create_variant': False, 'set_price': False,
-                                           'view_costs': False, 'choose_supplier': True})
+                                           'view_costs': False, 'choose_supplier': True, 'open_suppliers': True})
         self.assertEqual(receiver['suppliers'], [{'id': self.supplier.pk, 'name': 'Mayorista Q'}])
         manager = _api(self.manager).get(self.config_url()).json()
         self.assertTrue(all(manager['can'].values()))
+
+    def test_d_f_10_whoever_receives_chooses_the_supplier_without_seeing_the_supplier_screen(self):
+        """D-F-10: choosing the supplier on receipt is the receiver's (`inventory.adjust`); the screen is not."""
+        stock_only, _ = _p2d_member(self.company, 'prf-config-almacen-solo',
+                                    ['company.view', 'sales.pos.use', 'inventory.view', 'inventory.adjust'])
+        body = _api(stock_only).get(self.config_url()).json()
+        self.assertEqual((body['can']['choose_supplier'], body['can']['open_suppliers']), (True, False))
+        self.assertEqual(body['suppliers'], [{'id': self.supplier.pk, 'name': 'Mayorista Q'}])
+
+    def test_with_no_active_supplier_the_receiver_still_gets_an_empty_list(self):
+        Supplier.objects.filter(company=self.company).update(is_active=False)
+        body = _api(self.receiver).get(self.config_url()).json()
+        self.assertEqual(body['suppliers'], [])
+
+    def test_a_model_without_palette_varies_where_a_variant_lacks_the_attribute(self):
+        """Review of #375: A={128, Negro} and B={256, Negro, LL/A}. Region is not carried by every variant, so it
+        varies (the picker must not pick LL/A on its own and hide A); colour is the same on all, so it does not."""
+        loose = device_catalog.create_model(company=self.company, name='Teléfono R')
+        for name, slug, options in (('R 128 Negro', 'prf-r-a', [self.gb128, self.black]),
+                                    ('R 256 Negro LL/A', 'prf-r-b', [self.gb256, self.black, self.lla])):
+            product = _prod(self.company, name, slug, price='1000.00', inventory=0)
+            device_catalog.set_variant(product, model_id=loose.pk, condition_line='new',
+                                       option_ids=[o.pk for o in options])
+        body = _api(self.seller).get(self.config_url(loose)).json()
+        self.assertFalse(body['has_palette'])
+        self.assertEqual({a['role']: a['varies'] for a in body['attributes']},
+                         {'capacity': True, 'color': False, 'region': True})
+        self.assertEqual(sorted(sorted(c['option_ids']) for c in body['combinations']),
+                         sorted([sorted([self.gb128.pk, self.black.pk]),
+                                 sorted([self.gb256.pk, self.black.pk, self.lla.pk])]))
 
     def test_a_role_with_one_option_does_not_vary(self):
         model_palette.set_palette(self.model, option_ids=[o.pk for o in (
@@ -387,6 +417,51 @@ class RefusalsTest(QuickShop, TestCase):
         self.assertTrue(draft.is_pending_draft)
 
 
+class AllOrNothingTest(QuickShop, TestCase):
+    def setUp(self):
+        self.build('prf-todo-o-nada')
+
+    def test_a_duplicate_the_pre_check_missed_is_still_409_naming_the_device(self):
+        """The unlocked pre-check can read before another till commits: `receive_units` refuses under its lock and the
+        answer is the same 409 with the device (`_registration_error`)."""
+        from unittest import mock
+
+        from store import pos_device_services
+
+        holder = self.here[0]
+        real, calls = pos_device_services._duplicate, []
+
+        def stale_first(*args, **kwargs):
+            calls.append(1)
+            return None if len(calls) == 1 else real(*args, **kwargs)
+
+        before = self.counts()
+        with mock.patch.object(pos_device_services, '_duplicate', side_effect=stale_first):
+            res = self.post(self.manager, self.body([self.gb128, self.black, self.esim, self.lla], price=None,
+                                                    imei=holder.imei))
+        self.assertEqual((res.status_code, res.json()['code'], res.json()['field']), (409, 'duplicate_imei', 'imei'))
+        self.assertEqual(res.json()['unit']['id'], holder.pk)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(self.counts(), before)
+
+    def test_a_failure_after_the_variant_was_written_leaves_nothing(self):
+        from unittest import mock
+
+        from store import unit_codes
+
+        before = self.counts()
+        trails = AdminAuditLog.objects.filter(company=self.company).count()
+        with mock.patch.object(unit_codes, 'assign_label_code', side_effect=unit_codes.UnitCodeError('sin código')):
+            res = self.post(self.manager, self.body(supplier=self.supplier.pk))
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(self.counts(), before)          # no Product, no StockUnit, no StockMovement
+        self.assertEqual(AdminAuditLog.objects.filter(company=self.company).count(), trails)
+        self.assertFalse(Product.objects.filter(
+            company=self.company, variant_key=device_catalog.variant_key(
+                [self.gb256.pk, self.blue.pk, self.esim.pk, self.ja.pk])).exists())
+        self.assert_invariant()
+
+
 class IdempotencyTest(QuickShop, TestCase):
     def setUp(self):
         self.build('prf-idem')
@@ -442,6 +517,16 @@ class PermissionsTest(QuickShop, TestCase):
         res = self.post(self.receiver, self.body(), key='r-2')
         self.assertEqual((res.status_code, res.json()['code']), (403, 'create_forbidden'))
         self.assertEqual(self.counts(), before)
+
+    def test_d_f_10_a_receiver_without_the_supplier_screen_states_the_supplier(self):
+        stock_only, _ = _p2d_member(self.company, 'prf-permisos-almacen-solo',
+                                    ['company.view', 'sales.pos.use', 'inventory.view', 'inventory.adjust'])
+        res = self.post(stock_only, self.body([self.gb128, self.black, self.esim, self.lla], price=None,
+                                              supplier=self.supplier.pk))
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(StockUnit.objects.get(pk=res.json()['unit']['unit_id']).supplier, self.supplier)
+        # What the till answers does not show the supplier to who cannot see suppliers (D-F-3).
+        self.assertNotIn('supplier', res.json())
 
     def test_a_cost_needs_costs_view_and_a_price_change_needs_products_manage(self):
         existing = [self.gb128, self.black, self.esim, self.lla]
@@ -507,9 +592,15 @@ class IntoTheSaleTest(QuickShop, TestCase):
         self.assert_invariant()
 
     def test_no_stock_ever_appears_without_a_device_behind_it(self):
-        self.post(self.manager, self.body(), key='a')
-        self.post(self.manager, self.body([self.gb128, self.black, self.esim, self.lla], price=None), key='b')
-        self.post(self.manager, self.body([self.gb256, self.blue, self.chip, self.lla]), key='c')   # refused
+        devices = StockUnit.objects.filter(company=self.company).count()
+        self.assertEqual(self.post(self.manager, self.body(), key='a').status_code, 201)
+        self.assertEqual(self.post(self.manager, self.body([self.gb128, self.black, self.esim, self.lla], price=None),
+                                   key='b').status_code, 201)
+        self.assertEqual(self.post(self.manager, self.body([self.gb256, self.blue, self.chip, self.lla]),
+                                   key='c').status_code, 400)   # refused: an excluded pair
+        self.assertEqual(StockUnit.objects.filter(company=self.company).count(), devices + 2)
+        self.assertEqual(sum(BranchStock.objects.filter(branch__company=self.company).values_list('quantity', flat=True)),
+                         StockUnit.objects.filter(company=self.company, status='available').count())
         self.assert_invariant()
         stocked = BranchStock.objects.filter(branch__company=self.company, quantity__gt=0)
         for row in stocked:
@@ -578,6 +669,27 @@ class UnitSupplierVisibilityTest(QuickShop, TestCase):
                                       format='json', HTTP_IDEMPOTENCY_KEY='rcp-prf-1')
         self.assertEqual(res.status_code, 201, res.content)
         self.assertEqual(StockUnit.objects.get(imei=value).supplier, self.supplier)
+
+    def test_receiving_and_correcting_a_device_answer_its_supplier_like_the_list(self):
+        url = f'/api/admin/inventory/units/?company={self.company.pk}'
+        body = {'branch': self.branch.pk, 'product_id': self.existing.pk, 'reason': 'Compra',
+                'units': [{'imei': next(self._imei)}]}
+        res = _api(self.manager).post(url, body, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertIn('supplier', res.json()['results'][0])
+        stock_only, _ = _p2d_member(self.company, 'prf-proveedor-almacen',
+                                    ['company.view', 'inventory.view', 'inventory.adjust'])
+        body['units'] = [{'imei': next(self._imei)}]
+        res = _api(stock_only).post(url, body, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertNotIn('supplier', res.json()['results'][0])
+
+        # The device received at the till under 256 GB · Azul is corrected to the existing variant.
+        unit = StockUnit.objects.get(supplier=self.supplier)
+        moved = _api(self.manager).post(f'/api/admin/inventory/units/{unit.pk}/move-variant/?company={self.company.pk}',
+                                        {'product': self.existing.pk, 'reason': 'Era 128 GB Negro'}, format='json')
+        self.assertEqual(moved.status_code, 200, moved.content)
+        self.assertEqual(moved.json()['supplier'], {'id': self.supplier.pk, 'name': 'Mayorista Q'})
 
     def test_the_supplier_must_be_of_the_company_and_active(self):
         unit = StockUnit.objects.filter(supplier__isnull=False).first()
@@ -652,6 +764,34 @@ class SameImeiRaceTest(QuickShop, TransactionTestCase):
             thread.join()
         self.assertEqual(sorted(results), [201, 409], results)
         self.assertEqual(StockUnit.objects.filter(company=self.company).filter(imei=value).count(), 1)
+        self.assert_invariant()
+
+    def test_on_an_existing_variant_one_wins_and_the_other_gets_409(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('needs PostgreSQL row and advisory locks')
+        value = next(self._imei)
+        barrier = Barrier(2)
+        results = []
+
+        def run(key):
+            try:
+                barrier.wait()
+                body = self.body([self.gb128, self.black, self.esim, self.lla], price=None)
+                body['imei'] = value
+                res = self.post(self.manager, body, key=key)
+                results.append((res.status_code, res.json().get('code')))
+            finally:
+                connection.close()
+
+        threads = [Thread(target=run, args=(f'race-existing-{n}',)) for n in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(sorted(code for code, _ in results), [201, 409], results)
+        self.assertIn((409, 'duplicate_imei'), results)
+        self.assertEqual(StockUnit.objects.filter(company=self.company, imei=value).count(), 1)
+        self.assertEqual(inventory.branch_quantity(self.branch, self.existing), 3)
         self.assert_invariant()
 
 

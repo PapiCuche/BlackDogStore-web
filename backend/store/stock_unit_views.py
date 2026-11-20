@@ -302,10 +302,12 @@ class StockUnitListView(APIView):
         batch = label_batches.create_for_movement(created.movement, units=created, actor=request.user)
 
         fresh = StockUnit.objects.filter(pk__in=[u.pk for u in created]).select_related(
-            'product', 'branch').order_by('pk')
+            'product', 'branch', 'supplier').order_by('pk')
         include_cost = may_view_costs(request)
+        include_supplier = may_see_suppliers(request)       # D-F-3: the list's rule, on this answer too
         return Response(
-            {'results': [unit_payload(unit, include_cost=include_cost) for unit in fresh],
+            {'results': [unit_payload(unit, include_cost=include_cost, include_supplier=include_supplier)
+                         for unit in fresh],
              **label_batches.answer(batch)},
             status=status.HTTP_201_CREATED,
         )
@@ -538,9 +540,10 @@ class StockUnitMoveVariantView(_UnitMixin, APIView):
                                                actor=request.user, request=request)
         except InventoryError as exc:
             return _refusal(exc)
-        fresh = StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade').get(pk=unit.pk)
+        fresh = StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade', 'supplier').get(pk=unit.pk)
         # UC-D6: the new label (or that it failed). An idempotent repeat made none: `label_batch` is null.
-        return Response({**unit_payload(fresh, include_cost=may_view_costs(request)),
+        return Response({**unit_payload(fresh, include_cost=may_view_costs(request),
+                                        include_supplier=may_see_suppliers(request)),
                          **label_batches.answer(getattr(moved, 'label_batch', None))})
 
 

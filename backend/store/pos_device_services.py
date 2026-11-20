@@ -95,7 +95,8 @@ class Authority:
     create_variant: bool     # inventory.adjust + products.manage
     set_price: bool          # products.manage
     view_costs: bool         # costs.view
-    choose_supplier: bool    # inventory.adjust + products.view (who reads the supplier list today)
+    choose_supplier: bool    # inventory.adjust: the receiver states who sold the device (D-F-10)
+    open_suppliers: bool     # products.view: may open «Proveedores» (the empty state links to it only then)
     receive_on_order: bool   # inventory.adjust + sales.orders.manage (the order screen's «Recibir»)
 
     def can(self) -> dict:
@@ -124,8 +125,11 @@ def authority_for(user, company) -> Authority:
     manage = _holds(user, company, 'products.manage', _LEGACY_MANAGE_CATALOG_ROLES)
     view = _holds(user, company, 'products.view', _LEGACY_VIEW_CATALOG_ROLES)
     orders = _holds(user, company, 'sales.orders.manage', _LEGACY_MANAGE_ORDERS_ROLES)
+    # D-F-10 (review of #375): choosing the supplier on receipt is the RECEIVER's, per the owner's order — the
+    # name of an active supplier of the company, to pick it. Reading the supplier screen (and the supplier of a
+    # device in the unit lists, D-F-3) keeps its own authority.
     return Authority(receive=adjust, create_variant=adjust and manage, set_price=manage,
-                     view_costs=user_may_view_costs(user, company), choose_supplier=adjust and view,
+                     view_costs=user_may_view_costs(user, company), choose_supplier=adjust, open_suppliers=view,
                      receive_on_order=adjust and orders)
 
 
@@ -210,9 +214,14 @@ def configurations(company, model, branch, authority: Authority) -> dict:
             continue
         options = [o for o in attribute.options.all() if o.pk in allowed[attribute.pk] and o.company_id == company.pk]
         columns.append([o.pk for o in options])
+        # Review of #375: without a palette a variant may LACK an attribute (A = 128 · black, B = 256 · black · a
+        # region). The attribute does not vary only when EVERY variant carries its one option; otherwise the picker
+        # asks it, so a variant without it stays reachable. With a palette every combination carries every role.
+        own = {o.pk for o in options}
+        carried_by_all = palette or all(own & set(links.get(p.pk, [])) for p in variants if links.get(p.pk))
         attribute_rows.append({
             'id': attribute.pk, 'name': attribute.name, 'role': attribute.role, 'kind': attribute.kind,
-            'varies': len(options) > 1,
+            'varies': len(options) > 1 or not carried_by_all,
             'options': [{'id': o.pk, 'label': o.label, 'swatch_hex': o.swatch_hex} for o in options],
         })
     every_option = {pk for column in columns for pk in column}
@@ -356,7 +365,7 @@ def _supplier(company, body, authority):
     if raw in (None, ''):
         return None
     if not authority.choose_supplier:
-        raise QuickSaleError('Indicar el proveedor requiere ver proveedores («Ver productos»).',
+        raise QuickSaleError('Indicar el proveedor requiere el permiso «Mover inventario».',
                              code='suppliers_forbidden', field='supplier', status=403)
     supplier = Supplier.objects.filter(company=company, pk=_pk(raw, 'supplier')).first()
     if supplier is None:
@@ -588,7 +597,7 @@ def present(company, branch, record: dict, *, authority: Authority, replayed: bo
         'warnings': [] if record['mode'] == 'order' or unit.product.price > 0 else [
             'Esta variante no tiene precio de venta: la caja no la cobrará hasta que un usuario autorizado lo fije.'],
     })
-    if authority.choose_supplier or authority.view_costs:
+    if authority.open_suppliers or authority.view_costs:
         answer['supplier'] = None if unit.supplier_id is None else {'id': unit.supplier_id,
                                                                     'name': unit.supplier.name}
     return answer
