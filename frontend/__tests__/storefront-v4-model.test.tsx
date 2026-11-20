@@ -40,6 +40,9 @@ beforeEach(() => {
   send.mockReset();
   send.mockResolvedValue(reply({ id: 1 }, 201));
   window.localStorage.clear();
+  // Choosing writes `?variante=` (V4-VARIANT-URL) and, since PR D, a page without the server's model reads it back:
+  // every test starts from a clean address.
+  window.history.replaceState(null, '', '/');
 });
 
 function config(extra: Partial<StorefrontConfig> = {}): StorefrontConfig {
@@ -240,16 +243,20 @@ describe('teclado', () => {
     expect(within(colour()).getByRole('radio', { name: 'Azul' })).toHaveFocus();
   });
 
-  it('una combinación inexistente se ve pero las flechas la saltan', async () => {
+  it('una opción que ninguna variante tiene se ve pero las flechas la saltan', async () => {
+    // CATALOG-REFERENCE-01 · PR D: a colour of another capacity (Rojo) CAN be chosen now — it moves the capacity.
+    // Only an option no new variant has at all (here Verde, which only a used device would have) is disabled.
+    model.attributes[0].options.splice(1, 0, { id: 29, label: 'Verde', swatch_hex: '#0A0', sort_order: 0 });
     await renderPage();
-    const rojo = within(colour()).getByRole('radio', { name: 'Rojo, no disponible' });
-    expect(rojo).toHaveAttribute('aria-disabled', 'true');
+    const verde = within(colour()).getByRole('radio', { name: 'Verde, no disponible' });
+    expect(verde).toHaveAttribute('aria-disabled', 'true');
+    expect(within(colour()).getByRole('radio', { name: 'Rojo' })).not.toHaveAttribute('aria-disabled');
     const colours = within(colour()).getAllByRole('radio');
     colours[0].focus();
     fireEvent.keyDown(colours[0], { key: 'ArrowRight' });
-    fireEvent.keyDown(colours[1], { key: 'ArrowRight' });
-    expect(colours[0]).toHaveAttribute('aria-checked', 'true');
-    expect(colours[2]).toHaveAttribute('aria-checked', 'false');
+    // Azul → (Verde skipped) → Blanco.
+    expect(within(colour()).getByRole('radio', { name: 'Blanco' })).toHaveAttribute('aria-checked', 'true');
+    expect(verde).toHaveAttribute('aria-checked', 'false');
   });
 
   it('los equipos seminuevos se eligen con Tab y Enter', async () => {

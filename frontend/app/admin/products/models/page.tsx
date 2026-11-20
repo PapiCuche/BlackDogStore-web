@@ -7,12 +7,14 @@
  * servidor comprueba las dos; aquí sólo se decide qué controles se pintan.
  */
 
+import Link from "next/link";
+
 import { AccessGuard } from "../../components/AccessGuard";
 import { AdminShell } from "../../components/AdminShell";
 import { CatalogModelsManager } from "../../components/CatalogModelsManager";
 import { CatalogReadinessPanel } from "../../components/CatalogReadinessPanel";
 import { PalettesToBuildPanel } from "../../components/PalettesToBuildPanel";
-import { PageHeader } from "../../components/internal-ui";
+import { PageHeader, internalButtonClass } from "../../components/internal-ui";
 import type { InternalAccess } from "../../lib/internal-access";
 import type { AuthUser } from "../../../lib/auth";
 
@@ -24,6 +26,12 @@ function ModelsContent({ user, access }: { user: AuthUser; access: InternalAcces
           eyebrow="Productos"
           title="Modelos"
           description="Agrupa en un modelo los productos que son opciones de un mismo equipo —capacidad, color, nuevo o seminuevo— para venderlos desde una sola página."
+          actions={
+            // CATALOG-REFERENCE-01 · PR E: import verified models instead of typing them by hand.
+            <Link href="/admin/products/models/reference" className={`inline-flex min-h-[44px] items-center ${internalButtonClass}`}>
+              Catálogo de referencia
+            </Link>
+          }
         />
         {/* CATALOG-READINESS-01: lo primero de la página, qué falta antes de registrar el inventario. */}
         <CatalogReadinessPanel companyId={access.dashboard?.company?.id ?? null} />

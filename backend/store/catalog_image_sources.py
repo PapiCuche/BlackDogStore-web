@@ -29,7 +29,9 @@ from urllib.parse import urlsplit
 
 from django.db.models import Exists, OuterRef, Q
 
-from .models import Product, ProductImage, ProductModel
+from .models import (
+    ModelFinishImage, ModelOption, Product, ProductImage, ProductModel, ProductVariantOption, StorefrontImage,
+)
 
 DEFAULT_PAGE_SIZE = 50
 MAX_PAGE_SIZE = 200
@@ -166,4 +168,78 @@ def report(company, *, page=1, page_size=DEFAULT_PAGE_SIZE) -> dict:
         },
         'count': len(entries), 'page': page, 'page_size': page_size,
         'results': entries[start:start + page_size],
+    }
+
+
+# ---------------------------------------------------------------------------
+# CATALOG-REFERENCE-01 · PR C — finishes without pictures, and the licence of what the shop uploaded
+# ---------------------------------------------------------------------------
+
+#: How many finishes without pictures the report names (the count is always the whole catalogue's).
+MAX_PENDING_FINISHES = 200
+
+
+def _managed_ids(rows) -> set[str]:
+    from .storefront_media import managed_public_id
+
+    return {managed_public_id(value) for value in rows} - {None}
+
+
+def licensing(company) -> dict:
+    """
+    Read-only, one company, a fixed number of queries whatever the size of the catalogue:
+
+    * `finishes_without_images` / `pending_finishes`: each (model, colour) the catalogue has — a colour
+      (`finish_media.colour_attribute_ids`) of the model's palette or of one of its active variants — without a finish
+      picture. The shop shows those variants
+      «Imagen pendiente» unless the variant has pictures of its own.
+    * `uploads`: the shop's own uploads shown somewhere in the catalogue (model cover, a product's picture or
+      gallery, a finish), each counted once: `unknown_source` (no provenance: uploaded before PR C or through a slot
+      that does not ask), `unverified_license` (provenance given, not the shop's own photo, nobody checked it yet),
+      `demo` (a demo resource, flagged on the shop).
+    """
+    from .finish_media import colour_attribute_ids
+
+    dimension = colour_attribute_ids(company.pk)      # D-PRC-8: the same colour dimension as the shop
+    finishes: dict[tuple[int, int], str] = {}
+    for model_id, option_id, label in (ModelOption.objects.filter(company=company, option__attribute_id__in=dimension)
+                                       .values_list('model_id', 'option_id', 'option__label')):
+        finishes[(model_id, option_id)] = label
+    for model_id, option_id, label in (ProductVariantOption.objects.filter(
+            company=company, attribute_id__in=dimension, product__product_model__isnull=False,
+            product__is_active=True)
+            .values_list('product__product_model_id', 'option_id', 'option__label')):
+        finishes[(model_id, option_id)] = label
+    pictured = set(ModelFinishImage.objects.filter(company=company).values_list('model_id', 'color_option_id'))
+    pending = sorted(key for key in finishes if key not in pictured)
+    names = dict(ProductModel.objects.filter(company=company, pk__in={model_id for model_id, _ in pending})
+                 .values_list('pk', 'name')) if pending else {}
+    rows = sorted(
+        ({'model_id': model_id, 'model_name': names.get(model_id, ''), 'option_id': option_id,
+          'option_label': finishes[(model_id, option_id)], 'admin_url': f'/admin/products/models/{model_id}'}
+         for model_id, option_id in pending),
+        key=lambda row: (row['model_name'].casefold(), row['option_label'].casefold(), row['option_id']),
+    )
+
+    ids = (_managed_ids(ProductModel.objects.filter(company=company).exclude(image_url='')
+                        .values_list('image_url', flat=True))
+           | _managed_ids(Product.objects.filter(company=company).exclude(image_url='')
+                          .values_list('image_url', flat=True))
+           | _managed_ids(ProductImage.objects.filter(company=company).values_list('image_url', flat=True))
+           | _managed_ids(ModelFinishImage.objects.filter(company=company).values_list('image_url', flat=True)))
+    uploads = {'total': 0, 'unknown_source': 0, 'unverified_license': 0, 'demo': 0}
+    if ids:
+        for kind, verified_at in (StorefrontImage.objects.filter(company=company, public_id__in=ids)
+                                  .values_list('source_kind', 'license_verified_at')):
+            uploads['total'] += 1
+            if kind == StorefrontImage.SOURCE_UNKNOWN:
+                uploads['unknown_source'] += 1
+            elif kind != StorefrontImage.SOURCE_OWN_PHOTO and verified_at is None:
+                uploads['unverified_license'] += 1
+            if kind == StorefrontImage.SOURCE_DEMO:
+                uploads['demo'] += 1
+    return {
+        'finishes_without_images': len(rows),
+        'pending_finishes': rows[:MAX_PENDING_FINISHES],
+        'uploads': uploads,
     }

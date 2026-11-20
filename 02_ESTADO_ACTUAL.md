@@ -3,6 +3,48 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-20 — FASE 1 AMPLIADA · Catálogo maestro de iPhone — PR A (datos y validador, sin migración)
+
+- **Orden del propietario (2026-11-20):** el plan son PR A–G y se definió en `docs/adr-catalog-reference.md`:
+  - un catálogo maestro de iPhone, separado del catálogo comercial de cada empresa;
+  - un importador idempotente;
+  - una galería por color;
+  - un configurador web;
+  - personalización en el panel;
+  - venta rápida en caja.
+- **AGENTS §2:** se añade una segunda excepción, aprobada por el propietario: el catálogo de referencia de fabricantes. Son datos factuales en `backend/catalog_reference/`, fuera del motor.
+- **PR A:**
+  - `backend/catalog_reference/apple-iphone.json` con 55 modelos (49 `complete`, 6 `partial`), cada uno con sus fuentes oficiales de Apple y verificado el 2026-11-20;
+  - validador puro `store/catalog_reference.py`, que no nombra ningún fabricante (lo vigila un test).
+- **Nada cambia en la base, la tienda ni la caja.** El catálogo todavía no se carga en ninguna empresa (PR B). No se despliega ni se importa nada sin un GO del propietario.
+- **PR B (rama `feat/catalog-reference-import`, apilada sobre PR A; sin push, sin desplegar):** importador y paletas por modelo.
+  - Migración aditiva `0181_catalog_reference`: tablas de plataforma `ReferenceModel`, `ReferenceOption`, `ReferenceModelNumber` (sin empresa); `ProductModel.reference_key` y `VariantOption.reference_key` (`db_default=''`, únicos parciales por empresa); `ModelOptionExclusion` (pares imposibles por modelo). Los PR #367/#368 también usan `0181_label_printing`: el segundo en fusionarse añade una migración de fusión.
+  - `python manage.py load_reference_catalog --file … [--dry-run]`: valida primero, carga por clave (la segunda vez, 0 cambios), nunca borra (lo que salió del archivo queda `in_dataset=False` y se informa como candidato a retirar), auditado sin empresa.
+  - Importar a UNA empresa: `GET /api/admin/catalog/reference/models/`, `POST …/reference/preview/` y `…/reference/apply/` (nuevo / reutilizado / conflicto / pendiente de revisión; huella, `Idempotency-Key` y candado de empresa de `catalog_proposal`). Crea modelo oculto, atributos por rol que falten, opciones (por `reference_key`, luego por etiqueta; un renombre de la empresa se respeta), paleta y exclusiones SIM × región. Nunca crea variantes, stock ni unidades. Un modelo `partial` sólo con aprobación expresa.
+  - `check_variant` y la matriz del panel respetan las exclusiones; un modelo sin exclusiones se comporta igual que antes.
+  - Las opciones de SIM y región se crean con etiquetas en español del archivo (`label_es` y `region_label_es` en cada entrada `sim`: «nano-SIM y eSIM», «Solo eSIM», «Internacional (otros países)», «EE. UU. y Puerto Rico»…); las claves no cambian.
+  - Falta: pantallas del panel (PR E). No se carga ni importa nada en producción sin GO.
+- **PR C (rama `feat/catalog-finish-images`, apilada sobre PR B; sin push, sin desplegar):** galería por acabado (modelo + color) y procedencia de las imágenes (ADR §4.2).
+  - Migración aditiva `0182_catalog_finish_images`: `ModelFinishImage` y, en `StorefrontImage`, `source_kind` (`unknown` por defecto para lo existente), `source_url`, `license`, `attribution`, `license_verified_by/at`.
+  - Panel (sólo API): `/api/admin/catalog/models/<id>/finish-images/` (lista por color, subir con origen y licencia obligatorios salvo foto propia, editar, verificar licencia, quitar, `order/`); `products.view` / `products.manage`; otra empresa 404.
+  - Tienda: cada variante muestra sus fotos, si no las de su color, si no «Imagen pendiente» (`gallery`, `image_pending`, `finish_images` en `/api/catalog/models/<slug>/`); nunca la foto de otro color ni la portada del modelo. Un recurso demostrativo se rotula «Imagen referencial».
+  - El informe de imágenes (F4) cuenta acabados sin foto y subidas sin origen o sin licencia verificada.
+  - Falta: carga masiva `modelo__color` y pantallas del panel (PR E). Ninguna imagen entra al repositorio.
+- **PR D (rama `feat/catalog-configurator`, apilada sobre PR C; sin push, sin desplegar; sólo frontend, sin migración):** configurador público premium (ADR §4.3).
+  - `/modelo/<slug>` muestra el configurador del Manual V4 sólo dentro de su bloque (`data-design="v4" data-v4-scope="block"`, Montserrat por clase); la cabecera, el pie y las demás páginas siguen en V3. El bloque sigue el tema claro/oscuro del visitante. `/v4` sigue siendo la vista previa sin indexar y el Manual V4 sigue sin adoptarse para todo el sitio.
+  - Se puede elegir un color que sólo existe en otra capacidad: la capacidad pasa a la más cercana y la página lo dice (visible y `aria-live`). Nunca se llega a una combinación inexistente.
+  - La foto es la del acabado elegido, con transición sin parpadeo y caja fija; sin foto, «Imagen pendiente». «Bajo pedido» sólo con oferta comprable; el plazo sólo si el dato lo trae.
+  - `?variante=` abre la variante en el primer HTML y se actualiza sin navegar; la canónica sigue siendo la del modelo; JSON-LD con la dirección y la foto de acabado de cada variante.
+  - En escritorio el resumen ya no tapa los colores (también en `/v4`). Se retira el marcado V3 de la ficha (`VariantPicker`, `UsedUnitCard`).
+  - Falta: elegir modelos hermanos (la API pública no expone la generación) y promociones en la ficha (el contrato público no las trae).
+  - Revisión de #373 (ADR D-PRD-11): al cambiar de color la foto anterior sale al instante (caja neutra hasta la nueva); «Atrás» respeta `?variante=`; JSON-LD y vista previa al compartir sólo con fotos propias no demostrativas de la variante; la foto fija de escritorio queda bajo la cabecera; recorrer colores devuelve la capacidad elegida.
+- **PR E (rama `feat/catalog-admin-customization`, sobre master con PR D; sin push, sin desplegar):** personalización por empresa en el panel (ADR §4.4).
+  - Migración aditiva `0183_catalog_presentation`: `ProductModel.is_featured` y `ModelOption.sort_order` (ambos con valor por defecto en la base). Si PR F también trae una `0183`, el segundo en fusionarse añade la migración de fusión.
+  - Nueva pantalla «Catálogo de referencia» (`/admin/products/models/reference`): filtrar, previsualizar (nuevo / se reutiliza / conflicto / pendiente de revisión, con avisos), aprobar los modelos no completos e importar con `Idempotency-Key`. Nada se publica.
+  - Editor del modelo: «Configuración comercial» (resumen con enlaces a cada editor; costo de proveedor sólo con `costs.view`, promociones sólo con `sales.promotions.view`), «Orden en la tienda» (orden de colores y demás opciones del modelo), «Imágenes por acabado» (subir con procedencia, texto alternativo, principal, reordenar con teclado, verificar licencia con quién y cuándo, quitar con confirmación, «Imagen pendiente», rótulo de demostrativa), casilla «Destacado» y combinaciones excluidas en la paleta.
+  - Tienda: la lista de modelos muestra primero los destacados y la ficha ordena las opciones como las ordenó el modelo; una empresa que no usa nada de esto ve exactamente lo de antes.
+  - Se reutilizan sin cambios: visibilidad, descripción, precio por variante, bajo pedido, promociones y proveedores. Falta: activar el catálogo en producción (GO), carga masiva de fotos por nombre y distintivo «Destacado» en la tienda V3.
+
 ## 2026-11-19 — CRM-INGRESS · Borde de la tienda para el CRM en el mismo servidor; IP real del cliente en todas las rutas — en PR (sin desplegar)
 
 - **Por qué:** el CRM (otro repositorio) se publicará en el mismo servidor, y 80/443 son del Caddy de la tienda. Además, el `Caddyfile` en producción tenía sin confirmar la confianza en Cloudflare (desde el 2026-10-08); un despliegue desde git la habría perdido.

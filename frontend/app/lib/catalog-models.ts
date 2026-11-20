@@ -70,7 +70,11 @@ export type ModelAttribute = {
   options: AttributeOption[];
 };
 
-export type VariantImage = { url: string; alt_text: string; is_primary: boolean; width: number; height: number };
+export type VariantImage = {
+  url: string; alt_text: string; is_primary: boolean; width: number; height: number;
+  /** CATALOG-REFERENCE-01 · PR C: a demo resource (labelled «Imagen referencial»). Absent: not one. */
+  is_demo?: boolean;
+};
 
 /**
  * DC3 — what a product costs and how long it takes when it is sold «bajo
@@ -103,6 +107,13 @@ export type Variant = {
   sells_by_unit: boolean;
   /** DC3: the offer when `availability` is `supplier`. */
   on_order?: OnOrder | null;
+  /**
+   * CATALOG-REFERENCE-01 · PR C — what the variant shows, as the server resolved it: its own pictures, else its
+   * finish's (model + colour), else empty with `image_pending`. Absent on older servers (`variantGallery` applies
+   * the same rule then).
+   */
+  gallery?: VariantImage[];
+  image_pending?: boolean;
 };
 
 /**
@@ -154,6 +165,8 @@ export type CatalogModel = {
   accessories?: ModelAccessory[];
   /** SUPPLIER-DEVICE-FLOW-02: no variant available and no used device. Absent on older servers. */
   sold_out?: boolean;
+  /** CATALOG-REFERENCE-01 · PR C: colour option id → the pictures of that finish. Absent on older servers. */
+  finish_images?: Record<string, VariantImage[]>;
   as_of: string;
 };
 
@@ -275,6 +288,9 @@ export function deliveryDaysText(days: number | null | undefined, opts: { estima
   return `${head} en ${days} ${days === 1 ? "día" : "días"}`;
 }
 
+/** «Bajo pedido», alone: what the shop says of an offer whose delivery time the data does not give. */
+export const ON_ORDER_LABEL = "Bajo pedido";
+
 /** «Bajo pedido — entrega en N días»: the one way the shop says it. */
 export function onOrderLabel(days: number | null | undefined): string {
   return `Bajo pedido — ${deliveryDaysText(days)}`;
@@ -292,8 +308,12 @@ export function availabilityLabel(variant: Pick<Variant, "available" | "availabi
   switch (variant.availability) {
     case "own_stock":
       return "En stock";
-    case "supplier":
-      return onOrderLabel(variant.on_order?.lead_time_days);
+    case "supplier": {
+      // PR D (D-D-2): «Bajo pedido» only with a purchasable offer; a delivery time only when the data has one.
+      const days = variant.on_order?.lead_time_days;
+      if (!variant.on_order) return SOLD_OUT_LABEL;
+      return typeof days === "number" && Number.isFinite(days) ? onOrderLabel(days) : ON_ORDER_LABEL;
+    }
     case "none":
       return SOLD_OUT_LABEL;
     default:
@@ -447,6 +467,83 @@ export function selectOption(
     if (first) next[key] = first.id;
   }
   return next;
+}
+
+/**
+ * One option the configurator moved by itself (`chooseOption`): `unavailable` — what was chosen does not exist with
+ * the new choice; `restored` — back to what the buyer had chosen, now that it exists again.
+ */
+export type SelectionChange = { attributeId: number; from: number; to: number; reason: "unavailable" | "restored" };
+
+/** Whether some variant (an available one, with `onlyAvailable`) has every option of `decided`. */
+function someVariantHas(variants: Variant[], decided: Selection, onlyAvailable: boolean): boolean {
+  return variants.some((variant) => (!onlyAvailable || variant.available)
+    && Object.entries(decided).every(([key, value]) => variant.options[key] === value));
+}
+
+/**
+ * CATALOG-REFERENCE-01 · PR D — the buyer pressed `optionId` of the attribute at `index`. Unlike `selectOption`, ANY
+ * option some variant has can be pressed (a colour that only exists in another capacity too, as on a manufacturer's
+ * configurator): it stays chosen, and every other attribute, in the page's order, is decided against it and against
+ * those decided before:
+ *
+ *  - an attribute BEFORE it (the capacity, when a colour is pressed) keeps its option while some variant still has it
+ *    — even sold out: compatible is not available, and the buyer's capacity is not moved for stock;
+ *  - an attribute AFTER it keeps its option while that combination can be bought (`selectOption`'s rule);
+ *  - otherwise it moves to the NEAREST option in its list that can be bought, else to the nearest that exists; at the
+ *    same distance, the earlier one (the smaller capacity).
+ *
+ * The result is always the combination of an existing variant, so a pair no variant has (PR B's SIM × region
+ * exclusions) is never reached. `changed` lists what moved by itself, for the page to say it.
+ */
+export function chooseOption(
+  variants: Variant[], attributes: ModelAttribute[], selection: Selection, index: number, optionId: number,
+  opts: { preferred?: Selection } = {},
+): { selection: Selection; changed: SelectionChange[] } {
+  const decided: Selection = { [String(attributes[index].id)]: optionId };
+  const changed: SelectionChange[] = [];
+  attributes.forEach((attribute, at) => {
+    if (at === index) return;
+    const key = String(attribute.id);
+    const current = selection[key];
+    const fits = (option: number, onlyAvailable: boolean) =>
+      someVariantHas(variants, { ...decided, [key]: option }, onlyAvailable);
+    // Review of #373: what the buyer chose for this attribute, when it exists again with the new choice, comes back
+    // (browsing colours does not drag the capacity along).
+    const wanted = opts.preferred?.[key];
+    let next: number | undefined;
+    if (wanted !== undefined && wanted !== current && fits(wanted, at > index)) next = wanted;
+    else if (current !== undefined && fits(current, at > index)) next = current;
+    else {
+      const from = attribute.options.findIndex((option) => option.id === current);
+      const nearest = attribute.options
+        .map((option, position) => ({ id: option.id, distance: from < 0 ? position : Math.abs(position - from), position }))
+        .sort((a, b) => a.distance - b.distance || a.position - b.position)
+        .map((candidate) => candidate.id);
+      next = nearest.find((option) => fits(option, true))
+        ?? (current !== undefined && fits(current, false) ? current : nearest.find((option) => fits(option, false)));
+    }
+    if (next === undefined) return;
+    decided[key] = next;
+    if (current !== undefined && next !== current) {
+      changed.push({ attributeId: attribute.id, from: current, to: next, reason: next === wanted ? "restored" : "unavailable" });
+    }
+  });
+  return { selection: decided, changed };
+}
+
+/**
+ * What pressing `optionId` leads to (`chooseOption`): a variant that can be bought, a sold-out one, or none at all.
+ * `opts.preferred` must be what the press itself will use (the buyer's remembered choices), so the chip says exactly
+ * where the press lands (re-review of #373).
+ */
+export function choiceOutcome(
+  variants: Variant[], attributes: ModelAttribute[], selection: Selection, index: number, optionId: number,
+  opts: { preferred?: Selection } = {},
+): "available" | "sold-out" | "unavailable" {
+  const reached = matchVariant(variants, attributes, chooseOption(variants, attributes, selection, index, optionId, opts).selection);
+  if (!reached || reached.options[String(attributes[index].id)] !== optionId) return "unavailable";
+  return reached.available ? "available" : "sold-out";
 }
 
 /**

@@ -74,6 +74,55 @@
   color-scheme: light;
 }
 
+/* ---- El configurador dentro de la ficha pública (PR D) ------------------
+ *
+ * CATALOG-REFERENCE-01 · PR D: `/modelo/<slug>` (la tienda en V3) pinta el
+ * configurador con este mismo manual, pero SÓLO dentro de su bloque
+ * (`data-v4-scope="block"`): la cabecera, el pie y las demás páginas siguen en
+ * V3. Dos diferencias con la vista previa:
+ *  - no ocupa la pantalla entera (es un bloque entre la cabecera y el pie);
+ *  - SIGUE el tema del visitante, porque la cabecera y el pie lo siguen: en
+ *    oscuro usa los neutros del manual (negro, carbón, blanco cálido) desde los
+ *    colores oscuros de cada empresa. El dorado sigue siendo sólo acento.
+ *    Contraste medido en `contrast.test.ts`.
+ */
+[data-design="v4"][data-v4-scope="block"] {
+  min-height: 0;
+}
+
+[data-design="v4"][data-v4-scope="block"]:where([data-theme="dark"] *) {
+  --v4-canvas: var(--brand-background, #0a0a0a);
+  --v4-surface: var(--brand-surface, #141414);
+  --v4-ink: var(--brand-text, #fafafa);
+  /* El botón principal es claro sobre oscuro: al pasar, un poco más apagado. */
+  --v4-charcoal: color-mix(in srgb, var(--v4-ink) 86%, var(--v4-canvas));
+  --v4-muted: color-mix(in srgb, var(--v4-ink) 70%, var(--v4-canvas));
+  --v4-line: color-mix(in srgb, var(--v4-ink) 16%, var(--v4-canvas));
+  --v4-line-strong: color-mix(in srgb, var(--v4-ink) 55%, var(--v4-canvas));
+  --v4-focus: var(--v4-ink);
+  --v4-on-ink: var(--v4-canvas);
+
+  --background: var(--v4-canvas);
+  --surface: var(--v4-surface);
+  --surface-2: color-mix(in srgb, var(--v4-surface) 88%, var(--v4-ink));
+  --foreground: var(--v4-ink);
+  --muted: var(--v4-muted);
+  --border: var(--v4-line);
+  --primary: var(--v4-ink);
+  /* Los estados con la luminosidad que pide un fondo oscuro (los de la V3 oscura). */
+  --danger: #fda29b;
+  --danger-surface: color-mix(in srgb, #fda29b 10%, var(--v4-canvas));
+  --danger-border: color-mix(in srgb, #fda29b 30%, var(--v4-canvas));
+  --warning: #fec84b;
+  --warning-surface: color-mix(in srgb, #fec84b 10%, var(--v4-canvas));
+  --warning-border: color-mix(in srgb, #fec84b 30%, var(--v4-canvas));
+  --success: #75e0a7;
+  --success-surface: color-mix(in srgb, #75e0a7 10%, var(--v4-canvas));
+  --success-border: color-mix(in srgb, #75e0a7 30%, var(--v4-canvas));
+
+  color-scheme: dark;
+}
+
 /* Foco visible y negro en todo control de la V4. */
 [data-design="v4"] :is(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
   outline: 2px solid var(--v4-focus);
@@ -207,6 +256,22 @@
   color: var(--v4-ink);
 }
 
+/* PR D: aviso de lo que el configurador cambió solo (p. ej. la capacidad al
+   elegir un color que no existe en ella). Una raya a la izquierda, sin color
+   de alarma: no es un error. */
+[data-design="v4"] .v4-adjusted {
+  border-left: 2px solid var(--v4-line-strong);
+  padding-left: 0.75rem;
+  color: var(--v4-ink);
+}
+
+/* PR D (revisión de #373): la caja mientras llega la foto de otro acabado. Sin
+   foto ni texto: sólo la superficie (sin animación: la hoja no declara
+   @keyframes fuera de su ámbito). */
+[data-design="v4"] .v4-stage-loading {
+  background: var(--v4-surface);
+}
+
 [data-design="v4"] .v4-thumb {
   position: relative;
   height: 4.5rem;
@@ -231,13 +296,13 @@
   padding-block: 1.5rem;
 }
 
-/* En escritorio el resumen acompaña la elección: se queda a la vista mientras
-   se recorren las opciones. En el móvil va en su sitio, sin tapar la página. */
+/* En escritorio el resumen es una tarjeta, en su sitio tras las opciones.
+   PR D: ya no se pega al borde inferior. Pegado, subía sobre las opciones de
+   arriba y tapaba los colores en una pantalla de 900 px (lo prueba
+   `storefront-configurator.spec.ts`); lo que acompaña la elección es la foto,
+   que sí se queda a la vista (columna izquierda, `lg:sticky`). */
 @media (min-width: 1024px) {
   [data-design="v4"] .v4-summary {
-    position: sticky;
-    bottom: 1.5rem;
-    z-index: 10;
     border: 1px solid var(--v4-line);
     border-radius: 1.5rem;
     padding: 1.75rem;
@@ -415,6 +480,11 @@
 @media (prefers-reduced-motion: no-preference) {
   [data-design="v4"] :is(.v4-chip, .v4-thumb, .v4-unit, .v4-cta) {
     transition: border-color 160ms var(--v4-ease), box-shadow 160ms var(--v4-ease), background-color 160ms var(--v4-ease), transform 160ms var(--v4-ease);
+  }
+
+  /* PR D: la foto entrante aparece sobre la saliente (`CrossfadeStage`). */
+  [data-design="v4"] .v4-layer {
+    transition: opacity 240ms var(--v4-ease);
   }
 
   [data-design="v4"] .v4-cta:active:not(:disabled) {

@@ -27,6 +27,7 @@ import { isManagedStorefrontImage } from "./storefront-media";
 import {
   CartError,
   addDeviceToCart,
+  chooseOption,
   addProductToCart,
   fetchCatalogModel,
   initialSelection,
@@ -34,7 +35,6 @@ import {
   matchVariant,
   overStockOffer,
   roleOrderedAttributes,
-  selectOption,
   selectionForVariant,
   sortedAttributes,
   type CatalogModel,
@@ -150,8 +150,9 @@ export const DEVICE_PHOTOS_LABEL = "Fotos de este equipo";
  * on a used device, whose photos are only presented as «this device» when the
  * shop uploaded them.
  */
-export function photoLabel(url: string, source: "catalog" | "device"): string | null {
-  if (!isManagedStorefrontImage(url)) return REFERENCE_IMAGE_LABEL;
+export function photoLabel(url: string, source: "catalog" | "device", isDemo = false): string | null {
+  // CATALOG-REFERENCE-01 · PR C: a demo resource is never presented as the product, even when the shop uploaded it.
+  if (isDemo || !isManagedStorefrontImage(url)) return REFERENCE_IMAGE_LABEL;
   return source === "device" ? DEVICE_PHOTOS_LABEL : null;
 }
 
@@ -159,11 +160,54 @@ export function photoLabel(url: string, source: "catalog" | "device"): string | 
 // New line
 // ---------------------------------------------------------------------------
 
-/** The chosen variant's pictures; the model's own one when the variant has none. */
+/**
+ * D-PRC-8 — the colour dimension: the attribute with the `color` role; when none has it, the attributes of the
+ * `color` kind (a company whose colour attribute kept the `other` role). The server applies the same rule.
+ */
+export function colourAttributeIds(model: CatalogModel): number[] {
+  const attributes = model.attributes ?? [];
+  const byRole = attributes.filter((attribute) => attribute.role === "color");
+  return (byRole.length ? byRole : attributes.filter((attribute) => attribute.kind === "color"))
+    .map((attribute) => attribute.id);
+}
+
+export function colourOptionOf(variant: Variant, colourIds: number[]): number | undefined {
+  for (const id of colourIds) {
+    const optionId = variant.options?.[String(id)];
+    if (optionId != null) return optionId;
+  }
+  return undefined;
+}
+
+/** The pictures of `variant`'s finish: its colour (the colour dimension, D-PRC-8) on this model. */
+export function finishGallery(model: CatalogModel, variant: Variant): VariantImage[] {
+  const optionId = colourOptionOf(variant, colourAttributeIds(model));
+  return optionId == null ? [] : model.finish_images?.[String(optionId)] ?? [];
+}
+
+/**
+ * CATALOG-REFERENCE-01 · PR C (D-C-1) — what the chosen variant shows: its own pictures (its gallery, or its own
+ * address from before galleries) → else its finish's (model + colour) → else nothing, which the page draws as the
+ * neutral «Imagen pendiente». NEVER another colour's photo and NEVER the model's cover (`model.image_url` is one
+ * colour's photo; it stays for lists) — except on a model none of whose variants has an option of a `color` role or
+ * `color` kind attribute (D-PRC-8), where the cover is no other colour's photo. The server sends this already
+ * resolved (`variant.gallery`); the same rule applies here when an older server does not.
+ */
 export function variantGallery(model: CatalogModel, variant: Variant | null): VariantImage[] {
-  if (variant?.images?.length) return variant.images;
-  const url = variant?.image_url || model.image_url;
-  return url ? [{ url, alt_text: "", is_primary: true, width: 0, height: 0 }] : [];
+  if (!variant) return [];
+  if (Array.isArray(variant.gallery)) return variant.gallery;
+  if (variant.images?.length) return variant.images;
+  if (variant.image_url) return [{ url: variant.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }];
+  if (colourOptionOf(variant, colourAttributeIds(model)) != null) return finishGallery(model, variant);
+  // D-PRC-8 (re-review of #372): the cover only for a model none of whose variants has an option of ANY attribute
+  // with the `color` role or the `color` kind — wider than the colour dimension, as on the server.
+  const anyColour = (model.attributes ?? [])
+    .filter((attribute) => attribute.role === "color" || attribute.kind === "color")
+    .map((attribute) => attribute.id);
+  const colourless = !(model.variants ?? []).some((other) => colourOptionOf(other, anyColour) != null);
+  return colourless && model.image_url
+    ? [{ url: model.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }]
+    : [];
 }
 
 export type NewLineConfigurator = {
@@ -173,17 +217,33 @@ export type NewLineConfigurator = {
   /** The chosen combination; `null` when it matches no variant. */
   variant: Variant | null;
   gallery: VariantImage[];
+  /** PR C: a variant is chosen and neither it nor its finish has a picture: the page shows «Imagen pendiente». */
+  imagePending: boolean;
+  /**
+   * PR D (review of #373) — which finish the pictures belong to: the chosen variant's colour option (D-PRC-8), or
+   * `"none"` when it has none (a colourless model: its pictures are not another colour's). The photo box cross-fades only while this stays the same (another thumbnail);
+   * a new finish drops the previous colour's photo at once (D-C-1).
+   */
+  finishKey: string | null;
   imageIndex: number;
   /** The picture on show, or `null` when there is none. */
   shown: VariantImage | null;
   showImage: (index: number) => void;
   choose: (attributeIndex: number, optionId: number) => void;
+  /** Re-review of #373: the buyer's remembered choices, which `choose` uses; a chip predicts its press with them. */
+  preferred: Selection;
+  /**
+   * PR D — what the configurator moved by itself after the last choice, said in words («Capacidad cambió a 512 GB:
+   * 128 GB no está disponible en Rojo.»); `null` when nothing moved.
+   */
+  adjusted: string | null;
   /** Adds one device of the chosen variant; `onOrder` asks the supplier for it. */
   add: (onOrder: boolean) => Promise<void>;
   busy: boolean;
   status: ConfiguratorStatus;
   /** DC3: the shelf ran out while the buyer looked, and this offer covers it. */
   offer: OnOrder | null;
+  /** Something can be bought: own stock, or (DC3, D-D-2) a purchasable supplier offer. */
   available: boolean;
   /** DC3: no own device, but an offer covers it. */
   onOrder: OnOrder | null;
@@ -219,14 +279,41 @@ export function useNewLineConfigurator(
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<ConfiguratorStatus>(null);
   const [offer, setOffer] = useState<OnOrder | null>(null);
+  const [adjusted, setAdjusted] = useState<string | null>(null);
+  // Review of #373: what the buyer chose for each attribute (the first choice counts), so browsing colours brings the
+  // capacity they had back as soon as it exists again.
+  const [preferred, setPreferred] = useState<Selection>(() => state.selection);
 
   const variant = matchVariant(variants, attributes, selection);
   const gallery = variantGallery(model, variant);
+  const imagePending = variant !== null && gallery.length === 0;
+  const colourOption = variant ? colourOptionOf(variant, colourAttributeIds(model)) : undefined;
+  // No colour option: one constant key, so a capacity change on a colourless model keeps its (same) cover on screen.
+  const finishKey = variant ? (colourOption != null ? `colour:${colourOption}` : "none") : null;
   const imageIndex = chosenImage ?? Math.max(0, gallery.findIndex((image) => image.is_primary));
   const shown = gallery[imageIndex] ?? gallery[0] ?? null;
 
+  /**
+   * CATALOG-REFERENCE-01 · PR D — any option a variant has can be chosen (`chooseOption`); what moved by itself to
+   * keep the combination real is said («Capacidad cambió a 512 GB: 128 GB no está disponible en Rojo.»).
+   */
   function choose(index: number, optionId: number) {
-    setState((current) => ({ ...current, selection: selectOption(variants, attributes, current.selection, index, optionId) }));
+    const key = String(attributes[index].id);
+    const wanted = { ...preferred, [key]: optionId };
+    const { selection: next, changed } = chooseOption(variants, attributes, selection, index, optionId, { preferred: wanted });
+    setState((current) => ({ ...current, selection: next }));
+    setPreferred(wanted);
+    const label = (attribute: ModelAttribute | undefined, id: number) =>
+      attribute?.options.find((option) => option.id === id)?.label ?? "";
+    const chosenLabel = label(attributes[index], optionId);
+    setAdjusted(changed.length ? changed.map((change) => {
+      const attribute = attributes.find((candidate) => candidate.id === change.attributeId);
+      // A label that already ends in a full stop («EE. UU.») does not get a second one.
+      const sentence = (text: string) => (text.endsWith(".") ? text : `${text}.`);
+      return change.reason === "restored"
+        ? sentence(`${attribute?.name ?? ""} vuelve a ${label(attribute, change.to)}`)
+        : sentence(`${attribute?.name ?? ""} cambió a ${label(attribute, change.to)}: ${label(attribute, change.from)} no está disponible en ${chosenLabel}`);
+    }).join(" ") : null);
     setChosenImage(null);
     setStatus(null);
     setOffer(null);
@@ -260,13 +347,14 @@ export function useNewLineConfigurator(
     }
   }
 
-  const available = Boolean(variant?.available);
   const onOrder = variant && isOnOrderVariant(variant) ? variant.on_order ?? null : null;
+  // D-D-2: a supplier's availability is buyable only through a purchasable offer, never as stock.
+  const available = variant ? (variant.availability === "supplier" ? onOrder !== null : Boolean(variant.available)) : false;
   const overStock = variant && !onOrder && variant.availability === "own_stock" ? overStockOffer(variant.on_order) : null;
 
   return {
-    attributes, variants, selection, variant, gallery, imageIndex, shown,
-    showImage: setChosenImage, choose, add, busy, status, offer, available, onOrder, overStock,
+    attributes, variants, selection, variant, gallery, imagePending, finishKey, imageIndex, shown,
+    showImage: setChosenImage, choose, preferred, adjusted, add, busy, status, offer, available, onOrder, overStock,
   };
 }
 

@@ -3,6 +3,39 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-20 — Catálogo maestro de iPhone (PR A, en rama)
+
+**Added**
+
+- Catálogo de referencia de iPhone con datos oficiales de Apple. Tiene 55 modelos, desde el original hasta iPhone 18 Pro, 18 Pro Max y Duo, con capacidades, colores en inglés y español, SIM por región y números de modelo. Cada modelo indica su fuente y cuán completo está.
+- Un validador revisa el archivo en cada cambio. Si encuentra precios, stock, imágenes o fuentes que no son oficiales, lo rechaza.
+- (PR B) El catálogo de referencia se carga a la plataforma con `load_reference_catalog` (con simulación) y cada empresa puede importar los modelos que elija: quedan ocultos, con sus capacidades, colores, SIM y regiones propios, sin variantes ni stock. Un color renombrado por la tienda sigue renombrado al reimportar.
+- (PR B) Un modelo puede excluir combinaciones imposibles (por ejemplo, una SIM que no existe en una región): no se pueden crear y el panel no las ofrece.
+- (PR C) Cada color de un modelo tiene su propia galería: se sube una vez y la muestran todas las variantes de ese color. Al cambiar de color en la ficha cambian las fotos.
+- (PR C) Cada imagen guarda de dónde sale (foto propia, material autorizado por un proveedor, banco con licencia o recurso demostrativo), su licencia y quién la verificó. Sin origen no se sube una foto de acabado.
+- (PR C) El informe de imágenes cuenta los colores sin foto y las imágenes sin origen o sin licencia verificada.
+- (PR D) La ficha pública de un modelo tiene el configurador del Manual V4 dentro de su bloque, en claro y en oscuro; el resto de la tienda sigue igual.
+- (PR D) Un enlace con `?variante=` abre la ficha con esa opción elegida y la dirección cambia al elegir otra, sin recargar.
+- (PR E) Nueva pantalla «Catálogo de referencia» en Productos › Modelos: se eligen los modelos, se ve qué hará la importación (nuevo, se reutiliza, conflicto o pendiente de revisión) y se importan ocultos. Un modelo con datos incompletos pide aprobación.
+- (PR E) En cada modelo, «Imágenes por acabado»: fotos por color con su origen, licencia, texto alternativo, principal y orden; la licencia revisada dice quién la revisó.
+- (PR E) Un modelo se puede destacar (sale primero en la lista de la tienda) y ordenar sus colores y demás opciones en su ficha.
+- (PR E) «Configuración comercial» resume en el modelo lo que mostrará la tienda y lo que falta, con un enlace a cada sección. El costo de los proveedores sólo se ve con permiso de costos.
+
+**Changed**
+
+- (PR C) Una opción sin foto propia ni de su color muestra «Imagen pendiente», nunca la foto de otro color ni la portada del modelo. Un recurso demostrativo se rotula «Imagen referencial».
+- (PR D) Se puede elegir un color que no existe en la capacidad elegida: la capacidad cambia a la más cercana y la ficha lo avisa.
+- (PR D) Al cambiar de color, la foto nueva aparece sobre la anterior cuando ya cargó, sin quedar en blanco ni mover la página.
+- (PR D) «Bajo pedido» sólo aparece si hay una oferta que se puede comprar, y el plazo de entrega sólo si se conoce.
+
+**Fixed**
+
+- (PR D) En escritorio, el resumen de la elección ya no tapa los colores en pantallas bajas.
+- (PR D) Al cambiar de color nunca se ve, ni un instante, la foto del color anterior.
+- (PR D) Volver con «Atrás» abre la opción que dice la dirección, y un enlace compartido con `?variante=` muestra la foto de esa opción.
+- (PR D) Recorrer los colores ya no cambia la capacidad elegida: vuelve en cuanto el color la tiene.
+- (PR D) En escritorio, la foto fija ya no queda debajo de la cabecera.
+
 ## 2026-11-19 — Borde de la tienda listo para el CRM (en PR)
 
 **Fixed**

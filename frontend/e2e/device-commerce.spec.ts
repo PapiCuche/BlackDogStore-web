@@ -20,6 +20,9 @@ import { test, expect, type Page, type Request } from "@playwright/test";
  * `E2E_MOCKED_MODEL_PREFIX=equipo-e2e-`: para los slugs con ese prefijo, y
  * nunca en un build de producción, «no existe» cuenta como «no leído» y el
  * navegador lee el modelo (el mock), como antes (`app/lib/e2e-mocked-models.ts`).
+ *
+ * CATALOG-REFERENCE-01 · PR D — la ficha pública es el configurador V4 en su bloque: la condición es un grupo de
+ * radios, el resumen dice la disponibilidad y el seminuevo se elige en la lista y se compra desde el resumen.
  */
 
 const MOCKED_PREFIX = "equipo-e2e-";
@@ -103,7 +106,8 @@ async function mockApi(page: Page) {
   return cartWrites;
 }
 
-const price = (page: Page) => page.getByTestId("model-price");
+const price = (page: Page) => page.getByTestId("v4-price");
+const availability = (page: Page) => page.getByTestId("v4-summary").locator("dt", { hasText: "Disponibilidad" }).locator("+ dd");
 
 /** Opens the mocked model's page; a 404 means `next dev` was started without the E2E prefix. */
 async function openModel(page: Page) {
@@ -117,7 +121,8 @@ test.describe("DC2 · página de modelo", () => {
     await openModel(page);
 
     await expect(page.getByRole("heading", { level: 1, name: "Equipo E2E" })).toBeVisible();
-    await expect(page.getByRole("tab", { name: LINE_NEW })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("radiogroup", { name: "Condición" }).getByRole("radio", { name: LINE_NEW }))
+      .toHaveAttribute("aria-checked", "true");
     await expect(price(page)).toHaveText("S/ 3999.00");
 
     const capacity = page.getByRole("radiogroup", { name: "Capacidad" });
@@ -133,7 +138,7 @@ test.describe("DC2 · página de modelo", () => {
     await expect(blanco).not.toHaveAttribute("aria-disabled", "true");
     await blanco.click();
     await expect(blanco).toHaveAttribute("aria-checked", "true");
-    await expect(page.getByTestId("model-availability")).toHaveText("Agotado");
+    await expect(availability(page)).toHaveText("Agotado");
     await expect(page.getByRole("button", { name: "Agotado" })).toBeDisabled();
     await colour.getByRole("radio", { name: "Azul" }).click();
     await expect(colour.getByRole("radio", { name: "Azul" })).toHaveAttribute("aria-checked", "true");
@@ -159,17 +164,16 @@ test.describe("DC2 · página de modelo", () => {
     expect(body).not.toHaveProperty("unit");
   });
 
-  test("un seminuevo sin lectura de batería dice «no informado», y comprarlo manda ese equipo", async ({ page }) => {
+  test("un seminuevo sin lectura de batería no inventa un número, y comprarlo manda ese equipo", async ({ page }) => {
     const writes = await mockApi(page);
     await openModel(page);
-    await page.getByRole("tab", { name: LINE_USED }).click();
+    await page.getByRole("radiogroup", { name: "Condición" }).getByRole("radio", { name: LINE_USED }).click();
 
-    const card = page.getByRole("article", { name: "128 GB · Azul" });
-    await expect(card.getByText("Batería: no informado")).toBeVisible();
-    await expect(card.getByText("IMEI termina en 1234")).toBeVisible();
-    await expect(card).not.toContainText(/Batería: \d/);
+    const summary = page.getByTestId("v4-summary");
+    await expect(summary.getByText("IMEI termina en 1234")).toBeVisible();
+    await expect(page.locator("body")).not.toContainText(/Batería: \d/);
 
-    await card.getByRole("button", { name: "Comprar este equipo" }).click();
+    await summary.getByRole("button", { name: "Comprar este equipo" }).click();
     await expect(page.getByRole("status")).toContainText("Equipo agregado al carrito");
     expect(writes).toHaveLength(1);
     expect(writes[0].postDataJSON()).toMatchObject({ product: 52, quantity: 1, unit: USED_UNIT });

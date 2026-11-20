@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
 import CartPage from '@/app/cart/page';
 import { CartItemCard, isCartLineSellable } from '@/app/components/CartItemCard';
@@ -33,6 +33,8 @@ beforeEach(() => {
   reads.mockImplementation(() => Promise.resolve(reply([])));
   global.fetch = reads as unknown as typeof fetch;
   window.localStorage.clear();
+  // PR D: the page writes `?variante=` and reads it back when the server did not read the model: a clean address.
+  window.history.replaceState(null, '', '/');
 });
 
 const bodyOf = (call: number) => JSON.parse(String(send.mock.calls[call][1]?.body));
@@ -106,8 +108,10 @@ describe('página de un modelo', () => {
     await renderModel(withSupplierVariant());
     fireEvent.click(screen.getByRole('radio', { name: '256 GB' }));
     fireEvent.click(screen.getByRole('radio', { name: 'Blanco' }));
-    expect(screen.getByTestId('model-availability')).toHaveTextContent('Bajo pedido — entrega en 7 días');
-    expect(screen.getByTestId('model-price')).toHaveTextContent('S/ 4699.00');
+    const summary = screen.getByTestId('v4-summary');
+    expect(within(summary).getByText('Disponibilidad', { selector: 'dt' }).nextElementSibling)
+      .toHaveTextContent('Bajo pedido — entrega en 7 días');
+    expect(screen.getByTestId('v4-price')).toHaveTextContent('S/ 4699.00');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Pedir bajo pedido' })); });
     const body = bodyOf(0);
     expect(body).toMatchObject({ product: 44, quantity: 1, on_order: true });
@@ -205,7 +209,7 @@ describe('pedir al proveedor aunque haya stock', () => {
 
     it('con `over_stock`: el principal sin `on_order`, la opción con `on_order: true` y sin equipo', async () => {
       await renderModel(true);
-      expect(screen.getByTestId('model-price')).toHaveTextContent('S/ 3999.00');
+      expect(screen.getByTestId('v4-price')).toHaveTextContent('S/ 3999.00');
       expect(screen.getByTestId('over-stock-offer'))
         .toHaveTextContent('Se despacha desde el proveedor: entrega en 8 días · S/ 4100.00 c/u');
       await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Agregar al carrito' })); });

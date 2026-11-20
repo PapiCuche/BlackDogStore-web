@@ -1018,8 +1018,9 @@ class PublicContractWithRolesTest(RolesShop, TestCase):
         # D1 (2026-11-16): the closed role vocabulary is public; the palette and the normalized name never are.
         self.assertEqual([a['role'] for a in body['attributes']], ['capacity', 'color', 'sim', 'region'])
         full = next(v for v in body['variants'] if v['product_id'] == self.full.pk)
-        self.assertEqual(sorted(full), ['availability', 'available', 'image_url', 'images', 'name', 'on_order',
-                                        'options', 'price', 'product_id', 'sells_by_unit', 'slug'])
+        # PR C: `gallery` (what the variant shows) and `image_pending` (none of its own nor of its finish).
+        self.assertEqual(sorted(full), ['availability', 'available', 'gallery', 'image_pending', 'image_url', 'images',
+                                        'name', 'on_order', 'options', 'price', 'product_id', 'sells_by_unit', 'slug'])
         self.assertEqual(full['options'], {str(self.capacity.pk): self.gb256.pk, str(self.colour.pk): self.blue.pk,
                                            str(self.sim.pk): self.esim.pk, str(self.region.pk): self.lla.pk})
         text = str(body)

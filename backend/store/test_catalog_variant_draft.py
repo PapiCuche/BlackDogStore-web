@@ -679,8 +679,11 @@ class PayloadsAndExportsTest(DraftShop, TestCase):
         after = public.get(f'/api/catalog/models/{self.model.slug}/').json()
         after.pop('as_of')
         self.assertEqual(after, before)
+        # CATALOG-REFERENCE-01 · PR C: `image_pending` (a variant without pictures) is a public key of its own; any
+        # other «pending» would still be a draft leaking.
+        text = str(after).replace("'image_pending'", '')
         for word in ('draft', 'pending', 'sale_enabled', 'palette'):
-            self.assertNotIn(word, str(after))
+            self.assertNotIn(word, text)
         listing = public.get('/api/catalog/models/').json()
         self.assertEqual(sorted(listing['results'][0]), ['category', 'from_price', 'has_new', 'has_used', 'image_url',
                                                          'name', 'slug', 'sold_out'])

@@ -167,9 +167,11 @@ describe('modelGroupJsonLd', () => {
 
   it('la foto de una variante es absoluta; una dirección que no es https ni relativa se descarta', () => {
     const model = modelWithSupply('equipo-x');
-    model.variants[0].image_url = '/media/azul.png';
+    // PR D (review of #373): only a picture uploaded from the panel is published as the product's.
+    const managed = `/api/storefront/images/${'a'.repeat(32)}`;
+    model.variants[0].image_url = managed;
     const [first, second] = modelGroupJsonLd(model, ORIGIN).hasVariant as Record<string, unknown>[];
-    expect(first.image).toEqual([`${ORIGIN}/media/azul.png`]);
+    expect(first.image).toEqual([`${ORIGIN}${managed}`]);
     // «http://localhost/…» (la del fixture) no se publica como imagen.
     expect(second).not.toHaveProperty('image');
   });

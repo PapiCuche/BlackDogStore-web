@@ -1,6 +1,9 @@
 from rest_framework.routers import DefaultRouter
 from . import supply_alerts
 from . import count_views
+from .finish_media_views import (
+    AdminModelFinishImageDetailView, AdminModelFinishImageListView, AdminModelFinishImageOrderView,
+)
 from .inventory_ai_views import AdminInventoryAISettingsView
 from .text_preview_views import (
     AdminCatalogProposalApplyView, AdminCatalogProposalView, AdminTextPreviewMatchView,
@@ -195,6 +198,10 @@ from .device_catalog_views import (
     AdminProductEnableSaleView,
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
 )
+from .catalog_reference_views import (
+    AdminReferenceApplyView, AdminReferenceModelListView, AdminReferencePreviewView,
+)
+from .catalog_presentation_views import AdminModelCommercialView, AdminModelOptionOrderView
 from .registration_views import AdminProductRegisterView
 from .external_receipt_views import AdminOrderExternalReceiptView, AdminOrderExternalReceiptVoidView
 from .receipt_views import InventoryReceiptConfirmView, InventoryReceiptDraftView, InventoryReceiptPreviewView
@@ -353,10 +360,22 @@ urlpatterns = [
          name='admin-catalog-models-bulk-visibility'),
     path('admin/catalog/models/<int:pk>/', AdminModelDetailView.as_view(), name='admin-catalog-model'),
     path('admin/catalog/models/<int:pk>/palette/', AdminModelPaletteView.as_view(), name='admin-catalog-model-palette'),
+    # CATALOG-REFERENCE-01 · PR E — the model's own order of its options, and its «Configuración comercial».
+    path('admin/catalog/models/<int:pk>/option-order/', AdminModelOptionOrderView.as_view(),
+         name='admin-catalog-model-option-order'),
+    path('admin/catalog/models/<int:pk>/commercial/', AdminModelCommercialView.as_view(),
+         name='admin-catalog-model-commercial'),
     # P2 · F3 — accessories that fit a model, and the company's accessories to choose from.
     path('admin/catalog/models/<int:pk>/accessories/', AdminModelAccessoriesView.as_view(),
          name='admin-catalog-model-accessories'),
     path('admin/catalog/accessories/', AdminAccessoryCandidatesView.as_view(), name='admin-catalog-accessories'),
+    # CATALOG-REFERENCE-01 · PR C — the pictures of each finish (model + colour), with their provenance.
+    path('admin/catalog/models/<int:pk>/finish-images/', AdminModelFinishImageListView.as_view(),
+         name='admin-catalog-model-finish-images'),
+    path('admin/catalog/models/<int:pk>/finish-images/order/', AdminModelFinishImageOrderView.as_view(),
+         name='admin-catalog-model-finish-images-order'),
+    path('admin/catalog/models/<int:pk>/finish-images/<int:image_id>/', AdminModelFinishImageDetailView.as_view(),
+         name='admin-catalog-model-finish-image'),
     path('admin/catalog/image-sources/', AdminCatalogImageSourcesView.as_view(),
          name='admin-catalog-image-sources'),
     # A1b-2: a variant born from the palette matrix, and its one commercial transition.
@@ -379,6 +398,12 @@ urlpatterns = [
     path('admin/catalog/readiness/', AdminCatalogReadinessView.as_view(), name='admin-catalog-readiness'),
     path('admin/catalog/palette-suggestions/', AdminPaletteSuggestionsView.as_view(),
          name='admin-catalog-palette-suggestions'),
+    # CATALOG-REFERENCE-01 · PR B — the manufacturers' reference catalogue, imported into one company.
+    path('admin/catalog/reference/models/', AdminReferenceModelListView.as_view(),
+         name='admin-catalog-reference-models'),
+    path('admin/catalog/reference/preview/', AdminReferencePreviewView.as_view(),
+         name='admin-catalog-reference-preview'),
+    path('admin/catalog/reference/apply/', AdminReferenceApplyView.as_view(), name='admin-catalog-reference-apply'),
     # P2 · F5c — claims-control warnings (Manual V4 §21) while a shop text is typed. Read-only.
     path('admin/claims/check/', AdminClaimsCheckView.as_view(), name='admin-claims-check'),
     path('catalog/models/', PublicModelListView.as_view(), name='catalog-models'),

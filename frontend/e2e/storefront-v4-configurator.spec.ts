@@ -249,22 +249,25 @@ for (const viewport of VIEWPORTS) {
       await expect(price(page)).toHaveText("S/ 4499.00");
       await expect(announcement(page)).toHaveText(announced(VARIANTS[2].name, "4499.00", "En stock"));
 
-      // End → 512 GB: only Rojo exists there, the others are «no disponible» and cannot be chosen.
+      // End → 512 GB: only Rojo exists there; the colour re-fits to it.
       await page.keyboard.press("End");
       await expect(capacity.getByRole("radio", { name: "512 GB" })).toHaveAttribute("aria-checked", "true");
       await expect(price(page)).toHaveText("S/ 5499.00");
       const colour = group(page, /^Color/);
       await expect(colour.getByRole("radio", { name: "Rojo" })).toHaveAttribute("aria-checked", "true");
       await expect(colour).toHaveAccessibleName(/Rojo/);
-      const azulGone = colour.getByRole("radio", { name: "Azul, no disponible" });
-      await expect(azulGone).toHaveAttribute("aria-disabled", "true");
-      // Playwright treats aria-disabled as disabled: force the press a pointer user can still make.
-      await azulGone.click({ force: true });
-      await expect(colour.getByRole("radio", { name: "Rojo" })).toHaveAttribute("aria-checked", "true");
-      await expect(price(page)).toHaveText("S/ 5499.00");
+      // CATALOG-REFERENCE-01 · PR D: Azul does not exist in 512 GB but can be chosen — the capacity moves to the
+      // nearest one with Azul (256 GB) and the page says so, visibly and in the live region.
+      const azul = colour.getByRole("radio", { name: "Azul" });
+      await expect(azul).not.toHaveAttribute("aria-disabled", "true");
+      await azul.click();
+      await expect(capacity.getByRole("radio", { name: "256 GB" })).toHaveAttribute("aria-checked", "true");
+      await expect(price(page)).toHaveText("S/ 4499.00");
+      await expect(page.getByTestId("v4-choice-adjusted")).toHaveText("Capacidad cambió a 256 GB: 512 GB no está disponible en Azul.");
+      await expect(announcement(page)).toContainText("Capacidad cambió a 256 GB");
 
-      // Home → back to 128 GB; the colour re-fits to the first available one.
-      await capacity.getByRole("radio", { name: "512 GB" }).focus();
+      // Home → back to 128 GB; Azul exists there and is kept.
+      await capacity.getByRole("radio", { name: "256 GB" }).focus();
       await page.keyboard.press("Home");
       await expect(capacity.getByRole("radio", { name: "128 GB" })).toHaveAttribute("aria-checked", "true");
       await expect(colour.getByRole("radio", { name: "Azul" })).toHaveAttribute("aria-checked", "true");
@@ -278,10 +281,16 @@ for (const viewport of VIEWPORTS) {
       await expect(colour).toHaveAccessibleName(/Blanco/);
       // Blanco 128 GB has no panel photo: the model's supplier picture, said to be one.
       await expect(gallery(page).locator(".v4-image-label")).toHaveText("Imagen referencial");
-      await expect(colour.getByRole("radio", { name: "Rojo, no disponible" })).toHaveAttribute("aria-disabled", "true");
+      // PR D: Rojo (only in 512 GB) is reachable from the keyboard too, and takes the capacity with it.
+      await page.keyboard.press("ArrowRight");
+      await expect(colour.getByRole("radio", { name: "Rojo" })).toBeFocused();
+      await expect(capacity.getByRole("radio", { name: "512 GB" })).toHaveAttribute("aria-checked", "true");
+      // Wraps to Azul (back to 256 GB, the nearest with it), then the capacity back to 128 GB.
       await page.keyboard.press("ArrowRight");
       await expect(colour.getByRole("radio", { name: "Azul" })).toBeFocused();
       await expect(colour.getByRole("radio", { name: "Azul" })).toHaveAttribute("aria-checked", "true");
+      await capacity.getByRole("radio", { name: "128 GB" }).click();
+      await expect(price(page)).toHaveText("S/ 3999.00");
       await expect(gallery(page).locator(".v4-image-label")).toHaveCount(0);
 
       // --- SIM and region: shown because the variants differ by them -------------------------------------------
@@ -290,14 +299,22 @@ for (const viewport of VIEWPORTS) {
       await sim.getByRole("radio", { name: "Física + eSIM" }).click();
       await expect(price(page)).toHaveText("S/ 3799.00");
       await expect(region.getByRole("radio", { name: "Japón" })).toHaveAttribute("aria-checked", "true");
-      await expect(region.getByRole("radio", { name: "EE. UU., no disponible" })).toHaveAttribute("aria-disabled", "true");
-      await expect(announcement(page)).toHaveText(announced(VARIANTS[5].name, "3799.00", "En stock"));
+      // PR D: EE. UU. does not exist with «Física + eSIM», but choosing it moves the SIM back: it is not disabled.
+      await expect(region.getByRole("radio", { name: "EE. UU." })).not.toHaveAttribute("aria-disabled", "true");
+      // PR D: what moved by itself is said first.
+      await expect(announcement(page)).toHaveText(
+        `Región cambió a Japón: EE. UU. no está disponible en Física + eSIM. ${announced(VARIANTS[5].name, "3799.00", "En stock")}`);
 
       await sim.getByRole("radio", { name: "eSIM", exact: true }).click();
-      // Japón still exists with eSIM, so it is kept.
+      // Review of #373: the region the buyer had (EE. UU.) exists again with eSIM, so it comes back, and it is said.
+      await expect(region.getByRole("radio", { name: "EE. UU." })).toHaveAttribute("aria-checked", "true");
+      await expect(price(page)).toHaveText("S/ 3999.00");
+      await expect(page.getByTestId("v4-choice-adjusted")).toHaveText("Región vuelve a EE. UU.");
+      // Chosen by hand with the arrows, Japón stays with eSIM.
+      await region.getByRole("radio", { name: "EE. UU." }).focus();
+      await page.keyboard.press("ArrowRight");
       await expect(region.getByRole("radio", { name: "Japón" })).toHaveAttribute("aria-checked", "true");
       await expect(price(page)).toHaveText("S/ 3899.00");
-      await region.getByRole("radio", { name: "Japón" }).focus();
       await page.keyboard.press("ArrowLeft");
       await expect(region.getByRole("radio", { name: "EE. UU." })).toHaveAttribute("aria-checked", "true");
       await expect(price(page)).toHaveText("S/ 3999.00");

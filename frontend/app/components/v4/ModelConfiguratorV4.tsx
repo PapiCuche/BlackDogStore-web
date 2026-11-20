@@ -32,8 +32,11 @@
  */
 
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { ImagePending } from "../ImagePending";
 import { ProductImage } from "../ProductImage";
+import { CrossfadeStage } from "./CrossfadeStage";
 import { OnOrderOfferPrompt, OverStockOnOrderOption } from "../OnOrderOffer";
 import { RichText } from "../RichText";
 import { useStorefront } from "../StorefrontProvider";
@@ -44,10 +47,9 @@ import { formatMoney } from "../../lib/format";
 import {
   SOLD_OUT_LABEL,
   availabilityLabel,
+  choiceOutcome,
   hasPicker,
   imeiHintText,
-  isOptionAvailable,
-  isOptionSelectable,
   optionsText,
   type CatalogModel,
   type ConditionLine,
@@ -63,6 +65,7 @@ import {
   useNewLineConfigurator,
   useUsedLineConfigurator,
   useVariantInUrl,
+  VARIANT_PARAM,
   type ConfiguratorStatus,
 } from "../../lib/model-configurator";
 
@@ -163,24 +166,25 @@ function ChipGroup({
 }
 
 function AttributeChips({
-  attribute, index, attributes, variants, selection, onSelect,
+  attribute, index, attributes, variants, selection, preferred, onSelect,
 }: {
   attribute: ModelAttribute;
   index: number;
   attributes: ModelAttribute[];
   variants: Variant[];
   selection: Selection;
+  /** The buyer's remembered choices: the same ones the press uses, so the chip predicts exactly where it lands. */
+  preferred: Selection;
   onSelect: (index: number, optionId: number) => void;
 }) {
   const chosenId = selection[String(attribute.id)];
   const isColor = attribute.kind === "color";
+  // PR D: what pressing it leads to (`chooseOption`): a buyable variant, a sold-out one, or none at all.
   const chips: Chip[] = attribute.options.map((option) => {
-    const selectable = isOptionSelectable(variants, attributes, selection, index, option.id);
-    const available = selectable && isOptionAvailable(variants, attributes, selection, index, option.id);
     return {
       key: String(option.id),
       label: option.label,
-      state: !selectable ? "unavailable" : available ? "available" : "sold-out",
+      state: choiceOutcome(variants, attributes, selection, index, option.id, { preferred }),
       ...(isColor ? { swatch: option.swatch_hex } : {}),
     };
   });
@@ -200,7 +204,7 @@ function AttributeChips({
 // Gallery
 // ---------------------------------------------------------------------------
 
-type Picture = { url: string; alt_text: string };
+type Picture = { url: string; alt_text: string; is_demo?: boolean };
 
 /**
  * P2 · F2 — how wide the stage really is (the LCP image): the whole screen
@@ -210,7 +214,7 @@ type Picture = { url: string; alt_text: string };
 const GALLERY_SIZES = "(min-width: 1280px) 610px, (min-width: 1024px) 47vw, 100vw";
 
 function Gallery({
-  pictures, index, onIndex, source, alt, emptyText, initial,
+  pictures, index, onIndex, source, alt, emptyText, initial, pending = false, finishKey = null,
 }: {
   pictures: Picture[];
   index: number;
@@ -220,31 +224,38 @@ function Gallery({
   /** Said when there is no picture; without it, the model's initial is drawn. */
   emptyText?: string;
   initial: string;
+  /** PR C: the chosen variant and its finish have no picture: the neutral marker, in the photo's own box. */
+  pending?: boolean;
+  /** PR D: the finish the pictures belong to; another one never cross-fades from the previous colour. */
+  finishKey?: string | null;
 }) {
   const shown = pictures[index] ?? pictures[0] ?? null;
-  const caption = shown ? photoLabel(shown.url, source) : null;
+  const caption = shown ? photoLabel(shown.url, source, shown.is_demo) : null;
   return (
     <section data-testid="v4-gallery" aria-label="Fotos">
       <div className="v4-stage">
-        {shown ? (
-          <div className="relative aspect-square sm:aspect-[5/4]">
-            <ProductImage
-              key={shown.url}
-              src={shown.url}
-              alt={shown.alt_text || alt}
-              className="object-contain p-8 sm:p-14"
-              sizes={GALLERY_SIZES}
-              priority
-              fetchPriority="high"
-            />
-            {caption ? <span className="v4-image-label">{caption}</span> : null}
-          </div>
-        ) : (
-          <div className="flex aspect-square flex-col items-center justify-center gap-4 px-6 text-center sm:aspect-[5/4]">
-            <span aria-hidden="true" className="text-6xl font-bold text-[color:var(--v4-line-strong)]">{initial}</span>
-            {emptyText ? <p className="v4-small">{emptyText}</p> : null}
-          </div>
-        )}
+        {/* PR D: ONE box with a fixed aspect ratio whatever it holds (photo, «Imagen pendiente» or the initial), so
+            a choice never moves the page; the photo cross-fades inside it (`CrossfadeStage`). */}
+        <div data-testid="v4-stage" className="relative aspect-square sm:aspect-[5/4]">
+          {/* Mounted while there is a photo or not: a pending finish empties it at once, never keeping a colour. */}
+          <CrossfadeStage
+            picture={pending ? null : shown}
+            alt={alt}
+            sizes={GALLERY_SIZES}
+            imageClassName="object-contain p-8 sm:p-14"
+            finishKey={finishKey}
+          />
+          {shown ? (
+            caption ? <span className="v4-image-label">{caption}</span> : null
+          ) : pending ? (
+            <ImagePending className="text-[color:var(--v4-muted)]" />
+          ) : (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 text-center">
+              <span aria-hidden="true" className="text-6xl font-bold text-[color:var(--v4-line-strong)]">{initial}</span>
+              {emptyText ? <p className="v4-small">{emptyText}</p> : null}
+            </div>
+          )}
+        </div>
       </div>
       {pictures.length > 1 ? (
         // V4-QA: the padding keeps the focus ring (2 px + 3 px offset) inside the scroller, which would clip it; the
@@ -346,7 +357,7 @@ const GRID = "grid gap-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:grid-
 function Slots({ gallery, children }: { gallery: ReactNode; children: ReactNode }) {
   return (
     <>
-      <div className="min-w-0 lg:sticky lg:top-8 lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:self-start">{gallery}</div>
+      <div className="min-w-0 lg:sticky lg:top-[calc(var(--v4-sticky-offset,0px)+2rem)] lg:col-start-1 lg:row-span-2 lg:row-start-1 lg:self-start">{gallery}</div>
       <div className="min-w-0 lg:col-start-2 lg:row-start-2">{children}</div>
     </>
   );
@@ -397,6 +408,8 @@ function NewLineV4({
           source="catalog"
           alt={variant?.name || model.name}
           initial={initialOf(model)}
+          pending={c.imagePending}
+          finishKey={c.finishKey}
         />
       }
     >
@@ -410,10 +423,16 @@ function NewLineV4({
             attributes={c.attributes}
             variants={c.variants}
             selection={c.selection}
+            preferred={c.preferred}
             onSelect={c.choose}
           />
         ) : null))}
       </div>
+      {/* PR D: what the configurator moved by itself to keep the choice real, said where the eye is. Not a live region:
+          the announcement below says it once, with the new price. */}
+      {c.adjusted ? (
+        <p data-testid="v4-choice-adjusted" className="v4-small v4-adjusted mt-6">{c.adjusted}</p>
+      ) : null}
 
       <section data-testid="v4-summary" aria-label="Tu elección" className="v4-summary mt-10">
         <dl className="grid grid-cols-2 gap-x-6 gap-y-4">
@@ -429,7 +448,9 @@ function NewLineV4({
           </p>
         </div>
         <ChoiceAnnouncement
-          text={variant ? `${variant.name}: S/ ${formatMoney(c.onOrder ? c.onOrder.price : variant.price)}, ${availabilityLabel(variant)}` : ""}
+          text={variant
+            ? `${c.adjusted ? `${c.adjusted} ` : ""}${variant.name}: S/ ${formatMoney(c.onOrder ? c.onOrder.price : variant.price)}, ${availabilityLabel(variant)}`
+            : ""}
         />
         {c.onOrder ? (
           <p className="v4-small mt-2 leading-6">No lo tenemos en tienda ahora: lo pedimos para ti al confirmar tu compra.</p>
@@ -582,9 +603,14 @@ function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => 
 // ---------------------------------------------------------------------------
 
 export function ModelConfiguratorV4({
-  slug, initialLine, initialModel, initialVariant,
+  slug, initialLine, initialModel, initialVariant, catalogHref = "/v4",
 }: {
   slug: string;
+  /**
+   * CATALOG-REFERENCE-01 · PR D — where «Catálogo» leads: the V4 home in the preview (the default), the shop's
+   * catalogue (`/product`) on the public model page.
+   */
+  catalogHref?: string;
   initialLine?: string;
   /** P2 · F2: the server's read for this request — `null` is «no such model»; absent, the browser reads it. */
   initialModel?: CatalogModel | null;
@@ -597,7 +623,16 @@ export function ModelConfiguratorV4({
   const { model, error, reload } = useCatalogModel(slug, initialModel);
   const { offered, line, setLine } = useLineChoice(model, initialLine);
   // The last new variant chosen: switching to the used line and back starts from it, as the address says.
-  const [chosenVariant, setChosenVariant] = useState(initialVariant);
+  // PR D (review of #373): the ADDRESS's `?variante=` comes first. After a choice rewrote it (`replaceState`), leaving
+  // and coming back with «Atrás» restores the page's first payload (its `initialVariant`) while the address names the
+  // variant the buyer had chosen. `useSearchParams` is the request's on the server and the address in the browser, so
+  // on a first load both agree with `initialVariant`. A slug that is not one of the model's variants is ignored; with
+  // no server read (no model yet) it is checked later, against the model, by `selectionForVariant`.
+  const fromAddress = useSearchParams()?.get(VARIANT_PARAM) ?? undefined;
+  const [chosenVariant, setChosenVariant] = useState(() => (
+    fromAddress && (!initialModel || (initialModel.variants ?? []).some((variant) => variant.slug === fromAddress))
+      ? fromAddress
+      : initialVariant));
 
   if (error && model === undefined) {
     return (
@@ -627,7 +662,7 @@ export function ModelConfiguratorV4({
       <div className="v4-page mx-auto max-w-3xl px-4 py-24 sm:px-6">
         <h1 className="v4-title">Modelo no encontrado</h1>
         <p className="v4-small mt-4 leading-6">El modelo no está disponible o la dirección ya no corresponde a uno publicado.</p>
-        <Link href="/v4" className="v4-link mt-8 inline-block">Ver catálogo</Link>
+        <Link href={catalogHref} className="v4-link mt-8 inline-block">Ver catálogo</Link>
       </div>
     );
   }
@@ -662,7 +697,7 @@ export function ModelConfiguratorV4({
         <nav aria-label="Ruta del modelo" className="v4-small mb-8 flex flex-wrap items-center gap-2">
           <Link href="/" className="hover:text-foreground">Inicio</Link>
           <span aria-hidden="true">/</span>
-          <Link href="/v4" className="hover:text-foreground">Catálogo</Link>
+          <Link href={catalogHref} className="hover:text-foreground">Catálogo</Link>
           {model.category ? (
             <>
               <span aria-hidden="true">/</span>

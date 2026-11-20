@@ -708,6 +708,10 @@ export function ModelPalettePanel({
                     {palette.summary.incomplete ? ` · ${palette.summary.incomplete} ${palette.summary.incomplete === 1 ? "incompleta" : "incompletas"}` : ""}
                   </p>
                 </div>
+                {/* PR E: the pairs the reference catalogue says do not exist (PR B); only a model with some sends them. */}
+                {palette.excluded_pairs?.length ? (
+                  <ExcludedPairs pairs={palette.excluded_pairs} attributes={palette.attributes} />
+                ) : null}
                 {palette.truncated ? (
                   <p role="note" className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs text-warning">
                     La paleta tiene más configuraciones de las que se muestran ({palette.combinations.length} de {palette.summary.combinations}).
@@ -828,5 +832,28 @@ export function ModelPalettePanel({
         ) : null}
       </div>
     </Panel>
+  );
+}
+
+/**
+ * CATALOG-REFERENCE-01 · PR E — the combinations this model does NOT have (SIM × región, say): the matrix never offers
+ * them and the server refuses a variant with one. Read-only: they come from the reference catalogue import.
+ */
+export function ExcludedPairs({ pairs, attributes }: { pairs: number[][]; attributes: AdminModelPalette["attributes"] }) {
+  const labels = new Map<number, string>();
+  for (const attribute of attributes) for (const option of attribute.options) labels.set(option.id, option.label);
+  const named = pairs.map((pair) => pair.map((id) => labels.get(id) ?? `#${id}`).join(" + "));
+  return (
+    <details className="rounded-lg border border-bd-border px-3 py-2 text-xs text-muted">
+      <summary className="min-h-[44px] cursor-pointer content-center font-semibold text-foreground">
+        {named.length === 1 ? "1 combinación que no existe" : `${named.length} combinaciones que no existen`}
+      </summary>
+      <p className="mt-1">Vienen del catálogo de referencia: no se ofrecen y no se puede crear una variante con ellas.</p>
+      <ul className="mt-2 flex flex-wrap gap-1.5" aria-label="Combinaciones que no existen">
+        {named.map((text) => (
+          <li key={text} className="rounded-full border border-bd-border px-2.5 py-1 text-foreground">{text}</li>
+        ))}
+      </ul>
+    </details>
   );
 }
