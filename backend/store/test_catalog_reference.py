@@ -190,6 +190,13 @@ class MalformedInputTest(SimpleTestCase):
                 del bad[field]
                 self.assertTrue(ref.validate(dataset(bad)))
 
+    def test_notes_are_a_text_or_a_list_of_texts(self):
+        self.assertEqual(ref.validate(dataset(model(notes='one'))), [])
+        self.assertEqual(ref.validate(dataset(model(notes=['one', 'two']))), [])
+        for bad in (5, ['one', 3], {'a': 1}):
+            with self.subTest(bad):
+                self.assertTrue(ref.validate(dataset(model(notes=bad))))
+
     def test_schema_version_must_be_the_integer_one(self):
         for version in (True, 1.0, '1'):
             self.assertTrue(ref.validate({**dataset(), 'schema_version': version}), version)

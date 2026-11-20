@@ -156,6 +156,10 @@ def _model_errors(m, hosts):
             if not _official(url, hosts):
                 errors.append(f'{where}: source {url!r} is not an https page of an official host')
 
+    notes = m.get('notes')
+    if notes is not None and not (isinstance(notes, str) or (isinstance(notes, list) and all(_text(x) for x in notes))):
+        errors.append(f'{where}: notes must be a text or a list of texts')
+
     missing = m.get('missing')
     if not isinstance(missing, list) or not all(_text(x) for x in missing):
         errors.append(f'{where}: missing must be a list of texts')

@@ -60,6 +60,13 @@ def _upsert(manager, lookup, values, counter):
     return row
 
 
+def _notes(value) -> str:
+    """The file may keep notes as one text or as a list of texts; the row keeps one text (lines), so a reload compares equal."""
+    if isinstance(value, (list, tuple)):
+        return '\n'.join(str(item) for item in value)
+    return value or ''
+
+
 def _model_values(data, model, position):
     entries = [{'key': e['key'], 'regions': e['regions'], 'config': e['config'],
                 'region_key': ref.region_key(e['regions'])} for e in model.get('sim') or []]
@@ -68,7 +75,7 @@ def _model_values(data, model, position):
         'line': model['line'], 'generation': model['generation'], 'announced': _date(model.get('announced')),
         'sort_order': position, 'completeness': model['completeness'], 'missing': list(model.get('missing') or []),
         'sources': list(model['sources']), 'verified_at': _date(model['verified_at']),
-        'dataset_version': data['dataset_version'], 'notes': model.get('notes') or '', 'sim_entries': entries,
+        'dataset_version': data['dataset_version'], 'notes': _notes(model.get('notes')), 'sim_entries': entries,
         'in_dataset': True,
     }
 
