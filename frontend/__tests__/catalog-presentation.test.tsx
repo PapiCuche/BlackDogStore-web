@@ -347,6 +347,63 @@ describe('Imágenes por acabado', () => {
     expect(await screen.findByText(/Sí, por Ana Ruiz el/)).toBeInTheDocument();
   });
 
+  it('una foto propia sin verificar no es «Sin verificar»: la verificación no aplica y no se ofrece', async () => {
+    // Fixture: imagen 1 = foto propia sin verificar; imagen 2 = demostrativa sin verificar.
+    await mountFinishes();
+    const black = screen.getByRole('listitem', { name: 'Negro' });
+    const own = within(black).getByRole('listitem', { name: 'Imagen 1 de Negro' });
+    expect(within(own).getByText('No aplica (foto propia)')).toHaveClass('text-muted');
+    expect(within(own).queryByText('Sin verificar')).not.toBeInTheDocument();
+    expect(within(own).queryByRole('checkbox', { name: /Licencia verificada/ })).not.toBeInTheDocument();
+    const demo = within(black).getByRole('listitem', { name: 'Imagen 2 de Negro' });
+    expect(within(demo).getByText('Sin verificar')).toBeInTheDocument();
+    expect(within(demo).getByRole('checkbox', { name: 'Licencia verificada: imagen 2 de Negro' })).toBeInTheDocument();
+  });
+
+  it('el foco: confirmar quitar va a «Sí, quitar» y cancelar vuelve a «Quitar»', async () => {
+    await mountFinishes();
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar la imagen 1 de Negro' }));
+    expect(screen.getByRole('button', { name: 'Sí, quitar' })).toHaveFocus();
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar' }));
+    expect(screen.getByRole('button', { name: 'Quitar la imagen 1 de Negro' })).toHaveFocus();
+  });
+
+  it('el foco: editar la procedencia va al primer campo; cancelar y guardar vuelven a «Editar procedencia»', async () => {
+    await mountFinishes();
+    fireEvent.click(screen.getByRole('button', { name: 'Editar procedencia: imagen 1 de Negro' }));
+    const form = screen.getByRole('form', { name: 'Procedencia de la imagen 1 de Negro' });
+    expect(within(form).getByLabelText('Origen de la imagen (obligatorio)')).toHaveFocus();
+    fireEvent.click(within(form).getByRole('button', { name: 'Cancelar' }));
+    expect(screen.getByRole('button', { name: 'Editar procedencia: imagen 1 de Negro' })).toHaveFocus();
+
+    handlers['PATCH /admin/catalog/models/5/finish-images/1/'] = () => reply(gallery[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Editar procedencia: imagen 1 de Negro' }));
+    fireEvent.change(screen.getByLabelText('Atribución (opcional)'), { target: { value: 'Foto: tienda' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar procedencia' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Editar procedencia: imagen 1 de Negro' })).toHaveFocus());
+    expect(writes.at(-1)?.body).toMatchObject({ attribution: 'Foto: tienda', source_kind: 'own_photo' });
+  });
+
+  it('el foco tras quitar: la imagen que ocupa su lugar o, si no queda ninguna, el color', async () => {
+    await mountFinishes();
+    handlers['DELETE /admin/catalog/models/5/finish-images/1/'] = () => {
+      gallery = gallery.filter((g) => g.id !== 1).map((g, index) => ({ ...g, sort_order: index, is_primary: index === 0 }));
+      return reply(null, 204);
+    };
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar la imagen 1 de Negro' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Sí, quitar' }));
+    await waitFor(() => expect(screen.getByRole('listitem', { name: 'Imagen 1 de Negro' })).toHaveFocus());
+    expect(screen.getByRole('listitem', { name: 'Imagen 1 de Negro' })).toHaveAttribute('data-image-id', '2');
+
+    handlers['DELETE /admin/catalog/models/5/finish-images/2/'] = () => {
+      gallery = [];
+      return reply(null, 204);
+    };
+    fireEvent.click(screen.getByRole('button', { name: 'Quitar la imagen 1 de Negro' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Sí, quitar' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: 'Negro' })).toHaveFocus());
+  });
+
   it('sin products.manage sólo se ve', async () => {
     await mountFinishes(false);
     expect(screen.queryByRole('button', { name: /^Subir imagen/ })).not.toBeInTheDocument();

@@ -58,13 +58,15 @@ const formatDate = (iso: string | null) => {
 // ---------------------------------------------------------------------------
 
 export function ProvenanceFields({
-  value, onChange, errors, kinds, disabled,
+  value, onChange, errors, kinds, disabled, firstFieldRef,
 }: {
   value: Provenance;
   onChange: (value: Provenance) => void;
   errors: Partial<Record<keyof Provenance, string>>;
   kinds: { value: SourceKind; label: string }[];
   disabled?: boolean;
+  /** The origin select, for a host that moves focus into the form when it opens. */
+  firstFieldRef?: React.Ref<HTMLSelectElement>;
 }) {
   const id = useId();
   const field = (name: keyof Provenance) => ({
@@ -81,6 +83,7 @@ export function ProvenanceFields({
       <div>
         <label htmlFor={`${id}-source_kind`} className="block text-xs text-muted">Origen de la imagen (obligatorio)</label>
         <select
+          ref={firstFieldRef}
           {...field("source_kind")}
           value={value.source_kind}
           disabled={disabled}
@@ -274,6 +277,22 @@ function ImageCard({
   const [editing, setEditing] = useState(false);
   const [provenance, setProvenance] = useState<Provenance>(EMPTY_PROVENANCE);
   const [errors, setErrors] = useState<Partial<Record<keyof Provenance, string>>>({});
+  // Review of #374 (a11y): opening or closing a step never drops focus to the start of the page.
+  const confirmYes = useRef<HTMLButtonElement>(null);
+  const removeButton = useRef<HTMLButtonElement>(null);
+  const editButton = useRef<HTMLButtonElement>(null);
+  const originField = useRef<HTMLSelectElement>(null);
+  const focusNext = useRef<"confirm" | "remove" | "edit" | "origin" | null>(null);
+  useEffect(() => {
+    const target = focusNext.current;
+    if (!target) return;
+    focusNext.current = null;
+    ({ confirm: confirmYes, remove: removeButton, edit: editButton, origin: originField })[target].current?.focus();
+  });
+
+  function openConfirm() { focusNext.current = "confirm"; setConfirming(true); }
+  function cancelConfirm() { focusNext.current = "remove"; setConfirming(false); }
+  function closeEditing() { focusNext.current = "edit"; setEditing(false); }
 
   function startEditing() {
     setProvenance({
@@ -281,6 +300,7 @@ function ImageCard({
       license: image.source.license, source_url: image.source.url, attribution: image.source.attribution,
     });
     setErrors({});
+    focusNext.current = "origin";
     setEditing(true);
   }
 
@@ -293,12 +313,20 @@ function ImageCard({
       source_kind: provenance.source_kind as SourceKind, license: provenance.license,
       source_url: provenance.source_url, attribution: provenance.attribution,
     });
-    if (ok) setEditing(false);
+    if (ok) closeEditing();
   }
 
   const verified = image.source.license_verified;
+  // PR C: the shop's own photo never counts as an unverified licence (`catalog_image_sources`): nothing to check.
+  const ownPhoto = image.source.kind === "own_photo";
+  const positionLabel = `Imagen ${position} de ${colour}`;
   return (
-    <li data-image-id={image.id} className="flex min-w-0 flex-col rounded-xl border border-bd-border bg-background p-3">
+    <li
+      data-image-id={image.id}
+      tabIndex={-1}
+      aria-label={positionLabel}
+      className="flex min-w-0 flex-col rounded-xl border border-bd-border bg-background p-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+    >
       <div style={TRANSPARENCY_GRID_STYLE} className="relative flex aspect-[4/3] items-center justify-center overflow-hidden rounded-lg">
         {/* Imagen del propio tenant, de tamaño desconocido: no pasa por el optimizador. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -331,10 +359,10 @@ function ImageCard({
         ) : null}
         <div className="flex flex-wrap gap-x-1">
           <dt className="text-muted">Licencia verificada:</dt>
-          <dd className={verified ? "text-success" : "text-warning"}>
+          <dd className={verified ? "text-success" : ownPhoto ? "text-muted" : "text-warning"}>
             {verified
               ? `Sí${image.source.license_verified_by ? `, por ${image.source.license_verified_by}` : ""}${image.source.license_verified_at ? ` el ${formatDate(image.source.license_verified_at)}` : ""}`
-              : "Sin verificar"}
+              : ownPhoto ? "No aplica (foto propia)" : "Sin verificar"}
           </dd>
         </div>
         {image.source.is_demo ? (
@@ -360,6 +388,7 @@ function ImageCard({
               className={`mt-1 ${internalInputClass}`}
             />
           </label>
+          {ownPhoto && !verified ? null : (
           <label className={`flex items-center gap-2 text-xs text-foreground ${touch}`}>
             <input
               type="checkbox"
@@ -371,13 +400,14 @@ function ImageCard({
             />
             Revisé la licencia o la autorización
           </label>
+          )}
 
           {editing ? (
             <form onSubmit={saveProvenance} noValidate aria-label={`Procedencia de la ${name}`} className="space-y-3 rounded-lg border border-bd-border p-3">
-              <ProvenanceFields value={provenance} onChange={setProvenance} errors={errors} kinds={kinds} disabled={busy} />
+              <ProvenanceFields value={provenance} onChange={setProvenance} errors={errors} kinds={kinds} disabled={busy} firstFieldRef={originField} />
               <p className="text-xs text-muted">Cambiar la procedencia quita la verificación de la licencia.</p>
               <div className="flex flex-wrap justify-end gap-2">
-                <button type="button" className={smallButton} onClick={() => setEditing(false)} disabled={busy}>Cancelar</button>
+                <button type="button" className={smallButton} onClick={closeEditing} disabled={busy}>Cancelar</button>
                 <button type="submit" className={`${touch} ${internalPrimaryButtonClass} text-xs`} disabled={busy}>Guardar procedencia</button>
               </div>
             </form>
@@ -386,10 +416,10 @@ function ImageCard({
           {confirming ? (
             <div className="flex flex-wrap items-center gap-2 text-xs" role="group" aria-label={`Confirmar quitar la ${name}`}>
               <span className="text-foreground">¿Quitar esta imagen? La tienda dejará de mostrarla.</span>
-              <button type="button" onClick={() => { setConfirming(false); onRemove(); }} disabled={busy} className="min-h-[44px] rounded-lg border border-danger-border bg-danger-surface px-3 font-semibold text-danger">
+              <button ref={confirmYes} type="button" onClick={() => { setConfirming(false); onRemove(); }} disabled={busy} className="min-h-[44px] rounded-lg border border-danger-border bg-danger-surface px-3 font-semibold text-danger">
                 Sí, quitar
               </button>
-              <button type="button" onClick={() => setConfirming(false)} className="min-h-[44px] px-2 text-muted underline underline-offset-4">Cancelar</button>
+              <button type="button" onClick={cancelConfirm} className="min-h-[44px] px-2 text-muted underline underline-offset-4">Cancelar</button>
             </div>
           ) : (
             <div className="flex flex-wrap items-center gap-2">
@@ -405,11 +435,11 @@ function ImageCard({
                 </button>
               ) : null}
               {!editing ? (
-                <button type="button" aria-label={`Editar procedencia: ${name}`} disabled={busy} onClick={startEditing} className={smallButton}>
+                <button ref={editButton} type="button" aria-label={`Editar procedencia: ${name}`} disabled={busy} onClick={startEditing} className={smallButton}>
                   Editar procedencia
                 </button>
               ) : null}
-              <button type="button" aria-label={`Quitar la ${name}`} disabled={busy} onClick={() => setConfirming(true)} className="min-h-[44px] px-1 text-xs text-muted underline-offset-4 hover:text-danger hover:underline">
+              <button ref={removeButton} type="button" aria-label={`Quitar la ${name}`} disabled={busy} onClick={openConfirm} className="min-h-[44px] px-1 text-xs text-muted underline-offset-4 hover:text-danger hover:underline">
                 Quitar
               </button>
             </div>
@@ -439,6 +469,8 @@ export function FinishImagesManager({
   const [uploadingFor, setUploadingFor] = useState<number | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const focusAfter = useRef<{ imageId: number; move: "before" | "after" } | null>(null);
+  // Review of #374 (a11y): after a removal, the picture now in its place (or the one before), else the colour.
+  const focusAfterRemoval = useRef<{ colourId: number; index: number } | null>(null);
   const hostChanged = useRef(onChanged);
   useEffect(() => { hostChanged.current = onChanged; });
 
@@ -462,6 +494,16 @@ export function FinishImagesManager({
     const same = card.querySelector<HTMLButtonElement>(`[data-move="${wanted.move}"]`);
     const other = card.querySelector<HTMLButtonElement>(`[data-move="${wanted.move === "before" ? "after" : "before"}"]`);
     (same && !same.disabled ? same : other)?.focus();
+  }, [listing, busy]);
+
+  useEffect(() => {
+    const wanted = focusAfterRemoval.current;
+    if (!wanted || !root.current || busy !== null) return;
+    focusAfterRemoval.current = null;
+    const finish = root.current.querySelector<HTMLElement>(`[data-finish-id="${wanted.colourId}"]`);
+    const cards = finish ? Array.from(finish.querySelectorAll<HTMLElement>("[data-image-id]")) : [];
+    const card = cards[Math.min(wanted.index, cards.length - 1)];
+    (card ?? root.current.querySelector<HTMLElement>(`#acabado-${wanted.colourId}`))?.focus();
   }, [listing, busy]);
 
   const kinds = listing?.source_kinds?.length
@@ -530,7 +572,7 @@ export function FinishImagesManager({
               {finishes.map((finish) => {
                 const full = finish.images.length >= listing.max_per_colour;
                 return (
-                  <li key={finish.option.id} aria-labelledby={`acabado-${finish.option.id}`} className="min-w-0 rounded-xl border border-bd-border p-4">
+                  <li key={finish.option.id} data-finish-id={finish.option.id} aria-labelledby={`acabado-${finish.option.id}`} className="min-w-0 rounded-xl border border-bd-border p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex min-w-0 items-center gap-2">
                         <span
@@ -538,7 +580,7 @@ export function FinishImagesManager({
                           className="h-6 w-6 shrink-0 rounded-full border border-foreground/25"
                           style={{ backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(finish.option.swatch_hex) ? finish.option.swatch_hex : "transparent" }}
                         />
-                        <h3 id={`acabado-${finish.option.id}`} className="break-words text-sm font-semibold text-foreground">{finish.option.label}</h3>
+                        <h3 id={`acabado-${finish.option.id}`} tabIndex={-1} className="break-words text-sm font-semibold text-foreground focus:outline-none">{finish.option.label}</h3>
                         {finish.image_pending ? (
                           <span className="rounded-full border border-warning-border bg-warning-surface px-2.5 py-1 text-[11px] font-semibold text-warning">Imagen pendiente</span>
                         ) : (
@@ -595,7 +637,10 @@ export function FinishImagesManager({
                             busy={busy !== null}
                             onPatch={(data) => act(image.id, () => patchFinishImage(modelId, image.id, data, companyId), "Cambio guardado.")}
                             onMove={(step) => move(finish, index, step)}
-                            onRemove={() => void act(image.id, () => deleteFinishImage(modelId, image.id, companyId), `Imagen quitada de ${finish.option.label}.`)}
+                            onRemove={() => {
+                              focusAfterRemoval.current = { colourId: finish.option.id, index };
+                              void act(image.id, () => deleteFinishImage(modelId, image.id, companyId), `Imagen quitada de ${finish.option.label}.`);
+                            }}
                           />
                         ))}
                       </ul>
