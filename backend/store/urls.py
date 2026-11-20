@@ -1,6 +1,9 @@
 from rest_framework.routers import DefaultRouter
 from . import supply_alerts
 from . import count_views
+from .finish_media_views import (
+    AdminModelFinishImageDetailView, AdminModelFinishImageListView, AdminModelFinishImageOrderView,
+)
 from .inventory_ai_views import AdminInventoryAISettingsView
 from .text_preview_views import (
     AdminCatalogProposalApplyView, AdminCatalogProposalView, AdminTextPreviewMatchView,
@@ -360,6 +363,13 @@ urlpatterns = [
     path('admin/catalog/models/<int:pk>/accessories/', AdminModelAccessoriesView.as_view(),
          name='admin-catalog-model-accessories'),
     path('admin/catalog/accessories/', AdminAccessoryCandidatesView.as_view(), name='admin-catalog-accessories'),
+    # CATALOG-REFERENCE-01 · PR C — the pictures of each finish (model + colour), with their provenance.
+    path('admin/catalog/models/<int:pk>/finish-images/', AdminModelFinishImageListView.as_view(),
+         name='admin-catalog-model-finish-images'),
+    path('admin/catalog/models/<int:pk>/finish-images/order/', AdminModelFinishImageOrderView.as_view(),
+         name='admin-catalog-model-finish-images-order'),
+    path('admin/catalog/models/<int:pk>/finish-images/<int:image_id>/', AdminModelFinishImageDetailView.as_view(),
+         name='admin-catalog-model-finish-image'),
     path('admin/catalog/image-sources/', AdminCatalogImageSourcesView.as_view(),
          name='admin-catalog-image-sources'),
     # A1b-2: a variant born from the palette matrix, and its one commercial transition.

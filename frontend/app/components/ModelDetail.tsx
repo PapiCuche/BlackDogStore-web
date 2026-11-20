@@ -29,6 +29,7 @@
 
 import Link from "next/link";
 import { useRef } from "react";
+import { ImagePending } from "./ImagePending";
 import { ProductImage } from "./ProductImage";
 import { UsedUnitCard } from "./UsedUnitCard";
 import { VariantPicker } from "./VariantPicker";
@@ -37,6 +38,7 @@ import { OnOrderOfferPrompt, OverStockOnOrderOption } from "./OnOrderOffer";
 import { RichText } from "./RichText";
 import { SOLD_OUT_LABEL, availabilityLabel, type CatalogModel } from "../lib/catalog-models";
 import {
+  REFERENCE_IMAGE_LABEL,
   isModelSoldOut,
   useCatalogModel,
   useLineChoice,
@@ -71,7 +73,7 @@ function NewLine({
   model, onReload,
 }: { model: CatalogModel; onReload: () => void }) {
   const {
-    attributes, variants, selection, variant, gallery, imageIndex, shown, showImage: setChosenImage,
+    attributes, variants, selection, variant, gallery, imagePending, imageIndex, shown, showImage: setChosenImage,
     choose, add, busy, status, offer, available, onOrder, overStock,
   } = useNewLineConfigurator(model, onReload);
 
@@ -93,6 +95,16 @@ function NewLine({
                 sizes="(max-width: 1024px) 100vw, 58vw"
                 priority
               />
+              {shown.is_demo ? (
+                <span className="absolute bottom-3 left-3 rounded-full border border-bd-border bg-surface px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted">
+                  {REFERENCE_IMAGE_LABEL}
+                </span>
+              ) : null}
+            </div>
+          ) : imagePending ? (
+            // PR C: neither the variant nor its finish has a picture — the neutral marker in the photo's own box.
+            <div data-testid="model-main-image" className="relative aspect-[4/3] min-h-72 lg:min-h-[520px]">
+              <ImagePending className="text-muted" />
             </div>
           ) : (
             <div className="flex aspect-[4/3] min-h-72 items-center justify-center lg:min-h-[520px]">

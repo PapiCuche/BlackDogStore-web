@@ -514,7 +514,8 @@ class AdminCatalogImageSourcesView(APIView):
 
     P2 · F4 («Imágenes por reemplazar»). Read-only, `products.view`, the caller's company only (never a company
     the caller is not a member of). The host of each image, never its address; never a price or a cost. At most
-    200 per page.
+    200 per page. `licensing` (CATALOG-REFERENCE-01 · PR C): finishes without pictures and the shop's uploads whose
+    source is unknown or whose licence nobody checked (`catalog_image_sources.licensing`).
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -524,9 +525,11 @@ class AdminCatalogImageSourcesView(APIView):
         if error:
             return error
         params = request.query_params
-        return Response(catalog_image_sources.report(
-            company, page=params.get('page'), page_size=params.get('page_size'),
-        ))
+        return Response({
+            **catalog_image_sources.report(company, page=params.get('page'), page_size=params.get('page_size')),
+            # CATALOG-REFERENCE-01 · PR C: finishes without pictures and uploads without a checked licence.
+            'licensing': catalog_image_sources.licensing(company),
+        })
 
 
 class AdminAttributeOptionsView(APIView):

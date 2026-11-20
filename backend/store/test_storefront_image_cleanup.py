@@ -294,6 +294,10 @@ class ReferencesAcrossThePlatformTest(CleanupBase):
         counted = {(model.__name__, field) for model, field in storefront_media.reference_fields()}
         found = set()
         for model in apps.get_app_config('store').get_models():
+            if model is StorefrontImage:
+                # The one deliberate exception (CATALOG-REFERENCE-01 · PR C): the image's own row is not a slot, and
+                # its `source_url` (where the file came from) must never keep an image alive.
+                continue
             for field in model._meta.get_fields():
                 if not isinstance(field, (models.CharField, models.TextField)):
                     continue
@@ -301,6 +305,9 @@ class ReferencesAcrossThePlatformTest(CleanupBase):
                 if validate_asset_url in field.validators or name.endswith('_url') or 'image' in name or 'logo' in name:
                     found.add((model.__name__, field.name))
         self.assertEqual(found - counted, set())
+        # PR C: the finish galleries are a slot like the product gallery; the image's own fields are not.
+        self.assertIn(('ModelFinishImage', 'image_url'), counted)
+        self.assertFalse({field for model, field in counted if model == 'StorefrontImage'})
 
 
 class PlacingAnImageTest(CleanupBase):

@@ -33,6 +33,7 @@
 
 import Link from "next/link";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { ImagePending } from "../ImagePending";
 import { ProductImage } from "../ProductImage";
 import { OnOrderOfferPrompt, OverStockOnOrderOption } from "../OnOrderOffer";
 import { RichText } from "../RichText";
@@ -200,7 +201,7 @@ function AttributeChips({
 // Gallery
 // ---------------------------------------------------------------------------
 
-type Picture = { url: string; alt_text: string };
+type Picture = { url: string; alt_text: string; is_demo?: boolean };
 
 /**
  * P2 · F2 — how wide the stage really is (the LCP image): the whole screen
@@ -210,7 +211,7 @@ type Picture = { url: string; alt_text: string };
 const GALLERY_SIZES = "(min-width: 1280px) 610px, (min-width: 1024px) 47vw, 100vw";
 
 function Gallery({
-  pictures, index, onIndex, source, alt, emptyText, initial,
+  pictures, index, onIndex, source, alt, emptyText, initial, pending = false,
 }: {
   pictures: Picture[];
   index: number;
@@ -220,9 +221,11 @@ function Gallery({
   /** Said when there is no picture; without it, the model's initial is drawn. */
   emptyText?: string;
   initial: string;
+  /** PR C: the chosen variant and its finish have no picture: the neutral marker, in the photo's own box. */
+  pending?: boolean;
 }) {
   const shown = pictures[index] ?? pictures[0] ?? null;
-  const caption = shown ? photoLabel(shown.url, source) : null;
+  const caption = shown ? photoLabel(shown.url, source, shown.is_demo) : null;
   return (
     <section data-testid="v4-gallery" aria-label="Fotos">
       <div className="v4-stage">
@@ -238,6 +241,10 @@ function Gallery({
               fetchPriority="high"
             />
             {caption ? <span className="v4-image-label">{caption}</span> : null}
+          </div>
+        ) : pending ? (
+          <div className="relative aspect-square sm:aspect-[5/4]">
+            <ImagePending className="text-[color:var(--v4-muted)]" />
           </div>
         ) : (
           <div className="flex aspect-square flex-col items-center justify-center gap-4 px-6 text-center sm:aspect-[5/4]">
@@ -397,6 +404,7 @@ function NewLineV4({
           source="catalog"
           alt={variant?.name || model.name}
           initial={initialOf(model)}
+          pending={c.imagePending}
         />
       }
     >

@@ -622,13 +622,17 @@ class PublicContractUnchangedTest(PaletteShop, TestCase):
             'variants': [
                 {'product_id': self.new128.pk, 'slug': 'tx-128-negro', 'name': 'Teléfono X 128 GB Negro',
                  'options': {str(self.capacity.pk): self.gb128.pk, str(self.colour.pk): self.black.pk},
-                 'price': '3000.00', 'image_url': '', 'images': [], 'available': True, 'availability': 'own_stock',
+                 'price': '3000.00', 'image_url': '', 'images': [], 'gallery': [], 'image_pending': True,
+                 'available': True, 'availability': 'own_stock',
                  'on_order': None, 'sells_by_unit': True},
                 {'product_id': self.new256.pk, 'slug': 'tx-256-negro', 'name': 'Teléfono X 256 GB Negro',
                  'options': {str(self.capacity.pk): self.gb256.pk, str(self.colour.pk): self.black.pk},
-                 'price': '3500.00', 'image_url': '', 'images': [], 'available': False, 'availability': 'none',
+                 'price': '3500.00', 'image_url': '', 'images': [], 'gallery': [], 'image_pending': True,
+                 'available': False, 'availability': 'none',
                  'on_order': None, 'sells_by_unit': True},
             ],
+            # CATALOG-REFERENCE-01 · PR C: the pictures of each finish public variants have; none uploaded here.
+            'finish_images': {},
             'used_units': [],
             # P2 · F3: the accessories that fit the model; empty without links.
             'accessories': [],
