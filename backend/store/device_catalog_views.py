@@ -64,7 +64,8 @@ class PublicModelListView(APIView):
 
     def get(self, request):
         company = resolve_storefront_company(request)
-        models = _public_models(company).select_related('category')
+        # PR E: featured models first, then the company's order. Nobody featured = the order it always was.
+        models = _public_models(company).select_related('category').order_by('-is_featured', 'sort_order', 'name', 'pk')
         category = request.query_params.get('category')
         if category:
             models = models.filter(category__slug=category)
@@ -136,6 +137,8 @@ class PublicModelListView(APIView):
                 'from_price': f'{min(prices):.2f}' if prices else None,
                 'has_new': has_new, 'has_used': has_used,
                 'sold_out': sold_out,
+                # PR E: only on a featured card, so a company that never features one gets the cards it always got.
+                **({'is_featured': True} if model.is_featured else {}),
             })
         labels = device_catalog.line_labels(company)
         return Response({
@@ -197,6 +200,8 @@ def _model_payload(model, *, variants=False, has_palette=None):
         'category_id': model.category_id, 'category_name': model.category.name if model.category_id else '',
         'description': model.description, 'image_url': model.image_url,
         'is_published_online': model.is_published_online, 'sort_order': model.sort_order,
+        # PR E: shown first in the public list.
+        'is_featured': model.is_featured,
         'variant_count': model.variants.count(),
         # The storefront's branch, like the availability the shop shows.
         'used_unit_count': StockUnit.objects.filter(
@@ -283,7 +288,8 @@ class AdminModelDetailView(APIView):
         model = ProductModel.objects.filter(company=company, pk=pk).first()
         if model is None:
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
-        allowed = ('name', 'category_id', 'slug', 'description', 'image_url', 'is_published_online', 'sort_order')
+        allowed = ('name', 'category_id', 'slug', 'description', 'image_url', 'is_published_online', 'sort_order',
+                   'is_featured')
         fields = {key: request.data[key] for key in allowed if key in request.data}
         try:
             model = device_catalog.update_model(model, actor=request.user, request=request, **fields)

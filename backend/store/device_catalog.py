@@ -434,6 +434,11 @@ def update_model(model, *, actor=None, request=None, **fields) -> ProductModel:
         model.is_published_online = bool(fields['is_published_online'])
     if 'sort_order' in fields:
         model.sort_order = int(fields['sort_order'] or 0)
+    if 'is_featured' in fields:
+        # PR E: only a JSON boolean (bool('false') would feature it).
+        if not isinstance(fields['is_featured'], bool):
+            raise CatalogError('«Destacado» es verdadero o falso.', field='is_featured')
+        model.is_featured = fields['is_featured']
     try:
         model.full_clean(exclude=['company', 'category'])
     except ValidationError as exc:
@@ -1312,6 +1317,24 @@ def public_unit(unit, product, option_labels: dict) -> dict:
     }
 
 
+def _public_options(options: dict) -> list[dict]:
+    """
+    The options of one attribute of a public model page. As always — by the company's `sort_order`, then label — unless
+    the MODEL placed some of them (PR E, `model_palette.set_option_order`): then the placed ones go first in that
+    order, the rest after them as before, and `sort_order` says each one's place on this page (0, 1, 2…), which is
+    what the shop sorts by. An attribute nobody placed answers exactly what it did before PR E.
+    """
+    from .model_palette import placed_rank
+
+    rows = list(options.values())
+    if any(row['_rank'] for row in rows):
+        rows.sort(key=lambda o: (placed_rank(o['_rank']), o['sort_order'], o['label']))
+        return [{**{k: v for k, v in row.items() if k != '_rank'}, 'sort_order': index}
+                for index, row in enumerate(rows)]
+    rows.sort(key=lambda o: (o['sort_order'], o['label']))
+    return [{k: v for k, v in row.items() if k != '_rank'} for row in rows]
+
+
 def public_model(model, branch) -> dict:
     """
     A model as the shop shows it: its options, its NEW variants with price,
@@ -1335,9 +1358,12 @@ def public_model(model, branch) -> dict:
     `color` role or `color` kind attribute (D-PRC-8).
     Of a picture's provenance only `is_demo` is public.
     """
+    from django.db.models import OuterRef, Prefetch, Subquery
+    from django.db.models.functions import Coalesce
+
     from .accessory_compat import for_model_public
     from .finish_media import colour_attribute_ids, public_payload as finish_public_payload
-    from .models import ModelFinishImage, StorefrontImage
+    from .models import ModelFinishImage, ModelOption, StorefrontImage
     from .product_media import public_payload
     from .storefront_media import managed_public_id
     from .supply_services import on_order_payload
@@ -1347,7 +1373,15 @@ def public_model(model, branch) -> dict:
         # A1b-2: the same belt as `company_storefront_products` — a pending draft is not on the page
         # even if its flag was written past the services.
         .exclude(Product.pending_draft_q())
-        .prefetch_related('images', 'variant_options__option__attribute')
+        .prefetch_related(
+            'images',
+            # PR E: each link carries the place this MODEL gives its option (0 = not placed), read in the same
+            # query as the links: no query more than before.
+            Prefetch('variant_options', queryset=ProductVariantOption.objects.annotate(model_rank=Coalesce(
+                Subquery(ModelOption.objects.filter(model_id=model.pk, option_id=OuterRef('option_id'))
+                         .values('sort_order')[:1]), 0))),
+            'variant_options__option__attribute',
+        )
         .order_by('pk')
     )
     stock = {}
@@ -1377,7 +1411,7 @@ def public_model(model, branch) -> dict:
             })
             entry['options'][link.option.pk] = {
                 'id': link.option.pk, 'label': link.option.label, 'swatch_hex': link.option.swatch_hex,
-                'sort_order': link.option.sort_order,
+                'sort_order': link.option.sort_order, '_rank': link.model_rank,
             }
             selection[str(attribute.pk)] = link.option.pk
             if attribute.pk in dimension:
@@ -1487,8 +1521,7 @@ def public_model(model, branch) -> dict:
             {'slug': model.category.slug, 'name': model.category.name} if model.category_id else None
         ),
         'attributes': [
-            {**{k: v for k, v in entry.items() if k != 'options'},
-             'options': sorted(entry['options'].values(), key=lambda o: (o['sort_order'], o['label']))}
+            {**{k: v for k, v in entry.items() if k != 'options'}, 'options': _public_options(entry['options'])}
             for entry in sorted(attributes.values(), key=lambda a: (a['sort_order'], a['name']))
         ],
         'lines': {

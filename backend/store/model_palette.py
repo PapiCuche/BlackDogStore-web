@@ -5,9 +5,10 @@ CATALOG-COMMERCIAL-01 · A1 — the PALETTE of a model (ADR §5.7, §8, decision
 
 `ModelOption(model, option)` rows are the palette: the capacities, colours, SIM
 types and regions (whatever the company calls them, `VariantAttribute.role`)
-that this model's variants may combine. The only writer of those rows is
-`set_palette`, inside ONE company: an option of another company answers like
-one that does not exist.
+that this model's variants may combine. The only writers of those rows are
+`set_palette` / `add_to_palette` (and, for their display order only,
+`set_option_order`, PR E), inside ONE company: an option of another company
+answers like one that does not exist.
 
 Rules, and where each is held:
 
@@ -306,6 +307,89 @@ def add_to_palette(model, *, option_ids, actor=None, request=None) -> dict:
                target_type='product_model', target_id=model.pk, model_name=model.name,
                added=[o.pk for o in to_add], removed=[], total=len(current) + len(to_add))
     return {'added': len(to_add), 'removed': 0, 'total': len(current) + len(to_add)}
+
+
+#: The rank of an option nobody placed: after every placed one (PR E).
+UNPLACED = 1 << 30
+
+
+def placed_rank(rank) -> int:
+    """`ModelOption.sort_order` as a sort key: 1, 2, 3… first; 0 (never placed) after them."""
+    return rank if rank else UNPLACED
+
+
+def option_order(model) -> dict:
+    """
+    PR E — the options of `model`'s palette per attribute, in the order the model shows them: the ones placed by
+    `set_option_order` first (1, 2, 3…), then the rest in the company's own order (`VariantOption.sort_order`,
+    label). Attributes in reading order (capacity, colour, SIM, region, other). Admin only.
+    """
+    rows = list(
+        ModelOption.objects.filter(model=model, company_id=model.company_id)
+        .select_related('option__attribute')
+    )
+    by_attribute: dict[int, dict] = {}
+    for row in rows:
+        attribute = row.option.attribute
+        entry = by_attribute.setdefault(attribute.pk, {'attribute': attribute, 'rows': []})
+        entry['rows'].append(row)
+    attributes = []
+    for entry in sorted(by_attribute.values(), key=lambda e: attribute_sort_key(e['attribute'])):
+        attribute = entry['attribute']
+        ordered = sorted(entry['rows'], key=lambda r: (placed_rank(r.sort_order), r.option.sort_order,
+                                                       r.option.label.lower(), r.option.pk))
+        attributes.append({
+            'id': attribute.pk, 'name': attribute.name, 'kind': attribute.kind, 'role': attribute.role,
+            'options': [{'id': r.option.pk, 'label': r.option.label, 'swatch_hex': r.option.swatch_hex,
+                         'placed': bool(r.sort_order)} for r in ordered],
+        })
+    return {'model_id': model.pk, 'has_palette': bool(rows), 'attributes': attributes}
+
+
+@transaction.atomic
+def set_option_order(model, *, attribute_id, option_ids, actor=None, request=None) -> dict:
+    """
+    PR E — the order in which `model` shows the options of ONE of its attributes (its colours, say). `option_ids`
+    names every palette option of that attribute exactly once; they are placed 1, 2, 3… (`ModelOption.sort_order`).
+    Only this model changes: the company's own order (`VariantOption.sort_order`) and every other model stay.
+
+    An attribute of another company answers like a missing one (`not_found`); a model without a palette has nothing
+    to order (`no_palette`); anything else that is not that exact set is refused whole (`invalid`). Under the model's
+    lock, like every palette write, and audited with its company.
+    """
+    from .device_catalog import CatalogError, _audit
+
+    if isinstance(attribute_id, bool) or not isinstance(attribute_id, int) or attribute_id <= 0:
+        raise CatalogError('Elige el atributo que vas a ordenar.', field='attribute_id')
+    if (not isinstance(option_ids, list) or len(option_ids) > MAX_OPTION_IDS
+            or any(isinstance(i, bool) or not isinstance(i, int) or i <= 0 for i in option_ids)):
+        raise CatalogError('El orden es una lista de opciones.', field='option_ids')
+    company = model.company
+    model = type(model).objects.select_for_update().get(pk=model.pk)
+    attribute = VariantAttribute.objects.filter(company=company, pk=attribute_id).first()
+    if attribute is None:
+        raise CatalogError('Ese atributo no existe.', field='attribute_id', code='not_found')
+    rows = {row.option_id: row for row in ModelOption.objects.filter(model=model, company=company)
+            .select_related('option')}
+    if not rows:
+        raise CatalogError('Este modelo no tiene paleta: elige primero sus opciones.', field='option_ids',
+                           code='no_palette')
+    current = {pk for pk, row in rows.items() if row.option.attribute_id == attribute.pk}
+    if len(option_ids) != len(set(option_ids)) or set(option_ids) != current:
+        raise CatalogError(
+            f'El orden debe nombrar, una vez, cada opción de «{attribute.name}» de este modelo.',
+            field='option_ids')
+    changed = []
+    for position, option_id in enumerate(option_ids, start=1):
+        row = rows[option_id]
+        if row.sort_order != position:
+            row.sort_order = position
+            row.save(update_fields=['sort_order'])
+            changed.append(option_id)
+    _audit('product_model_option_order_set', company=company, actor=actor, request=request,
+           target_type='product_model', target_id=model.pk, model_name=model.name, attribute_id=attribute.pk,
+           option_ids=list(option_ids), changed=changed)
+    return option_order(model)
 
 
 def _clean_pairs(pairs) -> set[tuple[int, int]]:

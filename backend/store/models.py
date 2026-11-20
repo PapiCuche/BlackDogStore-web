@@ -11163,6 +11163,9 @@ class ProductModel(models.Model):
     image_url = models.CharField(max_length=500, blank=True, default='', validators=[validate_asset_url])
     is_published_online = models.BooleanField(default=True)
     sort_order = models.PositiveIntegerField(default=0)
+    #: CATALOG-REFERENCE-01 · PR E: the company shows this model first in the public list (then `sort_order`).
+    #: False for every model before PR E (db_default), so a company that never marks one sees the same order.
+    is_featured = models.BooleanField(default=False, db_default=False)
     #: CATALOG-REFERENCE-01 · PR B: the `ReferenceModel.key` this model was imported from (or linked to), so a
     #: re-import finds it even after the company renamed it. '' = not linked (every model before PR B). Written
     #: only by `catalog_reference_import`; never shown to the public.
@@ -11329,7 +11332,8 @@ class ModelOption(models.Model):
     model with no rows has no palette and accepts any option of the company,
     as before.
 
-    Written ONLY by `model_palette.set_palette`. Deleting a row never touches
+    Written ONLY by `model_palette` (`set_palette`, `add_to_palette`; its `sort_order` by
+    `set_option_order`, PR E). Deleting a row never touches
     a variant that already uses the option: it is reported as outside the
     palette, never rewritten (history is kept, ADR §5).
     """
@@ -11337,6 +11341,11 @@ class ModelOption(models.Model):
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
     model = models.ForeignKey(ProductModel, on_delete=models.CASCADE, related_name='palette')
     option = models.ForeignKey(VariantOption, on_delete=models.PROTECT, related_name='model_links')
+    #: CATALOG-REFERENCE-01 · PR E: the place of this option among the model's options of the same attribute
+    #: (e.g. its colours), 1-based; 0 = not placed (every row before PR E, and one added after an order was
+    #: saved): those follow the placed ones in the company's own order. Written only by
+    #: `model_palette.set_option_order`.
+    sort_order = models.PositiveIntegerField(default=0, db_default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

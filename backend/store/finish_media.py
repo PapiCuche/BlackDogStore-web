@@ -26,7 +26,8 @@ from urllib.parse import urlsplit
 
 from django.conf import settings
 from django.db import transaction
-from django.db.models import Max, Q
+from django.db.models import Max, OuterRef, Q, Subquery
+from django.db.models.functions import Coalesce
 from django.utils import timezone
 
 from . import storefront_media
@@ -113,11 +114,17 @@ def colours_of(model, dimension=None) -> list[VariantOption]:
     ).values('option_id')
     palette = ModelOption.objects.filter(model=model).values('option_id')
     pictured = ModelFinishImage.objects.filter(model=model).values('color_option_id')
-    return list(
+    from .model_palette import placed_rank
+
+    rows = list(
         VariantOption.objects.filter(company_id=model.company_id)
         .filter((Q(attribute_id__in=dimension) & (Q(pk__in=used) | Q(pk__in=palette))) | Q(pk__in=pictured))
+        # PR E: the model's own order of its colours first (`set_option_order`), then the company's.
+        .annotate(model_rank=Coalesce(Subquery(
+            ModelOption.objects.filter(model=model, option_id=OuterRef('pk')).values('sort_order')[:1]), 0))
         .order_by('sort_order', 'label', 'pk')
     )
+    return sorted(rows, key=lambda option: placed_rank(option.model_rank))
 
 
 def stored_of(images) -> dict[str, StorefrontImage]:
@@ -125,13 +132,15 @@ def stored_of(images) -> dict[str, StorefrontImage]:
     ids = {storefront_media.managed_public_id(image.image_url) for image in images} - {None}
     if not ids:
         return {}
-    return {row.public_id: row for row in StorefrontImage.objects.filter(public_id__in=ids)}
+    return {row.public_id: row for row in
+            StorefrontImage.objects.filter(public_id__in=ids).select_related('license_verified_by')}
 
 
 def _source_payload(stored: StorefrontImage | None) -> dict:
     if stored is None:
         return {'kind': StorefrontImage.SOURCE_UNKNOWN, 'kind_label': 'Sin registrar', 'url': '', 'license': '',
-                'attribution': '', 'is_demo': False, 'license_verified': False, 'license_verified_at': None}
+                'attribution': '', 'is_demo': False, 'license_verified': False, 'license_verified_at': None,
+                'license_verified_by': None}
     return {
         'kind': stored.source_kind,
         'kind_label': stored.get_source_kind_display(),
@@ -141,7 +150,15 @@ def _source_payload(stored: StorefrontImage | None) -> dict:
         'is_demo': stored.source_kind == StorefrontImage.SOURCE_DEMO,
         'license_verified': stored.license_verified_at is not None,
         'license_verified_at': stored.license_verified_at.isoformat() if stored.license_verified_at else None,
+        # PR E: who verified it, as the panel names a person (the audit keeps the id).
+        'license_verified_by': _person(stored.license_verified_by) if stored.license_verified_at else None,
     }
+
+
+def _person(user) -> str | None:
+    if user is None:
+        return None
+    return (user.get_full_name() or '').strip() or user.get_username()
 
 
 def payload(image: ModelFinishImage, stored: StorefrontImage | None = None) -> dict:
