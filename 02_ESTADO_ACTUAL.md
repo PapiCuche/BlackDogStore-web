@@ -30,6 +30,13 @@ documentación real, sin reemplazar su historial.
   - Tienda: cada variante muestra sus fotos, si no las de su color, si no «Imagen pendiente» (`gallery`, `image_pending`, `finish_images` en `/api/catalog/models/<slug>/`); nunca la foto de otro color ni la portada del modelo. Un recurso demostrativo se rotula «Imagen referencial».
   - El informe de imágenes (F4) cuenta acabados sin foto y subidas sin origen o sin licencia verificada.
   - Falta: carga masiva `modelo__color` y pantallas del panel (PR E). Ninguna imagen entra al repositorio.
+- **PR D (rama `feat/catalog-configurator`, apilada sobre PR C; sin push, sin desplegar; sólo frontend, sin migración):** configurador público premium (ADR §4.3).
+  - `/modelo/<slug>` muestra el configurador del Manual V4 sólo dentro de su bloque (`data-design="v4" data-v4-scope="block"`, Montserrat por clase); la cabecera, el pie y las demás páginas siguen en V3. El bloque sigue el tema claro/oscuro del visitante. `/v4` sigue siendo la vista previa sin indexar y el Manual V4 sigue sin adoptarse para todo el sitio.
+  - Se puede elegir un color que sólo existe en otra capacidad: la capacidad pasa a la más cercana y la página lo dice (visible y `aria-live`). Nunca se llega a una combinación inexistente.
+  - La foto es la del acabado elegido, con transición sin parpadeo y caja fija; sin foto, «Imagen pendiente». «Bajo pedido» sólo con oferta comprable; el plazo sólo si el dato lo trae.
+  - `?variante=` abre la variante en el primer HTML y se actualiza sin navegar; la canónica sigue siendo la del modelo; JSON-LD con la dirección y la foto de acabado de cada variante.
+  - En escritorio el resumen ya no tapa los colores (también en `/v4`). Se retira el marcado V3 de la ficha (`VariantPicker`, `UsedUnitCard`).
+  - Falta: elegir modelos hermanos (la API pública no expone la generación) y promociones en la ficha (el contrato público no las trae).
 
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 

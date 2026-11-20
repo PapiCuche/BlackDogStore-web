@@ -14,10 +14,19 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - (PR C) Cada color de un modelo tiene su propia galería: se sube una vez y la muestran todas las variantes de ese color. Al cambiar de color en la ficha cambian las fotos.
 - (PR C) Cada imagen guarda de dónde sale (foto propia, material autorizado por un proveedor, banco con licencia o recurso demostrativo), su licencia y quién la verificó. Sin origen no se sube una foto de acabado.
 - (PR C) El informe de imágenes cuenta los colores sin foto y las imágenes sin origen o sin licencia verificada.
+- (PR D) La ficha pública de un modelo tiene el configurador del Manual V4 dentro de su bloque, en claro y en oscuro; el resto de la tienda sigue igual.
+- (PR D) Un enlace con `?variante=` abre la ficha con esa opción elegida y la dirección cambia al elegir otra, sin recargar.
 
 **Changed**
 
 - (PR C) Una opción sin foto propia ni de su color muestra «Imagen pendiente», nunca la foto de otro color ni la portada del modelo. Un recurso demostrativo se rotula «Imagen referencial».
+- (PR D) Se puede elegir un color que no existe en la capacidad elegida: la capacidad cambia a la más cercana y la ficha lo avisa.
+- (PR D) Al cambiar de color, la foto nueva aparece sobre la anterior cuando ya cargó, sin quedar en blanco ni mover la página.
+- (PR D) «Bajo pedido» sólo aparece si hay una oferta que se puede comprar, y el plazo de entrega sólo si se conoce.
+
+**Fixed**
+
+- (PR D) En escritorio, el resumen de la elección ya no tapa los colores en pantallas bajas.
 
 ## 2026-11-18 — WIN-003D-1 · El agente de impresión no se queda colgado con Windows
 
