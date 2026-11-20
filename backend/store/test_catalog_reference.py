@@ -190,12 +190,13 @@ class MalformedInputTest(SimpleTestCase):
                 del bad[field]
                 self.assertTrue(ref.validate(dataset(bad)))
 
-    def test_colour_labels_fit_the_reference_columns(self):
+    def test_colour_labels_fit_the_company_option_label(self):
+        # The import copies a colour's label into VariantOption.label (60 characters).
         colour = model()['colors'][0]
         for label in ('label_en', 'label_es'):
             with self.subTest(label):
-                self.assertTrue(ref.validate(dataset(model(colors=[{**colour, label: 'x' * 121}]))))
-        self.assertEqual(ref.validate(dataset(model(colors=[{**colour, 'label_es': 'x' * 120}]))), [])
+                self.assertTrue(ref.validate(dataset(model(colors=[{**colour, label: 'x' * 61}]))))
+        self.assertEqual(ref.validate(dataset(model(colors=[{**colour, 'label_es': 'x' * 60}]))), [])
 
     def test_notes_are_a_text_or_a_list_of_texts(self):
         self.assertEqual(ref.validate(dataset(model(notes='one'))), [])

@@ -15,7 +15,6 @@ from urllib.parse import urlsplit
 SCHEMA_VERSION = 1
 LINES = ('standard', 'plus', 'pro', 'pro_max', 'mini', 'se', 'air', 'e', 'original', 'other')
 COMPLETENESS = ('complete', 'partial', 'pending_review')
-LABEL_MAX = 120  # ReferenceOption.label_en / label_es
 
 HEADER_FIELDS = {'schema_version', 'manufacturer', 'family', 'dataset_version', 'official_source_hosts', 'models',
                  'notes'}
@@ -120,7 +119,7 @@ def _model_errors(m, hosts):
         for label in ('label_en', 'label_es'):
             if not _text(c.get(label)):
                 errors.append(f'{where}: colour {c.get("key")!r} needs {label}')
-            elif len(c[label]) > LABEL_MAX:
+            elif len(c[label]) > LABEL_MAX:  # a colour's label becomes the company's option label (60 characters)
                 errors.append(f'{where}: colour {c.get("key")!r} {label} is longer than {LABEL_MAX} characters')
         official = c.get('official')
         if not (isinstance(official, dict) and _text(official.get('en'))
