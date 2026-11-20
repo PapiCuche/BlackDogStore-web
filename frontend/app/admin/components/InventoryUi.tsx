@@ -35,12 +35,20 @@ export function StatCard({
   );
 }
 
+/**
+ * A ring for an element that only takes focus by script (a heading with `tabIndex=-1`). `focus:`, not
+ * `focus-visible:`: after a click (e.g. «Sí, quitar») the browser would not mark the new target `:focus-visible`,
+ * and the person would not see where focus went.
+ */
+export const FOCUS_RING_ON_SCRIPT = "rounded-sm focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-primary";
+
 export function Panel({
   title,
   description,
   action,
   children,
   id,
+  titleFocusable = false,
 }: {
   title: string;
   description?: string;
@@ -48,6 +56,9 @@ export function Panel({
   children: React.ReactNode;
   /** An anchor (`#id`) to link to this panel; it then is a named region. */
   id?: string;
+  /** The title can take focus by script (`tabIndex=-1`) and then shows a ring: a place to land when what had
+   *  focus inside the panel is gone. */
+  titleFocusable?: boolean;
 }) {
   return (
     <section
@@ -57,7 +68,13 @@ export function Panel({
     >
       <header className="flex flex-wrap items-center justify-between gap-3 border-b border-bd-border px-5 py-4">
         <div>
-          <h2 id={id ? `${id}-title` : undefined} className="text-sm font-semibold text-foreground">{title}</h2>
+          <h2
+            id={id ? `${id}-title` : undefined}
+            tabIndex={titleFocusable ? -1 : undefined}
+            className={`text-sm font-semibold text-foreground${titleFocusable ? ` ${FOCUS_RING_ON_SCRIPT}` : ""}`}
+          >
+            {title}
+          </h2>
           {description ? (
             <p className="mt-0.5 text-xs text-muted">{description}</p>
           ) : null}

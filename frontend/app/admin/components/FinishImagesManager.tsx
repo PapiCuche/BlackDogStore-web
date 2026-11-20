@@ -27,12 +27,14 @@ import {
 import { CatalogApiError } from "../lib/internal-api";
 import { ImageDropzone } from "./ImageDropzone";
 import { TRANSPARENCY_GRID_STYLE } from "./ImageUploadField";
-import { ErrorBox, Panel, Spinner } from "./InventoryUi";
+import { ErrorBox, FOCUS_RING_ON_SCRIPT, Panel, Spinner } from "./InventoryUi";
 import { formatBytes, rejectReason } from "./ProductGallery";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 const message = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback);
 
+/** The panel (and its `#acabados-title` heading, the last place focus can land). */
+const PANEL_ID = "acabados";
 const touch = "min-h-[44px]";
 
 const smallButton = `${internalButtonClass} min-h-[44px] px-3 py-1.5 text-xs`;
@@ -392,6 +394,7 @@ function ImageCard({
           <label className={`flex items-center gap-2 text-xs text-foreground ${touch}`}>
             <input
               type="checkbox"
+              data-verify
               className="h-4 w-4"
               checked={verified}
               disabled={busy || image.source.kind === "unknown"}
@@ -469,8 +472,12 @@ export function FinishImagesManager({
   const [uploadingFor, setUploadingFor] = useState<number | null>(null);
   const root = useRef<HTMLDivElement>(null);
   const focusAfter = useRef<{ imageId: number; move: "before" | "after" } | null>(null);
-  // Review of #374 (a11y): after a removal, the picture now in its place (or the one before), else the colour.
+  // Review of #374 (a11y): after a removal, the picture now in its place (or the one before), else the colour,
+  // else (a colour outside the palette leaves the listing with its last picture) the panel's title.
   const focusAfterRemoval = useRef<{ colourId: number; index: number } | null>(null);
+  // After «Revisé la licencia»: its checkbox again, or the picture's card when the checkbox is gone (an own photo
+  // that is no longer verified has nothing to verify). A checkbox disabled while saving loses focus in a browser.
+  const focusAfterVerify = useRef<number | null>(null);
   const hostChanged = useRef(onChanged);
   useEffect(() => { hostChanged.current = onChanged; });
 
@@ -503,7 +510,18 @@ export function FinishImagesManager({
     const finish = root.current.querySelector<HTMLElement>(`[data-finish-id="${wanted.colourId}"]`);
     const cards = finish ? Array.from(finish.querySelectorAll<HTMLElement>("[data-image-id]")) : [];
     const card = cards[Math.min(wanted.index, cards.length - 1)];
-    (card ?? root.current.querySelector<HTMLElement>(`#acabado-${wanted.colourId}`))?.focus();
+    (card
+      ?? root.current.querySelector<HTMLElement>(`#acabado-${wanted.colourId}`)
+      ?? document.getElementById(`${PANEL_ID}-title`))?.focus();
+  }, [listing, busy]);
+
+  useEffect(() => {
+    const imageId = focusAfterVerify.current;
+    if (imageId === null || !root.current || busy !== null) return;
+    focusAfterVerify.current = null;
+    const card = root.current.querySelector<HTMLElement>(`[data-image-id="${imageId}"]`);
+    const check = card?.querySelector<HTMLInputElement>("input[data-verify]");
+    (check && !check.disabled ? check : card ?? document.getElementById(`${PANEL_ID}-title`))?.focus();
   }, [listing, busy]);
 
   const kinds = listing?.source_kinds?.length
@@ -545,7 +563,8 @@ export function FinishImagesManager({
 
   return (
     <Panel
-      id="acabados"
+      id={PANEL_ID}
+      titleFocusable
       title="Imágenes por acabado"
       description="Una galería por color, compartida por todas sus capacidades, SIM y regiones. Un color sin fotos se muestra como «Imagen pendiente», nunca con la foto de otro color."
     >
@@ -580,7 +599,7 @@ export function FinishImagesManager({
                           className="h-6 w-6 shrink-0 rounded-full border border-foreground/25"
                           style={{ backgroundColor: /^#[0-9A-Fa-f]{6}$/.test(finish.option.swatch_hex) ? finish.option.swatch_hex : "transparent" }}
                         />
-                        <h3 id={`acabado-${finish.option.id}`} tabIndex={-1} className="break-words text-sm font-semibold text-foreground focus:outline-none">{finish.option.label}</h3>
+                        <h3 id={`acabado-${finish.option.id}`} tabIndex={-1} className={`break-words text-sm font-semibold text-foreground ${FOCUS_RING_ON_SCRIPT}`}>{finish.option.label}</h3>
                         {finish.image_pending ? (
                           <span className="rounded-full border border-warning-border bg-warning-surface px-2.5 py-1 text-[11px] font-semibold text-warning">Imagen pendiente</span>
                         ) : (
@@ -635,7 +654,10 @@ export function FinishImagesManager({
                             kinds={kinds}
                             canManage={canManage}
                             busy={busy !== null}
-                            onPatch={(data) => act(image.id, () => patchFinishImage(modelId, image.id, data, companyId), "Cambio guardado.")}
+                            onPatch={(data) => {
+                              if ("license_verified" in data) focusAfterVerify.current = image.id;
+                              return act(image.id, () => patchFinishImage(modelId, image.id, data, companyId), "Cambio guardado.");
+                            }}
                             onMove={(step) => move(finish, index, step)}
                             onRemove={() => {
                               focusAfterRemoval.current = { colourId: finish.option.id, index };
