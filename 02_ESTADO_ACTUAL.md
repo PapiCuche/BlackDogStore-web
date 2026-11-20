@@ -53,9 +53,14 @@ Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 
 **Defecto arreglado en G:** las capacidades nuevas que crea la importación tomaban el orden 0 y se leían por etiqueta («1 TB, 256 GB, 512 GB»). Ahora se ordenan por tamaño. Las opciones que ya existían no se reordenan.
 
-**Defectos visuales vistos en la revisión de PR G** (PROPUESTA, sin arreglar):
-- El carrito dibuja la inicial del producto en lugar de la foto del acabado cuando la variante sólo tiene fotos de su color: el carrito lee la imagen propia del producto.
-- Los colores importados del catálogo de referencia llevan todos la misma muestra neutra (D-PRB-7). La empresa tiene que poner el color de cada muestra en el panel.
+**Revisión visual final (órdenes del propietario, ADR D-PRG-5…8), arreglada con pruebas:**
+- El carrito y el resumen del checkout muestran la foto del acabado de la variante con la misma regla que la ficha, o «Imagen pendiente». Antes salía la inicial del nombre.
+- Un equipo nuevo ya no dice «Batería: no informado».
+- A 375 px, el carrito y el checkout ya no se desbordan con un nombre de variante largo, como «iPhone 17 Pro 256 GB Azul profundo Dual nano-SIM…». Su rejilla de una columna no limitaba el ancho. Era un fallo anterior que los nombres del catálogo de referencia hacían visible.
+- Las capacidades importadas se ordenan por tamaño.
+- Los chips de color muestran la foto de su acabado, si no la muestra de la empresa, y si no sólo el nombre, nunca el gris neutro del importador. El panel dice «Muestra sin configurar» y deja guardar la muestra. Sin migración: la regla es derivada (D-PRG-6).
+
+**Hallazgo sin cambiar:** la ficha abre en la primera foto por orden y no en la marcada «principal». Si debe mandar la principal, lo decide el propietario.
 
 **Estado: IMPLEMENTADO EN MASTER (A–F) · PR G en rama · NO DESPLEGADO · NADA IMPORTADO EN PRODUCCIÓN.**
 - Desplegar necesita un GO del propietario con SHA y alcance.

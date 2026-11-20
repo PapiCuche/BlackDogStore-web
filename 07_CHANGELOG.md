@@ -56,6 +56,10 @@ Migraciones aditivas `0181`–`0184`. Nada desplegado ni importado en producció
   - desmarcar la licencia de una foto propia ya no tira el foco.
 - (PR G) La prueba de navegador de la descripción con formato vuelve a pasar (había dos botones «Cancelar» en el editor del modelo; el fallo era anterior a la Fase 1).
 - (PR G) Las capacidades que crea la importación se ordenan por tamaño (256 GB, 512 GB, 1 TB) y no por su texto.
+- (PR G) El carrito y el resumen del checkout muestran la foto del color elegido, o «Imagen pendiente», y ya no la inicial del nombre.
+- (PR G) Un equipo nuevo en el carrito ya no dice «Batería: no informado».
+- (PR G) En el teléfono, el carrito y el checkout ya no se salen de la pantalla con un nombre de variante largo.
+- (PR G) Los colores importados ya no se ven todos con el mismo punto gris. Cada chip muestra la foto de su color, si no la muestra que puso la tienda, y si no sólo su nombre. El panel avisa «Muestra sin configurar» y permite elegirla.
 
 ## 2026-11-19 — Borde de la tienda listo para el CRM (en PR)
 

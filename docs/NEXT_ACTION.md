@@ -36,9 +36,9 @@ Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 - **(c) R12b.** R12b (`4a3ce34`) ya está **dentro** de master: no existe un release de la Fase 1 sin R12b. Por eso R12b va primero, con su GO (ver «Orden de despliegue»).
 - **(d) Catálogo.** `load_reference_catalog` es un comando de plataforma, auditado sin empresa. La importación por empresa se hace sólo desde el panel, con `products.manage`.
 
-**Defectos vistos en la revisión visual de PR G** (PROPUESTA, sin arreglar):
-- el carrito no muestra la foto del acabado de una variante que sólo tiene fotos de su color;
-- los colores importados del catálogo llevan todos la misma muestra neutra hasta que la empresa la cambie.
+**Revisión visual de PR G:** carrito y checkout con la foto del color, equipos nuevos sin «Batería», capacidades por tamaño y chips de color sin el gris del importador. Todo arreglado con pruebas (ADR D-PRG-5…8).
+
+**Decisión abierta del propietario:** ¿la ficha debe abrir en la foto marcada «principal»? Hoy abre en la primera por orden.
 
 ## Producción vigente: R10 `21aae0f` (esquema `0176`), desplegada el 2026-11-18 09:34
 
