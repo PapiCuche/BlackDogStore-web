@@ -8861,6 +8861,24 @@ class StorefrontImage(models.Model):
     company = models.ForeignKey(
         'Company', on_delete=models.CASCADE, related_name='storefront_images',
     )
+    # CATALOG-REFERENCE-01 · PR C (D-C-1) — DE DÓNDE SALE la imagen. Es del archivo, no del hueco donde se
+    # coloca: vale igual para la galería de una variante, la de un acabado o una portada. Por prioridad del
+    # propietario: foto propia > material autorizado por proveedor o distribuidor > banco con licencia
+    # comercial > recurso demostrativo (identificado como tal en la tienda). `unknown` = subida antes de PR C o
+    # por un hueco que no la pide; nunca lo elige quien sube una imagen de acabado.
+    SOURCE_OWN_PHOTO = 'own_photo'
+    SOURCE_SUPPLIER_AUTHORIZED = 'supplier_authorized'
+    SOURCE_LICENSED_STOCK = 'licensed_stock'
+    SOURCE_DEMO = 'demo'
+    SOURCE_UNKNOWN = 'unknown'
+    SOURCE_KIND_CHOICES = [
+        (SOURCE_OWN_PHOTO, 'Foto propia'),
+        (SOURCE_SUPPLIER_AUTHORIZED, 'Material autorizado por proveedor o distribuidor'),
+        (SOURCE_LICENSED_STOCK, 'Banco de imágenes con licencia comercial'),
+        (SOURCE_DEMO, 'Recurso demostrativo'),
+        (SOURCE_UNKNOWN, 'Sin registrar'),
+    ]
+
     public_id = models.CharField(max_length=32, unique=True, editable=False)
     storage_key = models.CharField(max_length=255, unique=True, editable=False)
     mime_type = models.CharField(max_length=32)
@@ -8873,6 +8891,21 @@ class StorefrontImage(models.Model):
         null=True, blank=True, related_name='uploaded_storefront_images',
     )
     created_at = models.DateTimeField(auto_now_add=True)
+    source_kind = models.CharField(
+        max_length=24, choices=SOURCE_KIND_CHOICES, default=SOURCE_UNKNOWN, db_default=SOURCE_UNKNOWN,
+    )
+    #: Where the picture was obtained (a supplier's page, a stock bank's item). Never shown to the public. It ends
+    #: in `_url`, so the reference sweep reads it too: harmless, it never holds one of our own addresses
+    #: (`finish_media.clean_provenance` refuses that).
+    source_url = models.CharField(max_length=500, blank=True, default='', db_default='')
+    #: The licence or authorisation, in words. Empty only for an own photo (or an `unknown` upload).
+    license = models.CharField(max_length=255, blank=True, default='', db_default='')
+    attribution = models.CharField(max_length=255, blank=True, default='', db_default='')
+    #: Who checked the licence, and when. Both empty = not verified.
+    license_verified_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    license_verified_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         verbose_name = 'imagen de la tienda'
@@ -11348,6 +11381,68 @@ class ModelOptionExclusion(models.Model):
     def save(self, *args, **kwargs):
         if not (self.model.company_id == self.company_id == self.option_a.company_id == self.option_b.company_id):
             raise ValueError('El modelo y las opciones tienen que ser de la misma empresa.')
+        return super().save(*args, **kwargs)
+
+
+class ModelFinishImage(models.Model):
+    """
+    CATALOG-REFERENCE-01 · PR C (D-C-1) — one picture of a REAL FINISH: a model in one colour.
+
+    Every variant of that colour (any capacity, SIM or region) shows these pictures when it has none of its own,
+    so a photo is uploaded once per finish, not once per variant. A finish without pictures shows the neutral
+    «Imagen pendiente» marker on the shop — never another colour's photo, never the model's cover.
+
+    Like `ProductImage`, THE ROW IS NOT THE FILE: the pixels (and where they come from, their licence) are a
+    `StorefrontImage`; `image_url` holds its address, so the reference sweep counts this slot without knowing it.
+    Written ONLY by `finish_media`.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    model = models.ForeignKey(ProductModel, on_delete=models.CASCADE, related_name='finish_images')
+    color_option = models.ForeignKey(VariantOption, on_delete=models.PROTECT, related_name='finish_images')
+    image_url = models.CharField(max_length=255, validators=[validate_asset_url])
+    #: For people who do not see the picture. Empty means «<model> <colour>».
+    alt_text = models.CharField(max_length=160, blank=True, default='')
+    width = models.PositiveIntegerField(default=0)
+    height = models.PositiveIntegerField(default=0)
+    sort_order = models.PositiveIntegerField(default=0)
+    is_primary = models.BooleanField(default=False)
+    uploaded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [models.Index(fields=['company', 'model'], name='finish_image_company_model_idx')]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['model', 'color_option'], condition=models.Q(is_primary=True),
+                name='one_primary_finish_image_per_colour',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.model_id}:{self.color_option_id}:{self.sort_order}'
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        if not (self.model.company_id == self.company_id == self.color_option.company_id):
+            raise ValidationError({'color_option': 'El modelo, el color y la imagen tienen que ser de la misma empresa.'})
+        # The role as stored now, not as a loaded instance remembers it.
+        role = VariantAttribute.objects.filter(pk=self.color_option.attribute_id).values_list('role', flat=True).first()
+        if role != VariantAttribute.ROLE_COLOR:
+            raise ValidationError({'color_option': 'Esa opción no es un color.'})
+        if self._state.adding:
+            # A model with a palette admits only its colours. Checked when the picture is placed: a colour taken
+            # out of the palette later keeps its pictures (the variants of that colour still show them).
+            palette = ModelOption.objects.filter(model_id=self.model_id)
+            if palette.exists() and not palette.filter(option_id=self.color_option_id).exists():
+                raise ValidationError({'color_option': 'Ese color no está entre las opciones de este modelo.'})
+
+    def save(self, *args, **kwargs):
+        self.clean()
         return super().save(*args, **kwargs)
 
 

@@ -172,7 +172,8 @@ def upload(*, company, actor, uploaded, request=None) -> StorefrontImage:
     return store(company=company, actor=actor, raw=read_upload(uploaded), request=request)
 
 
-def store(*, company, actor, raw: bytes, request=None, audit: bool = True) -> StorefrontImage:
+def store(*, company, actor, raw: bytes, request=None, audit: bool = True,
+          provenance: dict | None = None) -> StorefrontImage:
     """
     Lo mismo que `upload`, a partir de los bytes ya leídos.
 
@@ -180,6 +181,10 @@ def store(*, company, actor, raw: bytes, request=None, audit: bool = True) -> St
     calcula su huella; la carga masiva, que lo saca de un ZIP—. `audit=False`
     es para la carga masiva: registra una fila por importación, no una por
     imagen.
+
+    `provenance` (CATALOG-REFERENCE-01 · PR C): de dónde sale la imagen
+    (`source_kind`, `license`, `source_url`, `attribution`), ya validado por
+    quien llama (`finish_media.clean_provenance`). Sin él queda `unknown`.
     """
     processed = process(raw)
 
@@ -199,6 +204,7 @@ def store(*, company, actor, raw: bytes, request=None, audit: bool = True) -> St
                 mime_type=processed.mime_type, byte_size=stored.byte_size,
                 width=processed.width, height=processed.height,
                 has_alpha=processed.has_alpha, uploaded_by=actor,
+                **(provenance or {}),
             )
             if audit:
                 AdminAuditLog.log(
@@ -208,6 +214,7 @@ def store(*, company, actor, raw: bytes, request=None, audit: bool = True) -> St
                         'public_id': public_id, 'mime_type': processed.mime_type,
                         'byte_size': stored.byte_size,
                         'width': processed.width, 'height': processed.height,
+                        'source_kind': image.source_kind,
                     },
                     request=request, company=company,
                 )
