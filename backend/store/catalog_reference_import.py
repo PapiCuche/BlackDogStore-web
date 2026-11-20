@@ -129,7 +129,7 @@ class _Plan:
         role = ref_option.role
         label = ref_option.label_es[:60]
         entry = {'reference_key': reference_key, 'role': role, 'label': label, 'status': 'new',
-                 'option_id': None, 'link': False, 'reason': ''}
+                 'option_id': None, 'link': False, 'reason': '', '_capacity_gb': ref_option.capacity_gb}
         attribute = self.attributes[role]
         if attribute['status'] == 'conflict':
             entry.update(status='conflict', reason=attribute['reason'])
@@ -378,9 +378,12 @@ def _execute(plan, *, actor, request) -> dict:
             option_ids[reference_key] = entry['option_id']
         else:
             attribute = attribute_for(entry['role'])
+            # A NEW capacity sorts by its size (256 GB, 512 GB, 1 TB), not by its label, in the company's order
+            # (G, visual review); the other roles keep the default. An option that already exists is never reordered.
             option = device_catalog.create_option(
                 company=company, attribute_id=attribute.pk, label=entry['label'],
                 swatch_hex=PLACEHOLDER_SWATCH if attribute.kind == VariantAttribute.KIND_COLOR else '',
+                sort_order=(entry['_capacity_gb'] or 0) if entry['role'] == 'capacity' else 0,
                 actor=actor, request=request)
             VariantOption.objects.filter(pk=option.pk).update(reference_key=reference_key)
             created['options'].append({'reference_key': reference_key, 'option_id': option.pk, 'label': option.label})

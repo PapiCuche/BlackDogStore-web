@@ -25,7 +25,7 @@ import threading
 from pathlib import Path
 
 from django.db import connection as db_connection
-from django.test import TestCase, TransactionTestCase
+from django.test import TestCase, TransactionTestCase, override_settings
 
 from store import catalog_reference_import as importer
 from store import catalog_reference_load as loader
@@ -211,6 +211,15 @@ class ApplyTest(_Shop, TestCase):
         esim, country_c = self.option('sim:esim-only').pk, self.option('region:country-c').pk
         self.assertFalse(any({esim, country_c} <= set(c['option_ids']) for c in body['combinations']))
 
+    def test_new_capacities_are_ordered_by_size_not_by_their_label(self):
+        """G (visual review): imported capacities read 256 GB, 512 GB, 1 TB — not «1 TB» first by alphabet — in the
+        company's order that the till, the palette and the public page use."""
+        self.applied(['phone-9-pro'])
+        capacity = VariantAttribute.objects.get(company=self.company, role='capacity')
+        labels = list(VariantOption.objects.filter(company=self.company, attribute=capacity)
+                      .order_by('sort_order', 'label', 'pk').values_list('label', flat=True))
+        self.assertEqual(labels, ['256 GB', '512 GB', '1 TB'])
+
     def test_applying_twice_changes_nothing(self):
         self.applied(['phone-9', 'phone-9-pro'])
         before, logs = self.counts(), AdminAuditLog.objects.exclude(action='catalog_reference_applied').count()
@@ -302,6 +311,43 @@ class ExistingCatalogTest(_Shop, TestCase):
         self.variant.refresh_from_db()
         self.assertEqual((str(self.variant.price), self.variant.name), ('999.00', 'Phone 9 128 tinta'))
         self.assertEqual(Product.objects.filter(company=self.company).count(), 1)
+
+    def test_a_model_on_sale_with_prices_photos_and_stock_imported_twice_keeps_all_of_it(self):
+        """G (owner's priority 6): a realistic tenant model — priced, with photos and devices in stock — imported
+        twice. No variant or option is duplicated; prices, photos and publication stay; nothing of stock moves."""
+        from store import stock_unit_services as units
+        from store.models import ProductImage
+        from store.test_stock_units import imei
+
+        Product.objects.filter(pk=self.variant.pk).update(is_serialized=True, requires_imei=True,
+                                                          image_url='https://cdn.example.com/p9-tinta.png')
+        ProductModel.objects.filter(pk=self.model.pk).update(image_url='https://cdn.example.com/p9.png')
+        ProductImage.objects.create(company=self.company, product=self.variant,
+                                    image_url='https://cdn.example.com/p9-tinta-dorso.png', sort_order=0)
+        units.receive_units(branch=self.company.default_inventory_branch, product=Product.objects.get(pk=self.variant.pk),
+                            actor=self.staff, reason='Compra',
+                            units=[{'imei': imei(f'35209899{n:06d}')} for n in range(2)])
+
+        def snapshot():
+            return (list(Product.objects.filter(company=self.company).order_by('pk').values_list(
+                        'pk', 'name', 'price', 'image_url', 'is_published_online', 'variant_key', 'product_model_id')),
+                    list(ProductImage.objects.filter(company=self.company).values_list('product_id', 'image_url')),
+                    ProductModel.objects.filter(pk=self.model.pk).values_list(
+                        'name', 'image_url', 'is_published_online').get())
+
+        stock, before = self.stock(), snapshot()
+        self.applied(['phone-9'])
+        after_first = self.counts()
+        second = self.applied(['phone-9'])
+        self.assertEqual(self.stock(), stock)            # zero Product, BranchStock, StockUnit or StockMovement
+        self.assertEqual(snapshot(), before)             # prices, photos, names and publication untouched
+        self.assertEqual(self.counts(), after_first)     # the second import writes no catalogue row
+        self.assertEqual(second['created'], {'models': [], 'attributes': [], 'options': []})
+        keys = list(VariantOption.objects.filter(company=self.company).exclude(reference_key='')
+                    .values_list('reference_key', flat=True))
+        self.assertEqual(len(keys), len(set(keys)), 'an option was duplicated')
+        self.assertEqual(Product.objects.filter(product_model=self.model).count(), 1)
+        self.assertEqual(ProductModel.objects.filter(company=self.company).count(), 1)
 
     def test_a_renamed_option_stays_renamed_and_is_never_duplicated(self):
         self.applied(['phone-9'])
@@ -575,6 +621,86 @@ class CommittedFileImportTest(TestCase):
             self.assertFalse(any(i['changes'] for i in again['items']), path.name)
         self.assertFalse(Product.objects.filter(company=company).exists())
         self.assertFalse(ProductModel.objects.filter(company=company, is_published_online=True).exists())
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class RealDatasetConfiguratorTest(TestCase):
+    """G (owner's priority 4): two neighbouring models of the COMMITTED file, imported into one company, offer exactly
+    their own capacities, colours, SIM and regions — in the till's configurator and on the public model page — and
+    nothing of the other model (the company shares one option per reference key between them)."""
+
+    KEYS = ('iphone-17-pro', 'iphone-16')
+
+    def setUp(self):
+        import json
+
+        from store import catalog_reference as ref
+
+        path = Path(__file__).resolve().parent.parent / 'catalog_reference' / 'apple-iphone.json'
+        loader.load(ref.load(path))
+        self.raw = {m['key']: m for m in json.loads(path.read_text(encoding='utf-8'))['models']}
+        self.company = _p3_company('refreal', 'Tienda real')
+        self.staff, _ = _p2d_member(self.company, 'refreal_staff', [
+            'company.view', 'products.view', 'products.manage', 'sales.pos.use', 'inventory.view'])
+        importer.apply(company=self.company, keys=list(self.KEYS), actor=self.staff)
+        from store.models import Category
+
+        self.category = Category.objects.create(company=self.company, name='Teléfonos', slug='refreal-telefonos')
+
+    def expected(self, key):
+        from store import catalog_reference as ref
+
+        model = self.raw[key]
+        return {
+            'capacity': {ref.capacity_label(gb) for gb in model['capacities_gb']},
+            'color': {c['label_es'] for c in model['colors']},
+            'sim': {s['label_es'] for s in model['sim']},
+            'region': {s['region_label_es'] for s in model['sim']},
+        }
+
+    def test_the_till_offers_exactly_each_models_dataset_options(self):
+        branch = self.company.default_inventory_branch
+        api = _client(self.staff)
+        for key in self.KEYS:
+            model = ProductModel.objects.get(company=self.company, reference_key=key)
+            res = api.get(f'/api/admin/pos/models/{model.pk}/configurations/?company={self.company.pk}&branch={branch.pk}')
+            self.assertEqual(res.status_code, 200, res.content)
+            offered = {a['role']: {o['label'] for o in a['options']} for a in res.json()['attributes']}
+            self.assertEqual(offered, self.expected(key), key)
+
+    def test_the_public_page_offers_exactly_each_models_capacities_and_colours(self):
+        branch = self.company.default_inventory_branch
+        api, public = _client(self.staff), _client(host=f'{self.company.slug}.tienda.pe')
+        for key in self.KEYS:
+            model = ProductModel.objects.get(company=self.company, reference_key=key)
+            body = api.get(f'/api/admin/pos/models/{model.pk}/configurations/?company={self.company.pk}&branch={branch.pk}').json()
+            roles = {o['id']: a['role'] for a in body['attributes'] for o in a['options']}
+            made = set()
+            # One published variant for each capacity × colour, with the first SIM × region pair that exists.
+            for combo in body['combinations']:
+                pair = tuple(sorted(o for o in combo['option_ids'] if roles[o] in ('capacity', 'color')))
+                if pair in made:
+                    continue
+                made.add(pair)
+                product = device_catalog.create_variant_product(self.company, model, condition_line='new',
+                                                                option_ids=combo['option_ids'], actor=self.staff,
+                                                                request=None)
+                # The palette's draft goes through its one commercial transition, as from the panel.
+                Product.objects.filter(pk=product.pk).update(price='999.00', category=self.category)
+                device_catalog.enable_variant_for_sale(product, publish=True, actor=self.staff, request=None)
+            ProductModel.objects.filter(pk=model.pk).update(is_published_online=True)
+            want = self.expected(key)
+            self.assertEqual(len(made), len(want['capacity']) * len(want['color']), key)
+            res = public.get(f'/api/catalog/models/{model.slug}/')
+            self.assertEqual(res.status_code, 200, res.content)
+            shown = {a.get('role'): {o['label'] for o in a['options']} for a in res.json()['attributes']}
+            self.assertTrue(res.json()['variants'], res.json())
+            self.assertEqual(shown['capacity'], want['capacity'], key)
+            self.assertEqual(shown['color'], want['color'], key)
+        # The two models share the company's options by reference key, yet neither shows the other's.
+        self.assertNotEqual(self.expected(self.KEYS[0])['color'], self.expected(self.KEYS[1])['color'])
+        self.assertFalse(Product.objects.filter(company=self.company, is_serialized=True).exists())
+        self.assertFalse(StockUnit.objects.filter(company=self.company).exists())
 
 
 class NoVocabularyInTheEngineTest(TestCase):
