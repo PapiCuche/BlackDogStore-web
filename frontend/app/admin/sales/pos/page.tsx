@@ -50,6 +50,7 @@ import { PosNewCustomerDialog } from "./PosNewCustomerDialog";
 import { saleSteps, type StepId } from "../../lib/pos-steps";
 import { PosModeSwitch, type PosMode } from "./PosModeSwitch";
 import { PosServiceIntake } from "./PosServiceIntake";
+import { PosDevicePicker } from "./PosDevicePicker";
 import { PosOnOrderBadge, PosOnOrderOffer, PosProductHit, PosSupplyReason, leadTimeText, onOrderLineLabel } from "./PosOnOrder";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
@@ -1139,6 +1140,18 @@ function PosContent({ ctx }: { ctx: InternalContext }) {
                 ))}
               </div>
             ) : null}
+
+            {/* CATALOG-REFERENCE-01 · PR F — el mismo catálogo: modelo → capacidad → color → SIM/región. */}
+            <PosDevicePicker
+              companyId={companyId}
+              branch={branch}
+              onAddProduct={(p) => { addProduct(p); focusScan(); }}
+              onAddOnOrder={(p) => { addOnOrder(p); focusScan(); }}
+              onReceived={(unit, product) => {
+                addUnit(unit, product, "manual");
+                notifyStockChanged();
+              }}
+            />
           </div>
 
           {/* --- carrito --------------------------------------------- */}
