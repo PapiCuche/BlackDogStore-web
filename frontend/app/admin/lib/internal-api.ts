@@ -3501,3 +3501,140 @@ export async function checkClaims(
       !!w && typeof (w as ClaimWarning).phrase === "string" && typeof (w as ClaimWarning).advice === "string",
   );
 }
+
+// ---------------------------------------------------------------------------
+// CATALOG-REFERENCE-01 · PR F — venta rápida de equipos en caja
+//   GET  /api/admin/pos/models/?q=&branch=                       sales.pos.use
+//   GET  /api/admin/pos/models/<id>/configurations/?branch=      sales.pos.use
+//   POST /api/admin/pos/devices/receive/?branch=  Idempotency-Key  inventory.adjust (+ products.manage al crear)
+// ---------------------------------------------------------------------------
+
+export type PosModelHit = { id: number; name: string; has_palette: boolean; variants: number; available: number };
+
+export type PosConfigOption = { id: number; label: string; swatch_hex: string };
+
+export type PosConfigAttribute = {
+  id: number;
+  name: string;
+  role: "capacity" | "color" | "sim" | "region" | "other" | string;
+  kind: string;
+  /** Con una sola opción, la caja no la pregunta. */
+  varies: boolean;
+  options: PosConfigOption[];
+};
+
+export type PosConfigVariant = {
+  product_id: number;
+  name: string;
+  price: string;
+  /** Equipos propios disponibles en ESTA sucursal. Nunca lo que tiene un proveedor. */
+  available: number;
+  is_active: boolean;
+  pending_draft: boolean;
+  sellable: boolean;
+  is_serialized: boolean;
+  requires_imei: boolean;
+  on_order: { lead_time_days: number; price: string } | null;
+  /** Sólo con «Ver costos y márgenes». */
+  reference_cost?: string | null;
+};
+
+export type PosConfigCombination = { key: string; option_ids: number[]; variant: PosConfigVariant | null };
+
+export type PosModelConfigurations = {
+  model: { id: number; name: string };
+  line: string;
+  has_palette: boolean;
+  attributes: PosConfigAttribute[];
+  /** Paleta menos exclusiones: una combinación que no está aquí no existe. */
+  combinations: PosConfigCombination[];
+  truncated: boolean;
+  can: { receive: boolean; create_variant: boolean; set_price: boolean; view_costs: boolean; choose_supplier: boolean };
+  excluded_pairs?: number[][];
+  suppliers?: { id: number; name: string }[];
+};
+
+export type PosDeviceReceiveInput = {
+  model: number;
+  option_ids: number[];
+  imei?: string;
+  imei2?: string;
+  serial_number?: string;
+  supplier?: number | null;
+  cost?: string;
+  price?: string;
+};
+
+export type PosDeviceReceived = {
+  unit: PosUnit;
+  product: PosProduct;
+  method: "manual";
+  replayed: boolean;
+  created_variant: boolean;
+  price_changed: boolean;
+  warnings: string[];
+  supplier?: { id: number; name: string } | null;
+};
+
+/** El servidor no recibió el equipo: `field` dice qué campo; `unit`, qué equipo ya tiene ese IMEI. */
+export class PosDeviceReceiveError extends Error {
+  code: string;
+  field: string;
+  status: number;
+  unit: { id: number; label_code: string; product_name: string; status_label: string; branch_name: string } | null;
+  constructor(message: string, code: string, field: string, status: number, unit: PosDeviceReceiveError["unit"]) {
+    super(message);
+    this.name = "PosDeviceReceiveError";
+    this.code = code;
+    this.field = field;
+    this.status = status;
+    this.unit = unit;
+  }
+}
+
+export async function posModelSearch(companyId: number | null, branchId: number, q: string): Promise<PosModelHit[]> {
+  const qs = new URLSearchParams({ branch: String(branchId), q });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/models/?${qs}`, { activity: true });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudo buscar el modelo."));
+  return (await res.json()).results ?? [];
+}
+
+export async function fetchPosModelConfigurations(
+  companyId: number | null,
+  branchId: number,
+  modelId: number,
+): Promise<PosModelConfigurations> {
+  const qs = new URLSearchParams({ branch: String(branchId) });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/models/${modelId}/configurations/?${qs}`, { activity: true });
+  if (!res.ok) throw new Error(await readDetail(res, "No se pudieron leer las configuraciones del modelo."));
+  return res.json();
+}
+
+/** «Llegó el equipo». La misma clave en un reintento devuelve el mismo equipo, sin registrar otro. */
+export async function posReceiveDevice(
+  companyId: number | null,
+  branchId: number,
+  body: PosDeviceReceiveInput,
+  idempotencyKey: string,
+): Promise<PosDeviceReceived> {
+  const qs = new URLSearchParams({ branch: String(branchId) });
+  if (companyId) qs.set("company", String(companyId));
+  const res = await fetchWithAuth(`${API_BASE}/admin/pos/devices/receive/?${qs}`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idempotencyKey },
+    body: JSON.stringify(body),
+  });
+  if (res.ok) return res.json();
+  const payload = (await res.json().catch(() => null)) as
+    | { detail?: string; code?: string; field?: string; unit?: PosDeviceReceiveError["unit"] }
+    | null;
+  throw new PosDeviceReceiveError(
+    payload?.detail ? String(payload.detail) : "No se pudo registrar el equipo.",
+    payload?.code ?? "",
+    payload?.field ?? "",
+    res.status,
+    payload?.unit ?? null,
+  );
+}
