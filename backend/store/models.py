@@ -10491,6 +10491,13 @@ class StockUnit(models.Model):
     # line that moves it carries it, and a sale line is valued at it. Shown
     # only to `costs.view`; never rewritten once the unit is sold.
     cost = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    # CATALOG-REFERENCE-01 · PR F (D-F-3) — who sold the shop THIS device, when known. Written once, by the
+    # reception (`stock_unit_services.receive_units`), and only with a supplier of the unit's company. Staff
+    # only, and only to who already sees suppliers or costs; never public. NULL: not stated (every device
+    # received before PR F, and the previous release keeps inserting while this migrates).
+    supplier = models.ForeignKey(
+        'store.Supplier', null=True, blank=True, on_delete=models.PROTECT, related_name='stock_units',
+    )
     # SERIAL-PICK-01: a device has NO price of its own. It is sold at the
     # product's price, at the till and on the web (the owner's decision).
     # DC2 amends it for USED devices on the web: each one is priced on its own

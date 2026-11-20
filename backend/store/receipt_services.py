@@ -725,7 +725,8 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
                         actor=actor, request=request)
                 created = units_service.receive_units(
                     branch=branch, product=product, units=line['units'], actor=actor, reason=reason,
-                    request=request, movement_type=movement_type_for(normalised))
+                    request=request, movement_type=movement_type_for(normalised),
+                    supplier=resolved.supplier)     # D-F-3 (PR F): each device keeps its supplier
                 movement = created.movement
                 batch = label_batches.create_for_movement(movement, units=created, actor=actor)
                 received = count = len(created)
