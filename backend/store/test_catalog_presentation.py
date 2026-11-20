@@ -123,15 +123,20 @@ class PublicListOrderTest(PresentationShop):
         self.assertNotIn('is_featured', cards[1])
 
     def test_a_company_that_never_features_gets_the_same_cards(self):
+        # A tie on `sort_order` (both 1) is broken by name; nobody featured = sort_order, name, pk.
+        self.second_model('Teléfono B', 'tb-128', sort_order=1)
         self.second_model('Teléfono A', 'ta-128', sort_order=1)
-        before = self.listing()
-        self.assertEqual(
-            sorted(before[0]), ['category', 'from_price', 'has_new', 'has_used', 'image_url', 'name', 'slug', 'sold_out'])
+        known = ['category', 'from_price', 'has_new', 'has_used', 'image_url', 'name', 'slug', 'sold_out']
+        cards = self.listing()
+        self.assertEqual([c['slug'] for c in cards], ['telefono-x', 'telefono-a', 'telefono-b'])
+        self.assertEqual([sorted(c) for c in cards], [known, known, known])
+        self.assertEqual(cards[1], {'slug': 'telefono-a', 'name': 'Teléfono A', 'image_url': '', 'category': None,
+                                    'from_price': '900.00', 'has_new': True, 'has_used': False, 'sold_out': True})
         # Featuring a model of ANOTHER company changes nothing here.
         other = _p3_company('pe-otra-lista', 'Otra')
         foreign = device_catalog.create_model(company=other, name='Ajeno')
         device_catalog.update_model(foreign, is_featured=True)
-        self.assertEqual(self.listing(), before)
+        self.assertEqual(self.listing(), cards)
 
 
 class OptionOrderTest(PresentationShop):
@@ -195,20 +200,38 @@ class OptionOrderTest(PresentationShop):
     def test_the_public_page_lists_the_colours_in_the_models_order(self):
         blue_variant = _prod(self.company, 'Teléfono X 128 GB Azul', 'tx-128-azul', price='3000.00', inventory=0)
         device_catalog.set_variant(blue_variant, model_id=self.model.pk, option_ids=[self.gb128.pk, self.blue.pk])
-        before = self.detail()
-        self.assertEqual(self.colour_labels(before), ['Azul', 'Negro'])
-        # Placing only the capacity changes nothing of the colours.
+        option = lambda o, order=0: {'id': o.pk, 'label': o.label, 'swatch_hex': o.swatch_hex,  # noqa: E731
+                                     'sort_order': order}
+        capacity = lambda body: next(a for a in body['attributes'] if a['id'] == self.capacity.pk)['options']  # noqa: E731
+        colours = lambda body: next(a for a in body['attributes'] if a['id'] == self.colour.pk)['options']  # noqa: E731
+        # Every option has the company's sort_order 0: the tie is broken by label (Azul before Negro).
+        body = self.detail()
+        self.assertEqual(capacity(body), [option(self.gb128), option(self.gb256)])
+        self.assertEqual(colours(body), [option(self.blue), option(self.black)])
+        # A palette alone changes nothing.
         self.palette(self.gb128, self.gb256, self.black, self.blue, self.red)
-        self.assertEqual(self.detail(), before)
+        self.assertEqual(self.detail(), body)
+        # Placing the CAPACITY reorders the capacity only; the colours stay as they were.
+        model_palette.set_option_order(self.model, attribute_id=self.capacity.pk,
+                                       option_ids=[self.gb256.pk, self.gb128.pk], actor=self.staff)
+        body = self.detail()
+        self.assertEqual(capacity(body), [option(self.gb256, 0), option(self.gb128, 1)])
+        self.assertEqual(colours(body), [option(self.blue), option(self.black)])
+        # Placing the colours: the model's order, `sort_order` = place on this page; Rojo has no public variant.
         model_palette.set_option_order(self.model, attribute_id=self.colour.pk,
                                        option_ids=[self.black.pk, self.red.pk, self.blue.pk], actor=self.staff)
         body = self.detail()
-        self.assertEqual(self.colour_labels(body), ['Negro', 'Azul'])
-        colours = next(a for a in body['attributes'] if a['id'] == self.colour.pk)['options']
-        self.assertEqual([o['sort_order'] for o in colours], [0, 1])
-        # The capacity, never placed, keeps the company's own values.
-        capacity = next(a for a in body['attributes'] if a['id'] == self.capacity.pk)['options']
-        self.assertEqual(capacity, before['attributes'][0]['options'])
+        self.assertEqual(colours(body), [option(self.black, 0), option(self.blue, 1)])
+        self.assertEqual(capacity(body), [option(self.gb256, 0), option(self.gb128, 1)])
+
+    def test_an_attribute_without_options_in_this_palette_is_refused(self):
+        self.palette(self.gb128, self.black, self.blue)
+        before = AdminAuditLog.objects.filter(action='product_model_option_order_set').count()
+        res = _client(self.staff).put(self.url(), {'attribute_id': self.sim.pk, 'option_ids': []}, format='json')
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.json()['field'], 'attribute_id')
+        self.assertIn('no tiene opciones de ese atributo', res.json()['detail'])
+        self.assertEqual(AdminAuditLog.objects.filter(action='product_model_option_order_set').count(), before)
 
     def test_an_option_added_after_the_order_follows_the_placed_ones(self):
         self.palette(self.black, self.blue)

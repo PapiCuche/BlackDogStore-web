@@ -375,6 +375,10 @@ def set_option_order(model, *, attribute_id, option_ids, actor=None, request=Non
         raise CatalogError('Este modelo no tiene paleta: elige primero sus opciones.', field='option_ids',
                            code='no_palette')
     current = {pk for pk, row in rows.items() if row.option.attribute_id == attribute.pk}
+    if not current:
+        # Review of #374: nothing of that attribute is in this palette, so there is nothing to order (not a no-op 200).
+        raise CatalogError(f'Este modelo no tiene opciones de ese atributo («{attribute.name}») en su paleta.',
+                           field='attribute_id')
     if len(option_ids) != len(set(option_ids)) or set(option_ids) != current:
         raise CatalogError(
             f'El orden debe nombrar, una vez, cada opción de «{attribute.name}» de este modelo.',
