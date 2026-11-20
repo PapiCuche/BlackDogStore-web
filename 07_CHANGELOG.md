@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-20 — Catálogo maestro de iPhone (PR A, en rama)
+
+**Added**
+
+- Catálogo de referencia de iPhone con datos oficiales de Apple. Tiene 55 modelos, desde el original hasta iPhone 18 Pro, 18 Pro Max y Duo, con capacidades, colores en inglés y español, SIM por región y números de modelo. Cada modelo indica su fuente y cuán completo está.
+- Un validador revisa el archivo en cada cambio. Si encuentra precios, stock, imágenes o fuentes que no son oficiales, lo rechaza.
+
 ## 2026-11-18 — WIN-003D-1 · El agente de impresión no se queda colgado con Windows
 
 **Fixed**

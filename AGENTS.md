@@ -32,10 +32,15 @@ Black Dog Store es el tenant piloto, no el producto. Nunca en código global: no
 dirección, teléfono, RUC, categorías, productos, garantías, políticas, imágenes, logos, textos
 comerciales, sucursales, métodos de pago. Todo eso sale de configuración del tenant, CMS, uploads o
 una migración de datos del piloto. Prueba mínima: otra tienda sin datos no ve nada del piloto.
-Única excepción (aprobada por el propietario, 2026-10-23): vocabularios técnicos **cerrados** de
+Primera excepción (aprobada por el propietario, 2026-10-23): vocabularios técnicos **cerrados** de
 reconocimiento y seguridad que nombran familias de **varios fabricantes** (p. ej. el reconocedor de texto
 de #142 y la lista permitida de la IA, `docs/adr-inv-ai-structured.md` §6). No cubre textos comerciales ni
 nada propio de la tienda piloto.
+Segunda excepción (aprobada por el propietario, 2026-11-20, `docs/adr-catalog-reference.md`): el
+**catálogo de referencia de fabricantes**. Son datos factuales verificados en fuentes oficiales (modelos,
+capacidades, colores, SIM, regiones y números de modelo) y viven sólo en `backend/catalog_reference/`, nunca en
+el motor. No incluye precios, stock, imágenes ni textos comerciales. Una empresa no ve nada hasta que lo
+importa, y al importarlo todo queda oculto y sin variantes ni stock.
 
 ## 3. Seguridad
 

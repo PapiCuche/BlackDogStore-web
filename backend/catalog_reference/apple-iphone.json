@@ -1,0 +1,5515 @@
+{
+ "schema_version": 1,
+ "manufacturer": "Apple",
+ "family": "iPhone",
+ "dataset_version": "2026-11-20",
+ "official_source_hosts": [
+  "apple.com"
+ ],
+ "notes": "Built from Apple official pages only (support.apple.com 108044 \"Identify your iPhone model\", each model Tech Specs in en-us, es-es and es-lamr, zh-cn/zh-hk/zh-mo for China SIM variants, Apple Newsroom for announcement dates). label_es prefers Apple Latin America (es-lamr) with the \"Color \" prefix removed; official keeps the strings exactly as published. No prices, stock or images.",
+ "models": [
+  {
+   "key": "iphone-duo",
+   "name": "iPhone Duo",
+   "line": "other",
+   "generation": "Duo",
+   "announced": "2026-09-09",
+   "capacities_gb": [
+    256,
+    512,
+    1024,
+    2048
+   ],
+   "colors": [
+    {
+     "key": "night-sky",
+     "label_en": "Night Sky",
+     "label_es": "Cielo nocturno",
+     "official": {
+      "en": "Night Sky",
+      "es_419": "Cielo nocturno",
+      "es_es": "Cielo nocturno"
+     }
+    },
+    {
+     "key": "star-white",
+     "label_en": "Star White",
+     "label_es": "Blanco estrella",
+     "official": {
+      "en": "Star White",
+      "es_419": "Blanco estrella",
+      "es_es": "Blanco estelar"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "all regions (support.apple.com/108044: 'There is no SIM tray'; dual eSIM confirmed on en-us, en-gb, en-hk, zh-cn Tech Specs and apple.com/la)",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3447",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3719",
+     "regions": "Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A3721",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A3720",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/148588",
+    "https://support.apple.com/en-gb/148588",
+    "https://support.apple.com/es-es/148588",
+    "https://support.apple.com/es-lamr/148588",
+    "https://support.apple.com/zh-cn/148588",
+    "https://support.apple.com/en-hk/148588",
+    "https://www.apple.com/la/iphone-duo/specs/",
+    "https://www.apple.com/newsroom/2026/09/apple-unveils-iphone-duo/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://www.apple.com/la/iphone-duo/specs/; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/148588 cross-checked)",
+    "line 'other': foldable model (5.4-inch outer + 7.6-inch inner display per support.apple.com/108044); no matching line value in the schema",
+    "es_419: apple.com/la and es-lamr Tech Specs say 'blanco estrella'; support.apple.com/es-lamr/108044 says 'blanco estelar'. es_es: support.apple.com/es-es/108044 says 'blanco estelar'; es-es Tech Specs say 'blanco estrella'"
+   ]
+  },
+  {
+   "key": "iphone-18-pro-max",
+   "name": "iPhone 18 Pro Max",
+   "line": "pro_max",
+   "generation": "18",
+   "announced": "2026-09-09",
+   "capacities_gb": [
+    256,
+    512,
+    1024,
+    2048
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "glacier",
+     "label_en": "Glacier",
+     "label_es": "Glaciar",
+     "official": {
+      "en": "Glacier",
+      "es_419": "Color glaciar",
+      "es_es": "Azul glacial"
+     }
+    },
+    {
+     "key": "burgundy",
+     "label_en": "Burgundy",
+     "label_es": "Borgoña",
+     "official": {
+      "en": "Burgundy",
+      "es_419": "Color borgoña",
+      "es_es": "Burdeos"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim-or-esim",
+     "regions": "China mainland",
+     "config": "Dual SIM: two nano-SIM cards, or one nano-SIM and one eSIM, or two active eSIMs [translated from zh-cn Tech Specs: 双卡 (两个 nano-SIM 卡，或一个 nano-SIM 卡和一个 eSIM，或激活两个 eSIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3473",
+     "regions": "USA, Puerto Rico"
+    },
+    {
+     "number": "A3716",
+     "regions": "Japan, Guam, USVI, Canada, Mexico, Saudi Arabia, KSA, UAE, Oman, Kuwait, Bahrain, Qatar"
+    },
+    {
+     "number": "A3718",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A3717",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/148591",
+    "https://support.apple.com/en-gb/148591",
+    "https://support.apple.com/es-es/148591",
+    "https://support.apple.com/es-lamr/148591",
+    "https://support.apple.com/zh-cn/148591",
+    "https://support.apple.com/en-hk/148591",
+    "https://www.apple.com/la/iphone-18-pro/specs/",
+    "https://www.apple.com/newsroom/2026/09/apple-debuts-iphone-18-pro-and-iphone-18-pro-max/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://www.apple.com/la/iphone-18-pro/specs/; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/148591 cross-checked)",
+    "SIM: eSIM-only region list quoted from the iPhone 18 Pro/Pro Max details in support.apple.com/108044; China mainland from zh-cn Tech Specs; apple.com/la shows 'Doble SIM (nano-SIM y eSIM)' + 'Compatibilidad con doble eSIM'",
+    "es_419: apple.com/la says 'Color plata, color glaciar, color borgoña'; support.apple.com/es-lamr/108044 says 'plata, glaciar, burdeos' (borgoña vs burdeos differ)",
+    "model_numbers regions kept verbatim from support.apple.com/108044 (uses abbreviations USA, USVI, KSA, UAE)",
+    "support.apple.com/es-lamr Tech Specs show the eSIM-only config (Mexico-type) for this model; apple.com/la specs show the regional (non-Mexico) config"
+   ]
+  },
+  {
+   "key": "iphone-18-pro",
+   "name": "iPhone 18 Pro",
+   "line": "pro",
+   "generation": "18",
+   "announced": "2026-09-09",
+   "capacities_gb": [
+    256,
+    512,
+    1024,
+    2048
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "glacier",
+     "label_en": "Glacier",
+     "label_es": "Glaciar",
+     "official": {
+      "en": "Glacier",
+      "es_419": "Color glaciar",
+      "es_es": "Azul glacial"
+     }
+    },
+    {
+     "key": "burgundy",
+     "label_en": "Burgundy",
+     "label_es": "Borgoña",
+     "official": {
+      "en": "Burgundy",
+      "es_419": "Color borgoña",
+      "es_es": "Burdeos"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim-or-esim",
+     "regions": "China mainland",
+     "config": "Dual SIM: two nano-SIM cards, or one nano-SIM and one eSIM, or two active eSIMs [translated from zh-cn Tech Specs: 双卡 (两个 nano-SIM 卡，或一个 nano-SIM 卡和一个 eSIM，或激活两个 eSIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3472",
+     "regions": "USA, Puerto Rico"
+    },
+    {
+     "number": "A3713",
+     "regions": "Japan, Guam, USVI, Canada, Mexico, Saudi Arabia, KSA, UAE, Oman, Kuwait, Bahrain, Qatar"
+    },
+    {
+     "number": "A3715",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A3714",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/148590",
+    "https://support.apple.com/en-gb/148590",
+    "https://support.apple.com/es-es/148590",
+    "https://support.apple.com/es-lamr/148590",
+    "https://support.apple.com/zh-cn/148590",
+    "https://support.apple.com/en-hk/148590",
+    "https://www.apple.com/la/iphone-18-pro/specs/",
+    "https://www.apple.com/newsroom/2026/09/apple-debuts-iphone-18-pro-and-iphone-18-pro-max/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://www.apple.com/la/iphone-18-pro/specs/; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/148590 cross-checked)",
+    "SIM: eSIM-only region list quoted from the iPhone 18 Pro/Pro Max details in support.apple.com/108044; China mainland from zh-cn Tech Specs; apple.com/la shows 'Doble SIM (nano-SIM y eSIM)' + 'Compatibilidad con doble eSIM'",
+    "es_419: apple.com/la says 'Color plata, color glaciar, color borgoña'; support.apple.com/es-lamr/108044 says 'plata, glaciar, burdeos' (borgoña vs burdeos differ)",
+    "model_numbers regions kept verbatim from support.apple.com/108044 (uses abbreviations USA, USVI, KSA, UAE)",
+    "support.apple.com/es-lamr Tech Specs show the eSIM-only config (Mexico-type) for this model; apple.com/la specs show the regional (non-Mexico) config"
+   ]
+  },
+  {
+   "key": "iphone-17e",
+   "name": "iPhone 17e",
+   "line": "e",
+   "generation": "17e",
+   "announced": "2026-03-02",
+   "capacities_gb": [
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "Blanco"
+     }
+    },
+    {
+     "key": "soft-pink",
+     "label_en": "Soft Pink",
+     "label_es": "Rosa pálido",
+     "official": {
+      "en": "Soft Pink",
+      "es_419": "Rosa pálido",
+      "es_es": "Rosa palo"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "China mainland",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support [translated from zh-cn Tech Specs: 双卡 (nano-SIM 卡和 eSIM), 支持双 eSIM]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3575",
+     "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A3635",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A3634",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/126470",
+    "https://support.apple.com/en-gb/126470",
+    "https://support.apple.com/es-es/126470",
+    "https://support.apple.com/es-lamr/126470",
+    "https://support.apple.com/zh-cn/126470",
+    "https://support.apple.com/en-hk/126470",
+    "https://www.apple.com/la/iphone-17e/specs/",
+    "https://www.apple.com/newsroom/2026/03/apple-introduces-iphone-17e/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://www.apple.com/la/iphone-17e/specs/; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/126470 cross-checked)",
+    "SIM: eSIM-only region list quoted from support.apple.com/108044; China mainland from zh-cn Tech Specs (unlike 16e/17, China is nano-SIM + eSIM, not dual nano-SIM)",
+    "support.apple.com/es-lamr Tech Specs show the eSIM-only config (Mexico-type) for this model; apple.com/la specs show the regional (non-Mexico) config"
+   ]
+  },
+  {
+   "key": "iphone-air",
+   "name": "iPhone Air",
+   "line": "air",
+   "generation": "Air",
+   "announced": "2025-09-09",
+   "capacities_gb": [
+    256,
+    512,
+    1024
+   ],
+   "colors": [
+    {
+     "key": "space-black",
+     "label_en": "Space Black",
+     "label_es": "Negro espacial",
+     "official": {
+      "en": "Space Black",
+      "es_419": "Negro espacial",
+      "es_es": "Negro espacial"
+     }
+    },
+    {
+     "key": "cloud-white",
+     "label_en": "Cloud White",
+     "label_es": "Blanco nube",
+     "official": {
+      "en": "Cloud White",
+      "es_419": "Blanco nube",
+      "es_es": "Blanco nube"
+     }
+    },
+    {
+     "key": "light-gold",
+     "label_en": "Light Gold",
+     "label_es": "Oro claro",
+     "official": {
+      "en": "Light Gold",
+      "es_419": "Color oro claro",
+      "es_es": "Dorado claro"
+     }
+    },
+    {
+     "key": "sky-blue",
+     "label_en": "Sky Blue",
+     "label_es": "Azul cielo",
+     "official": {
+      "en": "Sky Blue",
+      "es_419": "Azul cielo",
+      "es_es": "Azul cielo"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "all regions (support.apple.com/108044: 'There's no SIM tray'; dual eSIM confirmed on en-us, en-gb, en-hk, zh-cn Tech Specs and apple.com/la)",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3260",
+     "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A3516",
+     "regions": "Japan"
+    },
+    {
+     "number": "A3518",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A3517",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/125092",
+    "https://support.apple.com/en-gb/125092",
+    "https://support.apple.com/es-es/125092",
+    "https://support.apple.com/es-lamr/125092",
+    "https://support.apple.com/zh-cn/125092",
+    "https://support.apple.com/en-hk/125092",
+    "https://www.apple.com/la/iphone-air/specs/",
+    "https://www.apple.com/newsroom/2025/09/introducing-iphone-air-a-powerful-new-iphone-with-a-breakthrough-design/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://www.apple.com/la/iphone-air/specs/; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/125092 cross-checked)",
+    "es_419: apple.com/la and es-lamr Tech Specs say 'color oro claro'; support.apple.com/es-lamr/108044 says 'oro claro'"
+   ]
+  },
+  {
+   "key": "iphone-17-pro-max",
+   "name": "iPhone 17 Pro Max",
+   "line": "pro_max",
+   "generation": "17",
+   "announced": "2025-09-09",
+   "capacities_gb": [
+    256,
+    512,
+    1024,
+    2048
+   ],
+   "colors": [
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "cosmic-orange",
+     "label_en": "Cosmic Orange",
+     "label_es": "Naranja cósmico",
+     "official": {
+      "en": "Cosmic Orange",
+      "es_419": "Naranja cósmico",
+      "es_es": "Naranja cósmico"
+     }
+    },
+    {
+     "key": "deep-blue",
+     "label_en": "Deep Blue",
+     "label_es": "Azul profundo",
+     "official": {
+      "en": "Deep Blue",
+      "es_419": "Azul profundo",
+      "es_es": "Azul oscuro"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3257",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3525",
+     "regions": "Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A3527",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A3526",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/125091",
+    "https://support.apple.com/en-gb/125091",
+    "https://support.apple.com/es-es/125091",
+    "https://support.apple.com/es-lamr/125091",
+    "https://support.apple.com/zh-cn/125091",
+    "https://support.apple.com/en-hk/125091",
+    "https://www.apple.com/newsroom/2025/09/apple-unveils-iphone-17-pro-and-iphone-17-pro-max/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://support.apple.com/es-lamr/125091; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/125091 cross-checked)",
+    "SIM: eSIM-only region list quoted from support.apple.com/108044; China mainland from zh-cn Tech Specs; HK uses the 'other' model (en-hk Tech Specs: Dual SIM (nano-SIM and eSIM))",
+    "es_419: es-lamr Tech Specs say 'Color plata'; support.apple.com/es-lamr/108044 says 'plata'",
+    "Model not sold on apple.com/la any more; es_419 names from support.apple.com/es-lamr Tech Specs",
+    "support.apple.com/es-lamr Tech Specs show the eSIM-only config (Mexico-type) for this model"
+   ]
+  },
+  {
+   "key": "iphone-17-pro",
+   "name": "iPhone 17 Pro",
+   "line": "pro",
+   "generation": "17",
+   "announced": "2025-09-09",
+   "capacities_gb": [
+    256,
+    512,
+    1024
+   ],
+   "colors": [
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "cosmic-orange",
+     "label_en": "Cosmic Orange",
+     "label_es": "Naranja cósmico",
+     "official": {
+      "en": "Cosmic Orange",
+      "es_419": "Naranja cósmico",
+      "es_es": "Naranja cósmico"
+     }
+    },
+    {
+     "key": "deep-blue",
+     "label_en": "Deep Blue",
+     "label_es": "Azul profundo",
+     "official": {
+      "en": "Deep Blue",
+      "es_419": "Azul profundo",
+      "es_es": "Azul oscuro"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3256",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3522",
+     "regions": "Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A3524",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A3523",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/125090",
+    "https://support.apple.com/en-gb/125090",
+    "https://support.apple.com/es-es/125090",
+    "https://support.apple.com/es-lamr/125090",
+    "https://support.apple.com/zh-cn/125090",
+    "https://support.apple.com/en-hk/125090",
+    "https://www.apple.com/newsroom/2025/09/apple-unveils-iphone-17-pro-and-iphone-17-pro-max/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://support.apple.com/es-lamr/125090; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/125090 cross-checked)",
+    "SIM: eSIM-only region list quoted from support.apple.com/108044; China mainland from zh-cn Tech Specs; HK uses the 'other' model (en-hk Tech Specs: Dual SIM (nano-SIM and eSIM))",
+    "es_419: es-lamr Tech Specs say 'Color plata'; support.apple.com/es-lamr/108044 says 'plata'",
+    "Model not sold on apple.com/la any more; es_419 names from support.apple.com/es-lamr Tech Specs",
+    "support.apple.com/es-lamr Tech Specs show the eSIM-only config (Mexico-type) for this model"
+   ]
+  },
+  {
+   "key": "iphone-17",
+   "name": "iPhone 17",
+   "line": "standard",
+   "generation": "17",
+   "announced": "2025-09-09",
+   "capacities_gb": [
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "Blanco"
+     }
+    },
+    {
+     "key": "mist-blue",
+     "label_en": "Mist Blue",
+     "label_es": "Azul neblina",
+     "official": {
+      "en": "Mist Blue",
+      "es_419": "Azul neblina",
+      "es_es": "Azul neblina"
+     }
+    },
+    {
+     "key": "sage",
+     "label_en": "Sage",
+     "label_es": "Salvia",
+     "official": {
+      "en": "Sage",
+      "es_419": "Color salvia",
+      "es_es": "Verde salvia"
+     }
+    },
+    {
+     "key": "lavender",
+     "label_en": "Lavender",
+     "label_es": "Lavanda",
+     "official": {
+      "en": "Lavender",
+      "es_419": "Color lavanda",
+      "es_es": "Lavanda"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico, Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es, Latin America per apple.com/la)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3258",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3519",
+     "regions": "Bahrain, Canada, Guam, Japan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A3521",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A3520",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/125089",
+    "https://support.apple.com/en-gb/125089",
+    "https://support.apple.com/es-es/125089",
+    "https://support.apple.com/es-lamr/125089",
+    "https://support.apple.com/zh-cn/125089",
+    "https://support.apple.com/en-hk/125089",
+    "https://www.apple.com/la/iphone-17/specs/",
+    "https://www.apple.com/newsroom/2025/09/apple-debuts-iphone-17/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://www.apple.com/la/iphone-17/specs/; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/125089 cross-checked)",
+    "SIM: eSIM-only region list quoted from support.apple.com/108044 ('There's no SIM tray in ...'); China mainland from zh-cn Tech Specs; Latin America (apple.com/la) shows 'Doble SIM (nano-SIM y eSIM)' + 'Compatibilidad con doble eSIM'",
+    "es_419: apple.com/la and es-lamr Tech Specs say 'color salvia', 'color lavanda'; support.apple.com/es-lamr/108044 says 'salvia', 'lavanda'"
+   ]
+  },
+  {
+   "key": "iphone-16e",
+   "name": "iPhone 16e",
+   "line": "e",
+   "generation": "16e",
+   "announced": "2025-02-19",
+   "capacities_gb": [
+    128,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "Blanco"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Hong Kong per en-hk, Spain per es-es)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3212",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3408",
+     "regions": "Bahrain, Canada, Iraq, Guam, Jordan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A3410",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A3409",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/122208",
+    "https://support.apple.com/en-gb/122208",
+    "https://support.apple.com/es-es/122208",
+    "https://support.apple.com/es-lamr/122208",
+    "https://support.apple.com/zh-cn/122208",
+    "https://support.apple.com/en-hk/122208",
+    "https://www.apple.com/newsroom/2025/02/apple-debuts-iphone-16e-a-powerful-new-member-of-the-iphone-16-family/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://support.apple.com/es-lamr/122208; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/122208 cross-checked)",
+    "SIM: support.apple.com/108044 says 'In the United States, there's no SIM tray'; China mainland from zh-cn Tech Specs",
+    "Model not sold on apple.com/la any more; es_419 names from support.apple.com/es-lamr Tech Specs"
+   ]
+  },
+  {
+   "key": "iphone-16-pro-max",
+   "name": "iPhone 16 Pro Max",
+   "line": "pro_max",
+   "generation": "16",
+   "announced": "2024-09-09",
+   "capacities_gb": [
+    256,
+    512,
+    1024
+   ],
+   "colors": [
+    {
+     "key": "black-titanium",
+     "label_en": "Black Titanium",
+     "label_es": "Titanio negro",
+     "official": {
+      "en": "Black Titanium",
+      "es_419": "Titanio negro",
+      "es_es": "Titanio negro"
+     }
+    },
+    {
+     "key": "white-titanium",
+     "label_en": "White Titanium",
+     "label_es": "Titanio blanco",
+     "official": {
+      "en": "White Titanium",
+      "es_419": "Titanio blanco",
+      "es_es": "Titanio blanco"
+     }
+    },
+    {
+     "key": "natural-titanium",
+     "label_en": "Natural Titanium",
+     "label_es": "Titanio natural",
+     "official": {
+      "en": "Natural Titanium",
+      "es_419": "Titanio natural",
+      "es_es": "Titanio natural"
+     }
+    },
+    {
+     "key": "desert-titanium",
+     "label_en": "Desert Titanium",
+     "label_es": "Titanio del desierto",
+     "official": {
+      "en": "Desert Titanium",
+      "es_419": "Titanio del desierto",
+      "es_es": "Titanio desierto"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3084",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3295",
+     "regions": "Bahrain, Canada, Iraq, Guam, Japan, Jordan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, U.S. Virgin Islands"
+    },
+    {
+     "number": "A3297",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A3296",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/121032",
+    "https://support.apple.com/en-gb/121032",
+    "https://support.apple.com/es-es/121032",
+    "https://support.apple.com/es-lamr/121032",
+    "https://support.apple.com/zh-cn/121032",
+    "https://support.apple.com/zh-hk/121032",
+    "https://support.apple.com/zh-mo/121032",
+    "https://support.apple.com/en-hk/121032",
+    "https://www.apple.com/newsroom/2024/09/apple-debuts-iphone-16-pro-and-iphone-16-pro-max/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://support.apple.com/es-lamr/121032; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/121032 cross-checked)",
+    "SIM: US config from en-us Tech Specs + support.apple.com/108044; China/HK/Macao dual nano-SIM from zh-cn, zh-hk, zh-mo and en-hk Tech Specs ('Dual SIM (nano-SIM)')",
+    "es_es: support.apple.com/es-es/108044 says 'titanio desierto'; es-es Tech Specs says 'titanio color desierto'",
+    "Model not sold on apple.com/la any more; es_419 names from support.apple.com/es-lamr Tech Specs"
+   ]
+  },
+  {
+   "key": "iphone-16-pro",
+   "name": "iPhone 16 Pro",
+   "line": "pro",
+   "generation": "16",
+   "announced": "2024-09-09",
+   "capacities_gb": [
+    128,
+    256,
+    512,
+    1024
+   ],
+   "colors": [
+    {
+     "key": "black-titanium",
+     "label_en": "Black Titanium",
+     "label_es": "Titanio negro",
+     "official": {
+      "en": "Black Titanium",
+      "es_419": "Titanio negro",
+      "es_es": "Titanio negro"
+     }
+    },
+    {
+     "key": "white-titanium",
+     "label_en": "White Titanium",
+     "label_es": "Titanio blanco",
+     "official": {
+      "en": "White Titanium",
+      "es_419": "Titanio blanco",
+      "es_es": "Titanio blanco"
+     }
+    },
+    {
+     "key": "natural-titanium",
+     "label_en": "Natural Titanium",
+     "label_es": "Titanio natural",
+     "official": {
+      "en": "Natural Titanium",
+      "es_419": "Titanio natural",
+      "es_es": "Titanio natural"
+     }
+    },
+    {
+     "key": "desert-titanium",
+     "label_en": "Desert Titanium",
+     "label_es": "Titanio del desierto",
+     "official": {
+      "en": "Desert Titanium",
+      "es_419": "Titanio del desierto",
+      "es_es": "Titanio desierto"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3083",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3292",
+     "regions": "Bahrain, Canada, Iraq, Guam, Japan, Jordan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, U.S. Virgin Islands"
+    },
+    {
+     "number": "A3294",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A3293",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/121031",
+    "https://support.apple.com/en-gb/121031",
+    "https://support.apple.com/es-es/121031",
+    "https://support.apple.com/es-lamr/121031",
+    "https://support.apple.com/zh-cn/121031",
+    "https://support.apple.com/zh-hk/121031",
+    "https://support.apple.com/zh-mo/121031",
+    "https://support.apple.com/en-hk/121031",
+    "https://www.apple.com/newsroom/2024/09/apple-debuts-iphone-16-pro-and-iphone-16-pro-max/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://support.apple.com/es-lamr/121031; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/121031 cross-checked)",
+    "SIM: US config from en-us Tech Specs + support.apple.com/108044; China/HK/Macao dual nano-SIM from zh-cn, zh-hk, zh-mo and en-hk Tech Specs ('Dual SIM (nano-SIM)')",
+    "es_es: support.apple.com/es-es/108044 says 'titanio desierto'; es-es Tech Specs says 'titanio color desierto'",
+    "Model not sold on apple.com/la any more; es_419 names from support.apple.com/es-lamr Tech Specs"
+   ]
+  },
+  {
+   "key": "iphone-16-plus",
+   "name": "iPhone 16 Plus",
+   "line": "plus",
+   "generation": "16",
+   "announced": "2024-09-09",
+   "capacities_gb": [
+    128,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "Blanco"
+     }
+    },
+    {
+     "key": "pink",
+     "label_en": "Pink",
+     "label_es": "Rosa",
+     "official": {
+      "en": "Pink",
+      "es_419": "Rosa",
+      "es_es": "Rosa"
+     }
+    },
+    {
+     "key": "teal",
+     "label_en": "Teal",
+     "label_es": "Verde azulado",
+     "official": {
+      "en": "Teal",
+      "es_419": "Verde azulado",
+      "es_es": "Verde azulado"
+     }
+    },
+    {
+     "key": "ultramarine",
+     "label_en": "Ultramarine",
+     "label_es": "Ultramarino",
+     "official": {
+      "en": "Ultramarine",
+      "es_419": "Color ultramarino",
+      "es_es": "Azul ultramar"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3082",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3289",
+     "regions": "Bahrain, Canada, Iraq, Guam, Japan, Jordan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, U.S. Virgin Islands"
+    },
+    {
+     "number": "A3291",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A3290",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/121030",
+    "https://support.apple.com/en-gb/121030",
+    "https://support.apple.com/es-es/121030",
+    "https://support.apple.com/es-lamr/121030",
+    "https://support.apple.com/zh-cn/121030",
+    "https://support.apple.com/zh-hk/121030",
+    "https://support.apple.com/zh-mo/121030",
+    "https://support.apple.com/en-hk/121030",
+    "https://www.apple.com/newsroom/2024/09/apple-introduces-iphone-16-and-iphone-16-plus/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://support.apple.com/es-lamr/121030; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/121030 cross-checked)",
+    "SIM: US config from en-us Tech Specs + support.apple.com/108044; China/HK/Macao dual nano-SIM from zh-cn, zh-hk, zh-mo and en-hk Tech Specs ('Dual SIM (nano-SIM)')",
+    "es_419 'Color ultramarino' is the Tech Specs/apple.com/la wording; support.apple.com/es-lamr/108044 says 'ultramarino'",
+    "Model not sold on apple.com/la any more; es_419 names from support.apple.com/es-lamr Tech Specs"
+   ]
+  },
+  {
+   "key": "iphone-16",
+   "name": "iPhone 16",
+   "line": "standard",
+   "generation": "16",
+   "announced": "2024-09-09",
+   "capacities_gb": [
+    128,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "Blanco"
+     }
+    },
+    {
+     "key": "pink",
+     "label_en": "Pink",
+     "label_es": "Rosa",
+     "official": {
+      "en": "Pink",
+      "es_419": "Rosa",
+      "es_es": "Rosa"
+     }
+    },
+    {
+     "key": "teal",
+     "label_en": "Teal",
+     "label_es": "Verde azulado",
+     "official": {
+      "en": "Teal",
+      "es_419": "Verde azulado",
+      "es_es": "Verde azulado"
+     }
+    },
+    {
+     "key": "ultramarine",
+     "label_en": "Ultramarine",
+     "label_es": "Ultramarino",
+     "official": {
+      "en": "Ultramarine",
+      "es_419": "Color ultramarino",
+      "es_es": "Azul ultramar"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A3081",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3286",
+     "regions": "Bahrain, Canada, Iraq, Guam, Japan, Jordan, Kuwait, Mexico, Oman, Qatar, Saudi Arabia, United Arab Emirates, U.S. Virgin Islands"
+    },
+    {
+     "number": "A3288",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A3287",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/121029",
+    "https://support.apple.com/en-gb/121029",
+    "https://support.apple.com/es-es/121029",
+    "https://support.apple.com/es-lamr/121029",
+    "https://support.apple.com/zh-cn/121029",
+    "https://support.apple.com/zh-hk/121029",
+    "https://support.apple.com/zh-mo/121029",
+    "https://support.apple.com/en-hk/121029",
+    "https://www.apple.com/la/iphone-16/specs/",
+    "https://www.apple.com/newsroom/2024/09/apple-introduces-iphone-16-and-iphone-16-plus/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://www.apple.com/la/iphone-16/specs/; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/121029 cross-checked)",
+    "SIM: US config from en-us Tech Specs + support.apple.com/108044; China/HK/Macao dual nano-SIM from zh-cn, zh-hk, zh-mo and en-hk Tech Specs ('Dual SIM (nano-SIM)')",
+    "es_419 'Color ultramarino' is the Tech Specs/apple.com/la wording; support.apple.com/es-lamr/108044 says 'ultramarino'",
+    "apple.com/la/iphone-16/specs/ currently lists only 128 GB (current sales offer); Tech Specs list 128/256/512 GB"
+   ]
+  },
+  {
+   "key": "iphone-15-pro-max",
+   "name": "iPhone 15 Pro Max",
+   "line": "pro_max",
+   "generation": "15",
+   "announced": "2023-09-12",
+   "capacities_gb": [
+    256,
+    512,
+    1024
+   ],
+   "colors": [
+    {
+     "key": "black-titanium",
+     "label_en": "Black Titanium",
+     "label_es": "Titanio negro",
+     "official": {
+      "en": "Black Titanium",
+      "es_419": "Titanio negro",
+      "es_es": "Titanio negro"
+     }
+    },
+    {
+     "key": "white-titanium",
+     "label_en": "White Titanium",
+     "label_es": "Titanio blanco",
+     "official": {
+      "en": "White Titanium",
+      "es_419": "Titanio blanco",
+      "es_es": "Titanio blanco"
+     }
+    },
+    {
+     "key": "blue-titanium",
+     "label_en": "Blue Titanium",
+     "label_es": "Titanio azul",
+     "official": {
+      "en": "Blue Titanium",
+      "es_419": "Titanio azul",
+      "es_es": "Titanio azul"
+     }
+    },
+    {
+     "key": "natural-titanium",
+     "label_en": "Natural Titanium",
+     "label_es": "Titanio natural",
+     "official": {
+      "en": "Natural Titanium",
+      "es_419": "Titanio natural",
+      "es_es": "Titanio natural"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2849",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3105",
+     "regions": "Canada, Guam, Japan, Mexico, Saudi Arabia, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A3108",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A3106",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111828",
+    "https://support.apple.com/en-gb/111828",
+    "https://support.apple.com/es-es/111828",
+    "https://support.apple.com/es-lamr/111828",
+    "https://support.apple.com/zh-cn/111828",
+    "https://support.apple.com/zh-hk/111828",
+    "https://support.apple.com/zh-mo/111828",
+    "https://www.apple.com/newsroom/2023/09/apple-unveils-iphone-15-pro-and-iphone-15-pro-max/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://support.apple.com/es-lamr/111828; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/111828 cross-checked)",
+    "SIM: US config from en-us Tech Specs + support.apple.com/108044 ('In the United States, there's no SIM tray'); China/HK/Macao from zh-cn, zh-hk, zh-mo Tech Specs (en-hk page serves the US page content, not used)",
+    "Model not sold on apple.com/la any more; es_419 names from support.apple.com/es-lamr Tech Specs"
+   ]
+  },
+  {
+   "key": "iphone-15-pro",
+   "name": "iPhone 15 Pro",
+   "line": "pro",
+   "generation": "15",
+   "announced": "2023-09-12",
+   "capacities_gb": [
+    128,
+    256,
+    512,
+    1024
+   ],
+   "colors": [
+    {
+     "key": "black-titanium",
+     "label_en": "Black Titanium",
+     "label_es": "Titanio negro",
+     "official": {
+      "en": "Black Titanium",
+      "es_419": "Titanio negro",
+      "es_es": "Titanio negro"
+     }
+    },
+    {
+     "key": "white-titanium",
+     "label_en": "White Titanium",
+     "label_es": "Titanio blanco",
+     "official": {
+      "en": "White Titanium",
+      "es_419": "Titanio blanco",
+      "es_es": "Titanio blanco"
+     }
+    },
+    {
+     "key": "blue-titanium",
+     "label_en": "Blue Titanium",
+     "label_es": "Titanio azul",
+     "official": {
+      "en": "Blue Titanium",
+      "es_419": "Titanio azul",
+      "es_es": "Titanio azul"
+     }
+    },
+    {
+     "key": "natural-titanium",
+     "label_en": "Natural Titanium",
+     "label_es": "Titanio natural",
+     "official": {
+      "en": "Natural Titanium",
+      "es_419": "Titanio natural",
+      "es_es": "Titanio natural"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2848",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3101",
+     "regions": "Canada, Guam, Japan, Mexico, Saudi Arabia, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A3104",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A3102",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111829",
+    "https://support.apple.com/en-gb/111829",
+    "https://support.apple.com/es-es/111829",
+    "https://support.apple.com/es-lamr/111829",
+    "https://support.apple.com/zh-cn/111829",
+    "https://support.apple.com/zh-hk/111829",
+    "https://support.apple.com/zh-mo/111829",
+    "https://www.apple.com/newsroom/2023/09/apple-unveils-iphone-15-pro-and-iphone-15-pro-max/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://support.apple.com/es-lamr/111829; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/111829 cross-checked)",
+    "SIM: US config from en-us Tech Specs + support.apple.com/108044 ('In the United States, there's no SIM tray'); China/HK/Macao from zh-cn, zh-hk, zh-mo Tech Specs (en-hk page serves the US page content, not used)",
+    "Model not sold on apple.com/la any more; es_419 names from support.apple.com/es-lamr Tech Specs"
+   ]
+  },
+  {
+   "key": "iphone-15-plus",
+   "name": "iPhone 15 Plus",
+   "line": "plus",
+   "generation": "15",
+   "announced": "2023-09-12",
+   "capacities_gb": [
+    128,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "blue",
+     "label_en": "Blue",
+     "label_es": "Azul",
+     "official": {
+      "en": "Blue",
+      "es_419": "Azul",
+      "es_es": "Azul"
+     }
+    },
+    {
+     "key": "green",
+     "label_en": "Green",
+     "label_es": "Verde",
+     "official": {
+      "en": "Green",
+      "es_419": "Verde",
+      "es_es": "Verde"
+     }
+    },
+    {
+     "key": "yellow",
+     "label_en": "Yellow",
+     "label_es": "Amarillo",
+     "official": {
+      "en": "Yellow",
+      "es_419": "Amarillo",
+      "es_es": "Amarillo"
+     }
+    },
+    {
+     "key": "pink",
+     "label_en": "Pink",
+     "label_es": "Rosa",
+     "official": {
+      "en": "Pink",
+      "es_419": "Rosa",
+      "es_es": "Rosa"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2847",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3093",
+     "regions": "Canada, Guam, Japan, Mexico, Saudi Arabia, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A3096",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A3094",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111830",
+    "https://support.apple.com/en-gb/111830",
+    "https://support.apple.com/es-es/111830",
+    "https://support.apple.com/es-lamr/111830",
+    "https://support.apple.com/zh-cn/111830",
+    "https://support.apple.com/zh-hk/111830",
+    "https://support.apple.com/zh-mo/111830",
+    "https://www.apple.com/newsroom/2023/09/apple-debuts-iphone-15-and-iphone-15-plus/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://support.apple.com/es-lamr/111830; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/111830 cross-checked)",
+    "SIM: US config from en-us Tech Specs + support.apple.com/108044 ('In the United States, there's no SIM tray'); China/HK/Macao from zh-cn, zh-hk, zh-mo Tech Specs (en-hk page serves the US page content, not used)",
+    "Model not sold on apple.com/la any more; es_419 names from support.apple.com/es-lamr Tech Specs"
+   ]
+  },
+  {
+   "key": "iphone-15",
+   "name": "iPhone 15",
+   "line": "standard",
+   "generation": "15",
+   "announced": "2023-09-12",
+   "capacities_gb": [
+    128,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "blue",
+     "label_en": "Blue",
+     "label_es": "Azul",
+     "official": {
+      "en": "Blue",
+      "es_419": "Azul",
+      "es_es": "Azul"
+     }
+    },
+    {
+     "key": "green",
+     "label_en": "Green",
+     "label_es": "Verde",
+     "official": {
+      "en": "Green",
+      "es_419": "Verde",
+      "es_es": "Verde"
+     }
+    },
+    {
+     "key": "yellow",
+     "label_en": "Yellow",
+     "label_es": "Amarillo",
+     "official": {
+      "en": "Yellow",
+      "es_419": "Amarillo",
+      "es_es": "Amarillo"
+     }
+    },
+    {
+     "key": "pink",
+     "label_en": "Pink",
+     "label_es": "Rosa",
+     "official": {
+      "en": "Pink",
+      "es_419": "Rosa",
+      "es_es": "Rosa"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only: Dual eSIM (two active eSIMs; stores eight or more eSIMs); not compatible with physical SIM cards; no SIM tray"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default (other countries and regions; e.g. UK per en-gb Tech Specs, Spain per es-es, Latin America per es-lamr)",
+     "config": "Dual SIM (nano-SIM and eSIM); Dual eSIM support"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "Dual SIM (nano-SIM): two physical nano-SIM cards [translated from Chinese Tech Specs: 双卡/雙 SIM 卡 (nano-SIM)]"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2846",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A3089",
+     "regions": "Canada, Guam, Japan, Mexico, Saudi Arabia, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A3092",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A3090",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111831",
+    "https://support.apple.com/en-gb/111831",
+    "https://support.apple.com/es-es/111831",
+    "https://support.apple.com/es-lamr/111831",
+    "https://support.apple.com/zh-cn/111831",
+    "https://support.apple.com/zh-hk/111831",
+    "https://support.apple.com/zh-mo/111831",
+    "https://www.apple.com/newsroom/2023/09/apple-debuts-iphone-15-and-iphone-15-plus/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": [],
+   "notes": [
+    "colors[].source is the en-us Tech Specs page; es_419 names from https://support.apple.com/es-lamr/111831; es_es names from https://support.apple.com/es-es/108044 (es-es Tech Specs https://support.apple.com/es-es/111831 cross-checked)",
+    "SIM: US config from en-us Tech Specs + support.apple.com/108044 ('In the United States, there's no SIM tray'); China/HK/Macao from zh-cn, zh-hk, zh-mo Tech Specs (en-hk page serves the US page content, not used)",
+    "Model not sold on apple.com/la any more; es_419 names from support.apple.com/es-lamr Tech Specs"
+   ]
+  },
+  {
+   "key": "iphone-14-pro-max",
+   "name": "iPhone 14 Pro Max",
+   "line": "pro_max",
+   "generation": "14",
+   "announced": "2022-09-07",
+   "capacities_gb": [
+    128,
+    256,
+    512,
+    1024
+   ],
+   "colors": [
+    {
+     "key": "space-black",
+     "label_en": "Space Black",
+     "label_es": "Negro espacial",
+     "official": {
+      "en": "Space Black",
+      "es_419": "Negro espacial",
+      "es_es": "Negro espacial"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "color plata",
+      "es_es": "plata"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "color oro",
+      "es_es": "oro"
+     }
+    },
+    {
+     "key": "deep-purple",
+     "label_en": "Deep Purple",
+     "label_es": "Morado oscuro",
+     "official": {
+      "en": "Deep Purple",
+      "es_419": "morado oscuro",
+      "es_es": "morado oscuro"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM; dual eSIM supported"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2651",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A2893",
+     "regions": "Canada, Guam, Japan, Mexico, Saudi Arabia, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A2896",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2895",
+     "regions": "Armenia, Belarus, Kazakhstan, Kyrgyzstan, Russia"
+    },
+    {
+     "number": "A2894",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111846",
+    "https://support.apple.com/es-es/111846",
+    "https://support.apple.com/es-lamr/111846",
+    "https://support.apple.com/zh-cn/111846",
+    "https://support.apple.com/zh-hk/111846",
+    "https://support.apple.com/zh-mo/111846",
+    "https://www.apple.com/newsroom/2022/09/apple-debuts-iphone-14-pro-and-iphone-14-pro-max/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-14-pro",
+   "name": "iPhone 14 Pro",
+   "line": "pro",
+   "generation": "14",
+   "announced": "2022-09-07",
+   "capacities_gb": [
+    128,
+    256,
+    512,
+    1024
+   ],
+   "colors": [
+    {
+     "key": "space-black",
+     "label_en": "Space Black",
+     "label_es": "Negro espacial",
+     "official": {
+      "en": "Space Black",
+      "es_419": "Negro espacial",
+      "es_es": "Negro espacial"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "color plata",
+      "es_es": "plata"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "color oro",
+      "es_es": "oro"
+     }
+    },
+    {
+     "key": "deep-purple",
+     "label_en": "Deep Purple",
+     "label_es": "Morado oscuro",
+     "official": {
+      "en": "Deep Purple",
+      "es_419": "morado oscuro",
+      "es_es": "morado oscuro"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM; dual eSIM supported"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2650",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A2889",
+     "regions": "Canada, Guam, Japan, Mexico, Saudi Arabia, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A2892",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2891",
+     "regions": "Armenia, Belarus, Kazakhstan, Kyrgyzstan, Russia"
+    },
+    {
+     "number": "A2890",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111849",
+    "https://support.apple.com/es-es/111849",
+    "https://support.apple.com/es-lamr/111849",
+    "https://support.apple.com/zh-cn/111849",
+    "https://support.apple.com/zh-hk/111849",
+    "https://support.apple.com/zh-mo/111849",
+    "https://www.apple.com/newsroom/2022/09/apple-debuts-iphone-14-pro-and-iphone-14-pro-max/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-14-plus",
+   "name": "iPhone 14 Plus",
+   "line": "plus",
+   "generation": "14",
+   "announced": "2022-09-07",
+   "capacities_gb": [
+    128,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "midnight",
+     "label_en": "Midnight",
+     "label_es": "Medianoche",
+     "official": {
+      "en": "Midnight",
+      "es_419": "Color medianoche",
+      "es_es": "Medianoche"
+     }
+    },
+    {
+     "key": "purple",
+     "label_en": "Purple",
+     "label_es": "Morado",
+     "official": {
+      "en": "Purple",
+      "es_419": "morado",
+      "es_es": "púrpura"
+     }
+    },
+    {
+     "key": "starlight",
+     "label_en": "Starlight",
+     "label_es": "Blanco estelar",
+     "official": {
+      "en": "Starlight",
+      "es_419": "blanco estelar",
+      "es_es": "blanco estrella"
+     }
+    },
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    },
+    {
+     "key": "blue",
+     "label_en": "Blue",
+     "label_es": "Azul",
+     "official": {
+      "en": "Blue",
+      "es_419": "azul",
+      "es_es": "azul"
+     }
+    },
+    {
+     "key": "yellow",
+     "label_en": "Yellow",
+     "label_es": "Amarillo",
+     "official": {
+      "en": "Yellow",
+      "es_419": "amarillo",
+      "es_es": "amarillo"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM; dual eSIM supported"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2632",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A2885",
+     "regions": "Canada, Guam, Japan, Mexico, Saudi Arabia, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A2888",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2887",
+     "regions": "Armenia, Belarus, Kazakhstan, Kyrgyzstan, Russia"
+    },
+    {
+     "number": "A2886",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111854",
+    "https://support.apple.com/es-es/111854",
+    "https://support.apple.com/es-lamr/111854",
+    "https://support.apple.com/zh-cn/111854",
+    "https://support.apple.com/zh-hk/111854",
+    "https://support.apple.com/zh-mo/111854",
+    "https://www.apple.com/newsroom/2022/09/apple-introduces-iphone-14-and-iphone-14-plus/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-14",
+   "name": "iPhone 14",
+   "line": "standard",
+   "generation": "14",
+   "announced": "2022-09-07",
+   "capacities_gb": [
+    128,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "midnight",
+     "label_en": "Midnight",
+     "label_es": "Medianoche",
+     "official": {
+      "en": "Midnight",
+      "es_419": "Color medianoche",
+      "es_es": "Medianoche"
+     }
+    },
+    {
+     "key": "purple",
+     "label_en": "Purple",
+     "label_es": "Morado",
+     "official": {
+      "en": "Purple",
+      "es_419": "morado",
+      "es_es": "púrpura"
+     }
+    },
+    {
+     "key": "starlight",
+     "label_en": "Starlight",
+     "label_es": "Blanco estelar",
+     "official": {
+      "en": "Starlight",
+      "es_419": "blanco estelar",
+      "es_es": "blanco estrella"
+     }
+    },
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    },
+    {
+     "key": "blue",
+     "label_en": "Blue",
+     "label_es": "Azul",
+     "official": {
+      "en": "Blue",
+      "es_419": "azul",
+      "es_es": "azul"
+     }
+    },
+    {
+     "key": "yellow",
+     "label_en": "Yellow",
+     "label_es": "Amarillo",
+     "official": {
+      "en": "Yellow",
+      "es_419": "amarillo",
+      "es_es": "amarillo"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "esim-only",
+     "regions": "United States, Puerto Rico",
+     "config": "eSIM only (dual eSIM; no SIM tray, not compatible with physical SIM cards)"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM; dual eSIM supported"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2649",
+     "regions": "United States, Puerto Rico"
+    },
+    {
+     "number": "A2881",
+     "regions": "Canada, Guam, Japan, Mexico, Saudi Arabia, and U.S. Virgin Islands"
+    },
+    {
+     "number": "A2884",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2883",
+     "regions": "Armenia, Belarus, Kazakhstan, Kyrgyzstan, Russia"
+    },
+    {
+     "number": "A2882",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111850",
+    "https://support.apple.com/es-es/111850",
+    "https://support.apple.com/es-lamr/111850",
+    "https://support.apple.com/zh-cn/111850",
+    "https://support.apple.com/zh-hk/111850",
+    "https://support.apple.com/zh-mo/111850",
+    "https://www.apple.com/newsroom/2022/09/apple-introduces-iphone-14-and-iphone-14-plus/",
+    "https://www.apple.com/la/iphone-16/specs/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-se-3",
+   "name": "iPhone SE (3rd generation)",
+   "line": "se",
+   "generation": "3",
+   "announced": "2022-03-08",
+   "capacities_gb": [
+    64,
+    128,
+    256
+   ],
+   "colors": [
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    },
+    {
+     "key": "starlight",
+     "label_en": "Starlight",
+     "label_es": "Blanco estelar",
+     "official": {
+      "en": "Starlight",
+      "es_419": "blanco estelar",
+      "es_es": "blanco estrella"
+     }
+    },
+    {
+     "key": "midnight",
+     "label_en": "Midnight",
+     "label_es": "Medianoche",
+     "official": {
+      "en": "Midnight",
+      "es_419": "color medianoche",
+      "es_es": "medianoche"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM; dual eSIM supported"
+    },
+    {
+     "key": "nano-sim",
+     "regions": "China mainland",
+     "config": "single nano-SIM"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "Hong Kong, Macao",
+     "config": "nano-SIM + eSIM; dual eSIM supported"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2595",
+     "regions": "United States, Canada, Puerto Rico, U.S. Virgin Islands, Guam, Mexico, Saudi Arabia"
+    },
+    {
+     "number": "A2782",
+     "regions": "Japan"
+    },
+    {
+     "number": "A2784",
+     "regions": "Russia, Armenia, Belarus, Kazakhstan, Kyrgyzstan"
+    },
+    {
+     "number": "A2785",
+     "regions": "China"
+    },
+    {
+     "number": "A2783",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111866",
+    "https://support.apple.com/es-es/111866",
+    "https://support.apple.com/es-lamr/111866",
+    "https://support.apple.com/zh-cn/111866",
+    "https://support.apple.com/zh-hk/111866",
+    "https://support.apple.com/zh-mo/111866",
+    "https://www.apple.com/newsroom/2022/03/apple-announces-the-new-iphone-se-a-powerful-smartphone-in-an-iconic-design/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-13-mini",
+   "name": "iPhone 13 mini",
+   "line": "mini",
+   "generation": "13",
+   "announced": "2021-09-14",
+   "capacities_gb": [
+    128,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    },
+    {
+     "key": "starlight",
+     "label_en": "Starlight",
+     "label_es": "Blanco estelar",
+     "official": {
+      "en": "Starlight",
+      "es_419": "blanco estelar",
+      "es_es": "blanco estrella"
+     }
+    },
+    {
+     "key": "midnight",
+     "label_en": "Midnight",
+     "label_es": "Medianoche",
+     "official": {
+      "en": "Midnight",
+      "es_419": "color medianoche",
+      "es_es": "medianoche"
+     }
+    },
+    {
+     "key": "blue",
+     "label_en": "Blue",
+     "label_es": "Azul",
+     "official": {
+      "en": "Blue",
+      "es_419": "azul",
+      "es_es": "azul"
+     }
+    },
+    {
+     "key": "pink",
+     "label_en": "Pink",
+     "label_es": "Rosa",
+     "official": {
+      "en": "Pink",
+      "es_419": "rosa",
+      "es_es": "rosa"
+     }
+    },
+    {
+     "key": "green",
+     "label_en": "Green",
+     "label_es": "Verde",
+     "official": {
+      "en": "Green",
+      "es_419": "verde",
+      "es_es": "verde"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM; dual eSIM supported"
+    },
+    {
+     "key": "nano-sim",
+     "regions": "China mainland",
+     "config": "single nano-SIM"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "Hong Kong, Macao",
+     "config": "nano-SIM + eSIM; dual eSIM supported"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2481",
+     "regions": "United States"
+    },
+    {
+     "number": "A2626",
+     "regions": "Canada, Japan, Mexico, Saudi Arabia"
+    },
+    {
+     "number": "A2629",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A2630",
+     "regions": "Armenia, Belarus, Kazakhstan, Kyrgyzstan, Russia"
+    },
+    {
+     "number": "A2628",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111873",
+    "https://support.apple.com/es-es/111873",
+    "https://support.apple.com/es-lamr/111873",
+    "https://support.apple.com/zh-cn/111873",
+    "https://support.apple.com/zh-hk/111873",
+    "https://support.apple.com/zh-mo/111873",
+    "https://www.apple.com/newsroom/2021/09/apple-introduces-iphone-13-and-iphone-13-mini/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-13-pro-max",
+   "name": "iPhone 13 Pro Max",
+   "line": "pro_max",
+   "generation": "13",
+   "announced": "2021-09-14",
+   "capacities_gb": [
+    128,
+    256,
+    512,
+    1024
+   ],
+   "colors": [
+    {
+     "key": "graphite",
+     "label_en": "Graphite",
+     "label_es": "Grafito",
+     "official": {
+      "en": "Graphite",
+      "es_419": "Color grafito",
+      "es_es": "Grafito"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "color oro",
+      "es_es": "oro"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "color plata",
+      "es_es": "plata"
+     }
+    },
+    {
+     "key": "sierra-blue",
+     "label_en": "Sierra Blue",
+     "label_es": "Azul Sierra",
+     "official": {
+      "en": "Sierra Blue",
+      "es_419": "azul Sierra",
+      "es_es": "azul alpino"
+     }
+    },
+    {
+     "key": "alpine-green",
+     "label_en": "Alpine Green",
+     "label_es": "Verde alpino",
+     "official": {
+      "en": "Alpine Green",
+      "es_419": "verde alpino",
+      "es_es": "verde alpino"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM; dual eSIM supported"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2484",
+     "regions": "United States"
+    },
+    {
+     "number": "A2641",
+     "regions": "Canada, Japan, Mexico, Saudi Arabia"
+    },
+    {
+     "number": "A2644",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2645",
+     "regions": "Armenia, Belarus, Kazakhstan, Kyrgyzstan, Russia"
+    },
+    {
+     "number": "A2643",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111870",
+    "https://support.apple.com/es-es/111870",
+    "https://support.apple.com/es-lamr/111870",
+    "https://support.apple.com/zh-cn/111870",
+    "https://support.apple.com/zh-hk/111870",
+    "https://support.apple.com/zh-mo/111870",
+    "https://www.apple.com/newsroom/2021/09/apple-unveils-iphone-13-pro-and-iphone-13-pro-max-more-pro-than-ever-before/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-13-pro",
+   "name": "iPhone 13 Pro",
+   "line": "pro",
+   "generation": "13",
+   "announced": "2021-09-14",
+   "capacities_gb": [
+    128,
+    256,
+    512,
+    1024
+   ],
+   "colors": [
+    {
+     "key": "graphite",
+     "label_en": "Graphite",
+     "label_es": "Grafito",
+     "official": {
+      "en": "Graphite",
+      "es_419": "Color grafito",
+      "es_es": "Grafito"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "color oro",
+      "es_es": "oro"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "color plata",
+      "es_es": "plata"
+     }
+    },
+    {
+     "key": "sierra-blue",
+     "label_en": "Sierra Blue",
+     "label_es": "Azul Sierra",
+     "official": {
+      "en": "Sierra Blue",
+      "es_419": "azul Sierra",
+      "es_es": "azul alpino"
+     }
+    },
+    {
+     "key": "alpine-green",
+     "label_en": "Alpine Green",
+     "label_es": "Verde alpino",
+     "official": {
+      "en": "Alpine Green",
+      "es_419": "verde alpino",
+      "es_es": "verde alpino"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM; dual eSIM supported"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2483",
+     "regions": "United States"
+    },
+    {
+     "number": "A2636",
+     "regions": "Canada, Japan, Mexico, Saudi Arabia"
+    },
+    {
+     "number": "A2639",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2640",
+     "regions": "Armenia, Belarus, Kazakhstan, Kyrgyzstan, Russia"
+    },
+    {
+     "number": "A2638",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111871",
+    "https://support.apple.com/es-es/111871",
+    "https://support.apple.com/es-lamr/111871",
+    "https://support.apple.com/zh-cn/111871",
+    "https://support.apple.com/zh-hk/111871",
+    "https://support.apple.com/zh-mo/111871",
+    "https://www.apple.com/newsroom/2021/09/apple-unveils-iphone-13-pro-and-iphone-13-pro-max-more-pro-than-ever-before/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-13",
+   "name": "iPhone 13",
+   "line": "standard",
+   "generation": "13",
+   "announced": "2021-09-14",
+   "capacities_gb": [
+    128,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    },
+    {
+     "key": "starlight",
+     "label_en": "Starlight",
+     "label_es": "Blanco estelar",
+     "official": {
+      "en": "Starlight",
+      "es_419": "blanco estelar",
+      "es_es": "blanco estrella"
+     }
+    },
+    {
+     "key": "midnight",
+     "label_en": "Midnight",
+     "label_es": "Medianoche",
+     "official": {
+      "en": "Midnight",
+      "es_419": "color medianoche",
+      "es_es": "medianoche"
+     }
+    },
+    {
+     "key": "blue",
+     "label_en": "Blue",
+     "label_es": "Azul",
+     "official": {
+      "en": "Blue",
+      "es_419": "azul",
+      "es_es": "azul"
+     }
+    },
+    {
+     "key": "pink",
+     "label_en": "Pink",
+     "label_es": "Rosa",
+     "official": {
+      "en": "Pink",
+      "es_419": "rosa",
+      "es_es": "rosa"
+     }
+    },
+    {
+     "key": "green",
+     "label_en": "Green",
+     "label_es": "Verde",
+     "official": {
+      "en": "Green",
+      "es_419": "verde",
+      "es_es": "verde"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM; dual eSIM supported"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2482",
+     "regions": "United States"
+    },
+    {
+     "number": "A2631",
+     "regions": "Canada, Japan, Mexico, Saudi Arabia"
+    },
+    {
+     "number": "A2634",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2635",
+     "regions": "Armenia, Belarus, Kazakhstan, Kyrgyzstan, Russia"
+    },
+    {
+     "number": "A2633",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111872",
+    "https://support.apple.com/es-es/111872",
+    "https://support.apple.com/es-lamr/111872",
+    "https://support.apple.com/zh-cn/111872",
+    "https://support.apple.com/zh-hk/111872",
+    "https://support.apple.com/zh-mo/111872",
+    "https://www.apple.com/newsroom/2021/09/apple-introduces-iphone-13-and-iphone-13-mini/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-12-mini",
+   "name": "iPhone 12 mini",
+   "line": "mini",
+   "generation": "12",
+   "announced": "2020-10-13",
+   "capacities_gb": [
+    64,
+    128,
+    256
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "blanco"
+     }
+    },
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    },
+    {
+     "key": "green",
+     "label_en": "Green",
+     "label_es": "Verde",
+     "official": {
+      "en": "Green",
+      "es_419": "Verde",
+      "es_es": "verde"
+     }
+    },
+    {
+     "key": "blue",
+     "label_en": "Blue",
+     "label_es": "Azul",
+     "official": {
+      "en": "Blue",
+      "es_419": "Azul",
+      "es_es": "azul"
+     }
+    },
+    {
+     "key": "purple",
+     "label_en": "Purple",
+     "label_es": "Morado",
+     "official": {
+      "en": "Purple",
+      "es_419": "Morado",
+      "es_es": "púrpura"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM"
+    },
+    {
+     "key": "nano-sim",
+     "regions": "China mainland",
+     "config": "single nano-SIM"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "Hong Kong, Macao",
+     "config": "nano-SIM + eSIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2176",
+     "regions": "United States"
+    },
+    {
+     "number": "A2398",
+     "regions": "Canada, Japan"
+    },
+    {
+     "number": "A2400",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A2399",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111877",
+    "https://support.apple.com/es-es/111877",
+    "https://support.apple.com/es-lamr/111877",
+    "https://support.apple.com/zh-cn/111877",
+    "https://support.apple.com/zh-hk/111877",
+    "https://support.apple.com/zh-mo/111877",
+    "https://www.apple.com/newsroom/2020/10/apple-announces-iphone-12-and-iphone-12-mini-a-new-era-for-iphone-with-5g/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-12-pro-max",
+   "name": "iPhone 12 Pro Max",
+   "line": "pro_max",
+   "generation": "12",
+   "announced": "2020-10-13",
+   "capacities_gb": [
+    128,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "graphite",
+     "label_en": "Graphite",
+     "label_es": "Grafito",
+     "official": {
+      "en": "Graphite",
+      "es_419": "Color grafito",
+      "es_es": "Grafito"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "pacific-blue",
+     "label_en": "Pacific Blue",
+     "label_es": "Azul pacífico",
+     "official": {
+      "en": "Pacific Blue",
+      "es_419": "Azul pacífico",
+      "es_es": "Azul pacífico"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2342",
+     "regions": "United States"
+    },
+    {
+     "number": "A2410",
+     "regions": "Canada, Japan"
+    },
+    {
+     "number": "A2412",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2411",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111874",
+    "https://support.apple.com/es-es/111874",
+    "https://support.apple.com/es-lamr/111874",
+    "https://support.apple.com/zh-cn/111874",
+    "https://support.apple.com/zh-hk/111874",
+    "https://support.apple.com/zh-mo/111874",
+    "https://www.apple.com/newsroom/2020/10/apple-introduces-iphone-12-pro-and-iphone-12-pro-max-with-5g/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-12-pro",
+   "name": "iPhone 12 Pro",
+   "line": "pro",
+   "generation": "12",
+   "announced": "2020-10-13",
+   "capacities_gb": [
+    128,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "graphite",
+     "label_en": "Graphite",
+     "label_es": "Grafito",
+     "official": {
+      "en": "Graphite",
+      "es_419": "Color grafito",
+      "es_es": "Grafito"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "pacific-blue",
+     "label_en": "Pacific Blue",
+     "label_es": "Azul pacífico",
+     "official": {
+      "en": "Pacific Blue",
+      "es_419": "Azul pacífico",
+      "es_es": "Azul pacífico"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2341",
+     "regions": "United States"
+    },
+    {
+     "number": "A2406",
+     "regions": "Canada, Japan"
+    },
+    {
+     "number": "A2408",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2407",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111875",
+    "https://support.apple.com/es-es/111875",
+    "https://support.apple.com/es-lamr/111875",
+    "https://support.apple.com/zh-cn/111875",
+    "https://support.apple.com/zh-hk/111875",
+    "https://support.apple.com/zh-mo/111875",
+    "https://www.apple.com/newsroom/2020/10/apple-introduces-iphone-12-pro-and-iphone-12-pro-max-with-5g/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-12",
+   "name": "iPhone 12",
+   "line": "standard",
+   "generation": "12",
+   "announced": "2020-10-13",
+   "capacities_gb": [
+    64,
+    128,
+    256
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "blanco"
+     }
+    },
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    },
+    {
+     "key": "green",
+     "label_en": "Green",
+     "label_es": "Verde",
+     "official": {
+      "en": "Green",
+      "es_419": "Verde",
+      "es_es": "verde"
+     }
+    },
+    {
+     "key": "blue",
+     "label_en": "Blue",
+     "label_es": "Azul",
+     "official": {
+      "en": "Blue",
+      "es_419": "Azul",
+      "es_es": "azul"
+     }
+    },
+    {
+     "key": "purple",
+     "label_en": "Purple",
+     "label_es": "Morado",
+     "official": {
+      "en": "Purple",
+      "es_419": "Morado",
+      "es_es": "púrpura"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2172",
+     "regions": "United States"
+    },
+    {
+     "number": "A2402",
+     "regions": "Canada, Japan"
+    },
+    {
+     "number": "A2404",
+     "regions": "China Mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2403",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111876",
+    "https://support.apple.com/es-es/111876",
+    "https://support.apple.com/es-lamr/111876",
+    "https://support.apple.com/zh-cn/111876",
+    "https://support.apple.com/zh-hk/111876",
+    "https://support.apple.com/zh-mo/111876",
+    "https://www.apple.com/newsroom/2020/10/apple-announces-iphone-12-and-iphone-12-mini-a-new-era-for-iphone-with-5g/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-se-2",
+   "name": "iPhone SE (2nd generation)",
+   "line": "se",
+   "generation": "2",
+   "announced": "2020-04-15",
+   "capacities_gb": [
+    64,
+    128,
+    256
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "blanco",
+      "es_es": "Blanco"
+     }
+    },
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM"
+    },
+    {
+     "key": "nano-sim",
+     "regions": "China mainland",
+     "config": "single nano-SIM"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "Hong Kong, Macao",
+     "config": "nano-SIM + eSIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2275",
+     "regions": "Canada, United States"
+    },
+    {
+     "number": "A2298",
+     "regions": "China mainland"
+    },
+    {
+     "number": "A2296",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111882",
+    "https://support.apple.com/es-es/111882",
+    "https://support.apple.com/es-lamr/111882",
+    "https://support.apple.com/zh-cn/111882",
+    "https://support.apple.com/zh-hk/111882",
+    "https://support.apple.com/zh-mo/111882",
+    "https://www.apple.com/newsroom/2020/04/iphone-se-a-powerful-new-smartphone-in-a-popular-design/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-11-pro-max",
+   "name": "iPhone 11 Pro Max",
+   "line": "pro_max",
+   "generation": "11",
+   "announced": "2019-09-10",
+   "capacities_gb": [
+    64,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "gris espacial",
+      "es_es": "gris espacial"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "color plata",
+      "es_es": "plata"
+     }
+    },
+    {
+     "key": "midnight-green",
+     "label_en": "Midnight Green",
+     "label_es": "Verde medianoche",
+     "official": {
+      "en": "Midnight Green",
+      "es_419": "verde medianoche",
+      "es_es": "verde noche"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2161",
+     "regions": "Canada, United States"
+    },
+    {
+     "number": "A2220",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2218",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111878",
+    "https://support.apple.com/es-es/111878",
+    "https://support.apple.com/es-lamr/111878",
+    "https://support.apple.com/zh-cn/111878",
+    "https://support.apple.com/zh-hk/111878",
+    "https://support.apple.com/zh-mo/111878",
+    "https://www.apple.com/newsroom/2019/09/iphone-11-pro-and-iphone-11-pro-max-the-most-powerful-and-advanced-smartphones/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-11-pro",
+   "name": "iPhone 11 Pro",
+   "line": "pro",
+   "generation": "11",
+   "announced": "2019-09-10",
+   "capacities_gb": [
+    64,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "gris espacial",
+      "es_es": "gris espacial"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "color plata",
+      "es_es": "plata"
+     }
+    },
+    {
+     "key": "midnight-green",
+     "label_en": "Midnight Green",
+     "label_es": "Verde medianoche",
+     "official": {
+      "en": "Midnight Green",
+      "es_419": "verde medianoche",
+      "es_es": "verde noche"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2160",
+     "regions": "Canada, United States"
+    },
+    {
+     "number": "A2217",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2215",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111879",
+    "https://support.apple.com/es-es/111879",
+    "https://support.apple.com/es-lamr/111879",
+    "https://support.apple.com/zh-cn/111879",
+    "https://support.apple.com/zh-hk/111879",
+    "https://support.apple.com/zh-mo/111879",
+    "https://www.apple.com/newsroom/2019/09/iphone-11-pro-and-iphone-11-pro-max-the-most-powerful-and-advanced-smartphones/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-11",
+   "name": "iPhone 11",
+   "line": "standard",
+   "generation": "11",
+   "announced": "2019-09-10",
+   "capacities_gb": [
+    64,
+    128,
+    256
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "green",
+     "label_en": "Green",
+     "label_es": "Verde",
+     "official": {
+      "en": "Green",
+      "es_419": "verde",
+      "es_es": "verde"
+     }
+    },
+    {
+     "key": "yellow",
+     "label_en": "Yellow",
+     "label_es": "Amarillo",
+     "official": {
+      "en": "Yellow",
+      "es_419": "amarillo",
+      "es_es": "amarillo"
+     }
+    },
+    {
+     "key": "purple",
+     "label_en": "Purple",
+     "label_es": "Morado",
+     "official": {
+      "en": "Purple",
+      "es_419": "morado",
+      "es_es": "malva"
+     }
+    },
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "blanco",
+      "es_es": "blanco"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A2111",
+     "regions": "Canada, United States"
+    },
+    {
+     "number": "A2223",
+     "regions": "China mainland, Hong Kong, Macao"
+    },
+    {
+     "number": "A2221",
+     "regions": "other countries and regions"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111865",
+    "https://support.apple.com/es-es/111865",
+    "https://support.apple.com/es-lamr/111865",
+    "https://support.apple.com/zh-cn/111865",
+    "https://support.apple.com/zh-hk/111865",
+    "https://support.apple.com/zh-mo/111865",
+    "https://www.apple.com/newsroom/2019/09/apple-introduces-dual-camera-iphone-11/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-xs-max",
+   "name": "iPhone XS Max",
+   "line": "other",
+   "generation": "XS",
+   "announced": "2018-09-12",
+   "capacities_gb": [
+    64,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "Gris espacial",
+      "es_es": "Gris espacial"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1921",
+     "regions": null
+    },
+    {
+     "number": "A2101",
+     "regions": null
+    },
+    {
+     "number": "A2102",
+     "regions": "Japan"
+    },
+    {
+     "number": "A2103",
+     "regions": null
+    },
+    {
+     "number": "A2104",
+     "regions": "China mainland"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111880",
+    "https://support.apple.com/es-es/111880",
+    "https://support.apple.com/es-lamr/111880",
+    "https://support.apple.com/zh-cn/111880",
+    "https://support.apple.com/zh-hk/111880",
+    "https://support.apple.com/zh-mo/111880",
+    "https://www.apple.com/newsroom/2018/09/iphone-xs-and-iphone-xs-max-bring-the-best-and-biggest-displays-to-iphone/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-xs",
+   "name": "iPhone XS",
+   "line": "other",
+   "generation": "XS",
+   "announced": "2018-09-12",
+   "capacities_gb": [
+    64,
+    256,
+    512
+   ],
+   "colors": [
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "gris espacial",
+      "es_es": "Gris espacial"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "color plata",
+      "es_es": "Plata"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM"
+    },
+    {
+     "key": "nano-sim",
+     "regions": "China mainland",
+     "config": "single nano-SIM"
+    },
+    {
+     "key": "nano-sim-esim",
+     "regions": "Hong Kong, Macao",
+     "config": "nano-SIM + eSIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1920",
+     "regions": null
+    },
+    {
+     "number": "A2097",
+     "regions": null
+    },
+    {
+     "number": "A2098",
+     "regions": "Japan"
+    },
+    {
+     "number": "A2099",
+     "regions": null
+    },
+    {
+     "number": "A2100",
+     "regions": "China mainland"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111881",
+    "https://support.apple.com/es-es/111881",
+    "https://support.apple.com/es-lamr/111881",
+    "https://support.apple.com/zh-cn/111881",
+    "https://support.apple.com/zh-hk/111881",
+    "https://support.apple.com/zh-mo/111881",
+    "https://www.apple.com/newsroom/2018/09/iphone-xs-and-iphone-xs-max-bring-the-best-and-biggest-displays-to-iphone/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-xr",
+   "name": "iPhone XR",
+   "line": "standard",
+   "generation": "XR",
+   "announced": "2018-09-12",
+   "capacities_gb": [
+    64,
+    128,
+    256
+   ],
+   "colors": [
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    },
+    {
+     "key": "yellow",
+     "label_en": "Yellow",
+     "label_es": "Amarillo",
+     "official": {
+      "en": "Yellow",
+      "es_419": "amarillo",
+      "es_es": "amarillo"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "blanco",
+      "es_es": "blanco"
+     }
+    },
+    {
+     "key": "coral",
+     "label_en": "Coral",
+     "label_es": "Coral",
+     "official": {
+      "en": "Coral",
+      "es_419": "coral",
+      "es_es": "coral"
+     }
+    },
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "negro",
+      "es_es": "negro"
+     }
+    },
+    {
+     "key": "blue",
+     "label_en": "Blue",
+     "label_es": "Azul",
+     "official": {
+      "en": "Blue",
+      "es_419": "azul",
+      "es_es": "azul"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim-esim",
+     "regions": "default",
+     "config": "nano-SIM + eSIM"
+    },
+    {
+     "key": "dual-nano-sim",
+     "regions": "China mainland, Hong Kong, Macao",
+     "config": "dual nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1984",
+     "regions": null
+    },
+    {
+     "number": "A2105",
+     "regions": null
+    },
+    {
+     "number": "A2106",
+     "regions": "Japan"
+    },
+    {
+     "number": "A2107",
+     "regions": null
+    },
+    {
+     "number": "A2108",
+     "regions": "China mainland"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-mx/108044",
+    "https://support.apple.com/en-us/111868",
+    "https://support.apple.com/es-es/111868",
+    "https://support.apple.com/es-lamr/111868",
+    "https://support.apple.com/zh-cn/111868",
+    "https://support.apple.com/zh-hk/111868",
+    "https://support.apple.com/zh-mo/111868",
+    "https://www.apple.com/newsroom/2018/09/apple-introduces-iphone-xr/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-x",
+   "name": "iPhone X",
+   "line": "standard",
+   "generation": "X",
+   "announced": "2017-09-12",
+   "capacities_gb": [
+    64,
+    256
+   ],
+   "colors": [
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "Gris espacial",
+      "es_es": "Gris espacial"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1865",
+     "regions": null
+    },
+    {
+     "number": "A1901",
+     "regions": null
+    },
+    {
+     "number": "A1902",
+     "regions": "Japan"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111864",
+    "https://support.apple.com/es-es/111864",
+    "https://support.apple.com/es-lamr/111864",
+    "https://www.apple.com/newsroom/2017/09/the-future-is-here-iphone-x/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-8-plus",
+   "name": "iPhone 8 Plus",
+   "line": "plus",
+   "generation": "8",
+   "announced": "2017-09-12",
+   "capacities_gb": [
+    64,
+    128,
+    256
+   ],
+   "colors": [
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "Gris espacial",
+      "es_es": "Gris espacial"
+     }
+    },
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1864",
+     "regions": null
+    },
+    {
+     "number": "A1897",
+     "regions": null
+    },
+    {
+     "number": "A1898",
+     "regions": "Japan"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111950",
+    "https://support.apple.com/es-es/111950",
+    "https://support.apple.com/es-lamr/111950",
+    "https://www.apple.com/newsroom/2017/09/iphone-8-and-iphone-8-plus-a-new-generation-of-iphone/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-8",
+   "name": "iPhone 8",
+   "line": "standard",
+   "generation": "8",
+   "announced": "2017-09-12",
+   "capacities_gb": [
+    64,
+    128,
+    256
+   ],
+   "colors": [
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "Gris espacial",
+      "es_es": "Gris espacial"
+     }
+    },
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1863",
+     "regions": null
+    },
+    {
+     "number": "A1905",
+     "regions": null
+    },
+    {
+     "number": "A1906",
+     "regions": "Japan"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111976",
+    "https://support.apple.com/es-es/111976",
+    "https://support.apple.com/es-lamr/111976",
+    "https://www.apple.com/newsroom/2017/09/iphone-8-and-iphone-8-plus-a-new-generation-of-iphone/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-7-plus",
+   "name": "iPhone 7 Plus",
+   "line": "plus",
+   "generation": "7",
+   "announced": "2016-09-07",
+   "capacities_gb": [
+    32,
+    128,
+    256
+   ],
+   "colors": [
+    {
+     "key": "rose-gold",
+     "label_en": "Rose Gold",
+     "label_es": "Oro rosa",
+     "official": {
+      "en": "Rose Gold",
+      "es_419": "Color oro rosa",
+      "es_es": "Oro rosa"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro mate",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro mate",
+      "es_es": "Negro mate"
+     }
+    },
+    {
+     "key": "jet-black",
+     "label_en": "Jet Black",
+     "label_es": "Negro brillante",
+     "official": {
+      "en": "Jet Black",
+      "es_419": "Negro brillante",
+      "es_es": "Negro brillante"
+     }
+    },
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1661",
+     "regions": null
+    },
+    {
+     "number": "A1784",
+     "regions": null
+    },
+    {
+     "number": "A1785",
+     "regions": "Japan"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111953",
+    "https://support.apple.com/es-es/111953",
+    "https://support.apple.com/es-lamr/111953",
+    "https://www.apple.com/newsroom/2016/09/apple-introduces-iphone-7-iphone-7-plus/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-7",
+   "name": "iPhone 7",
+   "line": "standard",
+   "generation": "7",
+   "announced": "2016-09-07",
+   "capacities_gb": [
+    32,
+    128,
+    256
+   ],
+   "colors": [
+    {
+     "key": "rose-gold",
+     "label_en": "Rose Gold",
+     "label_es": "Oro rosa",
+     "official": {
+      "en": "Rose Gold",
+      "es_419": "Color oro rosa",
+      "es_es": "Oro rosa"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro mate",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro mate",
+      "es_es": "Negro mate"
+     }
+    },
+    {
+     "key": "jet-black",
+     "label_en": "Jet Black",
+     "label_es": "Negro brillante",
+     "official": {
+      "en": "Jet Black",
+      "es_419": "Negro brillante",
+      "es_es": "Negro brillante"
+     }
+    },
+    {
+     "key": "product-red",
+     "label_en": "(PRODUCT)RED",
+     "label_es": "(PRODUCT)RED",
+     "official": {
+      "en": "(PRODUCT)RED",
+      "es_419": "(PRODUCT)RED",
+      "es_es": "(PRODUCT)RED"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1660",
+     "regions": null
+    },
+    {
+     "number": "A1778",
+     "regions": null
+    },
+    {
+     "number": "A1779",
+     "regions": "Japan"
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111943",
+    "https://support.apple.com/es-es/111943",
+    "https://support.apple.com/es-lamr/111943",
+    "https://www.apple.com/newsroom/2016/09/apple-introduces-iphone-7-iphone-7-plus/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-se-1st-generation",
+   "name": "iPhone SE (1st generation)",
+   "line": "se",
+   "generation": "1",
+   "announced": "2016-03-21",
+   "capacities_gb": [
+    16,
+    32,
+    64,
+    128
+   ],
+   "colors": [
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "Gris espacial",
+      "es_es": "Gris espacial"
+     }
+    },
+    {
+     "key": "rose-gold",
+     "label_en": "Rose Gold",
+     "label_es": "Oro rosa",
+     "official": {
+      "en": "Rose Gold",
+      "es_419": "Color oro rosa",
+      "es_es": "Oro rosa"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1723",
+     "regions": null
+    },
+    {
+     "number": "A1662",
+     "regions": null
+    },
+    {
+     "number": "A1724",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/112005",
+    "https://support.apple.com/es-es/112005",
+    "https://support.apple.com/es-lamr/112005",
+    "https://www.apple.com/newsroom/2016/03/21Apple-Introduces-iPhone-SE-The-Most-Powerful-Phone-with-a-Four-inch-Display/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-6s-plus",
+   "name": "iPhone 6s Plus",
+   "line": "plus",
+   "generation": "6s",
+   "announced": "2015-09-09",
+   "capacities_gb": [
+    16,
+    32,
+    64,
+    128
+   ],
+   "colors": [
+    {
+     "key": "rose-gold",
+     "label_en": "Rose Gold",
+     "label_es": "Oro rosa",
+     "official": {
+      "en": "Rose Gold",
+      "es_419": "Color oro rosa",
+      "es_es": "Oro rosa"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "Gris espacial",
+      "es_es": "Gris espacial"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1634",
+     "regions": null
+    },
+    {
+     "number": "A1687",
+     "regions": null
+    },
+    {
+     "number": "A1699",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111996",
+    "https://support.apple.com/es-es/111996",
+    "https://support.apple.com/es-lamr/111996",
+    "https://www.apple.com/newsroom/2015/09/09Apple-Introduces-iPhone-6s-iPhone-6s-Plus/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-6s",
+   "name": "iPhone 6s",
+   "line": "standard",
+   "generation": "6s",
+   "announced": "2015-09-09",
+   "capacities_gb": [
+    16,
+    32,
+    64,
+    128
+   ],
+   "colors": [
+    {
+     "key": "rose-gold",
+     "label_en": "Rose Gold",
+     "label_es": "Oro rosa",
+     "official": {
+      "en": "Rose Gold",
+      "es_419": "Color oro rosa",
+      "es_es": "Oro rosa"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "Gris espacial",
+      "es_es": "Gris espacial"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1633",
+     "regions": null
+    },
+    {
+     "number": "A1688",
+     "regions": null
+    },
+    {
+     "number": "A1700",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111952",
+    "https://support.apple.com/es-es/111952",
+    "https://support.apple.com/es-lamr/111952",
+    "https://www.apple.com/newsroom/2015/09/09Apple-Introduces-iPhone-6s-iPhone-6s-Plus/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-6-plus",
+   "name": "iPhone 6 Plus",
+   "line": "plus",
+   "generation": "6",
+   "announced": "2014-09-09",
+   "capacities_gb": [
+    16,
+    64,
+    128
+   ],
+   "colors": [
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "Gris espacial",
+      "es_es": "Gris espacial"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1522",
+     "regions": null
+    },
+    {
+     "number": "A1524",
+     "regions": null
+    },
+    {
+     "number": "A1593",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111940",
+    "https://support.apple.com/es-es/111940",
+    "https://support.apple.com/es-lamr/111940",
+    "https://www.apple.com/newsroom/2014/09/09Apple-Announces-iPhone-6-iPhone-6-Plus-The-Biggest-Advancements-in-iPhone-History/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-6",
+   "name": "iPhone 6",
+   "line": "standard",
+   "generation": "6",
+   "announced": "2014-09-09",
+   "capacities_gb": [
+    16,
+    32,
+    64,
+    128
+   ],
+   "colors": [
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Color plata",
+      "es_es": "Plata"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Color oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "Gris espacial",
+      "es_es": "Gris espacial"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1549",
+     "regions": null
+    },
+    {
+     "number": "A1586",
+     "regions": null
+    },
+    {
+     "number": "A1589",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111954",
+    "https://support.apple.com/es-es/111954",
+    "https://support.apple.com/es-lamr/111954",
+    "https://www.apple.com/newsroom/2014/09/09Apple-Announces-iPhone-6-iPhone-6-Plus-The-Biggest-Advancements-in-iPhone-History/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-5s",
+   "name": "iPhone 5s",
+   "line": "standard",
+   "generation": "5s",
+   "announced": "2013-09-10",
+   "capacities_gb": [
+    16,
+    32,
+    64
+   ],
+   "colors": [
+    {
+     "key": "space-gray",
+     "label_en": "Space Gray",
+     "label_es": "Gris espacial",
+     "official": {
+      "en": "Space Gray",
+      "es_419": "Gris espacial",
+      "es_es": "Gris espacial"
+     }
+    },
+    {
+     "key": "gold",
+     "label_en": "Gold",
+     "label_es": "Oro",
+     "official": {
+      "en": "Gold",
+      "es_419": "Oro",
+      "es_es": "Oro"
+     }
+    },
+    {
+     "key": "silver",
+     "label_en": "Silver",
+     "label_es": "Plata",
+     "official": {
+      "en": "Silver",
+      "es_419": "Plata",
+      "es_es": "Plata"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1453",
+     "regions": null
+    },
+    {
+     "number": "A1457",
+     "regions": null
+    },
+    {
+     "number": "A1518",
+     "regions": null
+    },
+    {
+     "number": "A1528",
+     "regions": null
+    },
+    {
+     "number": "A1530",
+     "regions": null
+    },
+    {
+     "number": "A1533",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111973",
+    "https://support.apple.com/es-es/111973",
+    "https://support.apple.com/es-lamr/111973",
+    "https://www.apple.com/newsroom/2013/09/10Apple-Announces-iPhone-5s-The-Most-Forward-Thinking-Smartphone-in-the-World/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-5c",
+   "name": "iPhone 5c",
+   "line": "standard",
+   "generation": "5c",
+   "announced": "2013-09-10",
+   "capacities_gb": [
+    8,
+    16,
+    32
+   ],
+   "colors": [
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "Blanco"
+     }
+    },
+    {
+     "key": "pink",
+     "label_en": "Pink",
+     "label_es": "Rosa",
+     "official": {
+      "en": "Pink",
+      "es_419": "Rosa",
+      "es_es": "Rosa"
+     }
+    },
+    {
+     "key": "yellow",
+     "label_en": "Yellow",
+     "label_es": "Amarillo",
+     "official": {
+      "en": "Yellow",
+      "es_419": "Amarrillo",
+      "es_es": "Amarillo"
+     }
+    },
+    {
+     "key": "blue",
+     "label_en": "Blue",
+     "label_es": "Azul",
+     "official": {
+      "en": "Blue",
+      "es_419": "Azul",
+      "es_es": "Azul"
+     }
+    },
+    {
+     "key": "green",
+     "label_en": "Green",
+     "label_es": "Verde",
+     "official": {
+      "en": "Green",
+      "es_419": "Verde",
+      "es_es": "Verde"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1456",
+     "regions": null
+    },
+    {
+     "number": "A1507",
+     "regions": null
+    },
+    {
+     "number": "A1516",
+     "regions": null
+    },
+    {
+     "number": "A1529",
+     "regions": null
+    },
+    {
+     "number": "A1532",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/111917",
+    "https://support.apple.com/es-es/111917",
+    "https://support.apple.com/es-lamr/111917",
+    "https://www.apple.com/newsroom/2013/09/10Apple-Introduces-iPhone-5c-The-Most-Colorful-iPhone-Yet/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "partial",
+   "missing": [
+    "capacity 8 GB is listed only on the Identify page (108044); the Tech Specs page (111917) lists only 16GB and 32GB",
+    "es_419 'Amarrillo' is copied verbatim from es-lamr/111917 (misspelling on Apple's page; es-lamr/108044 writes 'amarillo')"
+   ]
+  },
+  {
+   "key": "iphone-5",
+   "name": "iPhone 5",
+   "line": "standard",
+   "generation": "5",
+   "announced": "2012-09-12",
+   "capacities_gb": [
+    16,
+    32,
+    64
+   ],
+   "colors": [
+    {
+     "key": "black-slate",
+     "label_en": "Black & Slate",
+     "label_es": "Negro y gris oscuro",
+     "official": {
+      "en": "Black & Slate",
+      "es_419": "Negro y gris oscuro",
+      "es_es": "Negro y grafito"
+     }
+    },
+    {
+     "key": "white-silver",
+     "label_en": "White & Silver",
+     "label_es": "Blanco y plata",
+     "official": {
+      "en": "White & Silver",
+      "es_419": "Blanco y plata",
+      "es_es": "Blanco y plata"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "nano-sim",
+     "regions": "default",
+     "config": "nano-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1428",
+     "regions": null
+    },
+    {
+     "number": "A1429",
+     "regions": null
+    },
+    {
+     "number": "A1442",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/112016",
+    "https://support.apple.com/es-es/112016",
+    "https://support.apple.com/es-lamr/112016",
+    "https://www.apple.com/newsroom/2012/09/12Apple-Introduces-iPhone-5/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "complete",
+   "missing": []
+  },
+  {
+   "key": "iphone-4s",
+   "name": "iPhone 4s",
+   "line": "standard",
+   "generation": "4s",
+   "announced": "2011-10-04",
+   "capacities_gb": [
+    8,
+    16,
+    32,
+    64
+   ],
+   "colors": [
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "Blanco"
+     }
+    },
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "micro-sim",
+     "regions": "default",
+     "config": "micro-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1431",
+     "regions": null
+    },
+    {
+     "number": "A1387",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/112004",
+    "https://support.apple.com/es-es/112004",
+    "https://support.apple.com/es-lamr/112004",
+    "https://www.apple.com/newsroom/2011/10/04Apple-Launches-iPhone-4S-iOS-5-iCloud/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "partial",
+   "missing": [
+    "capacity 8 GB is listed only on the Identify page (108044); the Tech Specs page (112004) lists only 16GB, 32GB and 64GB"
+   ]
+  },
+  {
+   "key": "iphone-4",
+   "name": "iPhone 4",
+   "line": "standard",
+   "generation": "4",
+   "announced": "2010-06-07",
+   "capacities_gb": [
+    8,
+    16,
+    32
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "Blanco"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "micro-sim",
+     "regions": "GSM model",
+     "config": "micro-SIM"
+    },
+    {
+     "key": "no-sim",
+     "regions": "CDMA model",
+     "config": "no SIM tray"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1349",
+     "regions": null
+    },
+    {
+     "number": "A1332",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/112562",
+    "https://support.apple.com/es-es/112562",
+    "https://support.apple.com/es-lamr/112562",
+    "https://www.apple.com/newsroom/2010/06/07Apple-Presents-iPhone-4/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "partial",
+   "missing": [
+    "capacity 8 GB is listed only on the Identify page (108044); the Tech Specs page (112562) lists only 16GB or 32GB",
+    "English color names come from the Identify page ('Black and white'); en-us/112562 lists no color, while es-es/112562 and es-lamr/112562 list 'Blanco o negro'",
+    "Apple pages do not say which of A1349/A1332 is the GSM or the CDMA model"
+   ]
+  },
+  {
+   "key": "iphone-3gs",
+   "name": "iPhone 3GS",
+   "line": "standard",
+   "generation": "3GS",
+   "announced": "2009-06-08",
+   "capacities_gb": [
+    8,
+    16,
+    32
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "Blanco"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "mini-sim",
+     "regions": "default",
+     "config": "mini-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1325",
+     "regions": null
+    },
+    {
+     "number": "A1303",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/112307",
+    "https://support.apple.com/es-es/112307",
+    "https://support.apple.com/es-lamr/112307",
+    "https://www.apple.com/newsroom/2009/06/08Apple-Announces-the-New-iPhone-3GS-The-Fastest-Most-Powerful-iPhone-Yet/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "partial",
+   "missing": [
+    "capacities 16 GB and 32 GB and color White are listed only on the Identify page (108044); the Tech Specs page (112307) lists only an 8GB flash drive in Black"
+   ]
+  },
+  {
+   "key": "iphone-3g",
+   "name": "iPhone 3G",
+   "line": "standard",
+   "generation": "3G",
+   "announced": "2008-06-09",
+   "capacities_gb": [
+    8,
+    16
+   ],
+   "colors": [
+    {
+     "key": "black",
+     "label_en": "Black",
+     "label_es": "Negro",
+     "official": {
+      "en": "Black",
+      "es_419": "Negro",
+      "es_es": "Negro"
+     }
+    },
+    {
+     "key": "white",
+     "label_en": "White",
+     "label_es": "Blanco",
+     "official": {
+      "en": "White",
+      "es_419": "Blanco",
+      "es_es": "Blanco"
+     }
+    }
+   ],
+   "sim": [
+    {
+     "key": "mini-sim",
+     "regions": "default",
+     "config": "mini-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1324",
+     "regions": null
+    },
+    {
+     "number": "A1241",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/112496",
+    "https://support.apple.com/es-es/112496",
+    "https://support.apple.com/es-lamr/112496",
+    "https://www.apple.com/newsroom/2008/06/09Apple-Introduces-the-New-iPhone-3G/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "partial",
+   "missing": [
+    "color per capacity per Tech Specs (112496): 8GB model Black only; 16GB model Black or White (the Identify page lists no colors)",
+    "Apple pages do not assign regions to A1324/A1241 (Identify page: introduced 2008, 2009 in China mainland)"
+   ]
+  },
+  {
+   "key": "iphone-original",
+   "name": "iPhone",
+   "line": "original",
+   "generation": "original",
+   "announced": "2007-01-09",
+   "capacities_gb": [
+    4,
+    8,
+    16
+   ],
+   "colors": [],
+   "sim": [
+    {
+     "key": "mini-sim",
+     "regions": "default",
+     "config": "mini-SIM"
+    }
+   ],
+   "model_numbers": [
+    {
+     "number": "A1203",
+     "regions": null
+    }
+   ],
+   "sources": [
+    "https://support.apple.com/en-us/108044",
+    "https://support.apple.com/es-es/108044",
+    "https://support.apple.com/es-lamr/108044",
+    "https://support.apple.com/en-us/112445",
+    "https://support.apple.com/es-es/112445",
+    "https://support.apple.com/es-lamr/112445",
+    "https://www.apple.com/newsroom/2007/01/09Apple-Reinvents-the-Phone-with-iPhone/"
+   ],
+   "verified_at": "2026-11-20",
+   "completeness": "partial",
+   "missing": [
+    "colors: no Apple page fetched lists a color for this model",
+    "capacity 4 GB is listed only on the Identify page (108044); the Tech Specs page (112445) lists only 8GB or 16GB",
+    "es-es/112445 and es-lamr/112445 are served in English (no Spanish translation)"
+   ]
+  }
+ ]
+}

@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-20 — FASE 1 AMPLIADA · Catálogo maestro de iPhone — PR A (datos y validador, sin migración)
+
+- **Orden del propietario (2026-11-20):** el plan son PR A–G y se definió en `docs/adr-catalog-reference.md`:
+  - un catálogo maestro de iPhone, separado del catálogo comercial de cada empresa;
+  - un importador idempotente;
+  - una galería por color;
+  - un configurador web;
+  - personalización en el panel;
+  - venta rápida en caja.
+- **AGENTS §2:** se añade una segunda excepción, aprobada por el propietario: el catálogo de referencia de fabricantes. Son datos factuales en `backend/catalog_reference/`, fuera del motor.
+- **PR A:**
+  - `backend/catalog_reference/apple-iphone.json` con 55 modelos (49 `complete`, 6 `partial`), cada uno con sus fuentes oficiales de Apple y verificado el 2026-11-20;
+  - validador puro `store/catalog_reference.py`, que no nombra ningún fabricante (lo vigila un test).
+- **Nada cambia en la base, la tienda ni la caja.** El catálogo todavía no se carga en ninguna empresa (PR B). No se despliega ni se importa nada sin un GO del propietario.
+
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 
 - **Por qué:** era el riesgo que bloqueaba el despliegue de WIN-003C. Una llamada a `winspool` colgada (controlador o spooler) dejaba al agente parado para siempre; el propietario eligió corregirlo antes de instalarlo.
