@@ -16,6 +16,10 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - (PR C) El informe de imágenes cuenta los colores sin foto y las imágenes sin origen o sin licencia verificada.
 - (PR D) La ficha pública de un modelo tiene el configurador del Manual V4 dentro de su bloque, en claro y en oscuro; el resto de la tienda sigue igual.
 - (PR D) Un enlace con `?variante=` abre la ficha con esa opción elegida y la dirección cambia al elegir otra, sin recargar.
+- (PR E) Nueva pantalla «Catálogo de referencia» en Productos › Modelos: se eligen los modelos, se ve qué hará la importación (nuevo, se reutiliza, conflicto o pendiente de revisión) y se importan ocultos. Un modelo con datos incompletos pide aprobación.
+- (PR E) En cada modelo, «Imágenes por acabado»: fotos por color con su origen, licencia, texto alternativo, principal y orden; la licencia revisada dice quién la revisó.
+- (PR E) Un modelo se puede destacar (sale primero en la lista de la tienda) y ordenar sus colores y demás opciones en su ficha.
+- (PR E) «Configuración comercial» resume en el modelo lo que mostrará la tienda y lo que falta, con un enlace a cada sección. El costo de los proveedores sólo se ve con permiso de costos.
 
 **Changed**
 

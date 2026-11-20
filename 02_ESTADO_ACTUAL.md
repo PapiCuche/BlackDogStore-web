@@ -38,6 +38,12 @@ documentación real, sin reemplazar su historial.
   - En escritorio el resumen ya no tapa los colores (también en `/v4`). Se retira el marcado V3 de la ficha (`VariantPicker`, `UsedUnitCard`).
   - Falta: elegir modelos hermanos (la API pública no expone la generación) y promociones en la ficha (el contrato público no las trae).
   - Revisión de #373 (ADR D-PRD-11): al cambiar de color la foto anterior sale al instante (caja neutra hasta la nueva); «Atrás» respeta `?variante=`; JSON-LD y vista previa al compartir sólo con fotos propias no demostrativas de la variante; la foto fija de escritorio queda bajo la cabecera; recorrer colores devuelve la capacidad elegida.
+- **PR E (rama `feat/catalog-admin-customization`, sobre master con PR D; sin push, sin desplegar):** personalización por empresa en el panel (ADR §4.4).
+  - Migración aditiva `0183_catalog_presentation`: `ProductModel.is_featured` y `ModelOption.sort_order` (ambos con valor por defecto en la base). Si PR F también trae una `0183`, el segundo en fusionarse añade la migración de fusión.
+  - Nueva pantalla «Catálogo de referencia» (`/admin/products/models/reference`): filtrar, previsualizar (nuevo / se reutiliza / conflicto / pendiente de revisión, con avisos), aprobar los modelos no completos e importar con `Idempotency-Key`. Nada se publica.
+  - Editor del modelo: «Configuración comercial» (resumen con enlaces a cada editor; costo de proveedor sólo con `costs.view`, promociones sólo con `sales.promotions.view`), «Orden en la tienda» (orden de colores y demás opciones del modelo), «Imágenes por acabado» (subir con procedencia, texto alternativo, principal, reordenar con teclado, verificar licencia con quién y cuándo, quitar con confirmación, «Imagen pendiente», rótulo de demostrativa), casilla «Destacado» y combinaciones excluidas en la paleta.
+  - Tienda: la lista de modelos muestra primero los destacados y la ficha ordena las opciones como las ordenó el modelo; una empresa que no usa nada de esto ve exactamente lo de antes.
+  - Se reutilizan sin cambios: visibilidad, descripción, precio por variante, bajo pedido, promociones y proveedores. Falta: activar el catálogo en producción (GO), carga masiva de fotos por nombre y distintivo «Destacado» en la tienda V3.
 
 ## 2026-11-18 — WIN-003D-1 · Plazo para las llamadas a la cola de Windows del agente — en PR (sólo el agente de la PC, sin servidor ni migración)
 
