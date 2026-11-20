@@ -9,6 +9,8 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 - Catálogo de referencia de iPhone con datos oficiales de Apple. Tiene 55 modelos, desde el original hasta iPhone 18 Pro, 18 Pro Max y Duo, con capacidades, colores en inglés y español, SIM por región y números de modelo. Cada modelo indica su fuente y cuán completo está.
 - Un validador revisa el archivo en cada cambio. Si encuentra precios, stock, imágenes o fuentes que no son oficiales, lo rechaza.
+- (PR B) El catálogo de referencia se carga a la plataforma con `load_reference_catalog` (con simulación) y cada empresa puede importar los modelos que elija: quedan ocultos, con sus capacidades, colores, SIM y regiones propios, sin variantes ni stock. Un color renombrado por la tienda sigue renombrado al reimportar.
+- (PR B) Un modelo puede excluir combinaciones imposibles (por ejemplo, una SIM que no existe en una región): no se pueden crear y el panel no las ofrece.
 
 ## 2026-11-18 — WIN-003D-1 · El agente de impresión no se queda colgado con Windows
 

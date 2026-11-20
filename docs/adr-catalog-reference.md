@@ -1,6 +1,6 @@
 # ADR — Catálogo maestro de referencia de fabricantes (CATALOG-REFERENCE-01)
 
-Estado: **APROBADO por el propietario (orden «FASE 1 AMPLIADA», 2026-11-20). En implementación por PR A–G.**
+Estado: **APROBADO por el propietario (orden «FASE 1 AMPLIADA», 2026-11-20). En implementación por PR A–G (PR B: §4.1).**
 Fecha: 2026-11-20. Base: master `d34df6b`.
 
 ## 1. Requisito
@@ -58,6 +58,19 @@ AGENTS.md §2 prohíbe «Apple/iPhone» en código global. Con esta orden, el pr
 - Procedencia y licencia en `StorefrontImage`.
 
 Se descartó una «empresa de referencia» oculta: rompería el aislamiento entre empresas y metería filas `Product` en Kardex, en la tienda y en el barrido de imágenes.
+
+### 4.1 Decisiones de implementación de PR B (2026-11-20)
+
+| ID | Decisión |
+|---|---|
+| D-PRB-1 | **SIM y región.** El archivo no trae una lista de regiones propia: cada entrada `sim` dice qué configuración existe en qué regiones, con el texto de Apple. Por eso: una `ReferenceOption` de rol `sim` por cada `sim.key` del modelo (etiqueta = la clave en palabras, «nano sim esim»; los textos exactos de configuración en `official.config`); una de rol `region` por cada grupo de regiones, que es el texto de `regions` hasta el primer paréntesis (lo demás cita la fuente; «default (other countries…)» → «default»), con clave derivada (`catalog_reference.region_key`: slug, recortado a 64 con un hash cuando es más largo), etiqueta de hasta 60 caracteres y los textos completos en `official.regions`. Cada entrada `sim` es un par SIM × región que **existe**; `ReferenceModel.sim_entries` guarda las entradas tal cual con su `region_key`. |
+| D-PRB-2 | **Números de modelo.** `ReferenceModelNumber` guarda número y texto de regiones, sólo como referencia: el dataset v1 no une un número con una entrada SIM, así que los pares los define `sim_entries` (no el número de modelo, como decía el §4). |
+| D-PRB-3 | **Exclusiones.** Al importar, cada par SIM × región del modelo que no está en `sim_entries` se guarda como `ModelOptionExclusion` (par ordenado, por empresa y modelo). Capacidad × color: el dataset no trae exclusiones, no se crea ninguna. `check_variant` las rechaza (`combination_excluded`) también en lecturas parciales que nombran las dos opciones; `payload` no ofrece esas combinaciones y añade `excluded_pairs` **sólo** si el modelo tiene alguna. La consulta de la paleta lleva un `EXISTS` y los pares se leen sólo si hay: un modelo sin exclusiones hace las mismas consultas que antes. |
+| D-PRB-4 | **Retirada.** La carga nunca borra: lo que salió del archivo (modelo, opción o número del mismo fabricante y familia) queda `in_dataset=False`, se informa como candidato a retirar y el importador deja de ofrecerlo; si vuelve al archivo, vuelve a `True`. |
+| D-PRB-5 | **Estados de la vista previa.** `new` / `reused` / `conflict` / `pending_review`. Conflicto (nunca se aplica; `apply` responde 400 `conflict` y no escribe nada): un modelo o una opción con el mismo nombre que ya están unidos a **otra** referencia, un alias de proveedor con ese texto, un atributo con el nombre del rol pero sin el rol, dos referencias que caerían en una misma opción. `pending_review` = `completeness` distinta de `complete`: sólo se aplica con la clave en `approve` (si no, 400 `approval_required`). |
+| D-PRB-6 | **Reutilizar y unir.** Modelo: por `reference_key` y, si no, por nombre plegado (`model_name_holder`); entonces sólo se le escribe `reference_key`. Opción: por `reference_key` y, si no, por etiqueta plegada como compara `create_option` (capacidad también «256GB» / «1 TB»); entonces sólo se le escribe `reference_key`. Nombre, etiqueta, muestra, precio, fotos, publicación y variantes de lo existente no se tocan. La paleta de un modelo reutilizado sólo crece (`add_to_palette`, o `set_palette` si no tenía); sus variantes que no encajen se informan, nunca se reescriben. |
+| D-PRB-7 | **Atributos.** Por rol; capacidad por nombre y color por tipo como en la lista pegada; si falta, se crea con el nombre del rol («Capacidad», «Color», «SIM», «Región»). Un color nuevo lleva la muestra neutra de `catalog_proposal`. |
+| D-PRB-8 | **Permisos y contrato.** Ver y previsualizar = `products.view`; aplicar = `products.manage` (no crea variantes, así que no pide `inventory.adjust`). Huella, `Idempotency-Key` y candado de empresa son los de `catalog_proposal` (helpers compartidos `request_fingerprint`, `replay`). Las tablas de plataforma sólo las escribe el comando, con `AdminAuditLog` sin empresa ni actor y `source: command`. |
 
 ## 5. Formato del dataset (PR A)
 
