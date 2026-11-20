@@ -24,16 +24,21 @@ COLOUR_FIELDS = {'key', 'label_en', 'label_es', 'official'}
 SIM_FIELDS = {'key', 'regions', 'config'}
 NUMBER_FIELDS = {'number', 'regions'}
 
-_SLUG = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
+_SLUG = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*')
 
 
 def load(path):
+    """Read a reference file. Invalid JSON or text raises: CI must fail loudly on a broken file."""
     with open(Path(path), encoding='utf-8') as fh:
         return json.load(fh)
 
 
 def _text(value):
     return isinstance(value, str) and value.strip() != ''
+
+
+def _slug(value):
+    return isinstance(value, str) and _SLUG.fullmatch(value) is not None
 
 
 def _iso(value):
@@ -47,10 +52,16 @@ def _iso(value):
 
 
 def _official(url, hosts):
-    parts = urlsplit(url) if isinstance(url, str) else None
-    if not parts or parts.scheme != 'https' or not parts.hostname:
+    if not isinstance(url, str):
         return False
-    return any(parts.hostname == h or parts.hostname.endswith('.' + h) for h in hosts)
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+    except ValueError:
+        return False
+    if parts.scheme != 'https' or not host:
+        return False
+    return any(host == h or host.endswith('.' + h) for h in hosts)
 
 
 def _unknown(where, item, allowed, errors):
@@ -58,11 +69,29 @@ def _unknown(where, item, allowed, errors):
         errors.append(f'{where}: unknown field {field!r}')
 
 
+def _duplicates(values):
+    """Repeated values among the hashable texts only; wrong types are reported elsewhere."""
+    return [v for v, n in Counter(v for v in values if isinstance(v, (str, tuple))).items() if n > 1]
+
+
+def _entries(where, m, field, errors):
+    """The dict entries of a list field; anything else is an error, never an exception."""
+    value = m.get(field)
+    if not isinstance(value, list):
+        errors.append(f'{where}: {field} must be a list')
+        return []
+    good = [e for e in value if isinstance(e, dict)]
+    if len(good) != len(value):
+        errors.append(f'{where}: every {field} entry must be an object')
+    return good
+
+
 def _model_errors(m, hosts):
-    where = f"model {m.get('key', '?')!r}"
+    key = m.get('key')
+    where = f"model {key if isinstance(key, str) else '?'!r}"
     errors = []
     _unknown(where, m, MODEL_FIELDS, errors)
-    if not (isinstance(m.get('key'), str) and _SLUG.match(m['key'])):
+    if not _slug(key):
         errors.append(f'{where}: key must be a lowercase slug')
     if not _text(m.get('name')):
         errors.append(f'{where}: name is required')
@@ -76,38 +105,42 @@ def _model_errors(m, hosts):
         errors.append(f'{where}: verified_at must be YYYY-MM-DD')
 
     caps = m.get('capacities_gb')
-    if not (isinstance(caps, list) and all(isinstance(c, int) and not isinstance(c, bool) and c > 0 for c in caps)
-            and caps == sorted(set(caps))):
+    if not (isinstance(caps, list) and all(type(c) is int and c > 0 for c in caps) and caps == sorted(set(caps))):
         errors.append(f'{where}: capacities_gb must be positive integers, unique and ascending')
         caps = []
 
-    colours = m.get('colors') if isinstance(m.get('colors'), list) else []
+    colours = _entries(where, m, 'colors', errors)
     for c in colours:
         _unknown(f'{where} colour', c, COLOUR_FIELDS, errors)
-        if not (isinstance(c.get('key'), str) and _SLUG.match(c['key'])):
+        if not _slug(c.get('key')):
             errors.append(f'{where}: colour key must be a lowercase slug')
         for label in ('label_en', 'label_es'):
             if not _text(c.get(label)):
                 errors.append(f'{where}: colour {c.get("key")!r} needs {label}')
-    for key, n in Counter(c.get('key') for c in colours).items():
-        if n > 1:
-            errors.append(f'{where}: duplicate colour {key!r}')
+        official = c.get('official')
+        if not (isinstance(official, dict) and _text(official.get('en'))
+                and all(official.get(k) is None or isinstance(official.get(k), str) for k in ('es_419', 'es_es'))
+                and set(official) <= {'en', 'es_419', 'es_es'}):
+            errors.append(f'{where}: colour {c.get("key")!r} needs official {{en, es_419, es_es}} strings')
+    for dup in _duplicates(c.get('key') for c in colours):
+        errors.append(f'{where}: duplicate colour {dup!r}')
 
-    sims = m.get('sim') if isinstance(m.get('sim'), list) else []
+    sims = _entries(where, m, 'sim', errors)
     for s in sims:
         _unknown(f'{where} sim', s, SIM_FIELDS, errors)
-        if not (isinstance(s.get('key'), str) and _SLUG.match(s['key'])) or not _text(s.get('config')) \
-                or not _text(s.get('regions')):
-            errors.append(f'{where}: each sim entry needs key, regions and config')
-    for key, n in Counter((s.get('key'), s.get('regions')) for s in sims).items():
-        if n > 1:
-            errors.append(f'{where}: duplicate sim entry {key!r}')
+        if not (_slug(s.get('key')) and _text(s.get('config')) and _text(s.get('regions'))):
+            errors.append(f'{where}: each sim entry needs a slug key, regions and config')
+    for dup in _duplicates((s.get('key'), s.get('regions')) for s in sims
+                           if isinstance(s.get('key'), str) and isinstance(s.get('regions'), str)):
+        errors.append(f'{where}: duplicate sim entry {dup!r}')
 
-    numbers = m.get('model_numbers') if isinstance(m.get('model_numbers'), list) else []
+    numbers = _entries(where, m, 'model_numbers', errors)
     for n in numbers:
         _unknown(f'{where} model number', n, NUMBER_FIELDS, errors)
         if not _text(n.get('number')):
             errors.append(f'{where}: each model number needs number')
+        if n.get('regions') is not None and not _text(n.get('regions')):
+            errors.append(f'{where}: model number regions must be text or null')
 
     sources = m.get('sources')
     if not (isinstance(sources, list) and sources):
@@ -135,12 +168,13 @@ def _model_errors(m, hosts):
 
 
 def validate(data):
-    """Every problem found in a reference file, as texts; [] when it is valid. Never changes `data`."""
+    """Every problem found in a reference file, as texts; [] when it is valid. Never raises, never changes `data`."""
     if not isinstance(data, dict):
         return ['the file must hold a JSON object']
     errors = []
     _unknown('header', data, HEADER_FIELDS, errors)
-    if data.get('schema_version') != SCHEMA_VERSION:
+    version = data.get('schema_version')
+    if type(version) is not int or version != SCHEMA_VERSION:
         errors.append(f'schema_version must be {SCHEMA_VERSION}')
     for field in ('manufacturer', 'family', 'dataset_version'):
         if not _text(data.get(field)):
@@ -153,21 +187,23 @@ def validate(data):
     if not (isinstance(models, list) and models):
         return errors + ['models must be a non-empty list']
 
-    for m in models:
-        errors.extend(_model_errors(m, hosts) if isinstance(m, dict) else ['each model must be an object'])
-    for field, label in (('key', 'key'), ('name', 'name')):
-        for value, n in Counter(m.get(field) for m in models if isinstance(m, dict)).items():
-            if n > 1:
-                errors.append(f'duplicate {label} {value!r}')
-    owners = Counter(n.get('number') for m in models if isinstance(m, dict)
-                     for n in (m.get('model_numbers') or []) if isinstance(n, dict))
-    for number, n in owners.items():
-        if n > 1:
-            errors.append(f'model number {number!r} appears more than once')
+    good = [m for m in models if isinstance(m, dict)]
+    if len(good) != len(models):
+        errors.append('each model must be an object')
+    for m in good:
+        errors.extend(_model_errors(m, hosts))
+    for field in ('key', 'name'):
+        for dup in _duplicates(m.get(field) for m in good):
+            errors.append(f'duplicate {field} {dup!r}')
+    numbers = [n.get('number') for m in good if isinstance(m.get('model_numbers'), list)
+               for n in m['model_numbers'] if isinstance(n, dict)]
+    for dup in _duplicates(numbers):
+        errors.append(f'model number {dup!r} appears more than once')
     return errors
 
 
 def summary(data):
+    """Counts of a file that already passed `validate`."""
     models = data.get('models') or []
     return {
         'manufacturer': data.get('manufacturer'), 'family': data.get('family'),

@@ -105,6 +105,80 @@ class ValidatorTest(SimpleTestCase):
         self.assertEqual(data, before)
 
 
+class MalformedInputTest(SimpleTestCase):
+    """A broken file is a list of errors, never an exception (review of #370)."""
+
+    BAD_MODELS = [
+        {'colors': [None]}, {'colors': ['grey']}, {'colors': [5]}, {'colors': 'grey'},
+        {'colors': [{'key': ['x'], 'label_en': 'A', 'label_es': 'A', 'official': {'en': 'A'}}]},
+        {'sim': [None]}, {'sim': [{'key': {}, 'regions': ['x'], 'config': 'c'}]}, {'sim': 'nano'},
+        {'model_numbers': 5}, {'model_numbers': [None]}, {'model_numbers': [{'number': ['X'], 'regions': None}]},
+        {'model_numbers': [{'number': 'X1', 'regions': 5}]},
+        {'key': ['a']}, {'name': {}}, {'sources': ['https://[::1/x']}, {'sources': [5]},
+        {'missing': 'x'}, {'capacities_gb': [True]}, {'verified_at': None}, {'announced': 5},
+    ]
+
+    def test_malformed_values_are_reported_not_raised(self):
+        for over in self.BAD_MODELS:
+            with self.subTest(over):
+                errors = ref.validate(dataset(model(**over)))
+                self.assertIsInstance(errors, list)
+                self.assertTrue(errors, over)
+
+    def test_malformed_roots_and_models(self):
+        for data in (None, [], 'x', {**dataset(), 'models': [5]}, {**dataset(), 'models': []},
+                     {**dataset(), 'models': 'x'}, {**dataset(), 'official_source_hosts': 'maker.test'}):
+            with self.subTest(data):
+                self.assertTrue(ref.validate(data))
+
+    def test_partial_models_still_need_well_typed_lists(self):
+        for field in ('colors', 'sim', 'model_numbers'):
+            with self.subTest(field):
+                bad = model(completeness='partial', missing=['x'])
+                del bad[field]
+                self.assertTrue(ref.validate(dataset(bad)))
+
+    def test_schema_version_must_be_the_integer_one(self):
+        for version in (True, 1.0, '1'):
+            self.assertTrue(ref.validate({**dataset(), 'schema_version': version}), version)
+
+    def test_a_key_with_a_trailing_newline_is_not_a_slug(self):
+        self.assertTrue(ref.validate(dataset(model(key='phone-1\n'))))
+        colour = {**model()['colors'][0], 'key': 'grey\n'}
+        self.assertTrue(ref.validate(dataset(model(colors=[colour]))))
+
+    def test_each_colour_keeps_the_official_strings(self):
+        colour = dict(model()['colors'][0])
+        del colour['official']
+        self.assertTrue(ref.validate(dataset(model(colors=[colour]))))
+        colour['official'] = {'en': 'Grey', 'es_419': 5, 'es_es': None}
+        self.assertTrue(ref.validate(dataset(model(colors=[colour]))))
+
+    def test_sim_entries_are_checked(self):
+        sim = model()['sim'][0]
+        self.assertTrue(ref.validate(dataset(model(sim=[sim, dict(sim)]))))
+        self.assertTrue(ref.validate(dataset(model(sim=[{**sim, 'key': 'Nano SIM'}]))))
+        self.assertTrue(ref.validate(dataset(model(sim=[{**sim, 'regions': ''}]))))
+
+    def test_unknown_fields_inside_entries_are_rejected(self):
+        m = model()
+        for field, entry in (('colors', m['colors'][0]), ('sim', m['sim'][0]), ('model_numbers', m['model_numbers'][0])):
+            with self.subTest(field):
+                self.assertTrue(ref.validate(dataset(model(**{field: [{**entry, 'price': 1}]}))))
+
+    def test_pending_review_needs_what_is_missing(self):
+        self.assertTrue(ref.validate(dataset(model(completeness='pending_review'))))
+        self.assertEqual(ref.validate(dataset(model(completeness='pending_review', missing=['all']))), [])
+
+    def test_summary_counts(self):
+        data = dataset(model(), model(key='phone-2', name='Phone 2', completeness='partial', missing=['x'],
+                                      model_numbers=[{'number': 'X2', 'regions': None}], line='plus'))
+        summary = ref.summary(data)
+        self.assertEqual(summary['models'], 2)
+        self.assertEqual(summary['by_completeness'], {'complete': 1, 'partial': 1})
+        self.assertEqual(summary['by_line'], {'pro': 1, 'plus': 1})
+
+
 class FilesTest(SimpleTestCase):
     """Every committed reference file validates; this is what CI checks on each change of the data."""
 
@@ -132,7 +206,7 @@ class PhoneFileFactsTest(SimpleTestCase):
         data = ref.load(DATA_DIR / 'apple-iphone.json')
         return {m['key']: m for m in data['models']}
 
-    def test_each_model_has_its_own_palette(self):
+    def test_neighbouring_models_have_their_own_palettes(self):
         models = self.models()
         palettes = {key: tuple(sorted(c['key'] for c in m['colors'])) for key, m in models.items() if m['colors']}
         self.assertNotEqual(palettes['iphone-17-pro'], palettes['iphone-16-pro'])

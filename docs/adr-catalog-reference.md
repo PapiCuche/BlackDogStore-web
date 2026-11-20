@@ -22,7 +22,7 @@ AGENTS.md §2 prohíbe «Apple/iPhone» en código global. Con esta orden, el pr
 
 - **Qué entra:** un **catálogo de referencia de fabricantes**, con **datos factuales** verificados en fuentes oficiales: modelos, generaciones, capacidades, colores, SIM, regiones y números de modelo.
 - **Dónde vive:** archivos de datos versionados en `backend/catalog_reference/`, fuera de `backend/store/`. Es uno por fabricante y familia, con un esquema común, así que otro fabricante se añade con otro archivo.
-- **El motor no nombra nada.** Los servicios del importador y del catálogo no contienen nombres de fabricante, modelo ni color. Un test guardián lo comprueba, igual que `NoVocabularyInCodeTest`.
+- **El motor no nombra nada.** El validador (PR A), el importador y los servicios del catálogo (PR B en adelante) no contienen nombres de fabricante, modelo ni color. Cada PR añade su módulo al test guardián: `NoVocabularyInValidatorTest`, del mismo estilo que `NoVocabularyInCodeTest`.
 - **Qué no entra:**
   - precios, stock ni disponibilidad;
   - imágenes;
