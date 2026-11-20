@@ -3,57 +3,64 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-20 — FASE 1 AMPLIADA · Catálogo maestro de iPhone — PR A (datos y validador, sin migración)
+## 2026-11-20 — FASE 1 AMPLIADA · CATALOG-REFERENCE-01 · Catálogo maestro de iPhone — COMPLETA EN MASTER (PR A–F fusionados; PR G en rama), SIN DESPLEGAR
 
-- **Orden del propietario (2026-11-20):** el plan son PR A–G y se definió en `docs/adr-catalog-reference.md`:
-  - un catálogo maestro de iPhone, separado del catálogo comercial de cada empresa;
-  - un importador idempotente;
-  - una galería por color;
-  - un configurador web;
-  - personalización en el panel;
-  - venta rápida en caja.
-- **AGENTS §2:** se añade una segunda excepción, aprobada por el propietario: el catálogo de referencia de fabricantes. Son datos factuales en `backend/catalog_reference/`, fuera del motor.
-- **PR A:**
-  - `backend/catalog_reference/apple-iphone.json` con 55 modelos (49 `complete`, 6 `partial`), cada uno con sus fuentes oficiales de Apple y verificado el 2026-11-20;
-  - validador puro `store/catalog_reference.py`, que no nombra ningún fabricante (lo vigila un test).
-- **Nada cambia en la base, la tienda ni la caja.** El catálogo todavía no se carga en ninguna empresa (PR B). No se despliega ni se importa nada sin un GO del propietario.
-- **PR B (rama `feat/catalog-reference-import`, apilada sobre PR A; sin push, sin desplegar):** importador y paletas por modelo.
-  - Migración aditiva `0181_catalog_reference`: tablas de plataforma `ReferenceModel`, `ReferenceOption`, `ReferenceModelNumber` (sin empresa); `ProductModel.reference_key` y `VariantOption.reference_key` (`db_default=''`, únicos parciales por empresa); `ModelOptionExclusion` (pares imposibles por modelo). Los PR #367/#368 también usan `0181_label_printing`: el segundo en fusionarse añade una migración de fusión.
-  - `python manage.py load_reference_catalog --file … [--dry-run]`: valida primero, carga por clave (la segunda vez, 0 cambios), nunca borra (lo que salió del archivo queda `in_dataset=False` y se informa como candidato a retirar), auditado sin empresa.
-  - Importar a UNA empresa: `GET /api/admin/catalog/reference/models/`, `POST …/reference/preview/` y `…/reference/apply/` (nuevo / reutilizado / conflicto / pendiente de revisión; huella, `Idempotency-Key` y candado de empresa de `catalog_proposal`). Crea modelo oculto, atributos por rol que falten, opciones (por `reference_key`, luego por etiqueta; un renombre de la empresa se respeta), paleta y exclusiones SIM × región. Nunca crea variantes, stock ni unidades. Un modelo `partial` sólo con aprobación expresa.
-  - `check_variant` y la matriz del panel respetan las exclusiones; un modelo sin exclusiones se comporta igual que antes.
-  - Las opciones de SIM y región se crean con etiquetas en español del archivo (`label_es` y `region_label_es` en cada entrada `sim`: «nano-SIM y eSIM», «Solo eSIM», «Internacional (otros países)», «EE. UU. y Puerto Rico»…); las claves no cambian.
-  - Falta: pantallas del panel (PR E). No se carga ni importa nada en producción sin GO.
-- **PR C (rama `feat/catalog-finish-images`, apilada sobre PR B; sin push, sin desplegar):** galería por acabado (modelo + color) y procedencia de las imágenes (ADR §4.2).
-  - Migración aditiva `0182_catalog_finish_images`: `ModelFinishImage` y, en `StorefrontImage`, `source_kind` (`unknown` por defecto para lo existente), `source_url`, `license`, `attribution`, `license_verified_by/at`.
-  - Panel (sólo API): `/api/admin/catalog/models/<id>/finish-images/` (lista por color, subir con origen y licencia obligatorios salvo foto propia, editar, verificar licencia, quitar, `order/`); `products.view` / `products.manage`; otra empresa 404.
-  - Tienda: cada variante muestra sus fotos, si no las de su color, si no «Imagen pendiente» (`gallery`, `image_pending`, `finish_images` en `/api/catalog/models/<slug>/`); nunca la foto de otro color ni la portada del modelo. Un recurso demostrativo se rotula «Imagen referencial».
-  - El informe de imágenes (F4) cuenta acabados sin foto y subidas sin origen o sin licencia verificada.
-  - Falta: carga masiva `modelo__color` y pantallas del panel (PR E). Ninguna imagen entra al repositorio.
-- **PR D (rama `feat/catalog-configurator`, apilada sobre PR C; sin push, sin desplegar; sólo frontend, sin migración):** configurador público premium (ADR §4.3).
-  - `/modelo/<slug>` muestra el configurador del Manual V4 sólo dentro de su bloque (`data-design="v4" data-v4-scope="block"`, Montserrat por clase); la cabecera, el pie y las demás páginas siguen en V3. El bloque sigue el tema claro/oscuro del visitante. `/v4` sigue siendo la vista previa sin indexar y el Manual V4 sigue sin adoptarse para todo el sitio.
-  - Se puede elegir un color que sólo existe en otra capacidad: la capacidad pasa a la más cercana y la página lo dice (visible y `aria-live`). Nunca se llega a una combinación inexistente.
-  - La foto es la del acabado elegido, con transición sin parpadeo y caja fija; sin foto, «Imagen pendiente». «Bajo pedido» sólo con oferta comprable; el plazo sólo si el dato lo trae.
-  - `?variante=` abre la variante en el primer HTML y se actualiza sin navegar; la canónica sigue siendo la del modelo; JSON-LD con la dirección y la foto de acabado de cada variante.
-  - En escritorio el resumen ya no tapa los colores (también en `/v4`). Se retira el marcado V3 de la ficha (`VariantPicker`, `UsedUnitCard`).
-  - Falta: elegir modelos hermanos (la API pública no expone la generación) y promociones en la ficha (el contrato público no las trae).
-  - Revisión de #373 (ADR D-PRD-11): al cambiar de color la foto anterior sale al instante (caja neutra hasta la nueva); «Atrás» respeta `?variante=`; JSON-LD y vista previa al compartir sólo con fotos propias no demostrativas de la variante; la foto fija de escritorio queda bajo la cabecera; recorrer colores devuelve la capacidad elegida.
-- **PR E (rama `feat/catalog-admin-customization`, sobre master con PR D; sin push, sin desplegar):** personalización por empresa en el panel (ADR §4.4).
-  - Migración aditiva `0183_catalog_presentation`: `ProductModel.is_featured` y `ModelOption.sort_order` (ambos con valor por defecto en la base). Si PR F también trae una `0183`, el segundo en fusionarse añade la migración de fusión.
-  - Nueva pantalla «Catálogo de referencia» (`/admin/products/models/reference`): filtrar, previsualizar (nuevo / se reutiliza / conflicto / pendiente de revisión, con avisos), aprobar los modelos no completos e importar con `Idempotency-Key`. Nada se publica.
-  - Editor del modelo: «Configuración comercial» (resumen con enlaces a cada editor; costo de proveedor sólo con `costs.view`, promociones sólo con `sales.promotions.view`), «Orden en la tienda» (orden de colores y demás opciones del modelo), «Imágenes por acabado» (subir con procedencia, texto alternativo, principal, reordenar con teclado, verificar licencia con quién y cuándo, quitar con confirmación, «Imagen pendiente», rótulo de demostrativa), casilla «Destacado» y combinaciones excluidas en la paleta.
-  - Tienda: la lista de modelos muestra primero los destacados y la ficha ordena las opciones como las ordenó el modelo; una empresa que no usa nada de esto ve exactamente lo de antes.
-  - Se reutilizan sin cambios: visibilidad, descripción, precio por variante, bajo pedido, promociones y proveedores. Falta: activar el catálogo en producción (GO), carga masiva de fotos por nombre y distintivo «Destacado» en la tienda V3.
-- **PR F (rama `feat/pos-quick-device-sale`, rebasada sobre master `d5e1da24`; sin push, sin desplegar):** venta rápida de equipos en caja (ADR §4.5, D-F-1…D-F-9).
-  - La caja usa el mismo catálogo. En «Vender equipo por modelo» se busca el modelo y se elige capacidad → color (con su muestra) → SIM → región. Sólo se pregunta lo que varía y sólo se ofrece la paleta menos las exclusiones. Cada opción dice el stock propio de la sucursal, y la combinación elegida muestra además «bajo pedido» (plazo y precio, nunca el stock del proveedor).
-  - Con una variante existente, «Agregar a la venta» abre la línea y el IMEI se escanea como siempre (SERIAL-PICK).
-  - «Llegó el equipo» (IMEI 1, IMEI 2, serie, proveedor, costo sólo con `costs.view`, precio) registra el equipo sin abrir el panel y lo agrega a la venta identificado. Si la combinación aún no es variante, la crea habilitada para la tienda física y **nunca publicada en la web**, en la misma transacción que el equipo y su Kardex. Compone `registration_services.register` → `receive_units`. Una línea bajo pedido se recibe con `supply_services.receive_line`.
-  - Rechaza la combinación excluida o inexistente sin escribir nada. Un IMEI repetido en la empresa responde 409 y dice qué equipo lo tiene. Es idempotente con `Idempotency-Key`, y de dos recepciones simultáneas del mismo IMEI gana una.
-  - Permisos: recibir = `inventory.adjust` (y con él, elegir el proveedor: D-F-10); crear la variante = además `products.manage`; cambiar el precio = `products.manage`. Un vendedor sin ellos vende lo que existe y la pantalla le pide recurrir a un usuario autorizado.
-  - Migración aditiva `0183_stock_unit_supplier` (`StockUnit.supplier`, nula). Se llena al recibir (caja, «Recibir mercadería» y líneas bajo pedido) y sólo la ve quien ve proveedores o costos.
-  - API: `GET /api/admin/pos/models/`, `GET …/pos/models/<id>/configurations/`, `POST …/pos/devices/receive/`, y lo mismo bajo `/api/v1/internal/<slug>/sales/pos/`.
-  - Revisión de #375: un modelo sin paleta deja elegir la variante que no lleva un atributo; al cambiar de sucursal se vuelve a leer el modelo; sin proveedores activos el campo lo dice; el proveedor también aparece al recibir y al corregir un equipo (regla D-F-3).
-  - Falta (D-F-9): recepción de seminuevos en caja, formulario de líneas bajo pedido dentro de la caja, alta de proveedor desde la caja. Con PR E (`0183_catalog_presentation`) la une la migración de fusión vacía `0184_merge_presentation_stock_unit_supplier`.
+Orden del propietario (2026-11-20). El diseño y las decisiones están en `docs/adr-catalog-reference.md`.
+
+El catálogo maestro de iPhone queda separado del catálogo comercial de cada empresa. La fase incluye:
+- un importador idempotente;
+- una galería por color;
+- un configurador web;
+- personalización en el panel;
+- venta rápida en caja.
+
+**AGENTS §2:** el propietario aprobó una segunda excepción, el catálogo de referencia de fabricantes. Son datos factuales en `backend/catalog_reference/` y el motor no los nombra (lo vigilan los tests guardianes de vocabulario).
+
+| PR | Qué | Migración |
+|---|---|---|
+| A · #370 | Datos y validador. `backend/catalog_reference/apple-iphone.json` tiene 55 modelos (49 `complete`, 6 `partial`), cada uno con sus fuentes oficiales y verificado el 2026-11-20. El validador puro es `store/catalog_reference.py`. | — |
+| B · #371 | Importador y paletas (ADR §4.1). Tablas de plataforma `ReferenceModel`, `ReferenceOption`, `ReferenceModelNumber`; `reference_key` por empresa; `ModelOptionExclusion` (pares SIM × región imposibles). El comando `load_reference_catalog` se puede repetir y nunca borra. La importación por empresa (`/api/admin/catalog/reference/…`) tiene vista previa con 4 estados, `Idempotency-Key` y candado de empresa. Crea el modelo oculto, sus opciones, su paleta y sus exclusiones; **nunca** variantes, stock ni equipos. | `0181_catalog_reference` |
+| C · #372 | Galería por acabado y procedencia (ADR §4.2). `ModelFinishImage`; origen, licencia y verificación en `StorefrontImage`. Regla pública: las fotos de la variante; si no tiene, las de su color; si tampoco, «Imagen pendiente». Nunca la foto de otro color. El informe F4 cuenta lo que falta y lo que no tiene licencia verificada. | `0182_catalog_finish_images` |
+| D · #373 | Configurador público (ADR §4.3). El Manual V4 sólo se aplica dentro del bloque de `/modelo/<slug>`, en claro y en oscuro. Si el color elegido no existe en la capacidad, la capacidad pasa a la más cercana y la página lo dice. `?variante=` abre esa variante desde el primer HTML; la canónica es la del modelo y el JSON-LD lleva una entrada por variante. «Bajo pedido» sólo aparece con una oferta comprable. | — |
+| E · #374 | Personalización en el panel (ADR §4.4): pantalla «Catálogo de referencia», «Imágenes por acabado», «Orden en la tienda», «Destacado», «Configuración comercial» y exclusiones en la paleta. | `0183_catalog_presentation` |
+| F · #376 | Venta rápida en caja (ADR §4.5). «Vender equipo por modelo» elige capacidad, color, SIM y región. «Llegó el equipo» crea la variante si hace falta: queda habilitada para la tienda física y nunca publicada en la web, en la misma transacción que el equipo y su Kardex. Un IMEI duplicado responde 409 nombrando el equipo; la operación es idempotente. El proveedor queda en cada equipo. | `0183_stock_unit_supplier` + fusión vacía `0184_merge_presentation_stock_unit_supplier` |
+| G · rama `feat/catalog-phase1-closeout` | Cierre (ADR §4.6 y §7). Matriz de pruebas de la lista del propietario (`docs/catalog-reference-test-matrix.md`). Pruebas nuevas: compra web completa desde `/modelo/<slug>` con pasarela falsa (configuración → foto por color → precio por variante → carrito → checkout → pago firmado → pedido con ese equipo); «Agotado» y «Bajo pedido» sin mostrar nunca el stock del proveedor como propio; métricas móviles a 375 px; iPhone 17 Pro e iPhone 16 del archivo real ofrecen exactamente sus opciones en caja y en la ficha; importar dos veces un modelo con precios, fotos y stock no toca nada; dos cajas crean la misma variante; la caja cuenta en la base antes y después. Arreglos: el orden de las capacidades importadas (por tamaño, no por etiqueta), el foco del gestor de acabados (seguimientos de #374) y el localizador de `rich-description.spec.ts` (fallo anterior a la Fase 1). Lista de comprobación del release y orden de despliegue. | — |
+
+**Decisiones del propietario y del coordinador que rigen:**
+- D-REF-1…3, D-B-1, D-C-1, D-D-1/2 y D-F-1…10 (ADR §3–§4).
+- El maestro nunca es stock.
+- Una empresa no ve nada hasta que importa, y lo importado queda oculto.
+- Sin licencia demostrada no entra ninguna foto al repositorio. Las fotos de prensa de fabricantes siguen `BLOCKED: LICENSING`; el sistema funciona entero con «Imagen pendiente».
+
+**Migraciones `0181`–`0184`:** todas aditivas (tablas nuevas o columnas con valor por defecto en la base). Una empresa que no usa nada de esto ve exactamente lo de antes.
+
+**Pruebas de PR G:**
+- **Backend completo:** OK (`--parallel 6`, PostgreSQL).
+- **Frontend:** jest completo, `tsc`, lint y build, todos OK.
+- **E2E de catálogo, configurador y caja:** 36/36, más la compra web 2/2 y la presentación 2/2, contra un backend local con base desechable.
+
+**Orden de despliegue** (confirmado por el propietario el 2026-11-20), cada paso con su GO:
+1. R12b (`4a3ce34`, `0177`–`0180`) en prod-02, con el predeploy vigente.
+2. El release de la Fase 1 sobre la base confirmada, con su propio ensayo. Incluye `0181`–`0184` y la reconciliación a mano de la línea `@limit_image` en el `deploy/Caddyfile` vivo, que tiene una edición local: `diff`, fusión a mano, `caddy validate`, `caddy reload`.
+3. La importación del catálogo, al final, tras simular qué modelos serían nuevos, reutilizados, conflictos o duplicados.
+
+Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
+
+**Fallos anteriores y regresiones:**
+- `rich-description.spec.ts:113` es **anterior** a la Fase 1: el «Cancelar» siempre presente de la paleta viene de A1 (#269, 2026-11-12) y ya estaba en `d34df6b`. Se arregló sólo la prueba.
+- El foco del gestor de acabados era **nuevo** de PR E. Se arregló con pruebas.
+- No se encontró ninguna otra regresión.
+
+**Defecto arreglado en G:** las capacidades nuevas que crea la importación tomaban el orden 0 y se leían por etiqueta («1 TB, 256 GB, 512 GB»). Ahora se ordenan por tamaño. Las opciones que ya existían no se reordenan.
+
+**Defectos visuales vistos en la revisión de PR G** (PROPUESTA, sin arreglar):
+- El carrito dibuja la inicial del producto en lugar de la foto del acabado cuando la variante sólo tiene fotos de su color: el carrito lee la imagen propia del producto.
+- Los colores importados del catálogo de referencia llevan todos la misma muestra neutra (D-PRB-7). La empresa tiene que poner el color de cada muestra en el panel.
+
+**Estado: IMPLEMENTADO EN MASTER (A–F) · PR G en rama · NO DESPLEGADO · NADA IMPORTADO EN PRODUCCIÓN.**
+- Desplegar necesita un GO del propietario con SHA y alcance.
+- Cargar el catálogo de referencia en producción e importarlo para una empresa necesita otro GO, aparte.
+- Trampas del release: `docs/NEXT_ACTION.md` y ADR §7.
 
 ## 2026-11-19 — CRM-INGRESS · Borde de la tienda para el CRM en el mismo servidor; IP real del cliente en todas las rutas — en PR (sin desplegar)
 

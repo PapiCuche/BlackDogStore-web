@@ -1,6 +1,6 @@
 # ADR — Catálogo maestro de referencia de fabricantes (CATALOG-REFERENCE-01)
 
-Estado: **APROBADO por el propietario (orden «FASE 1 AMPLIADA», 2026-11-20). En implementación por PR A–G (PR B: §4.1; PR C: §4.2; PR D: §4.3; PR E: §4.4; PR F: §4.5).**
+Estado: **APROBADO por el propietario (orden «FASE 1 AMPLIADA», 2026-11-20). PR A–F en master `33513cc2`; PR G (cierre) en rama. Sin desplegar. (PR B: §4.1; PR C: §4.2; PR D: §4.3; PR E: §4.4; PR F: §4.5; PR G: §4.6; release: §7.)**
 Fecha: 2026-11-20. Base: master `d34df6b`.
 
 ## 1. Requisito
@@ -129,6 +129,15 @@ Se descartó una «empresa de referencia» oculta: rompería el aislamiento entr
 | D-F-10 | **El proveedor lo elige quien recibe (decisión del líder tras la revisión de #375, según la orden del propietario).** Indicar el proveedor al recibir en caja requiere sólo `inventory.adjust`, el permiso de quien recibe. La configuración le manda los proveedores activos, aunque la lista esté vacía, y el campo se muestra siempre. Sin proveedores activos dice «No hay proveedores activos: créalo en Proveedores» y enlaza a esa pantalla sólo si quien recibe puede abrirla (`can.open_suppliers` = `products.view`). Ver el proveedor de un equipo (respuesta de la caja, lista, detalle, recepción y corrección de variante en «Inventario › Equipos») sigue la regla D-F-3: `products.view` o `costs.view`. Además: al cambiar la sucursal de la caja se descarta lo elegido y se vuelve a leer el modelo para esa sucursal; un 409 `idempotency_conflict` cambia la clave y avisa que el equipo pudo quedar registrado (escanearlo antes de repetir); una recepción que responde después de cambiar la sucursal queda en la sucursal anterior y no entra a la venta de la nueva (re-revisión de #376). |
 | D-F-9 | **Fuera de PR F:** recepción de seminuevos en caja (batería, grado y precio por equipo: siguen en «Registrar artículo»); el formulario de recepción de líneas bajo pedido dentro de la caja (existe en la API; la pantalla del pedido sigue siendo la puerta); crear un proveedor nuevo desde la caja; el proveedor en las exportaciones. El flujo completo lo fija `frontend/e2e/pos-quick-device.spec.ts` (backend local sin mocks: par imposible, «Llegó el equipo», cobro y `OrderUnit` manual; sin desborde a 375). |
 
+### 4.6 Cierre: PR G (2026-11-20)
+
+| ID | Decisión |
+|---|---|
+| D-PRG-1 | **Matriz de pruebas.** `docs/catalog-reference-test-matrix.md` asigna a cada punto de la lista obligatoria del propietario sus pruebas (backend, jest y e2e) con su nombre exacto. Los huecos se cerraron con pruebas nuevas, ninguna de las cuales reveló un error de producto: compra web, precio por variante, modelo sin stock propio, dos cajas que crean la misma variante, tipo de entrada en el Kardex, SEO y métricas móviles. |
+| D-PRG-2 | **Compra web en e2e** (`catalog-web-purchase.spec.ts`). Todo es real: ficha, carrito, vista `create-checkout-session` y notificación firmada. Lo único sustituido es la pasarela. El navegador entrega su petición de checkout a la vista del backend (cliente de Django) con `FakeIzipay` en el lugar del socket y claves de prueba inventadas. `PAYMENTS_PUBLIC_TEST` sólo se activa para esa petición, nunca en el servidor. El formulario de la pasarela es un sustituto que se cierra solo; lo que diga no confirma nada. Nunca hay claves reales ni red. |
+| D-PRG-3 | **Rendimiento móvil sin dependencias nuevas.** No se añade Lighthouse CI. Playwright, a 375 px, comprueba: CLS al cargar < 0,1 y al cambiar de color < 0,01; que el elemento LCP sea la foto principal del acabado elegido; que sólo se pidan las fotos de ese acabado; un tope de bytes de imagen; y que no haya desborde. Los tiempos reales (LCP en ms, INP) se medirán en producción. |
+| D-PRG-4 | **Foco del gestor de acabados** (seguimientos de la revisión de #374). Si al quitar la última foto de un color que salió de la paleta el color desaparece de la lista, el foco va al título del panel (`Panel` con `titleFocusable`). Los títulos que reciben el foco por programa muestran un anillo con `focus:`, porque tras un clic el navegador no marcaría `:focus-visible`. Después de «Revisé la licencia», el foco vuelve a su casilla o, si la casilla desaparece (foto propia que deja de estar verificada), a la tarjeta de la imagen. |
+
 ## 5. Formato del dataset (PR A)
 
 Hay un archivo por fabricante y familia: `backend/catalog_reference/<fabricante>-<familia>.json`, en JSON UTF-8. El esquema es el validador puro `store/catalog_reference.py`, que no usa la base de datos y cuyas pruebas (`store/test_catalog_reference.py`) corren en CI con cada cambio de los datos.
@@ -168,3 +177,67 @@ Hay un archivo por fabricante y familia: `backend/catalog_reference/<fabricante>
 - El resolutor resuelve exactamente lo mismo que antes.
 - `check_model_names` sigue devolviendo 0.
 - No se importa ni despliega en producción sin un GO del propietario con SHA y alcance.
+
+## 7. Release (BORRADOR: requiere GO del propietario con SHA y alcance)
+
+Esto es un borrador de lista de comprobación. No autoriza nada. Los pasos de servidor siguen `docs/despliegue-produccion.md` y los runbooks de los releases anteriores (R4.5, R10).
+
+**Antes de pedir el GO**
+1. Fijar el SHA candidato en master y confirmar que su CI está verde: frontend y backend PostgreSQL.
+2. **Orden** (confirmado por el propietario el 2026-11-20):
+   - **R12b** (`4a3ce34`, comprobantes, `0177`–`0180`) va primero, en prod-02, con su GO y el predeploy vigente. Ya está dentro de master: no hay release de la Fase 1 sin R12b.
+   - Después, este release, sobre la base de producción ya confirmada, con su propio ensayo y su GO.
+   - La importación del catálogo va la última, con autorización aparte (puntos 12–13).
+3. Ensayo en seco sobre una copia restaurada de producción:
+   - `migrate` de ida hasta `0184`, con huellas y tiempos;
+   - vuelta atrás del esquema hasta el de producción, con la imagen nueva;
+   - `makemigrations --check` en la imagen;
+   - `check_model_names` = 0 antes y después.
+4. Pruebas E2E a mano contra el backend local: las de `docs/catalog-reference-test-matrix.md`, incluida `catalog-web-purchase.spec.ts`. Playwright no corre en CI.
+
+**Ventana**
+5. Respaldo externo y restauración aislada verificada, como siempre.
+6. Migraciones **antes** del código: `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s' python manage.py migrate`.
+   - `0181`–`0184` son aditivas: tablas nuevas y columnas con valor por defecto en la base o nulas.
+   - `0181_catalog_reference`:
+     - tablas de plataforma `ReferenceModel`, `ReferenceOption` y `ReferenceModelNumber`;
+     - `ProductModel.reference_key` y `VariantOption.reference_key` (`db_default=''`, únicos parciales);
+     - tabla `ModelOptionExclusion`.
+   - `0182_catalog_finish_images`:
+     - tabla `ModelFinishImage`;
+     - en `StorefrontImage`: `source_kind` (`db_default='unknown'`), `source_url`, `license`, `attribution` y `license_verified_by/at` (nulos).
+   - `0183_catalog_presentation`: `ProductModel.is_featured` (`db_default=False`) y `ModelOption.sort_order` (`db_default=0`).
+   - `0183_stock_unit_supplier`: `StockUnit.supplier`, FK nula con `PROTECT`.
+   - `0184_merge_presentation_stock_unit_supplier`: fusión vacía, sin esquema.
+   - Con R12b se suman `0177`–`0180`.
+7. **Reconciliar Caddy.** Producción tiene una edición local de `deploy/Caddyfile`: el archivo del repositorio **no** se copia encima.
+   1. Ejecutar `diff` entre el archivo vivo y el del SHA del GO.
+   2. Llevar a mano sólo la línea `@limit_image` nueva (PR C añade `catalog/models/[0-9]+/finish-images`), conservando todas las modificaciones locales.
+   3. Ejecutar `caddy validate` y después `caddy reload`.
+   4. Trampa del bind mount: comprobar dentro del contenedor que Caddy lee la línea nueva.
+   5. Una subida de foto de acabado de más de 9 MB debe responder 413 desde Caddy.
+8. Cambiar el código: imágenes de backend y frontend del SHA del GO.
+
+**Humo (sin datos ficticios en producción)**
+9. Sin importar nada:
+   - la tienda y `/modelo/<slug>` de un modelo existente se ven como antes;
+   - la caja vende un equipo existente;
+   - el informe de imágenes responde;
+   - «Catálogo de referencia» lista vacío o sólo lo cargado.
+10. Tras el despliegue, el catálogo **no** está cargado: `load_reference_catalog` es un paso aparte (punto 12).
+
+**Vuelta atrás**
+11. Del código: volver a las imágenes anteriores. El esquema aditivo convive con el código anterior. Revertir `0181`–`0184` sólo con la imagen nueva, y sólo si no hay datos que perder:
+    - modelos importados;
+    - fotos de acabado;
+    - proveedores en equipos.
+
+**Después, con un GO aparte**
+12. **Simulación antes de autorizar la importación:**
+    - `python manage.py load_reference_catalog --file backend/catalog_reference/apple-iphone.json --dry-run`;
+    - para la empresa, la vista previa del panel (sin aplicar), revisando los modelos nuevos, los que se reutilizan (posibles duplicados con nombres ya existentes), los conflictos y los pendientes de revisión.
+
+    Con la autorización, el mismo comando sin `--dry-run`. Es un comando de plataforma, auditado sin empresa, y ninguna empresa ve nada todavía.
+13. La empresa importa sus modelos desde el panel, en «Productos › Modelos › Catálogo de referencia», con `products.manage`. Quedan ocultos, sin variantes ni stock. Después pone las muestras de color, sube las fotos de acabado con su licencia y publica.
+
+No van en este documento ni secretos, ni direcciones de servidor, ni credenciales.
