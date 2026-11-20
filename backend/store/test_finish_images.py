@@ -346,3 +346,100 @@ class FinishPermissionsTest(FinishApiBase):
         self.assertEqual(self.api.patch(self.url(f'{image["id"]}/', model=second), {'alt_text': 'x'},
                                         format='json').status_code, 404)
         self.assertTrue(ModelFinishImage.objects.filter(pk=image['id']).exists())
+
+
+class PublicFinishGalleryTest(FinishApiBase):
+    """`GET /api/catalog/models/<slug>/`: variant → its own pictures → its colour's → nothing and `image_pending`."""
+
+    def setUp(self):
+        super().setUp()
+        self.new128blue = self.variant('Teléfono X 128 GB Azul', 'tx-128-azul', '3100.00', [self.gb128, self.blue])
+        self.public = _client(host=self.host)
+
+    def detail(self):
+        res = self.public.get(f'/api/catalog/models/{self.model.slug}/')
+        self.assertEqual(res.status_code, 200, res.content)
+        return res.json()
+
+    def variants(self):
+        return {row['product_id']: row for row in self.detail()['variants']}
+
+    def test_each_colour_shows_its_own_finish(self):
+        black = self.uploaded(self.black, alt_text='Negro de frente')
+        blue = self.uploaded(self.blue, raw=jpeg(), name='azul.jpg')
+        rows = self.variants()
+        for product in (self.new128, self.new256):
+            self.assertEqual([image['url'] for image in rows[product.pk]['gallery']], [black['url']])
+            self.assertFalse(rows[product.pk]['image_pending'])
+        self.assertEqual([image['url'] for image in rows[self.new128blue.pk]['gallery']], [blue['url']])
+        self.assertEqual(rows[self.new128.pk]['gallery'][0]['alt_text'], 'Negro de frente')
+        # Without its own text, the picture is described by the model and the colour.
+        self.assertEqual(rows[self.new128blue.pk]['gallery'][0]['alt_text'], 'Teléfono X Azul')
+
+    def test_a_finish_without_pictures_is_pending_never_another_colours_photo(self):
+        black = self.uploaded(self.black)
+        row = self.variants()[self.new128blue.pk]
+        self.assertEqual(row['gallery'], [])
+        self.assertTrue(row['image_pending'])
+        self.assertNotIn(black['url'], str(row))
+
+    def test_the_models_cover_is_never_a_variants_gallery(self):
+        cover = self.stored()
+        ProductModel.objects.filter(pk=self.model.pk).update(image_url=cover.url)
+        body = self.detail()
+        self.assertEqual(body['image_url'], cover.url)   # the cover stays, for lists
+        for row in body['variants']:
+            self.assertEqual(row['gallery'], [])
+            self.assertTrue(row['image_pending'])
+
+    def test_a_variants_own_pictures_come_first(self):
+        from store import product_media
+        self.uploaded(self.black)
+        own = product_media.add_image(product=self.new128, actor=self.staff, uploaded=SimpleUploadedFile(
+            'propia.png', png_with_transparency(), content_type='image/png'))
+        rows = self.variants()
+        self.assertEqual([image['url'] for image in rows[self.new128.pk]['gallery']], [own.image_url])
+        self.assertNotEqual(rows[self.new256.pk]['gallery'][0]['url'], own.image_url)
+
+    def test_a_variants_own_single_address_is_its_own_picture(self):
+        # A variant whose own address was written before galleries (no ProductImage) keeps showing it.
+        from store.models import Product
+        Product.objects.filter(pk=self.new256.pk).update(image_url='https://cdn.example.com/propia-256.png')
+        self.uploaded(self.black)
+        row = self.variants()[self.new256.pk]
+        self.assertEqual([image['url'] for image in row['gallery']], ['https://cdn.example.com/propia-256.png'])
+
+    def test_the_finish_map_is_an_allowlist_with_only_the_demo_flag(self):
+        self.uploaded(self.black, SUPPLIER)
+        self.uploaded(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})
+        body = self.detail()
+        finishes = body['finish_images']
+        self.assertEqual(set(finishes), {str(self.black.pk), str(self.blue.pk)})
+        self.assertEqual(sorted(finishes[str(self.black.pk)][0]),
+                         ['alt_text', 'height', 'is_demo', 'is_primary', 'url', 'width'])
+        self.assertFalse(finishes[str(self.black.pk)][0]['is_demo'])
+        self.assertTrue(finishes[str(self.blue.pk)][0]['is_demo'])
+        self.assertTrue(self.variants()[self.new128blue.pk]['gallery'][0]['is_demo'])
+        text = str(body)
+        for leak in (SUPPLIER['license'], SUPPLIER['source_url'], SUPPLIER['attribution'], 'supplier_authorized',
+                     'Recurso de demostración interno', 'source_kind', 'license'):
+            self.assertNotIn(leak, text)
+
+    def test_a_colour_no_published_variant_uses_is_not_public(self):
+        red = device_catalog.create_option(company=self.company, attribute_id=self.colour.pk, label='Rojo',
+                                           swatch_hex='#B91C1C')
+        self.uploaded(red)
+        self.assertNotIn(str(red.pk), self.detail()['finish_images'])
+
+    def test_the_count_of_queries_does_not_grow_with_the_pictures(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        self.uploaded(self.black)
+        with CaptureQueriesContext(connection) as before:
+            self.detail()
+        for _ in range(3):
+            self.uploaded(self.black)
+            self.uploaded(self.blue)
+        with CaptureQueriesContext(connection) as after:
+            self.detail()
+        self.assertEqual(len(after.captured_queries), len(before.captured_queries))

@@ -1324,9 +1324,20 @@ def public_model(model, branch) -> dict:
     A published variant with neither is NOT left out (owner, 2026-10-20:
     published does not mean available): it comes with its price and photos
     and `availability: 'none'`, and the page sells nothing of it.
+
+    CATALOG-REFERENCE-01 · PR C (D-C-1) — what a variant SHOWS is `gallery`:
+    its own pictures (its gallery or, before galleries, its own address) →
+    else the pictures of its finish (model + its colour, `finish_images`) →
+    else nothing and `image_pending: true`, which the shop draws as the
+    neutral «Imagen pendiente». Never another colour's photo and never the
+    model's cover (`image_url` stays for lists and a model without variants).
+    Of a picture's provenance only `is_demo` is public.
     """
     from .accessory_compat import for_model_public
+    from .finish_media import public_payload as finish_public_payload
+    from .models import ModelFinishImage, StorefrontImage
     from .product_media import public_payload
+    from .storefront_media import managed_public_id
     from .supply_services import on_order_payload
 
     variants = list(
@@ -1345,6 +1356,8 @@ def public_model(model, branch) -> dict:
         }
     attributes: dict[int, dict] = {}
     variant_rows, used_products = [], []
+    #: product id -> the option of its colour (role `color`), and every colour a public variant has.
+    colour_of: dict[int, int] = {}
     for product in variants:
         links = sorted(
             product.variant_options.all(),
@@ -1364,6 +1377,8 @@ def public_model(model, branch) -> dict:
                 'sort_order': link.option.sort_order,
             }
             selection[str(attribute.pk)] = link.option.pk
+            if attribute.role == VariantAttribute.ROLE_COLOR:
+                colour_of[product.pk] = link.option.pk
         if product.condition_line == Product.CONDITION_USED:
             used_products.append((product, selection, {
                 link.attribute.name: link.option.label for link in links
@@ -1382,12 +1397,49 @@ def public_model(model, branch) -> dict:
             'price': str(product.price),
             'image_url': product.image_url,
             'images': [public_payload(image) for image in product.images.all()],
+            # Resolved below, once the finishes are read (one query for all of them).
+            'gallery': None,
+            'image_pending': None,
             'available': availability != 'none',
             'availability': availability,
             'on_order': on_order,
             # Bought by unit: the cart holds one concrete device of this variant.
             'sells_by_unit': product.sells_by_unit,
         })
+
+    # PR C — the finishes of the colours a public variant has (never one only a hidden variant or the palette
+    # has), and which pictures are demo resources: two queries whatever the number of pictures.
+    finishes: dict[int, list] = {}
+    finish_rows = list(
+        ModelFinishImage.objects.filter(model=model, company_id=model.company_id,
+                                        color_option_id__in=set(colour_of.values()))
+        .select_related('color_option').order_by('sort_order', 'pk')
+    ) if colour_of else []
+    own_by_product = {product.pk: list(product.images.all()) for product in variants}
+    addresses = [row.image_url for row in finish_rows] + [
+        image.image_url for images in own_by_product.values() for image in images]
+    public_ids = {managed_public_id(address) for address in addresses} - {None}
+    demo = set(
+        StorefrontImage.objects.filter(company_id=model.company_id, public_id__in=public_ids,
+                                       source_kind=StorefrontImage.SOURCE_DEMO)
+        .values_list('public_id', flat=True)
+    ) if public_ids else set()
+    for row in finish_rows:
+        finishes.setdefault(row.color_option_id, []).append(finish_public_payload(
+            row, is_demo=managed_public_id(row.image_url) in demo,
+            alt=f'{model.name} {row.color_option.label}'))
+    for entry in variant_rows:
+        own = own_by_product[entry['product_id']]
+        if own:
+            gallery = [{**public_payload(image), 'is_demo': managed_public_id(image.image_url) in demo}
+                       for image in own]
+        elif entry['image_url']:
+            gallery = [{'url': entry['image_url'], 'alt_text': '', 'is_primary': True, 'width': 0, 'height': 0,
+                        'is_demo': False}]
+        else:
+            gallery = list(finishes.get(colour_of.get(entry['product_id']), []))
+        entry['gallery'] = gallery
+        entry['image_pending'] = not gallery
 
     used_units = []
     if used_products and branch is not None:
@@ -1419,6 +1471,8 @@ def public_model(model, branch) -> dict:
             'used': {'label': labels[Product.CONDITION_USED], 'count': len(used_units)},
         },
         'variants': variant_rows,
+        # PR C — colour option id -> the pictures of that finish, for the colours public variants have.
+        'finish_images': {str(option_id): images for option_id, images in finishes.items()},
         'used_units': used_units,
         # P2 · F3 — accessories that fit it, only those the shop sells, in the company's order. Empty: none.
         'accessories': for_model_public(model, branch),
