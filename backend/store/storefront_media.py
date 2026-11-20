@@ -282,6 +282,10 @@ def reference_fields() -> list[tuple[type[models.Model], str]]:
     """
     found = []
     for model in apps.get_app_config('store').get_models():
+        if model is StorefrontImage:
+            # The image's own row is not a slot: its `source_url` says where the file came from, and an identifier
+            # written there must never keep another image (or itself) from being deleted.
+            continue
         for field in model._meta.get_fields():
             if not isinstance(field, (models.CharField, models.TextField)):
                 continue

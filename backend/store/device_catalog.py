@@ -1330,11 +1330,12 @@ def public_model(model, branch) -> dict:
     else the pictures of its finish (model + its colour, `finish_images`) →
     else nothing and `image_pending: true`, which the shop draws as the
     neutral «Imagen pendiente». Never another colour's photo and never the
-    model's cover (`image_url` stays for lists and a model without variants).
+    model's cover (`image_url` stays for lists and a model without variants)
+    — except on a model none of whose variants has a colour (D-PRC-8).
     Of a picture's provenance only `is_demo` is public.
     """
     from .accessory_compat import for_model_public
-    from .finish_media import public_payload as finish_public_payload
+    from .finish_media import colour_attribute_ids, public_payload as finish_public_payload
     from .models import ModelFinishImage, StorefrontImage
     from .product_media import public_payload
     from .storefront_media import managed_public_id
@@ -1356,8 +1357,9 @@ def public_model(model, branch) -> dict:
         }
     attributes: dict[int, dict] = {}
     variant_rows, used_products = [], []
-    #: product id -> the option of its colour (role `color`), and every colour a public variant has.
+    #: product id -> the option of its colour (the company's colour dimension, D-PRC-8).
     colour_of: dict[int, int] = {}
+    dimension = colour_attribute_ids(model.company_id) if variants else set()
     for product in variants:
         links = sorted(
             product.variant_options.all(),
@@ -1377,7 +1379,7 @@ def public_model(model, branch) -> dict:
                 'sort_order': link.option.sort_order,
             }
             selection[str(attribute.pk)] = link.option.pk
-            if attribute.role == VariantAttribute.ROLE_COLOR:
+            if attribute.pk in dimension:
                 colour_of[product.pk] = link.option.pk
         if product.condition_line == Product.CONDITION_USED:
             used_products.append((product, selection, {
@@ -1436,8 +1438,15 @@ def public_model(model, branch) -> dict:
         elif entry['image_url']:
             gallery = [{'url': entry['image_url'], 'alt_text': '', 'is_primary': True, 'width': 0, 'height': 0,
                         'is_demo': False}]
-        else:
+        elif colour_of:
+            # A model with colours: its colour's finish, or nothing. Never the cover (one colour's photo).
             gallery = list(finishes.get(colour_of.get(entry['product_id']), []))
+        elif model.image_url:
+            # D-PRC-8: a COLOURLESS model (no variant has a colour): the cover is not another colour's photo.
+            gallery = [{'url': model.image_url, 'alt_text': '', 'is_primary': True, 'width': 0, 'height': 0,
+                        'is_demo': False}]
+        else:
+            gallery = []
         entry['gallery'] = gallery
         entry['image_pending'] = not gallery
 

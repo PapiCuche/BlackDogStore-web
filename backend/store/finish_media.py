@@ -80,27 +80,42 @@ def _too_many() -> FinishMediaError:
 # Reading
 # ---------------------------------------------------------------------------
 
+def colour_attribute_ids(company_id) -> set[int]:
+    """
+    D-PRC-8 — the company's COLOUR DIMENSION: its attribute with the `color` role; when it has none, its attributes
+    of the `color` kind (a company whose colour attribute kept the `other` role, as 0165 left existing ones). One
+    query. The same rule on every side: placing a picture, the panel's listing, the public page and the F4 report.
+    """
+    rows = list(VariantAttribute.objects.filter(company_id=company_id)
+                .filter(Q(role=VariantAttribute.ROLE_COLOR) | Q(kind=VariantAttribute.KIND_COLOR))
+                .values_list('pk', 'role'))
+    by_role = {pk for pk, role in rows if role == VariantAttribute.ROLE_COLOR}
+    return by_role or {pk for pk, _role in rows}
+
+
 def gallery(model, colour=None):
     """The finish pictures of `model` (of one colour, when given), in the order they are shown."""
     rows = ModelFinishImage.objects.filter(model=model, company_id=model.company_id)
     return rows.filter(color_option=colour) if colour is not None else rows
 
 
-def colours_of(model) -> list[VariantOption]:
+def colours_of(model, dimension=None) -> list[VariantOption]:
     """
-    The finishes a model has: the colours of its palette and the colours its variants use (a model without a
-    palette, or a variant outside it, still has a finish). Colour = an option whose attribute has the `color` role.
+    The finishes a model has: the colours (`colour_attribute_ids`) of its palette and those its variants use (a model
+    without a palette, or a variant outside it, still has a finish) — and any option that already has pictures, even
+    if its attribute stopped being a colour later (the listing flags it; its pictures stay editable and removable).
     """
     from .models import ProductVariantOption
 
+    dimension = colour_attribute_ids(model.company_id) if dimension is None else dimension
     used = ProductVariantOption.objects.filter(
         company_id=model.company_id, product__product_model=model, product__is_active=True,
     ).values('option_id')
     palette = ModelOption.objects.filter(model=model).values('option_id')
     pictured = ModelFinishImage.objects.filter(model=model).values('color_option_id')
     return list(
-        VariantOption.objects.filter(company_id=model.company_id, attribute__role=VariantAttribute.ROLE_COLOR)
-        .filter(Q(pk__in=used) | Q(pk__in=palette) | Q(pk__in=pictured))
+        VariantOption.objects.filter(company_id=model.company_id)
+        .filter((Q(attribute_id__in=dimension) & (Q(pk__in=used) | Q(pk__in=palette))) | Q(pk__in=pictured))
         .order_by('sort_order', 'label', 'pk')
     )
 
@@ -154,10 +169,13 @@ def listing(model) -> dict:
     for image in images:
         by_colour.setdefault(image.color_option_id, []).append(
             payload(image, stored.get(storefront_media.managed_public_id(image.image_url))))
+    dimension = colour_attribute_ids(model.company_id)
     return {'finishes': [
         {'option': {'id': colour.pk, 'label': colour.label, 'swatch_hex': colour.swatch_hex},
-         'images': by_colour.get(colour.pk, []), 'image_pending': not by_colour.get(colour.pk)}
-        for colour in colours_of(model)
+         'images': by_colour.get(colour.pk, []), 'image_pending': not by_colour.get(colour.pk),
+         # Its attribute stopped being a colour after the pictures were placed: shown so they can be removed.
+         'not_colour': colour.attribute_id not in dimension}
+        for colour in colours_of(model, dimension)
     ], 'max_per_colour': max_per_colour(), 'source_kinds': [
         {'value': kind, 'label': label} for kind, label in StorefrontImage.SOURCE_KIND_CHOICES
         if kind in UPLOAD_SOURCE_KINDS
@@ -242,14 +260,15 @@ def _option_id(value) -> int:
 def colour_for(model, option_id) -> VariantOption:
     """
     The colour option `option_id` of `model`'s company, if it may have finish pictures on `model`: an option of
-    another company answers like a missing one (`not_found`); it must be a colour; with a palette, one of its colours.
+    another company answers like a missing one (`not_found`); it must be of the colour dimension
+    (`colour_attribute_ids`); with a palette, one of its colours.
     """
     number = _option_id(option_id)
     option = (VariantOption.objects.select_related('attribute')
               .filter(company_id=model.company_id, pk=number).first())
     if option is None:
         raise FinishMediaError('Color no encontrado.', field='color_option_id', code='not_found')
-    if option.attribute.role != VariantAttribute.ROLE_COLOR:
+    if option.attribute_id not in colour_attribute_ids(model.company_id):
         raise FinishMediaError('Esa opción no es un color.', field='color_option_id', code='not_a_colour')
     palette = ModelOption.objects.filter(model=model)
     if palette.exists() and not palette.filter(option=option).exists():

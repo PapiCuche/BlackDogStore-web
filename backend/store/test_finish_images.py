@@ -520,3 +520,103 @@ class NoVocabularyInFinishMediaTest(TestCase):
         for name, source in sources.items():
             found = re.search(words, strip(None, source), re.I)
             self.assertIsNone(found, (name, found))
+
+
+# ---------------------------------------------------------------------------
+# Review of #372
+# ---------------------------------------------------------------------------
+
+class RoleChangeAfterUploadTest(FinishApiBase):
+    """An attribute's role (or kind) can change after pictures were placed: its finish galleries stay workable."""
+
+    def _two_pictures(self):
+        return self.uploaded(self.blue), self.uploaded(self.blue)
+
+    def _still_workable(self, first, second):
+        res = self.api.patch(self.url(f'{second["id"]}/'), {'alt_text': 'De lado'}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.api.post(self.url('order/'), {'color_option_id': self.blue.pk,
+                                                     'order': [second['id'], first['id']]}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.api.delete(self.url(f'{first["id"]}/'))
+        self.assertEqual(res.status_code, 204, res.content)
+        self.assertTrue(ModelFinishImage.objects.get(pk=second['id']).is_primary)
+
+    def test_no_longer_a_colour_the_pictures_are_listed_flagged_and_editable(self):
+        first, second = self._two_pictures()
+        VariantAttribute.objects.filter(pk=self.colour.pk).update(role='other', kind='text')
+        rows = self.listing()
+        self.assertEqual(len(rows[self.blue.pk]['images']), 2)
+        self.assertTrue(rows[self.blue.pk]['not_colour'])
+        self.assertNotIn(self.black.pk, rows)       # black has no pictures and is no longer a colour
+        self._still_workable(first, second)
+
+    def test_role_other_with_a_colour_kind_still_is_the_colour_dimension(self):
+        first, second = self._two_pictures()
+        VariantAttribute.objects.filter(pk=self.colour.pk).update(role='other')
+        rows = self.listing()
+        self.assertFalse(rows[self.blue.pk]['not_colour'])
+        self.assertIn(self.black.pk, rows)
+        self._still_workable(first, second)
+
+
+class ColourDimensionTest(FinishApiBase):
+    """D-PRC-8: the colour dimension is the `color` role; without one, the attributes of the `color` kind."""
+
+    def setUp(self):
+        super().setUp()
+        self.public = _client(host=self.host)
+        self.new128blue = self.variant('Teléfono X 128 GB Azul', 'tx-128-azul', '3100.00', [self.gb128, self.blue])
+        self.cover = self.stored()
+        ProductModel.objects.filter(pk=self.model.pk).update(image_url=self.cover.url)
+
+    def variants(self, model=None):
+        res = self.public.get(f'/api/catalog/models/{(model or self.model).slug}/')
+        self.assertEqual(res.status_code, 200, res.content)
+        return {row['product_id']: row for row in res.json()['variants']}
+
+    def test_a_colour_kind_without_the_role_is_the_colour_dimension(self):
+        # Production today: the colour attribute kept the `other` role (0165).
+        VariantAttribute.objects.filter(pk=self.colour.pk).update(role='other')
+        blue = self.uploaded(self.blue)
+        rows = self.variants()
+        self.assertEqual([image['url'] for image in rows[self.new128blue.pk]['gallery']], [blue['url']])
+        self.assertEqual(rows[self.new128.pk]['gallery'], [])
+        self.assertTrue(rows[self.new128.pk]['image_pending'])
+        self.assertNotIn(self.cover.url, str(rows))
+        report = self.api.get(f'/api/admin/catalog/image-sources/{self.q}').json()['licensing']
+        self.assertEqual(report['finishes_without_images'], 1)   # black
+
+    def test_with_the_colour_role_present_the_kind_is_ignored(self):
+        tone = device_catalog.create_attribute(company=self.company, name='Tono', kind='color')
+        warm = device_catalog.create_option(company=self.company, attribute_id=tone.pk, label='Cálido',
+                                            swatch_hex='#AA5500')
+        res = self.upload(warm)
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.json()['code'], 'not_a_colour')
+
+    def test_a_colourless_model_shows_its_cover(self):
+        charger = device_catalog.create_model(company=self.company, name='Cargador X')
+        ProductModel.objects.filter(pk=charger.pk).update(image_url=self.cover.url)
+        self.model = charger
+        plain = self.variant('Cargador X 128 GB', 'cargador-128', '99.00', [self.gb128])
+        row = self.variants(charger)[plain.pk]
+        self.assertEqual([image['url'] for image in row['gallery']], [self.cover.url])
+        self.assertFalse(row['image_pending'])
+
+    def test_a_model_with_colours_never_shows_its_cover(self):
+        for row in self.variants().values():
+            self.assertNotIn(self.cover.url, str(row['gallery']))
+
+
+class SweepIgnoresProvenanceTest(FinishShop):
+    def test_a_source_address_never_keeps_another_image_alive(self):
+        self.assertNotIn((StorefrontImage, 'source_url'), storefront_media.reference_fields())
+        victim = self.stored()
+        other = self.stored()
+        StorefrontImage.objects.filter(pk=other.pk).update(
+            source_url=f'https://proveedor.example/catalogo/{victim.public_id}')
+        self.assertEqual(storefront_media.reference_count(victim.public_id), 0)
+        self.assertIn(victim.pk, [image.pk for image in storefront_media.unplaced(older_than_hours=0)])

@@ -31,7 +31,6 @@ from django.db.models import Exists, OuterRef, Q
 
 from .models import (
     ModelFinishImage, ModelOption, Product, ProductImage, ProductModel, ProductVariantOption, StorefrontImage,
-    VariantAttribute,
 )
 
 DEFAULT_PAGE_SIZE = 50
@@ -190,21 +189,25 @@ def licensing(company) -> dict:
     """
     Read-only, one company, a fixed number of queries whatever the size of the catalogue:
 
-    * `finishes_without_images` / `pending_finishes`: each (model, colour) the catalogue has — a colour of the
-      model's palette or of one of its active variants — without a finish picture. The shop shows those variants
+    * `finishes_without_images` / `pending_finishes`: each (model, colour) the catalogue has — a colour
+      (`finish_media.colour_attribute_ids`) of the model's palette or of one of its active variants — without a finish
+      picture. The shop shows those variants
       «Imagen pendiente» unless the variant has pictures of its own.
     * `uploads`: the shop's own uploads shown somewhere in the catalogue (model cover, a product's picture or
       gallery, a finish), each counted once: `unknown_source` (no provenance: uploaded before PR C or through a slot
       that does not ask), `unverified_license` (provenance given, not the shop's own photo, nobody checked it yet),
       `demo` (a demo resource, flagged on the shop).
     """
-    colour = VariantAttribute.ROLE_COLOR
+    from .finish_media import colour_attribute_ids
+
+    dimension = colour_attribute_ids(company.pk)      # D-PRC-8: the same colour dimension as the shop
     finishes: dict[tuple[int, int], str] = {}
-    for model_id, option_id, label in (ModelOption.objects.filter(company=company, option__attribute__role=colour)
+    for model_id, option_id, label in (ModelOption.objects.filter(company=company, option__attribute_id__in=dimension)
                                        .values_list('model_id', 'option_id', 'option__label')):
         finishes[(model_id, option_id)] = label
     for model_id, option_id, label in (ProductVariantOption.objects.filter(
-            company=company, attribute__role=colour, product__product_model__isnull=False, product__is_active=True)
+            company=company, attribute_id__in=dimension, product__product_model__isnull=False,
+            product__is_active=True)
             .values_list('product__product_model_id', 'option_id', 'option__label')):
         finishes[(model_id, option_id)] = label
     pictured = set(ModelFinishImage.objects.filter(company=company).values_list('model_id', 'color_option_id'))

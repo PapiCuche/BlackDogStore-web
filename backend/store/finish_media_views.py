@@ -30,6 +30,11 @@ from .throttles import AdminProductsThrottle, AdminProductWriteThrottle
 _NOT_FOUND = {'detail': 'No encontrado.'}
 
 
+def _invalid(exc: ValidationError) -> Response:
+    """A row the model refuses to save: a 400 the panel can show, never a 500."""
+    return Response({'detail': '; '.join(exc.messages), 'code': 'invalid'}, status=status.HTTP_400_BAD_REQUEST)
+
+
 def _refused(exc: finish_media.FinishMediaError) -> Response:
     code = status.HTTP_404_NOT_FOUND if exc.code == 'not_found' else status.HTTP_400_BAD_REQUEST
     return Response(exc.body(), status=code)
@@ -134,6 +139,8 @@ class AdminModelFinishImageDetailView(_FinishGalleryView):
             )
         except finish_media.FinishMediaError as exc:
             return _refused(exc)
+        except ValidationError as exc:
+            return _invalid(exc)
         return Response(finish_media.payload(image))
 
     def delete(self, request, pk, image_id):
@@ -144,6 +151,8 @@ class AdminModelFinishImageDetailView(_FinishGalleryView):
             finish_media.remove_image(image=image, actor=request.user, request=request)
         except finish_media.FinishImageGone:
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        except ValidationError as exc:
+            return _invalid(exc)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -158,5 +167,5 @@ class AdminModelFinishImageOrderView(_FinishGalleryView):
         except finish_media.FinishMediaError as exc:
             return _refused(exc)
         except ValidationError as exc:
-            return Response({'detail': '; '.join(exc.messages)}, status=status.HTTP_400_BAD_REQUEST)
+            return _invalid(exc)
         return Response(finish_media.listing(model))

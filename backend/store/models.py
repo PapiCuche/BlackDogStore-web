@@ -8894,9 +8894,8 @@ class StorefrontImage(models.Model):
     source_kind = models.CharField(
         max_length=24, choices=SOURCE_KIND_CHOICES, default=SOURCE_UNKNOWN, db_default=SOURCE_UNKNOWN,
     )
-    #: Where the picture was obtained (a supplier's page, a stock bank's item). Never shown to the public. It ends
-    #: in `_url`, so the reference sweep reads it too: harmless, it never holds one of our own addresses
-    #: (`finish_media.clean_provenance` refuses that).
+    #: Where the picture was obtained (a supplier's page, a stock bank's item). Never shown to the public. Not a slot:
+    #: the reference sweep skips this model's own fields (`storefront_media.reference_fields`).
     source_url = models.CharField(max_length=500, blank=True, default='', db_default='')
     #: The licence or authorisation, in words. Empty only for an own photo (or an `unknown` upload).
     license = models.CharField(max_length=255, blank=True, default='', db_default='')
@@ -11430,13 +11429,14 @@ class ModelFinishImage(models.Model):
 
         if not (self.model.company_id == self.company_id == self.color_option.company_id):
             raise ValidationError({'color_option': 'El modelo, el color y la imagen tienen que ser de la misma empresa.'})
-        # The role as stored now, not as a loaded instance remembers it.
-        role = VariantAttribute.objects.filter(pk=self.color_option.attribute_id).values_list('role', flat=True).first()
-        if role != VariantAttribute.ROLE_COLOR:
-            raise ValidationError({'color_option': 'Esa opción no es un color.'})
         if self._state.adding:
-            # A model with a palette admits only its colours. Checked when the picture is placed: a colour taken
-            # out of the palette later keeps its pictures (the variants of that colour still show them).
+            # Checked when the picture is PLACED, never again: an attribute whose role or kind changes later, or a
+            # colour taken out of the palette, keeps its pictures editable, reorderable and removable.
+            from .finish_media import colour_attribute_ids
+
+            if self.color_option.attribute_id not in colour_attribute_ids(self.company_id):
+                raise ValidationError({'color_option': 'Esa opción no es un color.'})
+            # A model with a palette admits only its colours.
             palette = ModelOption.objects.filter(model_id=self.model_id)
             if palette.exists() and not palette.filter(option_id=self.color_option_id).exists():
                 raise ValidationError({'color_option': 'Ese color no está entre las opciones de este modelo.'})
