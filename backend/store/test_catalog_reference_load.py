@@ -176,6 +176,28 @@ class LoadTest(TestCase):
         self.assertEqual(report['model_numbers']['created'] + report['model_numbers']['updated'], 0)
         self.assertEqual(report['retired'], [])
 
+    def test_notes_written_as_a_list_reload_without_changes(self):
+        # The iPhone file keeps Apple-page discrepancies as a list of notes; a reload must not rewrite them.
+        listed = dataset(model(notes=['first note', 'second note']), pro(), old())
+        loader.load(listed)
+        report = loader.load(listed)
+        self.assertEqual(report['models'], {'created': 0, 'updated': 0, 'unchanged': 3})
+        self.assertEqual(ReferenceModel.objects.get(key='phone-9').notes, 'first note\nsecond note')
+
+    def test_the_committed_files_reload_without_changes(self):
+        from pathlib import Path
+
+        from store import catalog_reference as ref
+
+        for path in sorted((Path(__file__).resolve().parent.parent / 'catalog_reference').glob('*.json')):
+            with self.subTest(path.name):
+                data = ref.load(path)
+                loader.load(data)
+                report = loader.load(data)
+                self.assertEqual(report['models']['updated'], 0, path.name)
+                self.assertEqual(report['options']['updated'], 0, path.name)
+                self.assertEqual(report['model_numbers']['updated'], 0, path.name)
+
     def test_a_changed_model_is_updated_alone(self):
         loader.load(dataset())
         changed = dataset(model(name='Phone 9 (2025)'), pro(), old())

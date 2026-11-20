@@ -119,6 +119,8 @@ def _model_errors(m, hosts):
         for label in ('label_en', 'label_es'):
             if not _text(c.get(label)):
                 errors.append(f'{where}: colour {c.get("key")!r} needs {label}')
+            elif len(c[label]) > LABEL_MAX:  # a colour's label becomes the company's option label (60 characters)
+                errors.append(f'{where}: colour {c.get("key")!r} {label} is longer than {LABEL_MAX} characters')
         official = c.get('official')
         if not (isinstance(official, dict) and _text(official.get('en'))
                 and all(official.get(k) is None or isinstance(official.get(k), str) for k in ('es_419', 'es_es'))
@@ -155,6 +157,10 @@ def _model_errors(m, hosts):
         for url in sources:
             if not _official(url, hosts):
                 errors.append(f'{where}: source {url!r} is not an https page of an official host')
+
+    notes = m.get('notes')
+    if notes is not None and not (isinstance(notes, str) or (isinstance(notes, list) and all(_text(x) for x in notes))):
+        errors.append(f'{where}: notes must be a text or a list of texts')
 
     missing = m.get('missing')
     if not isinstance(missing, list) or not all(_text(x) for x in missing):
