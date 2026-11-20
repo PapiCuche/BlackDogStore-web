@@ -37,6 +37,8 @@ beforeEach(() => {
   send.mockReset();
   send.mockResolvedValue(reply({ id: 1 }, 201));
   window.localStorage.clear();
+  // PR D: the page writes `?variante=` and reads it back when the server did not read the model: a clean address.
+  window.history.replaceState(null, '', '/');
 });
 
 const price = () => screen.getByTestId('v4-price').textContent;

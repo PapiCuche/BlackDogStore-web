@@ -193,6 +193,32 @@ describe('la dirección', () => {
   });
 });
 
+describe('volver a una foto después de «Imagen pendiente»', () => {
+  it('no reaparece la del color anterior debajo de la nueva', () => {
+    renderPage();
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Blanco' }));
+    expect(stageImages()).toHaveLength(0);
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Rojo' }));
+    // Only Rojo's picture (loading), never Azul's from before the pending finish.
+    expect(stageImages()).toHaveLength(1);
+    expect(stageImages()[0]).toHaveAttribute('alt', 'Equipo X Rojo');
+  });
+});
+
+describe('la dirección, sin lectura del servidor', () => {
+  it('si el servidor no pudo leer el modelo, el navegador abre la variante de ?variante=', async () => {
+    window.history.replaceState(null, '', '/modelo/equipo-x?variante=equipo-x-43');
+    reads.mockImplementation(() => Promise.resolve(reply(model)));
+    render(
+      <StorefrontProvider config={NEUTRAL_CONFIG}>
+        <ModelConfiguratorV4 slug="equipo-x" />
+      </StorefrontProvider>,
+    );
+    await screen.findByRole('heading', { level: 1, name: 'Equipo X' });
+    expect(within(capacity()).getByRole('radio', { name: '256 GB' })).toHaveAttribute('aria-checked', 'true');
+  });
+});
+
 describe('opciones que no existen', () => {
   it('una opción que ninguna variante nueva tiene se ve deshabilitada y las flechas la saltan', () => {
     model.attributes[0].options.push({ id: 29, label: 'Verde', swatch_hex: '#0A0', sort_order: 9 });

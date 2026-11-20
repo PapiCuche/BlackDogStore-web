@@ -40,6 +40,9 @@ beforeEach(() => {
   send.mockReset();
   send.mockResolvedValue(reply({ id: 1 }, 201));
   window.localStorage.clear();
+  // Choosing writes `?variante=` (V4-VARIANT-URL) and, since PR D, a page without the server's model reads it back:
+  // every test starts from a clean address.
+  window.history.replaceState(null, '', '/');
 });
 
 function config(extra: Partial<StorefrontConfig> = {}): StorefrontConfig {

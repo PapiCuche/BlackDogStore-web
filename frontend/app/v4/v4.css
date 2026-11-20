@@ -289,13 +289,13 @@
   padding-block: 1.5rem;
 }
 
-/* En escritorio el resumen acompaña la elección: se queda a la vista mientras
-   se recorren las opciones. En el móvil va en su sitio, sin tapar la página. */
+/* En escritorio el resumen es una tarjeta, en su sitio tras las opciones.
+   PR D: ya no se pega al borde inferior. Pegado, subía sobre las opciones de
+   arriba y tapaba los colores en una pantalla de 900 px (lo prueba
+   `storefront-configurator.spec.ts`); lo que acompaña la elección es la foto,
+   que sí se queda a la vista (columna izquierda, `lg:sticky`). */
 @media (min-width: 1024px) {
   [data-design="v4"] .v4-summary {
-    position: sticky;
-    bottom: 1.5rem;
-    z-index: 10;
     border: 1px solid var(--v4-line);
     border-radius: 1.5rem;
     padding: 1.75rem;

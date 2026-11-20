@@ -33,6 +33,8 @@ beforeEach(() => {
   reads.mockImplementation(() => Promise.resolve(reply([])));
   global.fetch = reads as unknown as typeof fetch;
   window.localStorage.clear();
+  // PR D: the page writes `?variante=` and reads it back when the server did not read the model: a clean address.
+  window.history.replaceState(null, '', '/');
 });
 
 const bodyOf = (call: number) => JSON.parse(String(send.mock.calls[call][1]?.body));

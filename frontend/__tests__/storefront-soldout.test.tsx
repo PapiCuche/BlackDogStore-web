@@ -49,6 +49,8 @@ beforeEach(() => {
     Promise.resolve(String(input).includes('/catalog/models/equipo-x') ? reply(model) : reply({}, 404)));
   global.fetch = reads as unknown as typeof fetch;
   window.localStorage.clear();
+  // PR D: the page writes `?variante=` and reads it back when the server did not read the model: a clean address.
+  window.history.replaceState(null, '', '/');
 });
 
 const attributes = () => sortedAttributes(modelFixture().attributes as ModelAttribute[]);

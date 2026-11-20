@@ -56,7 +56,12 @@ export function CrossfadeStage({
   if (url !== seen) {
     setSeen(url);
     if (!url) setLayers([]);
-    else {
+    else if (seen === null) {
+      // From nothing on show («Imagen pendiente»): nothing to keep under the new picture.
+      const id = nextId;
+      setNextId(id + 1);
+      setLayers([{ id, url, ready: false, first: false }]);
+    } else {
       const id = nextId;
       setNextId(id + 1);
       setLayers((current) => {
@@ -68,7 +73,10 @@ export function CrossfadeStage({
     }
   }
 
-  const top = layers[layers.length - 1];
+  // Nothing to show is NOTHING, whatever the layers hold: a pending finish never keeps a colour's photo, even for a
+  // frame in which the reset above has not been applied yet.
+  const shownLayers = url ? layers : [];
+  const top = shownLayers[shownLayers.length - 1];
 
   // The incoming picture is shown after `MAX_WAIT_MS` even if it never said it loaded.
   useEffect(() => {
@@ -79,14 +87,14 @@ export function CrossfadeStage({
 
   // Once it is in, the ones under it leave after the fade.
   useEffect(() => {
-    if (!top?.ready || layers.length < 2) return;
+    if (!top?.ready || shownLayers.length < 2) return;
     const timer = window.setTimeout(() => setLayers((current) => current.filter((layer) => layer.id === top.id)), CROSSFADE_MS);
     return () => window.clearTimeout(timer);
-  }, [top, layers.length]);
+  }, [top, shownLayers.length]);
 
   return (
     <>
-      {layers.map((layer) => {
+      {shownLayers.map((layer) => {
         const current = layer === top;
         return (
           <div

@@ -64,6 +64,7 @@ import {
   useNewLineConfigurator,
   useUsedLineConfigurator,
   useVariantInUrl,
+  VARIANT_PARAM,
   type ConfiguratorStatus,
 } from "../../lib/model-configurator";
 
@@ -614,7 +615,13 @@ export function ModelConfiguratorV4({
   const { model, error, reload } = useCatalogModel(slug, initialModel);
   const { offered, line, setLine } = useLineChoice(model, initialLine);
   // The last new variant chosen: switching to the used line and back starts from it, as the address says.
-  const [chosenVariant, setChosenVariant] = useState(initialVariant);
+  // PR D: when the server could not read the model (no `initialModel`), the browser reads it and the address's
+  // `?variante=` is read here instead (only compared with the model's own slugs, by `selectionForVariant`). Nothing
+  // of it is rendered before the model arrives, so the server's HTML and the first client render stay the same.
+  const [chosenVariant, setChosenVariant] = useState(() => initialVariant ?? (
+    initialModel === undefined && typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get(VARIANT_PARAM) ?? undefined
+      : undefined));
 
   if (error && model === undefined) {
     return (
