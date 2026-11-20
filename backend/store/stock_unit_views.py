@@ -33,7 +33,7 @@ from . import stock_unit_services as units
 from . import storefront_media, unit_media
 from .product_media import ProductMediaError
 from .inventory_services import InventoryError
-from .admin_views import CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES
+from .admin_views import CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES
 from .admin_views import _company_context as _catalog_context
 from .inventory_views import (
     CAP_INVENTORY_ADJUST, CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_ADJUST_ROLES,
@@ -51,7 +51,16 @@ NOT_FOUND = 'Equipo no encontrado.'
 PRICES_FORBIDDEN = cost_services.PRICES_FORBIDDEN
 
 
-def unit_payload(unit, *, include_cost: bool = False) -> dict:
+def may_see_suppliers(request) -> bool:
+    """
+    D-F-3 (PR F) — whether this caller may read WHO sold a device: who already sees suppliers (`products.view`, the
+    supplier list's authority) or costs (`costs.view`). Anybody else gets no `supplier` key at all.
+    """
+    _company, error = _catalog_context(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
+    return error is None or may_view_costs(request)
+
+
+def unit_payload(unit, *, include_cost: bool = False, include_supplier: bool = False) -> dict:
     payload = {
         'id': unit.pk,
         'product_id': unit.product_id,
@@ -86,6 +95,9 @@ def unit_payload(unit, *, include_cost: bool = False) -> dict:
     }
     if not include_cost:
         del payload['cost']
+    if include_supplier:
+        payload['supplier'] = None if unit.supplier_id is None else {'id': unit.supplier_id,
+                                                                     'name': unit.supplier.name}
     return payload
 
 
@@ -212,16 +224,18 @@ class StockUnitListView(APIView):
             )
 
         rows = (
-            rows.select_related('product', 'product__product_model', 'branch', 'cosmetic_grade')
+            rows.select_related('product', 'product__product_model', 'branch', 'cosmetic_grade', 'supplier')
             .prefetch_related('photos')
             .order_by('-received_at', '-pk')
         )
         page, meta = _paginate(rows, request)
         include_cost = may_view_costs(request)
+        include_supplier = may_see_suppliers(request)
         dispatch = company_fulfillment_branch(company)
         return Response({
             'results': [
-                {**unit_payload(unit, include_cost=include_cost), 'web': web_status(unit, dispatch=dispatch)}
+                {**unit_payload(unit, include_cost=include_cost, include_supplier=include_supplier),
+                 'web': web_status(unit, dispatch=dispatch)}
                 for unit in page
             ],
             'statuses': [{'value': v, 'label': label} for v, label in StockUnit.Status.choices],
@@ -288,10 +302,12 @@ class StockUnitListView(APIView):
         batch = label_batches.create_for_movement(created.movement, units=created, actor=request.user)
 
         fresh = StockUnit.objects.filter(pk__in=[u.pk for u in created]).select_related(
-            'product', 'branch').order_by('pk')
+            'product', 'branch', 'supplier').order_by('pk')
         include_cost = may_view_costs(request)
+        include_supplier = may_see_suppliers(request)       # D-F-3: the list's rule, on this answer too
         return Response(
-            {'results': [unit_payload(unit, include_cost=include_cost) for unit in fresh],
+            {'results': [unit_payload(unit, include_cost=include_cost, include_supplier=include_supplier)
+                         for unit in fresh],
              **label_batches.answer(batch)},
             status=status.HTTP_201_CREATED,
         )
@@ -413,8 +429,9 @@ class _UnitMixin:
         return unit, None
 
     def answer(self, request, unit) -> Response:
-        fresh = StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade').get(pk=unit.pk)
-        return Response(unit_payload(fresh, include_cost=may_view_costs(request)))
+        fresh = StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade', 'supplier').get(pk=unit.pk)
+        return Response(unit_payload(fresh, include_cost=may_view_costs(request),
+                                     include_supplier=may_see_suppliers(request)))
 
 
 def may_manage_products(request) -> bool:
@@ -523,9 +540,10 @@ class StockUnitMoveVariantView(_UnitMixin, APIView):
                                                actor=request.user, request=request)
         except InventoryError as exc:
             return _refusal(exc)
-        fresh = StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade').get(pk=unit.pk)
+        fresh = StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade', 'supplier').get(pk=unit.pk)
         # UC-D6: the new label (or that it failed). An idempotent repeat made none: `label_batch` is null.
-        return Response({**unit_payload(fresh, include_cost=may_view_costs(request)),
+        return Response({**unit_payload(fresh, include_cost=may_view_costs(request),
+                                        include_supplier=may_see_suppliers(request)),
                          **label_batches.answer(getattr(moved, 'label_batch', None))})
 
 

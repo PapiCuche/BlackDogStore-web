@@ -506,15 +506,20 @@ class ReceivedUnits(list):
 
 @transaction.atomic
 def receive_units(*, branch, product, units, actor=None, reason: str = '',
-                  movement_type: str = StockMovement.PURCHASE_ENTRY, request=None) -> ReceivedUnits:
+                  movement_type: str = StockMovement.PURCHASE_ENTRY, request=None, supplier=None) -> ReceivedUnits:
     """
     Units arrive. ALL OF THEM OR NONE: one bad line refuses the batch, and the
     error names the line.
 
     One Kardex entry for the batch, with the ids of the units it brought in.
+
+    `supplier` (CATALOG-REFERENCE-01 · PR F, D-F-3): who sold the batch, written on every unit. Only a supplier
+    of the branch's company; one of another company is refused like one that does not exist.
     """
     if product.company_id != branch.company_id:
         raise StockUnitError('El producto no pertenece a la empresa de esta sucursal.')
+    if supplier is not None and supplier.company_id != branch.company_id:
+        raise StockUnitError('Proveedor no encontrado.', field='supplier', code='not_found', status=404)
     if not product.is_serialized:
         raise StockUnitError(f'"{product.name}" no se controla por número de serie.')
     rows = list(units or [])
@@ -566,7 +571,8 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
             created = [
                 StockUnit.objects.create(
                     company_id=branch.company_id, branch=branch, product=product,
-                    status=StockUnit.Status.AVAILABLE, received_at=now, created_by=actor, **cleaned,
+                    status=StockUnit.Status.AVAILABLE, received_at=now, created_by=actor, supplier=supplier,
+                    **cleaned,
                 )
                 for cleaned in cleaned_rows
             ]
@@ -596,7 +602,8 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
     AdminAuditLog.log(
         actor=actor, action='stock_units_received', target_type='product', target_id=product.pk,
         # How many and where. Not the identifiers: the units are the record.
-        metadata={'product_id': product.pk, 'branch_id': branch.pk, 'count': len(created)},
+        metadata={'product_id': product.pk, 'branch_id': branch.pk, 'count': len(created),
+                  **({'supplier_id': supplier.pk} if supplier is not None else {})},
         request=request, company=branch.company,
     )
     received = ReceivedUnits(created)

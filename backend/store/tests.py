@@ -53973,6 +53973,8 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
         # 404 después de buscarlo, en la caja y en un pedido.
         'v1-internal-pos-unit-lookup': {404},
         'v1-internal-order-unit-lookup': {404},
+        # CATALOG-REFERENCE-01 · PR F: un modelo que no es de la empresa responde 404 después de buscarlo.
+        'v1-internal-pos-model-configurations': {404},
     }
 
     def setUp(self):
@@ -54022,6 +54024,8 @@ class H411SafeMethodsAreReadOnlyTest(M12DEvidenceBase):
             'v1-internal-pos-search': f'?branch={self.branch_a.pk}&q=Bat',
             'v1-internal-pos-lookup': f'?branch={self.branch_a.pk}&code=H411-NO-EXISTE',
             'v1-internal-pos-unit-lookup': f'?branch={self.branch_a.pk}&code=H411-NO-EXISTE&method=scanner',
+            'v1-internal-pos-models': f'?branch={self.branch_a.pk}&q=Bat',
+            'v1-internal-pos-model-configurations': f'?branch={self.branch_a.pk}',
             'v1-internal-order-unit-lookup': '?code=H411-NO-EXISTE&method=scanner',
             'v1-internal-service-technicians': f'?branch_id={self.branch_a.pk}',
         }
@@ -54369,7 +54373,8 @@ class H411CredentialChannelTest(M8ServiceBase):
         # identificación y retiro del equipo de un pedido.
         # 88 desde CLIENT-SEC-01: decidir la revisión de un pedido.
         # 89 desde DELIVERY-01: el registro de entrega de un pedido.
-        self.assertEqual(internal, 89)
+        # 92 desde CATALOG-REFERENCE-01 · PR F: búsqueda de modelos, configuraciones y «Llegó el equipo» en caja.
+        self.assertEqual(internal, 92)
         self.assertEqual(elsewhere, [])
 
     # -- identidades ----------------------------------------------------------

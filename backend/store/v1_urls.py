@@ -106,6 +106,11 @@ from .v1_transfer_views import (
     V1TransferListView,
     V1TransferReceiveView,
 )
+from .pos_device_views import (
+    V1PosDeviceReceiveView,
+    V1PosModelConfigurationsView,
+    V1PosModelSearchView,
+)
 from .v1_pos_views import (
     V1PosContextView,
     V1PosPreviewView,
@@ -288,6 +293,19 @@ urlpatterns = [
     path(
         'internal/<slug:company_slug>/sales/pos/sales/',
         V1PosSaleView.as_view(), name='v1-internal-pos-sale',
+    ),
+    # CATALOG-REFERENCE-01 · PR F — the same quick device sale as the Web till (`pos_device_views`).
+    path(
+        'internal/<slug:company_slug>/sales/pos/models/',
+        V1PosModelSearchView.as_view(), name='v1-internal-pos-models',
+    ),
+    path(
+        'internal/<slug:company_slug>/sales/pos/models/<int:pk>/configurations/',
+        V1PosModelConfigurationsView.as_view(), name='v1-internal-pos-model-configurations',
+    ),
+    path(
+        'internal/<slug:company_slug>/sales/pos/devices/receive/',
+        V1PosDeviceReceiveView.as_view(), name='v1-internal-pos-device-receive',
     ),
     path(
         'internal/<slug:company_slug>/inventory/summary/',
