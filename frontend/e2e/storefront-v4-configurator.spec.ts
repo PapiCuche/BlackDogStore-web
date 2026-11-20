@@ -306,10 +306,15 @@ for (const viewport of VIEWPORTS) {
         `Región cambió a Japón: EE. UU. no está disponible en Física + eSIM. ${announced(VARIANTS[5].name, "3799.00", "En stock")}`);
 
       await sim.getByRole("radio", { name: "eSIM", exact: true }).click();
-      // Japón still exists with eSIM, so it is kept.
+      // Review of #373: the region the buyer had (EE. UU.) exists again with eSIM, so it comes back, and it is said.
+      await expect(region.getByRole("radio", { name: "EE. UU." })).toHaveAttribute("aria-checked", "true");
+      await expect(price(page)).toHaveText("S/ 3999.00");
+      await expect(page.getByTestId("v4-choice-adjusted")).toHaveText("Región vuelve a EE. UU.");
+      // Chosen by hand with the arrows, Japón stays with eSIM.
+      await region.getByRole("radio", { name: "EE. UU." }).focus();
+      await page.keyboard.press("ArrowRight");
       await expect(region.getByRole("radio", { name: "Japón" })).toHaveAttribute("aria-checked", "true");
       await expect(price(page)).toHaveText("S/ 3899.00");
-      await region.getByRole("radio", { name: "Japón" }).focus();
       await page.keyboard.press("ArrowLeft");
       await expect(region.getByRole("radio", { name: "EE. UU." })).toHaveAttribute("aria-checked", "true");
       await expect(price(page)).toHaveText("S/ 3999.00");

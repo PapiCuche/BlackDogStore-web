@@ -305,9 +305,11 @@ export function useNewLineConfigurator(
     const chosenLabel = label(attributes[index], optionId);
     setAdjusted(changed.length ? changed.map((change) => {
       const attribute = attributes.find((candidate) => candidate.id === change.attributeId);
+      // A label that already ends in a full stop («EE. UU.») does not get a second one.
+      const sentence = (text: string) => (text.endsWith(".") ? text : `${text}.`);
       return change.reason === "restored"
-        ? `${attribute?.name ?? ""} vuelve a ${label(attribute, change.to)}.`
-        : `${attribute?.name ?? ""} cambió a ${label(attribute, change.to)}: ${label(attribute, change.from)} no está disponible en ${chosenLabel}.`;
+        ? sentence(`${attribute?.name ?? ""} vuelve a ${label(attribute, change.to)}`)
+        : sentence(`${attribute?.name ?? ""} cambió a ${label(attribute, change.to)}: ${label(attribute, change.from)} no está disponible en ${chosenLabel}`);
     }).join(" ") : null);
     setChosenImage(null);
     setStatus(null);

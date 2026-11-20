@@ -361,7 +361,14 @@ test.describe("teclado", () => {
 
     await page.keyboard.press("Home");
     await expect(colour(page).getByRole("radio", { name: "Grafito" })).toHaveAttribute("aria-checked", "true");
-    // Grafito 512 GB is sold out: the button says so and adds nothing.
+    // Review of #373: the capacity the buyer chose with the arrows (256 GB) exists in Grafito: it comes back.
+    await expect(capacity(page).getByRole("radio", { name: "256 GB" })).toHaveAttribute("aria-checked", "true");
+    await expect(page.getByTestId("v4-choice-adjusted")).toHaveText("Capacidad vuelve a 256 GB.");
+    // Grafito 512 GB is sold out: 512 GB re-fits the colour to one that can be bought (Niebla); choosing Grafito
+    // there keeps 512 GB (it exists), and the button says so and adds nothing.
+    await capacity(page).getByRole("radio", { name: "512 GB" }).click();
+    await colour(page).getByRole("radio", { name: "Grafito, agotado" }).click();
+    await expect(capacity(page).getByRole("radio", { name: "512 GB" })).toHaveAttribute("aria-checked", "true");
     await expect(page.getByRole("button", { name: "Agotado" })).toBeDisabled();
     await capacity(page).getByRole("radio", { name: "128 GB" }).click();
     await page.getByRole("button", { name: "Agregar al carrito" }).press("Enter");

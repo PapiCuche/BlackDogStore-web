@@ -214,6 +214,14 @@ describe('recorrer los colores no arrastra la capacidad (revisión de #373)', ()
     expect(screen.getByTestId('v4-choice-adjusted')).toHaveTextContent('Capacidad vuelve a 128 GB.');
   });
 
+  it('una opción cuyo nombre ya termina en punto («EE. UU.») no lleva otro', () => {
+    model.attributes[1].options[0].label = '128 GB EE. UU.';
+    renderPage();
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Rojo' }));
+    fireEvent.click(within(colour()).getByRole('radio', { name: 'Azul' }));
+    expect(screen.getByTestId('v4-choice-adjusted')).toHaveTextContent(/^Capacidad vuelve a 128 GB EE\. UU\.$/);
+  });
+
   it('una capacidad elegida a mano pasa a ser la que se recuerda', () => {
     renderPage();
     fireEvent.click(within(capacity()).getByRole('radio', { name: '256 GB' }));
