@@ -152,6 +152,7 @@ def create_attribute(*, company, name, kind=VariantAttribute.KIND_TEXT, sort_ord
 
 def update_attribute(attribute, *, name=None, role=None, sort_order=None, actor=None, request=None) -> VariantAttribute:
     """A1: the name, the role or the order of an attribute. Its kind and its options do not change here."""
+    previous = {'name': attribute.name, 'role': attribute.role, 'sort_order': attribute.sort_order}
     changed = []
     if name is not None:
         attribute.name = _text(name, 'el nombre del atributo', 'name', max_length=60)
@@ -183,7 +184,7 @@ def update_attribute(attribute, *, name=None, role=None, sort_order=None, actor=
         raise CatalogError('Otro atributo ya tiene ese nombre o ese rol.', field='role', code='role_taken') from None
     _audit('variant_attribute_updated', company=attribute.company, actor=actor, request=request,
            target_type='variant_attribute', target_id=attribute.pk, changed=changed, name=attribute.name,
-           role=attribute.role)
+           role=attribute.role, previous=previous)
     return attribute
 
 
@@ -247,7 +248,18 @@ def _not_an_option_alias(company, label) -> None:
             'cámbialo antes de usarlo como opción.', field='label', code='conflict_with_alias')
 
 
+def _clean_sort_order(value) -> int:
+    """An order is a whole number from 0 (a blank one is 0, as before); the field is unsigned."""
+    if value in (None, ''):
+        return 0
+    if isinstance(value, bool) or not str(value).strip().lstrip('-').isdigit() or not 0 <= int(value) <= 2_147_483_647:
+        raise CatalogError('El orden es un número entero desde 0.', field='sort_order')
+    return int(value)
+
+
 def update_option(option, *, label=None, swatch_hex=None, sort_order=None, actor=None, request=None) -> VariantOption:
+    # CATALOG-F11: the audit says what the option was, so a rename or a reorder can be read back (and undone).
+    previous = {'label': option.label, 'sort_order': option.sort_order, 'swatch_hex': option.swatch_hex}
     if label is not None:
         option.label = _text(label, 'el valor', 'label', max_length=60)
         if option.attribute.options.exclude(pk=option.pk).filter(label__iexact=option.label).exists() \
@@ -258,10 +270,11 @@ def update_option(option, *, label=None, swatch_hex=None, sort_order=None, actor
     if swatch_hex is not None:
         option.swatch_hex = _clean_swatch(option.attribute, swatch_hex)
     if sort_order is not None:
-        option.sort_order = int(sort_order or 0)
+        option.sort_order = _clean_sort_order(sort_order)
     option.save()
     _audit('variant_option_updated', company=option.company, actor=actor, request=request,
-           target_type='variant_option', target_id=option.pk, label=option.label)
+           target_type='variant_option', target_id=option.pk, label=option.label, sort_order=option.sort_order,
+           swatch_hex=option.swatch_hex, previous=previous)
     return option
 
 
