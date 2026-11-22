@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-22 — Fase 1.1: «Región» es procedencia; #23 fuera de la normalización
+
+«Región» indica el mercado donde Apple vendió el equipo, no dónde funciona. La variante #23 no tiene equipo que lo compruebe, así que queda como está; la normalización se limita a los roles y las capacidades. Simulación v2 verde; producción sin cambios. Detalle en `docs/adr-catalog-reference.md` §9.5.
+
 ## 2026-11-22 — Fase 1.1: simulación final de la normalización en producción
 
 Simulación final con el código de producción (`ed9f5e0`) sobre una copia aislada del backup `db-20261122-142233`: los cambios aprobados se aplican por las vistas del panel ya desplegadas, en una sola transacción, sin código nuevo. Producción sin cambios; GO pedido en `docs/NEXT_ACTION.md`. Detalle en `docs/adr-catalog-reference.md` §9.4.
