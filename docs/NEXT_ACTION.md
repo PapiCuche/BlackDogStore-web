@@ -1,6 +1,6 @@
-# NEXT ACTION — 2026-11-21
+# NEXT ACTION — 2026-11-22
 
-## CATALOG-REFERENCE-01 · Fase 1 ampliada: completa en master, SIN DESPLEGAR
+## CATALOG-REFERENCE-01 · Fase 1 ampliada: DESPLEGADA el 2026-11-22 (`ed9f5e0`); catálogo SIN IMPORTAR
 
 **Qué está hecho:**
 - PR A–F están fusionados en master `33513cc2`: #370, #371, #372, #373, #374 y #376.
@@ -15,13 +15,13 @@
 
 **Orden de despliegue** (confirmado por el propietario el 2026-11-20). Cada paso necesita su propio GO:
 1. ~~**R12b**~~ **HECHO:** `4a3ce34` desplegada en prod-02 el 2026-11-21 a las 22:24 (`0177`–`0180`).
-2. **Release de la Fase 1**, sobre la base de producción ya confirmada después de R12b, con su propio ensayo y su GO para el SHA exacto. Migraciones `0181`–`0184`. Incluye la reconciliación de Caddy, trampa (b).
+2. ~~**Release de la Fase 1**~~ **HECHO:** `ed9f5e0` desplegada en prod-02 el 2026-11-22 a las 08:11 (`0181`–`0184`), sin tocar Caddy ni el CRM.
 3. **Importar el catálogo**, al final y con una autorización aparte. Antes, una simulación: `load_reference_catalog --dry-run` y una vista previa de la importación por empresa que muestre qué modelos serían nuevos, cuáles reutilizados, cuáles en conflicto y cuáles duplicados.
 
 Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 
 **Lo que necesita al propietario:**
-1. **Release:** un GO con el SHA exacto y el alcance. Nada de la Fase 1 está en producción.
+1. ~~**Release**~~ hecho. El catálogo de referencia está vacío en producción y no se importó nada.
 2. **Catálogo de referencia en producción:** necesita otro GO, aparte del release. `load_reference_catalog --file backend/catalog_reference/apple-iphone.json` es un comando de **plataforma**: carga las tablas de referencia y no lo ve ninguna empresa. La importación para cada empresa se hace desde el panel, en «Productos › Modelos › Catálogo de referencia». Ninguna de las dos cosas publica nada.
 3. **Fotos de acabado:** las sube cada empresa con su origen y su licencia. Las fotos de prensa de fabricantes siguen `BLOCKED: LICENSING`; mientras falten, la tienda muestra «Imagen pendiente».
 
@@ -45,11 +45,11 @@ Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 
 **Decisión abierta del propietario:** ¿la ficha debe abrir en la foto marcada «principal»? Hoy abre en la primera por orden.
 
-## Producción vigente: R12b `4a3ce34` (esquema `0180`), desplegada el 2026-11-21 22:24 en prod-02
+## Producción vigente: Fase 1 `ed9f5e0` (esquema `0184`), desplegada el 2026-11-22 08:11 en prod-02
 
-- Detalle y verificación en la entrada del 2026-11-21 de `02_ESTADO_ACTUAL.md`.
-- **Vuelta atrás de R12b:** `sh backups/release-r12b-prod02/rollback_r12.sh` en `/srv/blackdogstore` (sólo código, a `release-21aae0f`).
-- **Siguiente:** la Fase 1 (`0181`–`0184`), con su ensayo final sobre un backup tomado con R12b y su propio GO. Después, la simulación y la autorización de la importación del catálogo.
+- Detalle y verificación en la entrada del 2026-11-22 de `02_ESTADO_ACTUAL.md`.
+- **Vuelta atrás de la Fase 1:** `sh backups/release-p1/rollback_p1.sh` en `/srv/blackdogstore` (sólo código, a `release-4a3ce34`). Repone los tres archivos de enrutamiento del CRM desde `backups/p1-routing-20261122-081143/`: en `ed9f5e0` están versionados y un checkout simple a R12b borraría dos de ellos.
+- **Siguiente:** la importación del catálogo, con autorización aparte. La simulación sobre una copia del backup posterior (`db-20261122-082424`) está hecha: 21 nuevos, 28 reutilizados, 6 pendientes, 0 conflictos, idempotente y sin tocar stock, precios ni fotos.
 - Pendiente con el propietario: la prueba en la impresora térmica real.
 - Cada despliegue nuevo necesita un GO del propietario para su SHA exacto.
 

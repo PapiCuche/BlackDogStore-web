@@ -3,6 +3,36 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-22 — FASE 1 DESPLEGADA en prod-02 · producción `ed9f5e0`, esquema `0184` · catálogo sin importar
+
+GO del propietario «GO despliegue ed9f5e0 prod-02». Desplegada el 2026-11-22 a las 08:11 (Lima) desde R12b `4a3ce34`. Runbook y scripts en `/srv/blackdogstore/backups/release-p1/` (`RUNBOOK-ed9f5e0-prod02.md`).
+
+**Ensayo final** (2026-11-21, backup `db-20261121-222640`, tomado con R12b): migraciones en 10 s con huellas idénticas; código R12b sobre el esquema nuevo y Fase 1 con humo profundo 32/32; reimpresión; segunda carga del catálogo de referencia sin cambios; simulación de importación idempotente; frontend; vuelta atrás del esquema. La tanda de pruebas en la imagen encontró un fallo de aislamiento de las propias pruebas (carpeta temporal compartida entre workers paralelos), corregido en #379 (`fde1465`, fuera de la release); con las pruebas corregidas, 842 OK en la misma imagen.
+
+**Despliegue:**
+- backup previo `db-20261122-081143`;
+- copia de los tres archivos de enrutamiento del CRM en `backups/p1-routing-20261122-081143/`; tras el checkout siguen idénticos (`deploy/Caddyfile`, `deploy/compose.crm-ingress.yml`, `deploy/sites.d/crm.caddy`, también dentro de Caddy);
+- `0181`–`0184` aplicadas con la imagen nueva antes de cambiar el código;
+- cambio de backend y frontend a las 08:11:58; sanos a las 08:12:14;
+- huella antes = después: productos, stock, Kardex, unidades, pedidos, notas, fiscales, modelos, opciones y políticas legales;
+- catálogo de referencia vacío (0 modelos): no se cargó ni se importó nada;
+- 20 rutas comprobadas, healthcheck OK, `sharp` 0.35.5, reimpresión histórica 7/7/7/9, 0 errores.
+
+**Verificación en producción, sólo lectura:**
+- tienda: 30 modelos publicados responden en la API y en `/modelo/<slug>`; las 2 variantes publicadas abren con `?variante=`; capacidades en orden; ninguna variante muestra la foto de otro color; sin fotos de demostración; carrito, checkout y catálogo 200. La palabra «Batería» sólo aparece en el enlace de servicios del pie, no en la ficha;
+- caja: búsqueda de modelos y configuraciones de venta rápida 200 con sucursal (sin sucursal responde «Selecciona una sucursal para vender», como se diseñó); APIs del panel sin sesión, 401;
+- stock y Kardex: `stock_after` del último movimiento = stock en 11/11 filas; 2 equipos, 202 unidades;
+- documentos: notas de venta, movimientos, stock y equipos del panel 200;
+- a los 13 minutos: 369 peticiones, 0 errores, 0 respuestas 5xx; Caddy sin reiniciar y los 9 contenedores del CRM en marcha.
+
+**Backup posterior:** `db-20261122-082424` (comprobado, con `0184`, 24/24 archivos).
+
+**Simulación de importación sobre una copia de ese backup:** 21 modelos nuevos (ocultos), 28 existentes reutilizados y enlazados, 6 pendientes de revisión (parciales, no se importan), 0 conflictos; 10 capacidades, 45 colores, 8 tipos de SIM, 9 regiones; 1472 configuraciones válidas y 148 pares SIM × región excluidos. La segunda aplicación no cambia nada. Stock, Kardex, pedidos, precios, publicación y las fotos de las 58 filas existentes quedan iguales; 0 duplicados. Avisos: «iPhone 17 Pro», «iPhone 15» y «iPhone 13 Pro Max» tienen una variante cada uno y aún no tienen paleta. Las etiquetas de capacidad que ya existían tienen formatos mezclados («128Gb», «1TB», «2 TB») y se reutilizan tal cual.
+
+**Vuelta atrás:** `sh /tmp/rollback_p1.sh` (sólo código, a `release-4a3ce34`; repone y prepara los tres archivos de enrutamiento). La del esquema exporta antes el proveedor de cada equipo y no se recomienda.
+
+**Siguiente:** la importación del catálogo, con autorización aparte.
+
 ## 2026-11-21 — R12b DESPLEGADA en prod-02 · producción `4a3ce34`, esquema `0180`
 
 GO del propietario «GO despliegue 4a3ce34 prod-02». Desplegada el 2026-11-21 a las 22:24 (Lima) en `blackdogstore-prod-02` (`56.127.0.236`), desde R10 `21aae0f`. Runbook y scripts en `/srv/blackdogstore/backups/release-r12b-prod02/` (`RUNBOOK-4a3ce34-prod02.md`).

@@ -3,6 +3,13 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-22 — Fase 1 del catálogo de iPhone en producción
+
+`ed9f5e0` desplegada en prod-02 con `0181`–`0184`. El catálogo de referencia todavía no se ha cargado ni importado. Detalle en la entrada del 2026-11-22 de `02_ESTADO_ACTUAL.md`.
+
+**Fixed**
+- Pruebas: los workers paralelos ya no borran la carpeta de archivos de los demás (#379).
+
 ## 2026-11-21 — R12b en producción (comprobantes)
 
 `4a3ce34` desplegada en prod-02 con `0177`–`0180`. Detalle en la entrada del 2026-11-21 de `02_ESTADO_ACTUAL.md`.
