@@ -1,4 +1,4 @@
-# NEXT ACTION — 2026-11-20
+# NEXT ACTION — 2026-11-21
 
 ## CATALOG-REFERENCE-01 · Fase 1 ampliada: completa en master, SIN DESPLEGAR
 
@@ -14,7 +14,7 @@
 - Detalle en la entrada del 2026-11-20 de `02_ESTADO_ACTUAL.md`. Diseño y decisiones en `docs/adr-catalog-reference.md`.
 
 **Orden de despliegue** (confirmado por el propietario el 2026-11-20). Cada paso necesita su propio GO:
-1. **R12b** (`4a3ce34`, `0177`–`0180`) primero, en prod-02, con su GO y con el predeploy vigente.
+1. ~~**R12b**~~ **HECHO:** `4a3ce34` desplegada en prod-02 el 2026-11-21 a las 22:24 (`0177`–`0180`).
 2. **Release de la Fase 1**, sobre la base de producción ya confirmada después de R12b, con su propio ensayo y su GO para el SHA exacto. Migraciones `0181`–`0184`. Incluye la reconciliación de Caddy, trampa (b).
 3. **Importar el catálogo**, al final y con una autorización aparte. Antes, una simulación: `load_reference_catalog --dry-run` y una vista previa de la importación por empresa que muestre qué modelos serían nuevos, cuáles reutilizados, cuáles en conflicto y cuáles duplicados.
 
@@ -28,7 +28,8 @@ Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 **Trampas del release** (lista completa en el ADR §7):
 - **(0) #366 CRM-INGRESS ya está en master** (fusionado el 2026-11-20 a las 14:27 UTC desde la cuenta del propietario): toca `deploy/Caddyfile`, `backup.sh`, `restore.sh` y el compose del CRM. El propietario decide si la release de la Fase 1 lo incluye o si se revierte o se aísla antes del GO.
 - **(a) Migraciones.** `0181`–`0184` son aditivas. Se aplican **antes** de cambiar el código, con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`, como en los releases anteriores. Con R12b se suman `0177`–`0180`.
-- **(b) Reconciliar Caddy.** PR C cambió en `deploy/Caddyfile` la línea `@limit_image`: añade `catalog/models/[0-9]+/finish-images`. Sin ese cambio, Caddy no aplica el tope de imagen a las subidas de fotos de acabado. Producción tiene una edición local de `deploy/Caddyfile`, así que **no se copia el archivo del repositorio**. Pasos:
+- **(b) Caddy — resuelto sin recarga (2026-11-21).** El Caddyfile vivo ya es idéntico byte a byte al de master (`ed9f5e07`), incluida la línea `@limit_image` con `finish-images`, y Caddy arrancó con él el 2026-11-20 a las 14:27 UTC. La Fase 1 no toca Caddy. Lo que sigue es el texto original:
+- **(b, original) Reconciliar Caddy.** PR C cambió en `deploy/Caddyfile` la línea `@limit_image`: añade `catalog/models/[0-9]+/finish-images`. Sin ese cambio, Caddy no aplica el tope de imagen a las subidas de fotos de acabado. Producción tiene una edición local de `deploy/Caddyfile`, así que **no se copia el archivo del repositorio**. Pasos:
   1. Comparar el archivo vivo con el del SHA (`diff`).
   2. Llevar a mano los cambios del alcance aprobado, sin tocar las modificaciones locales:
      - siempre, la línea `@limit_image` nueva;
@@ -44,11 +45,12 @@ Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 
 **Decisión abierta del propietario:** ¿la ficha debe abrir en la foto marcada «principal»? Hoy abre en la primera por orden.
 
-## Producción vigente: R10 `21aae0f` (esquema `0176`), desplegada el 2026-11-18 09:34
+## Producción vigente: R12b `4a3ce34` (esquema `0180`), desplegada el 2026-11-21 22:24 en prod-02
 
-- R11, R12 y R12b (comprobantes, `0177`–`0180`) están en master y esperan cada uno su GO. Detalle en la entrada del 2026-11-19 de `02_ESTADO_ACTUAL.md`.
-- **Vuelta atrás de R10:** `sh backups/release-r10/rollback_r10.sh` en `/srv/blackdogstore`.
-- **Siguiente con R10:** operación real de inventario con `docs/guia-personal-inventario.md`. Primero un lote pequeño y autorizado.
+- Detalle y verificación en la entrada del 2026-11-21 de `02_ESTADO_ACTUAL.md`.
+- **Vuelta atrás de R12b:** `sh backups/release-r12b-prod02/rollback_r12.sh` en `/srv/blackdogstore` (sólo código, a `release-21aae0f`).
+- **Siguiente:** la Fase 1 (`0181`–`0184`), con su ensayo final sobre un backup tomado con R12b y su propio GO. Después, la simulación y la autorización de la importación del catálogo.
+- Pendiente con el propietario: la prueba en la impresora térmica real.
 - Cada despliegue nuevo necesita un GO del propietario para su SHA exacto.
 
 ## Historial — estado al 2026-11-15

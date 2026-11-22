@@ -3,6 +3,35 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-21 — R12b DESPLEGADA en prod-02 · producción `4a3ce34`, esquema `0180`
+
+GO del propietario «GO despliegue 4a3ce34 prod-02». Desplegada el 2026-11-21 a las 22:24 (Lima) en `blackdogstore-prod-02` (`56.127.0.236`), desde R10 `21aae0f`. Runbook y scripts en `/srv/blackdogstore/backups/release-r12b-prod02/` (`RUNBOOK-4a3ce34-prod02.md`).
+
+**Antes del GO** (2026-11-20):
+- backup fresco `db-20261120-123939`, verificado y restaurado en una base aislada;
+- ensayo aislado: `0177`–`0180` en 10 s con huellas idénticas, R10 sobre el esquema nuevo con humo profundo 32/32, R12b con humo profundo 32/32, reimpresión histórica, frontend, vuelta atrás del esquema;
+- pruebas en la imagen con el entorno de CI: 393/393 de comprobantes y 5223 de las suites ampliadas.
+
+**Despliegue:**
+- backup previo `db-20261121-222417`;
+- `0177`–`0180` aplicadas con la imagen nueva antes de cambiar el código;
+- cambio de backend y frontend a las 22:24:31; sanos a las 22:24:47;
+- huella antes = después: productos, stock, Kardex, unidades, pedidos y políticas legales;
+- 19 rutas públicas y del panel 200, healthcheck OK, `sharp` 0.35.5, reimpresión histórica 7/7/7/9, 0 errores.
+
+**Verificación en producción, sólo lectura:**
+- stock y Kardex: el `stock_after` del último movimiento coincide con el stock en 11/11 filas;
+- impresora activa con ancho «según rollo» (`print_width_dots = 0`), 2 agentes;
+- registro de comprobantes externos creado y vacío;
+- caja, notas de venta, impresión, documentos, movimientos, stock y unidades del panel responden 200; las API del panel sin sesión, 401;
+- a los 31 minutos: 284 peticiones, 0 errores, 0 respuestas 5xx, healthcheck OK.
+
+**Caddy y CRM:** el despliegue sólo recreó backend y frontend con `docker-compose.prod.yml`. Caddy sigue con el arranque del 2026-11-20 14:27 UTC (CRM-INGRESS #366), su Caddyfile coincide con el del disco y los 9 contenedores del CRM siguen en marcha. Los tres archivos de enrutamiento preparados en el árbol vivo no cambiaron.
+
+**Vuelta atrás:** `sh /tmp/rollback_r12.sh` (sólo código, a `release-21aae0f`). La del esquema exporta antes el registro de comprobantes externos y no se recomienda.
+
+**Sin probar todavía:** impresión en la térmica real, con el propietario presente. SUNAT sigue desactivada.
+
 ## 2026-11-20 — FASE 1 AMPLIADA · CATALOG-REFERENCE-01 · Catálogo maestro de iPhone — COMPLETA EN MASTER (PR A–F fusionados; PR G en rama), SIN DESPLEGAR
 
 Orden del propietario (2026-11-20). El diseño y las decisiones están en `docs/adr-catalog-reference.md`.
