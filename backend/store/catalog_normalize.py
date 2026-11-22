@@ -111,6 +111,17 @@ def _capacities(company, attribute) -> list[dict]:
                 continue
         row.update(label=label, sort_order=order, status='change')
         out.append(row)
+    # Review of #383: two options that would both be written «1 TB» («1TB» and «1024 GB») are the same capacity twice:
+    # merging them is not this module's job, so neither is touched (the second rename would be refused mid-apply).
+    targets: dict[str, int] = {}
+    for row in out:
+        if row['status'] == 'change':
+            targets[row['label'].casefold()] = targets.get(row['label'].casefold(), 0) + 1
+    for row in out:
+        if row['status'] == 'change' and targets[row['label'].casefold()] > 1:
+            row.update(status='conflict', reason=f'Otra opción también pasaría a «{row["label"]}»: son la misma '
+                                                 'capacidad dos veces y hay que unirlas a mano.',
+                       label=row['current'], sort_order=row['current_sort_order'])
     return out
 
 
@@ -130,6 +141,23 @@ def plan(company) -> dict:
     return body
 
 
+def _write(company, body, *, actor, request) -> None:
+    for row in body['roles']:
+        if row['status'] == 'assign':
+            attribute = VariantAttribute.objects.get(company=company, pk=row['attribute_id'])
+            device_catalog.update_attribute(attribute, role=row['role'], actor=actor, request=request)
+    for row in body['capacities']:
+        if row['status'] != 'change':
+            continue
+        option = VariantOption.objects.select_related('attribute').get(company=company, pk=row['option_id'])
+        changes = {}
+        if row['label'] != option.label:
+            changes['label'] = row['label']
+        if row['sort_order'] != option.sort_order:
+            changes['sort_order'] = row['sort_order']
+        device_catalog.update_option(option, actor=actor, request=request, **changes)
+
+
 def apply(company, *, actor, request=None, expected=None) -> dict:
     """Apply the plan to `company`. Raises `StalePlan` when `expected` is not the plan read under the lock."""
     with transaction.atomic():
@@ -137,20 +165,12 @@ def apply(company, *, actor, request=None, expected=None) -> dict:
         body = plan(company)
         if expected and expected != body['fingerprint']:
             raise StalePlan('El catálogo cambió desde la simulación: vuelve a simular y revisa el plan.')
-        for row in body['roles']:
-            if row['status'] == 'assign':
-                attribute = VariantAttribute.objects.get(company=company, pk=row['attribute_id'])
-                device_catalog.update_attribute(attribute, role=row['role'], actor=actor, request=request)
-        for row in body['capacities']:
-            if row['status'] != 'change':
-                continue
-            option = VariantOption.objects.select_related('attribute').get(company=company, pk=row['option_id'])
-            changes = {}
-            if row['label'] != option.label:
-                changes['label'] = row['label']
-            if row['sort_order'] != option.sort_order:
-                changes['sort_order'] = row['sort_order']
-            device_catalog.update_option(option, actor=actor, request=request, **changes)
+        try:
+            _write(company, body, actor=actor, request=request)
+        except device_catalog.CatalogError as exc:
+            # The panel and the alias list do not take the company lock: a write in between can make a check refuse
+            # one step. The whole apply is undone (this transaction) and the caller simulates again.
+            raise StalePlan(f'Un paso fue rechazado ({exc}); no se aplicó nada: vuelve a simular.') from exc
         if body['changes']:
             AdminAuditLog.log(
                 actor=actor, action=APPLIED, target_type='company', target_id=company.pk, request=request,

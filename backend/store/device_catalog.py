@@ -210,6 +210,7 @@ def create_option(*, company, attribute_id, label, swatch_hex='', sort_order=0,
         raise CatalogError('Atributo no encontrado.', field='attribute', code='not_found')
     label = _text(label, 'el valor', 'label', max_length=60)
     swatch = _clean_swatch(attribute, swatch_hex)
+    order = _clean_sort_order(sort_order)
     if attribute.options.filter(label__iexact=label).exists() or _reads_like_a_sibling(attribute, label):
         raise CatalogError(f'«{attribute.name}» ya tiene la opción «{label}».', field='label', code='duplicate')
     _not_an_option_alias(company, label)
@@ -217,7 +218,7 @@ def create_option(*, company, attribute_id, label, swatch_hex='', sort_order=0,
         with transaction.atomic():
             option = VariantOption.objects.create(
                 company=company, attribute=attribute, label=label, swatch_hex=swatch,
-                sort_order=int(sort_order or 0),
+                sort_order=order,
             )
     except IntegrityError:
         raise CatalogError(f'«{attribute.name}» ya tiene la opción «{label}».', field='label', code='duplicate') from None
@@ -252,9 +253,12 @@ def _clean_sort_order(value) -> int:
     """An order is a whole number from 0 (a blank one is 0, as before); the field is unsigned."""
     if value in (None, ''):
         return 0
-    if isinstance(value, bool) or not str(value).strip().lstrip('-').isdigit() or not 0 <= int(value) <= 2_147_483_647:
+    if isinstance(value, bool):
         raise CatalogError('El orden es un número entero desde 0.', field='sort_order')
-    return int(value)
+    text = str(value).strip()
+    if not (text.isascii() and text.isdigit()) or int(text) > 2_147_483_647:
+        raise CatalogError('El orden es un número entero desde 0.', field='sort_order')
+    return int(text)
 
 
 def update_option(option, *, label=None, swatch_hex=None, sort_order=None, actor=None, request=None) -> VariantOption:

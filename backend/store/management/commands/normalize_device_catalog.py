@@ -28,7 +28,7 @@ class Command(BaseCommand):
         parser.add_argument('--company', required=True, help='Slug o id de la empresa.')
         parser.add_argument('--apply', action='store_true', help='Escribe los cambios (sin esto, sólo simula).')
         parser.add_argument('--actor', help='Id del usuario que firma la auditoría (con products.manage).')
-        parser.add_argument('--expect', help='Huella del plan simulado: si cambió, no se aplica nada.')
+        parser.add_argument('--expect', help='Huella del plan simulado (obligatoria con --apply): si cambió, no se aplica nada.')
 
     def handle(self, *args, **options):
         ref = str(options['company'])
@@ -44,8 +44,10 @@ class Command(BaseCommand):
             actor = get_user_model().objects.filter(pk=int(options['actor']), is_active=True).first()
         if actor is None or not has_capability(actor, company, 'products.manage'):
             raise CommandError('--apply necesita --actor: un usuario activo con products.manage en esa empresa.')
+        if not options['expect']:
+            raise CommandError('--apply necesita --expect con la huella que mostró la simulación.')
         try:
-            body = normalize.apply(company, actor=actor, expected=options['expect'] or None)
+            body = normalize.apply(company, actor=actor, expected=options['expect'])
         except normalize.StalePlan as exc:
             raise CommandError(str(exc)) from exc
         self.stdout.write(self._summary(company, body, dry_run=False))

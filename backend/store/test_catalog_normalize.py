@@ -98,6 +98,24 @@ class PlanTest(_Shop, TestCase):
         caps = {c['option_id']: c for c in normalize.plan(self.company)['capacities']}
         self.assertEqual(caps[self.opts['128Gb'].pk]['status'], 'conflict')
 
+    def test_two_options_that_would_get_the_same_label_are_both_conflicts(self):
+        twin = VariantOption.objects.create(company=self.company, attribute=self.cap, label='1024 GB', sort_order=50)
+        caps = {c['option_id']: c for c in normalize.plan(self.company)['capacities']}
+        self.assertEqual((caps[self.opts['1TB'].pk]['status'], caps[twin.pk]['status']), ('conflict', 'conflict'))
+        self.assertIn('1 TB', caps[twin.pk]['reason'])
+
+    def test_two_colour_attributes_are_ambiguous(self):
+        VariantAttribute.objects.create(company=self.company, name='Acabado', role=OTHER, kind=VariantAttribute.KIND_COLOR)
+        roles = {r['role']: r for r in normalize.plan(self.company)['roles']}
+        self.assertEqual(roles['color']['status'], 'ambiguous')
+
+    def test_the_options_of_a_capacity_attribute_already_held_are_normalised(self):
+        VariantAttribute.objects.filter(pk=self.cap.pk).update(role='capacity')
+        plan = normalize.plan(self.company)
+        self.assertEqual({r['role']: r['status'] for r in plan['roles']}['capacity'], 'held')
+        caps = {c['option_id']: c for c in plan['capacities']}
+        self.assertEqual((caps[self.opts['128Gb'].pk]['status'], caps[self.opts['128Gb'].pk]['label']), ('change', '128 GB'))
+
 
 class ApplyTest(_Shop, TestCase):
     def setUp(self):
@@ -158,6 +176,26 @@ class ApplyTest(_Shop, TestCase):
         self.assertEqual(self.cap.role, OTHER)
         self.assertFalse(AdminAuditLog.objects.filter(company=self.company).exists())
 
+    def test_a_refusal_in_the_middle_undoes_everything(self):
+        from unittest import mock
+
+        real = device_catalog.update_option
+        calls = []
+
+        def second_fails(option, **kwargs):
+            calls.append(option.pk)
+            if len(calls) == 2:
+                raise device_catalog.CatalogError('Otra persona escribió en medio.', field='label')
+            return real(option, **kwargs)
+
+        with mock.patch.object(normalize.device_catalog, 'update_option', side_effect=second_fails):
+            with self.assertRaises(normalize.StalePlan):
+                normalize.apply(self.company, actor=self.actor)
+        self.cap.refresh_from_db()
+        self.opts['128Gb'].refresh_from_db()
+        self.assertEqual((self.cap.role, self.opts['128Gb'].label), (OTHER, '128Gb'))
+        self.assertFalse(AdminAuditLog.objects.filter(company=self.company).exists())
+
     def test_conflicts_are_skipped_the_rest_applies(self):
         VariantOption.objects.create(company=self.company, attribute=self.cap, label='256 GB', sort_order=256)
         body = normalize.apply(self.company, actor=self.actor)
@@ -192,6 +230,11 @@ class CommandTest(_Shop, TestCase):
             self.run_command('--apply', '--actor', str(self.viewer.pk))
         self.assertFalse(AdminAuditLog.objects.exists())
 
+    def test_apply_needs_the_fingerprint_of_the_simulation(self):
+        with self.assertRaises(CommandError):
+            self.run_command('--apply', '--actor', str(self.actor.pk))
+        self.assertFalse(AdminAuditLog.objects.exists())
+
     def test_apply_with_the_fingerprint_it_was_shown(self):
         fingerprint = normalize.plan(self.company)['fingerprint']
         text = self.run_command('--apply', '--actor', str(self.actor.pk), '--expect', fingerprint)
@@ -215,8 +258,11 @@ class ServiceAuditTest(_Shop, TestCase):
         self.assertEqual(row.metadata['sort_order'], 17)
 
     def test_a_negative_option_order_is_refused(self):
+        for bad in (-1, '--5', '²', '1.5', True, 2_147_483_648):
+            with self.assertRaises(device_catalog.CatalogError, msg=repr(bad)):
+                device_catalog.update_option(self.opts['16 GB'], sort_order=bad)
         with self.assertRaises(device_catalog.CatalogError):
-            device_catalog.update_option(self.opts['16 GB'], sort_order=-1)
+            device_catalog.create_option(company=self.company, attribute_id=self.cap.pk, label='4 TB', sort_order=-1)
         self.opts['16 GB'].refresh_from_db()
         self.assertEqual(self.opts['16 GB'].sort_order, 16)
 
