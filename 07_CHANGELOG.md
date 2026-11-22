@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-22 — Fase 1.1: normalización del catálogo de equipos (#383)
+
+**Added**
+- `manage.py normalize_device_catalog`: asigna los roles de capacidad y color y escribe las capacidades como el catálogo, ordenadas por tamaño, para una empresa; simulación por defecto, idempotente y auditado.
+
+**Changed**
+- La auditoría de opciones y atributos del catálogo guarda el valor anterior; el orden de una opción debe ser un entero desde 0.
+
+Sin desplegar; producción sin cambios. Detalle en `docs/adr-catalog-reference.md` §9.
+
 ## 2026-11-22 — Catálogo de iPhone importado en Black Dog Store
 
 Catálogo de referencia cargado en prod-02 (55 modelos, 618 opciones, 208 números de modelo) e importados los 49 modelos completos: 21 nuevos ocultos y 28 enlazados a los existentes. No se publicó nada ni se crearon variantes, equipos o stock. Los 6 modelos incompletos quedan pendientes de revisión. Detalle en la entrada del 2026-11-22 de `02_ESTADO_ACTUAL.md`.

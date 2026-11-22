@@ -50,15 +50,20 @@ Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 - Detalle y verificación en la entrada del 2026-11-22 de `02_ESTADO_ACTUAL.md`.
 - **Vuelta atrás de la Fase 1:** `sh backups/release-p1/rollback_p1.sh` en `/srv/blackdogstore` (sólo código, a `release-4a3ce34`). Repone los tres archivos de enrutamiento del CRM desde `backups/p1-routing-20261122-081143/`: en `ed9f5e0` están versionados y un checkout simple a R12b borraría dos de ellos.
 - **Catálogo importado** el 2026-11-22 (entrada «CATÁLOGO iPHONE IMPORTADO» de `02_ESTADO_ACTUAL.md`): 21 modelos nuevos ocultos, 28 enlazados, 6 parciales pendientes de revisión; nada publicado, sin variantes ni stock.
-- **Siguiente — habilitar la venta de equipos nuevos** (decisiones y trabajo del propietario en el panel; nada de esto necesita despliegue):
-  1. **Normalizar capacidades:** las cuatro que ya existían se llaman «128Gb», «256Gb», «512Gb» y «1TB» y tienen orden 0–3, así que en las listas ordenadas por posición salen antes de «16 GB», «32 GB» y «64 GB» (orden por tamaño); «2 TB» lleva espacio. Propuesta: renombrarlas a «128 GB», «256 GB», «512 GB», «1 TB», «2 TB» y ordenarlas por tamaño desde el panel. Renombrar conserva el enlace al catálogo (D-REF-3).
-  2. **Roles de los atributos:** «Capacidad» y «Color» se reutilizaron por nombre y tipo y siguen con el rol «other»; conviene asignarles el rol de capacidad y de color.
-  3. **Variantes existentes:** «iPhone 17 Pro», «iPhone 15» y «iPhone 13 Pro Max» tienen una variante cada uno; con la paleta nueva pueden leerse «incompleta» o «fuera de paleta» hasta completar su SIM y región o ajustar la paleta.
-  4. **Colores:** los 45 colores tienen la muestra neutra provisional; poner el color real a los que se vayan a vender.
-  5. **Fotos por color:** subirlas con origen y licencia; mientras falten, la tienda muestra «Imagen pendiente».
-  6. **Variantes comerciales y stock:** crear las combinaciones que se venden (capacidad × color × SIM/región) con su precio y recibir los equipos con IMEI/serie (recepción o venta rápida).
-  7. **Publicar** cada modelo cuando tenga variantes, precio, fotos y stock; los 21 nuevos siguen ocultos.
-  8. **6 modelos parciales** (iPhone 5c, 4s, 4, 3GS, 3G y el original): aprobarlos uno por uno en el panel sólo si se van a vender (probablemente con la Fase 2, seminuevos).
+- **Fase 1.1 (CATALOG-F11):** código #383 fusionado (`ffc1315`, sin desplegar), ensayo aislado verde, producción sin cambios. Detalle en `docs/adr-catalog-reference.md` §9.
+- **GO pedido — «GO normalización catálogo prod-02».** Autorizaría sólo, en prod-02 y para Black Dog Store, con backup previo, instantánea por tabla antes y después y actor #1:
+  1. rol «capacidad» para «Capacidad» (#1) y rol «color» para «Color» (#2);
+  2. «128Gb» → «128 GB» (orden 128), «256Gb» → «256 GB» (256), «512Gb» → «512 GB» (512), «1TB» → «1 TB» (1024);
+  3. opciones de la variante #23 «iPhone 17 Pro JPN 256Gb Plata»: 256 GB, Plata, Solo eSIM, «EE. UU., Canadá, Japón, México y otros» (leídas de su nombre), con motivo.
+  Por las vistas del panel que ya están en producción (sin desplegar). Sin publicar, sin precios, sin stock, sin renombrar productos. Efecto visible: la caja pregunta Capacidad → Color → SIM → Región; las capacidades salen por tamaño en caja y tienda; la ficha del iPhone 17 Pro muestra los chips de #23. Vuelta atrás: las mismas vistas con los valores anteriores que guarda la instantánea.
+- **Decisiones del propietario (BLOCKED):**
+  1. SIM y región de la variante #22 «iPhone 15 128Gb Negro», o quitar SIM/región de la paleta del iPhone 15;
+  2. colores hexadecimales aprobados (hoy se ve el nombre del color);
+  3. fotos por color con origen y licencia (0 de 205);
+  4. qué regiones compra por modelo (para recortar paletas: hoy 1472 combinaciones);
+  5. si #23 se renombra «iPhone 17 Pro 256 GB Plata …»;
+  6. #19 «iPhone 13 Pro Max» (equipo usado) queda para la Fase 2.
+- Los 6 modelos parciales (iPhone 5c, 4s, 4, 3GS, 3G y el original) siguen fuera; aprobarlos uno por uno sólo si se van a vender.
 - Pendiente con el propietario: la prueba en la impresora térmica real.
 - Cada despliegue nuevo necesita un GO del propietario para su SHA exacto.
 

@@ -255,3 +255,68 @@ Esto es un borrador de lista de comprobación. No autoriza nada. Los pasos de se
 13. La empresa importa sus modelos desde el panel, en «Productos › Modelos › Catálogo de referencia», con `products.manage`. Quedan ocultos, sin variantes ni stock. Después pone las muestras de color, sube las fotos de acabado con su licencia y publica.
 
 No van en este documento ni secretos, ni direcciones de servidor, ni credenciales.
+
+## 9. Fase 1.1 — preparación comercial (CATALOG-F11, 2026-11-22)
+
+Orden del propietario: dejar el catálogo iPhone usable en caja y tienda sin que el vendedor cree variantes a mano, sin
+inventar datos comerciales y sin cambios masivos en producción sin GO. Auditoría hecha en producción **sólo lectura**
+(empresa 1, tras la importación); simulación sobre una copia aislada del backup `db-20261122-120236`.
+
+### 9.1 Hallazgos
+- «Capacidad» (#1) y «Color» (#2) tienen el rol «Otro»; la importación los reutilizó sin tocarlos (D-PRG-8). Efectos:
+  la caja pregunta SIM → Región → Capacidad → Color (`model_palette.attribute_sort_key` ordena por rol); las variantes
+  nuevas se nombran en ese orden (`device_catalog.variant_name`); la ficha V4 ordena igual (`roleOrderedAttributes`); el
+  resumen comercial cuenta capacidad y color como «otro»; las fotos de cuenta ya funcionan por el respaldo «tipo color».
+- Capacidades: «128Gb», «256Gb», «512Gb», «1TB» con orden 0–3; «16 GB», «32 GB», «64 GB», «2 TB» con orden = GB. Toda
+  lista se ordena por `sort_order` (ninguna lee el tamaño): «16 GB» sale después de «1TB».
+- Variantes existentes de iPhone:
+  - #23 «iPhone 17 Pro JPN 256Gb Plata» (modelo 29) sin opciones; su nombre dice 256 GB, Plata y modelo de Japón, que en
+    el catálogo es «Solo eSIM» / «EE. UU., Canadá, Japón, México y otros». Sin stock ni unidades;
+  - #22 «iPhone 15 128Gb Negro» (modelo 22) con capacidad y color, sin SIM ni región, sin stock: nada dice cuál es;
+  - #19 «iPhone 13 Pro Max» (modelo 7) sin opciones; su única unidad en stock es **usada** (con batería): Fase 2.
+- 45 colores, todos con la muestra provisional `#9CA3AF`; la tienda y la caja muestran entonces el nombre, sin punto gris.
+  El catálogo de referencia no trae colores hexadecimales (Apple no los publica).
+- Fotos por acabado: 0 de 205 pares modelo × color (49 modelos). Ninguna con licencia demostrada.
+- Combinaciones válidas (paleta menos exclusiones): 1472 en 49 modelos; 27 en iPhone 17 Pro.
+
+### 9.2 Decisiones
+- **D-F11-1 · Roles.** Se asigna el rol de capacidad y de color sólo al atributo que `Vocabulary.roles_of` ya lee así
+  (único candidato) y sólo si nadie tiene el rol. Nunca se mueve un rol asignado; dos candidatos = ambiguo, no se toca.
+- **D-F11-2 · Capacidades.** Una etiqueta que se lee como tamaño se escribe como el catálogo («128 GB», «1 TB»,
+  `catalog_reference.capacity_label`) y se ordena por tamaño (`sort_order` = GB). No se toca: una etiqueta que no es un
+  tamaño, una cuyo nombre nuevo ya tiene otra opción o un alias, ni dos que acabarían iguales («1TB» y «1024 GB»: hay que
+  unirlas a mano). `reference_key` no cambia.
+- **D-F11-3 · Nombres congelados.** Ningún `Product` se renombra (su nombre se fijó al crearse) y las ventas pasadas
+  conservan su foto del momento. La variante #23 seguirá llamándose «… 256Gb …» salvo que el propietario la renombre.
+- **D-F11-4 · Variantes existentes.** #23 se completa con lo que dice su propio nombre (GO). #22 queda incompleta hasta que
+  el propietario diga su SIM y región o quite SIM/región de la paleta del iPhone 15: `BLOCKED: decisión del propietario`.
+  #19 es un equipo usado: se resuelve con la Fase 2, no aquí.
+- **D-F11-5 · Muestras de color.** No se inventan: `BLOCKED: decisión del propietario` (valores hex aprobados por él).
+  Mientras tanto se ve el nombre del color, que es correcto.
+- **D-F11-6 · Fotos.** `BLOCKED: LICENSING`: las sube la empresa con origen y licencia (`finish_media`); sin ellas,
+  «Imagen pendiente», nunca la foto de otro color.
+- **D-F11-7 · Combinaciones comerciales.** No se crean variantes ni stock por adelantado (sería inventario ficticio): la
+  paleta y sus exclusiones ya definen las 1472 combinaciones válidas y la caja crea la variante exacta al recibir el
+  equipo («Llegó el equipo», D-F-1: activa, serializada, nunca publicada sola). El propietario puede quitar de la paleta
+  de cada modelo las regiones que no compra.
+- **D-F11-8 · Cómo se aplica.** `catalog_normalize` + `manage.py normalize_device_catalog` (#383): simulación por defecto;
+  `--apply --actor <id> --expect <huella>`; pasa por `device_catalog` (auditoría con empresa y actor y, desde #383, con el
+  valor anterior); un bloqueo por empresa; plan obsoleto o paso rechazado = no se aplica nada; segunda vez = 0 cambios.
+  En producción, mientras #383 no esté desplegado, los mismos 6 cambios se pueden hacer por las vistas del panel que ya
+  existen (`PATCH /api/admin/catalog/attributes/<pk>/` y `/options/<pk>/`), como la importación.
+
+### 9.3 Ensayo aislado (copia de `db-20261122-120236`, salida bloqueada)
+- Plan: 2 roles + 4 capacidades (128Gb→128 GB, 256Gb→256 GB, 512Gb→512 GB, 1TB→1 TB, cada una con orden = GB); 0 sin
+  tocar; huella `e4fb4c2b7a2fefff`. Aplicado: 6; segunda aplicación: 0. Orden final: 16, 32, 64, 128, 256, 512 GB, 1, 2 TB.
+- #23 completada por `PUT /api/admin/products/23/variant/` con motivo: estado `variante_existente`; #22 y #19 siguen
+  `incompleta`.
+- Caja, iPhone 17 Pro: pasos Capacidad → Color → SIM → Región; 27 combinaciones.
+- Venta rápida con datos sintéticos: proveedor nuevo; «Llegó el equipo» con IMEI sintético de dígito válido y serie
+  sintética crea la variante «iPhone 17 Pro 512 GB Azul profundo nano-SIM y eSIM Internacional (otros países)» (no
+  publicada, serializada), la unidad con su proveedor, la etiqueta y el Kardex `purchase_entry` 1 → 1; repetir con la
+  misma clave devuelve lo mismo; el mismo IMEI con otra clave, 409. Venta en efectivo con nota de venta: unidad vendida,
+  Kardex `sale_exit` 1 → 0, stock 0 = último `stock_after`; repetir la venta no crea otro pedido; la nota sale en A4,
+  80 mm y ESC/POS (el IMEI completo aparece en el documento a propósito: DOC-DESIGN-03, la garantía depende de él).
+- Diferencias contra la instantánea: sólo roles (2), etiquetas/orden (4), `variant_key` de #23 y las filas nuevas de la
+  venta sintética. Reimpresión de los documentos históricos: 8/8/8 notas, 10 constancias.
+- Ficha pública del iPhone 17 Pro: muestra los chips de #23 (256 GB, Plata, Solo eSIM, región).
