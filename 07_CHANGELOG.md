@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-22 — Catálogo de iPhone importado en Black Dog Store
+
+Catálogo de referencia cargado en prod-02 (55 modelos, 618 opciones, 208 números de modelo) e importados los 49 modelos completos: 21 nuevos ocultos y 28 enlazados a los existentes. No se publicó nada ni se crearon variantes, equipos o stock. Los 6 modelos incompletos quedan pendientes de revisión. Detalle en la entrada del 2026-11-22 de `02_ESTADO_ACTUAL.md`.
+
 ## 2026-11-22 — Fase 1 del catálogo de iPhone en producción
 
 `ed9f5e0` desplegada en prod-02 con `0181`–`0184`. El catálogo de referencia todavía no se ha cargado ni importado. Detalle en la entrada del 2026-11-22 de `02_ESTADO_ACTUAL.md`.
