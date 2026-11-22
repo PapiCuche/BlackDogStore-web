@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-21 — R12b en producción (comprobantes)
+
+`4a3ce34` desplegada en prod-02 con `0177`–`0180`. Detalle en la entrada del 2026-11-21 de `02_ESTADO_ACTUAL.md`.
+
+**Changed**
+- Notas de venta y tickets con el diseño nuevo: ESC/POS, ancho por impresora y logotipo opcional.
+- Cada línea de pedido guarda el nombre con que se vendió, para que una reimpresión salga igual aunque el producto cambie de nombre.
+- Registro de comprobantes emitidos fuera del sistema.
+
 ## 2026-11-20 — Catálogo maestro de iPhone · Fase 1 completa (PR A–G, en master, sin desplegar)
 
 Migraciones aditivas `0181`–`0184`. Nada desplegado ni importado en producción. Desplegar requiere un GO del propietario con SHA y alcance; importar el catálogo en producción requiere otro GO.
