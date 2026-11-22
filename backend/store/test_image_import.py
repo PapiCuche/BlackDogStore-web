@@ -19,6 +19,7 @@ Lo que estas pruebas fijan:
   * aplicar todo o nada, una vez, y sólo sobre la galería;
   * empresa, permiso y cada protección del ZIP, también por este camino.
 """
+import atexit
 import io
 import shutil
 import tempfile
@@ -54,8 +55,10 @@ WORD = 'REEMPLAZAR'
 ONE, TWO, THREE, FOUR = png_with_transparency(), jpeg((100, 60)), webp((90, 90)), png_with_transparency((64, 64))
 
 
-def tearDownModule():
-    shutil.rmtree(_ROOT, ignore_errors=True)
+# The parallel runner forks its workers after this module is imported, so they all share _ROOT. A tearDownModule
+# would run in each worker and delete files the others still use; only the process that created it removes it,
+# at exit (forked workers leave without running atexit). Guarded by test_parallel_tempdir_guard.
+atexit.register(shutil.rmtree, _ROOT, True)
 
 
 def apply_url(job_id):

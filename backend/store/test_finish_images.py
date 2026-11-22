@@ -13,6 +13,7 @@ What is fixed here:
     `image_pending` — never another colour's photo and never the model's cover;
   * the F4 report counts finishes without pictures and uploads whose licence is unknown or unverified.
 """
+import atexit
 import shutil
 import tempfile
 
@@ -31,8 +32,10 @@ from store.tests import _p2d_member, _p3_company
 _ROOT = tempfile.mkdtemp(prefix='finish-images-')
 
 
-def tearDownModule():
-    shutil.rmtree(_ROOT, ignore_errors=True)
+# The parallel runner forks its workers after this module is imported, so they all share _ROOT. A tearDownModule
+# would run in each worker and delete files the others still use; only the process that created it removes it,
+# at exit (forked workers leave without running atexit). Guarded by test_parallel_tempdir_guard.
+atexit.register(shutil.rmtree, _ROOT, True)
 
 
 @override_settings(EVIDENCE_STORAGE_BACKEND='filesystem', EVIDENCE_STORAGE_ROOT=_ROOT,

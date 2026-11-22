@@ -11,6 +11,7 @@ El logotipo de la tienda en el comprobante — PAYMENT-FISCAL-PRINT-01.
     documento tributario no: el logotipo se dibuja tal cual, una vez, sin
     sombra, ni en el papel ni en la vista previa del panel.
 """
+import atexit
 import hashlib
 import io
 import shutil
@@ -34,8 +35,10 @@ UPLOAD = '/api/admin/storefront/images/'
 _ROOT = tempfile.mkdtemp(prefix='fiscal-logo-')
 
 
-def tearDownModule():
-    shutil.rmtree(_ROOT, ignore_errors=True)
+# The parallel runner forks its workers after this module is imported, so they all share _ROOT. A tearDownModule
+# would run in each worker and delete files the others still use; only the process that created it removes it,
+# at exit (forked workers leave without running atexit). Guarded by test_parallel_tempdir_guard.
+atexit.register(shutil.rmtree, _ROOT, True)
 
 
 def logo_png(colour=(20, 20, 20, 255), size=(240, 80)):
@@ -185,7 +188,9 @@ class FiscalDocumentLogoSnapshotTest(FiscalLogoBase):
         self.assertEqual(first.logo_storage_key, second.logo_storage_key)
 
     def test_a_missing_snapshot_does_not_stop_the_reprint(self):
-        self.set_logo(self.upload())
+        # Its own colour: snapshots are named by content (and every parallel worker's test database starts with the
+        # same company ids), so deleting the default logo's snapshot could delete a file another worker is reading.
+        self.set_logo(self.upload(logo_png(colour=(7, 77, 177, 255))))
         document = self.issue()
         storage.delete_quietly(document.logo_storage_key)
 

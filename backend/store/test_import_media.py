@@ -12,6 +12,7 @@ Lo que no cambia, y por eso se fija otra vez:
   * un libro sin columnas de imagen se importa exactamente como antes;
   * otra empresa no ve, no aplica y no puede citar nada de esto.
 """
+import atexit
 import io
 import json
 import shutil
@@ -38,8 +39,10 @@ HEADERS = ['Código', 'Nombre', 'Precio de venta', 'Imagen principal', 'Imágene
 XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 
-def tearDownModule():
-    shutil.rmtree(_ROOT, ignore_errors=True)
+# The parallel runner forks its workers after this module is imported, so they all share _ROOT. A tearDownModule
+# would run in each worker and delete files the others still use; only the process that created it removes it,
+# at exit (forked workers leave without running atexit). Guarded by test_parallel_tempdir_guard.
+atexit.register(shutil.rmtree, _ROOT, True)
 
 
 def workbook(rows, headers=HEADERS):

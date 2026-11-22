@@ -1,3 +1,4 @@
+import atexit
 import io
 import shutil
 import tempfile
@@ -17,8 +18,10 @@ PAGE = '/api/admin/storefront/page/'
 _ROOT = tempfile.mkdtemp(prefix='storefront-media-')
 
 
-def tearDownModule():
-    shutil.rmtree(_ROOT, ignore_errors=True)
+# The parallel runner forks its workers after this module is imported, so they all share _ROOT. A tearDownModule
+# would run in each worker and delete files the others still use; only the process that created it removes it,
+# at exit (forked workers leave without running atexit). Guarded by test_parallel_tempdir_guard.
+atexit.register(shutil.rmtree, _ROOT, True)
 
 
 def png_with_transparency(size=(120, 80)):
