@@ -338,3 +338,31 @@ inventar datos comerciales y sin cambios masivos en producción sin GO. Auditor�
   `incompleta`. Ficha pública del iPhone 17 Pro con sus cuatro chips; los 11 productos públicos conservan nombre y precio.
 - **Vuelta atrás ensayada:** roles y capacidades vuelven a sus valores. Devolver #23 a «sin opciones» lo rechaza la vista
   (`variant_incomplete`) y la transacción lo deshace todo, así que la vuelta atrás deja #23 con sus opciones.
+
+### 9.5 Qué significa «Región» y alcance definitivo (2026-11-22, orden «Normalización Fase 1.1»)
+- **Semántica: procedencia, no compatibilidad.** Cada opción de rol `region` es un grupo de **países donde Apple vende**
+  el equipo con esa configuración SIM (D-PRB-1: texto `regions` de cada entrada `sim`; números de modelo en
+  `ReferenceModelNumber`). En el iPhone 17 Pro: «EE. UU., Canadá, Japón, México y otros» = A3256 (EE. UU., Puerto Rico)
+  + A3522 (Japón, Canadá, México, Golfo…); «Internacional (otros países)» = A3523; «China continental» = A3524. No dice
+  dónde funciona el equipo: dice de qué versión de mercado es. Se comprueba en el equipo (número de modelo en la caja o
+  en Ajustes › General › Información) o en la factura de compra.
+- **En el 17 Pro, SIM y región van juntas:** 6 exclusiones dejan 3 pares (Solo eSIM ↔ ese grupo, nano-SIM y eSIM ↔
+  Internacional, Dual nano-SIM ↔ China). La región no añade un dato nuevo, pero sigue siendo una declaración de
+  procedencia.
+- **#23 no se toca.** No tiene ni tuvo equipos (0 unidades, 0 stock, 0 ventas): no hay equipo que comprobar. Lo único que
+  la sitúa en Japón es la palabra JPN que se escribió en su nombre, y de eso depende también «Solo eSIM». La vista no acepta
+  tres opciones sin región: en el ensayo, 256 GB + Plata + Solo eSIM da 400 `variant_incomplete`. #23 sigue igual que
+  hoy, `incompleta`, publicada y sin stock.
+- **Cuándo completarla:** cuando llegue un equipo, se lee su número de modelo y se completan las cuatro opciones de #23
+  **antes** de recibirlo, por `PUT /api/admin/products/23/variant/`. Así el equipo entra en #23. Si se recibe sin
+  completarla, «Llegó el equipo» crea otra variante sin publicar y #23 sigue publicada sin stock. La decisión es del
+  propietario.
+- **Texto en caja y tienda (propuesta, sin cambios):** el chip dice «Región». Si se fija desde el equipo es exacto, pero
+  un cliente podría leerlo como «dónde funciona». Un nombre como «Versión (país de venta)» sería más claro. Renombrar el
+  atributo es una decisión del propietario y no entra en este GO.
+- **Ensayo v2** (copia de `db-20261122-153017`, imagen de producción sin #383): 6 escrituras más 1 resumen en una
+  transacción. Un paso rechazado (etiqueta duplicada), un fallo provocado o una huella equivocada no dejan ninguna
+  diferencia. Al aplicar, las diferencias son sólo `VariantAttribute.role` (2), `VariantOption.label/sort_order` (4) y 7
+  auditorías; repetir no escribe. Caja: Capacidad → Color → SIM → Región, con 27 combinaciones. #19, #22 y #23 siguen
+  `incompleta`. Los 11 productos públicos conservan nombre y precio. La vuelta atrás devuelve exactamente el estado
+  anterior (sólo quedan las auditorías).

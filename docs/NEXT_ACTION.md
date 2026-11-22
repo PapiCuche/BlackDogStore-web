@@ -51,21 +51,23 @@ Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 - **Vuelta atrás de la Fase 1:** `sh backups/release-p1/rollback_p1.sh` en `/srv/blackdogstore` (sólo código, a `release-4a3ce34`). Repone los tres archivos de enrutamiento del CRM desde `backups/p1-routing-20261122-081143/`: en `ed9f5e0` están versionados y un checkout simple a R12b borraría dos de ellos.
 - **Catálogo importado** el 2026-11-22 (entrada «CATÁLOGO iPHONE IMPORTADO» de `02_ESTADO_ACTUAL.md`): 21 modelos nuevos ocultos, 28 enlazados, 6 parciales pendientes de revisión; nada publicado, sin variantes ni stock.
 - **Fase 1.1 (CATALOG-F11):** código #383 fusionado (`ffc1315`, sin desplegar y no necesario para el GO), ensayo aislado y simulación final verdes, producción sin cambios. Detalle en `docs/adr-catalog-reference.md` §9.
-- **Simulación final hecha (2026-11-22 14:22–14:30 Lima)** con el código de producción tal como está (`release-ed9f5e0`, sin #383) sobre una copia aislada de `db-20261122-142233`: detalle en `docs/adr-catalog-reference.md` §9.4. Producción leída sin escribir: precondiciones exactas, huella `1689fd2825cc5724`, igual a la de la copia.
+- **Simulación final v2 (2026-11-22 15:30 Lima)**, sobre una copia aislada de `db-20261122-153017`, con el código de producción tal cual. Producción leída sin escribir: precondiciones exactas, huella `1689fd2825cc5724`. «Región» es procedencia (mercado de venta), así que #23 queda fuera: `docs/adr-catalog-reference.md` §9.5.
 - **GO pedido — «GO normalización catálogo prod-02».** Autorizaría sólo, en prod-02 y para Black Dog Store, con backup previo, instantánea por tabla antes y después y actor #1:
   1. rol «capacidad» para «Capacidad» (#1) y rol «color» para «Color» (#2);
-  2. «128Gb» → «128 GB» (orden 128), «256Gb» → «256 GB» (256), «512Gb» → «512 GB» (512), «1TB» → «1 TB» (1024);
-  3. opciones de la variante #23 «iPhone 17 Pro JPN 256Gb Plata» (modelo 29): 256 GB (#1), Plata (#6), Solo eSIM (#11), «EE. UU., Canadá, Japón, México y otros» (#14), con motivo.
-  Cómo: `sh backups/release-p1/f11p_go.sh` en `/srv/blackdogstore`. Llama a las vistas del panel de `ed9f5e0` (`PATCH /api/admin/catalog/attributes/<pk>/`, `PATCH /api/admin/catalog/options/<pk>/`, `PUT /api/admin/products/23/variant/`) dentro de **una sola transacción** bajo el bloqueo de la empresa: si cualquier paso o comprobación falla, no queda nada escrito. Se detiene antes de escribir si cambian el SHA, el esquema, la imagen, los roles, las ocho capacidades o el estado de #23. Deja 7 auditorías de las vistas y una `catalog_normalized` con los valores anteriores. Sin desplegar, sin publicar, sin precios, sin stock, sin renombrar productos; #22 y #19 no se tocan.
-  Efecto visible: la caja pregunta Capacidad → Color → SIM → Región; las capacidades salen por tamaño en caja y tienda; la ficha del iPhone 17 Pro muestra los chips de #23.
-  Vuelta atrás: `F11_MODE=rollback` del mismo kit devuelve roles y capacidades a sus valores anteriores por las mismas vistas, en una transacción. #23 conserva sus cuatro opciones: las vistas no aceptan volver a dejarla incompleta.
+  2. «128Gb» → «128 GB» (orden 128), «256Gb» → «256 GB» (256), «512Gb» → «512 GB» (512), «1TB» → «1 TB» (1024).
+  Cómo: `sh backups/release-p1/f11p_go.sh` en `/srv/blackdogstore`. Usa las vistas del panel de `ed9f5e0` en **una sola transacción**, con la empresa bloqueada. Se detiene sin escribir si cambian el SHA, el esquema, la imagen, los roles, las ocho capacidades o #23. Deja 6 auditorías de las vistas y una `catalog_normalized` con los valores anteriores; repetir no escribe.
+  No toca #19, #22 ni #23, precios, fotos, stock, publicación ni ventas.
+  Efecto visible: la caja pregunta Capacidad → Color → SIM → Región; las capacidades salen por tamaño en caja y tienda.
+  Vuelta atrás: `F11_MODE=rollback`, por las mismas vistas y en una transacción; deja exactamente el estado anterior.
+- **#23:** se completa cuando haya equipo y su número de modelo, antes de recibirlo (§9.5). Decisión del propietario.
 - **Decisiones del propietario (BLOCKED):**
   1. SIM y región de la variante #22 «iPhone 15 128Gb Negro», o quitar SIM/región de la paleta del iPhone 15;
   2. colores hexadecimales aprobados (hoy se ve el nombre del color);
   3. fotos por color con origen y licencia (0 de 205);
   4. qué regiones compra por modelo (para recortar paletas: hoy 1472 combinaciones);
-  5. si #23 se renombra «iPhone 17 Pro 256 GB Plata …»;
-  6. #19 «iPhone 13 Pro Max» (equipo usado) queda para la Fase 2.
+  5. #23: completar sus opciones con el número de modelo del equipo cuando llegue, y si se renombra «iPhone 17 Pro 256 GB Plata …»;
+  6. si el atributo «Región» pasa a llamarse «Versión (país de venta)»;
+  7. #19 «iPhone 13 Pro Max» (equipo usado) queda para la Fase 2.
 - Los 6 modelos parciales (iPhone 5c, 4s, 4, 3GS, 3G y el original) siguen fuera; aprobarlos uno por uno sólo si se van a vender.
 - Pendiente con el propietario: la prueba en la impresora térmica real.
 - Cada despliegue nuevo necesita un GO del propietario para su SHA exacto.
