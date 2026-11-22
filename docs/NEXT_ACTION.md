@@ -1,6 +1,6 @@
 # NEXT ACTION — 2026-11-22
 
-## CATALOG-REFERENCE-01 · Fase 1 ampliada: DESPLEGADA el 2026-11-22 (`ed9f5e0`); catálogo SIN IMPORTAR
+## CATALOG-REFERENCE-01 · Fase 1 ampliada: DESPLEGADA el 2026-11-22 (`ed9f5e0`); catálogo IMPORTADO el 2026-11-22 (49 modelos, nada publicado)
 
 **Qué está hecho:**
 - PR A–F están fusionados en master `33513cc2`: #370, #371, #372, #373, #374 y #376.
@@ -16,7 +16,7 @@
 **Orden de despliegue** (confirmado por el propietario el 2026-11-20). Cada paso necesita su propio GO:
 1. ~~**R12b**~~ **HECHO:** `4a3ce34` desplegada en prod-02 el 2026-11-21 a las 22:24 (`0177`–`0180`).
 2. ~~**Release de la Fase 1**~~ **HECHO:** `ed9f5e0` desplegada en prod-02 el 2026-11-22 a las 08:11 (`0181`–`0184`), sin tocar Caddy ni el CRM.
-3. **Importar el catálogo**, al final y con una autorización aparte. Antes, una simulación: `load_reference_catalog --dry-run` y una vista previa de la importación por empresa que muestre qué modelos serían nuevos, cuáles reutilizados, cuáles en conflicto y cuáles duplicados.
+3. ~~**Importar el catálogo**~~ **HECHO** el 2026-11-22 a las 11:46 (49 modelos completos; 6 parciales fuera). Texto original: al final y con una autorización aparte. Antes, una simulación: `load_reference_catalog --dry-run` y una vista previa de la importación por empresa que muestre qué modelos serían nuevos, cuáles reutilizados, cuáles en conflicto y cuáles duplicados.
 
 Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 
@@ -49,7 +49,16 @@ Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
 
 - Detalle y verificación en la entrada del 2026-11-22 de `02_ESTADO_ACTUAL.md`.
 - **Vuelta atrás de la Fase 1:** `sh backups/release-p1/rollback_p1.sh` en `/srv/blackdogstore` (sólo código, a `release-4a3ce34`). Repone los tres archivos de enrutamiento del CRM desde `backups/p1-routing-20261122-081143/`: en `ed9f5e0` están versionados y un checkout simple a R12b borraría dos de ellos.
-- **Siguiente:** la importación del catálogo, con autorización aparte. La simulación sobre una copia del backup posterior (`db-20261122-082424`) está hecha: 21 nuevos, 28 reutilizados, 6 pendientes, 0 conflictos, idempotente y sin tocar stock, precios ni fotos.
+- **Catálogo importado** el 2026-11-22 (entrada «CATÁLOGO iPHONE IMPORTADO» de `02_ESTADO_ACTUAL.md`): 21 modelos nuevos ocultos, 28 enlazados, 6 parciales pendientes de revisión; nada publicado, sin variantes ni stock.
+- **Siguiente — habilitar la venta de equipos nuevos** (decisiones y trabajo del propietario en el panel; nada de esto necesita despliegue):
+  1. **Normalizar capacidades:** las cuatro que ya existían se llaman «128Gb», «256Gb», «512Gb» y «1TB» y tienen orden 0–3, así que en las listas ordenadas por posición salen antes de «16 GB», «32 GB» y «64 GB» (orden por tamaño); «2 TB» lleva espacio. Propuesta: renombrarlas a «128 GB», «256 GB», «512 GB», «1 TB», «2 TB» y ordenarlas por tamaño desde el panel. Renombrar conserva el enlace al catálogo (D-REF-3).
+  2. **Roles de los atributos:** «Capacidad» y «Color» se reutilizaron por nombre y tipo y siguen con el rol «other»; conviene asignarles el rol de capacidad y de color.
+  3. **Variantes existentes:** «iPhone 17 Pro», «iPhone 15» y «iPhone 13 Pro Max» tienen una variante cada uno; con la paleta nueva pueden leerse «incompleta» o «fuera de paleta» hasta completar su SIM y región o ajustar la paleta.
+  4. **Colores:** los 45 colores tienen la muestra neutra provisional; poner el color real a los que se vayan a vender.
+  5. **Fotos por color:** subirlas con origen y licencia; mientras falten, la tienda muestra «Imagen pendiente».
+  6. **Variantes comerciales y stock:** crear las combinaciones que se venden (capacidad × color × SIM/región) con su precio y recibir los equipos con IMEI/serie (recepción o venta rápida).
+  7. **Publicar** cada modelo cuando tenga variantes, precio, fotos y stock; los 21 nuevos siguen ocultos.
+  8. **6 modelos parciales** (iPhone 5c, 4s, 4, 3GS, 3G y el original): aprobarlos uno por uno en el panel sólo si se van a vender (probablemente con la Fase 2, seminuevos).
 - Pendiente con el propietario: la prueba en la impresora térmica real.
 - Cada despliegue nuevo necesita un GO del propietario para su SHA exacto.
 

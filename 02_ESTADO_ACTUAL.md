@@ -3,6 +3,40 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-22 — CATÁLOGO iPHONE IMPORTADO en prod-02 · Black Dog Store · 49 modelos, nada publicado
+
+GO del propietario «GO importación catálogo iPhone prod-02» y, para el paso 5, «importa por servidor». Producción sigue en `ed9f5e0`, esquema `0184`; no se tocó código, Caddy, el CRM ni SUNAT. Scripts y registros en `/srv/blackdogstore/backups/release-p1/` (`imp_pre.sh`, `imp_state.py`, `imp_apply.py`, `imp_verify.py`) y `backups/imp-*.log`.
+
+**Antes de escribir:**
+- SHA, esquema y plan de migraciones comprobados (sin operaciones pendientes); catálogo de referencia vacío y 0 modelos enlazados;
+- backup `db-20261122-112508`: gzip válido, volcado completo, contiene `0184`, 17/17 archivos de evidencias;
+- instantánea de las 136 tablas de `store` y de los usuarios (hash por fila y campo, sin valores), para comparar después;
+- `load_reference_catalog --dry-run`: 55 / 618 / 208, sin escribir;
+- simulación sobre una copia aislada de ese backup (`backups/import-sim-pre-import.log`): 21 nuevos, 28 reutilizados, 6 pendientes, 0 conflictos; 2 atributos, 59 opciones, 573 entradas de paleta, 148 exclusiones; segunda aplicación sin cambios; stock, Kardex, pedidos, precios, publicación y fotos iguales. Idéntica a la simulación del despliegue.
+
+**Carga del catálogo de referencia** (11:42, comando de plataforma): 55 modelos, 618 opciones y 208 números de modelo; una segunda carga simulada no cambia nada. Auditoría `reference_catalog_loaded` sin empresa ni actor (comando). Diferencias contra la instantánea: sólo las tres tablas de referencia y esa entrada de auditoría.
+
+**Importación** (11:45:55–11:46:00, por servidor): a través de las vistas reales del panel (`/api/admin/catalog/reference/preview/` y `/apply/`, con `APIRequestFactory` y `force_authenticate`), así que pasan la empresa por contexto (`?company=1`), la comprobación de `products.manage`, el bloqueo por empresa, la idempotencia y la auditoría del panel. Actor: usuario #1 (MASTER). `Idempotency-Key` `go-import-iphone-prod02-20261122`; user agent `server-import GO-importacion-catalogo-iPhone-prod02`. Sólo las 49 claves completas, sin aprobaciones: los 6 parciales quedan fuera.
+- vista previa justo antes: 21 nuevos, 28 reutilizados, 0 conflictos, 0 pendientes;
+- resultado: 21 modelos creados ocultos (#34–#54), 28 enlazados (#4, #6–#32), atributos nuevos «Región» (#3) y «SIM» (#4), 59 opciones nuevas y 6 enlazadas, 573 entradas de paleta, 148 exclusiones SIM × región;
+- repetir la misma petición devuelve la respuesta guardada (`replayed: true`) sin escribir.
+
+**Modelos creados (ocultos):** iPhone Duo, iPhone 16e, iPhone SE (3rd generation), iPhone 13 mini, iPhone 12 mini, iPhone SE (2nd generation), iPhone XS Max, iPhone XS, iPhone XR, iPhone X, iPhone 8 Plus, iPhone 8, iPhone 7 Plus, iPhone 7, iPhone SE (1st generation), iPhone 6s Plus, iPhone 6s, iPhone 6 Plus, iPhone 6, iPhone 5s, iPhone 5.
+
+**Modelos enlazados (sin cambiar nombre, slug, categoría, portada, publicación ni variantes):** iPhone 11, 11 Pro, 11 Pro Max, 12, 12 Pro, 12 Pro Max, 13, 13 Pro, 13 Pro Max, 14, 14 Plus, 14 Pro, 14 Pro Max, 15, 15 Plus, 15 Pro, 15 Pro Max, 16, 16 Plus, 16 Pro, 16 Pro Max, 17, 17 Pro, 17 Pro Max, 17e, Air, 18 Pro, 18 Pro Max.
+
+**Pendientes de revisión (no importados):** iPhone 5c, iPhone 4s, iPhone 4, iPhone 3GS, iPhone 3G e iPhone (original). Motivos en el catálogo: capacidades que sólo lista la página de identificación de Apple, colores sin fuente o regiones sin asignar. Se importan sólo si alguien los aprueba uno por uno en el panel.
+
+**Comparación contra la instantánea tomada justo antes de importar:** sólo cambió lo esperado: `ProductModel` 21 nuevas y 28 con sólo `reference_key`; `VariantOption` 59 nuevas y 6 con sólo `reference_key`; `VariantAttribute` 2 nuevas; `ModelOption` 573; `ModelOptionExclusion` 148; `AdminAuditLog` 201 (todas del actor #1, empresa 1: 1 `catalog_reference_applied`, 34 `catalog_reference_linked`, 21 `product_model_created`, 2 `variant_attribute_created`, 59 `variant_option_created`, 49 `product_model_palette_set`, 35 `product_model_exclusions_added`). Ninguna otra tabla cambió; el único cambio concurrente en toda la ventana fue `FinanceReminderPolicy.last_run_at` (el cron de finanzas).
+
+**Después:**
+- huella igual a la de antes en productos (14, precios y publicación), stock (11 filas, 202 unidades), Kardex (46 movimientos), equipos (2), pedidos (12), notas (7), fiscales (0) y políticas legales; Kardex coherente 11/11; 0 variantes, equipos o movimientos nuevos;
+- los 21 modelos nuevos ocultos y sin variantes (`/modelo/iphone-x` y similares, 404); 30 modelos publicados, como antes, con páginas 200, 0 fotos de otro color y 0 fotos de demostración; carrito y checkout 200;
+- vista previa repetida: 0 nuevos, 49 reutilizados, 0 enlaces pendientes, todas las opciones reutilizadas: una nueva importación no cambiaría nada;
+- 0 duplicados en la paleta; healthcheck OK; 0 errores en el backend; Caddy sin reiniciar desde el 2026-11-20, los 9 contenedores del CRM en marcha y los tres archivos de enrutamiento con las mismas sumas.
+
+**Vuelta atrás:** no hace falta. Si se quisiera deshacer, no se restaura el backup encima de producción: se ocultan o borran desde el panel los 21 modelos nuevos (no tienen variantes) y se dejan los enlaces, que no cambian nada visible.
+
 ## 2026-11-22 — FASE 1 DESPLEGADA en prod-02 · producción `ed9f5e0`, esquema `0184` · catálogo sin importar
 
 GO del propietario «GO despliegue ed9f5e0 prod-02». Desplegada el 2026-11-22 a las 08:11 (Lima) desde R12b `4a3ce34`. Runbook y scripts en `/srv/blackdogstore/backups/release-p1/` (`RUNBOOK-ed9f5e0-prod02.md`).
