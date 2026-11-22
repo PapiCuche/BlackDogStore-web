@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-22 — Fase 1.1: simulación final de la normalización en producción
+
+Simulación final con el código de producción (`ed9f5e0`) sobre una copia aislada del backup `db-20261122-142233`: los cambios aprobados se aplican por las vistas del panel ya desplegadas, en una sola transacción, sin código nuevo. Producción sin cambios; GO pedido en `docs/NEXT_ACTION.md`. Detalle en `docs/adr-catalog-reference.md` §9.4.
+
 ## 2026-11-22 — Fase 1.1: normalización del catálogo de equipos (#383)
 
 **Added**

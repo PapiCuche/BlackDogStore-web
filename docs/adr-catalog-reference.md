@@ -320,3 +320,21 @@ inventar datos comerciales y sin cambios masivos en producción sin GO. Auditor�
 - Diferencias contra la instantánea: sólo roles (2), etiquetas/orden (4), `variant_key` de #23 y las filas nuevas de la
   venta sintética. Reimpresión de los documentos históricos: 8/8/8 notas, 10 constancias.
 - Ficha pública del iPhone 17 Pro: muestra los chips de #23 (256 GB, Plata, Solo eSIM, región).
+
+### 9.4 Simulación final con el código de producción (2026-11-22, copia de `db-20261122-142233`)
+- **Vistas de producción comprobadas** en `ed9f5e0`: `update_attribute` acepta el rol (un solo atributo por rol), `update_option`
+  acepta etiqueta y orden con sus comprobaciones de duplicado y de alias, `set_variant` exige la paleta del modelo y no
+  toca nombre, precio ni publicación. Todas piden `products.manage` y auditan con empresa y actor. Lo que les falta frente
+  a #383: el valor anterior en la auditoría y una aplicación de todo o nada. El kit lo cubre sin código nuevo: una
+  transacción que llama a las vistas, comprobaciones antes y después, y una auditoría `catalog_normalized` con los valores
+  anteriores. Por eso no hace falta una release.
+- **#23 verificada:** su historial dice que el 2026-11-10 se creó con «256Gb» y «Plata» y luego se movió al modelo 29 sin
+  opciones; su nombre dice JPN; el dataset de referencia (Apple, support.apple.com/108044) da Japón = A3522 = Solo eSIM.
+  El iPhone 17 Pro existe en 256 GB y en Plata. Sin equipos, stock, ventas ni pedidos.
+- **Ensayo:** paso final rechazado por la vista y fallo provocado después de todos los pasos = 0 diferencias; huella
+  equivocada = no escribe. Aplicado: 7 escrituras + 1 resumen; diferencias sólo en `VariantAttribute.role` (2),
+  `VariantOption.label/sort_order` (4), `Product.variant_key` (#23), 4 `ProductVariantOption` y 8 auditorías. Repetir = no
+  escribe. Caja: Capacidad → Color → SIM → Región, 27 combinaciones. #23 `variante_existente`; #22 y #19 siguen
+  `incompleta`. Ficha pública del iPhone 17 Pro con sus cuatro chips; los 11 productos públicos conservan nombre y precio.
+- **Vuelta atrás ensayada:** roles y capacidades vuelven a sus valores. Devolver #23 a «sin opciones» lo rechaza la vista
+  (`variant_incomplete`) y la transacción lo deshace todo, así que la vuelta atrás deja #23 con sus opciones.
