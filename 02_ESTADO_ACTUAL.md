@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-22 — FASE 1.1 (CATALOG-F11) · catálogo de equipos nuevos listo para normalizar · producción SIN CAMBIOS
+
+Orden del propietario «Fase 1.1 — preparación comercial y validación de equipos nuevos». Auditoría en producción sólo lectura; código fusionado; ensayo sobre una copia aislada. Detalle, decisiones D-F11-1…8 y ensayo en `docs/adr-catalog-reference.md` §9.
+
+- **Código (#383, fusionado `ffc1315`, sin desplegar):** `store/catalog_normalize.py` y `manage.py normalize_device_catalog`: roles de capacidad y color para el atributo que el sistema ya lee así, capacidades escritas como el catálogo y ordenadas por tamaño, conflictos informados y sin tocar; simulación por defecto, `--apply --actor --expect`, bloqueo por empresa, segunda aplicación = 0. La auditoría de opciones y atributos guarda ahora el valor anterior; el orden de una opción debe ser un entero desde 0. Revisión independiente: 1 hallazgo (dos opciones que acabarían con la misma etiqueta) corregido con pruebas. CI verde.
+- **Auditoría (producción, sólo lectura):** «Capacidad» y «Color» con rol «Otro» (la caja pregunta SIM y región primero); «128Gb», «256Gb», «512Gb», «1TB» ordenadas antes de «16 GB»; variante #23 del iPhone 17 Pro sin opciones (su nombre las dice), #22 del iPhone 15 sin SIM ni región, #19 del iPhone 13 Pro Max con un equipo **usado** (Fase 2); 45 colores con la muestra provisional; 0 de 205 pares modelo × color con foto; 1472 combinaciones válidas.
+- **Ensayo** (copia de `db-20261122-120236`, salida bloqueada): 6 cambios (2 roles, 4 capacidades), segunda vez 0; #23 completada; caja en orden Capacidad → Color → SIM → Región; venta rápida sintética completa (proveedor, IMEI y serie sintéticos, variante creada al recibir, Kardex entrada y salida coherentes, nota de venta en A4/80 mm/ESC/POS, repeticiones idempotentes, IMEI repetido 409); documentos históricos reimpresos sin errores.
+- **BLOCKED (propietario):** SIM y región de #22; colores hexadecimales; fotos con licencia; qué regiones compra por modelo; nombre de #23.
+- **Producción:** nada cambió. La normalización y #23 esperan el GO de `docs/NEXT_ACTION.md`.
+
 ## 2026-11-22 — CATÁLOGO iPHONE IMPORTADO en prod-02 · Black Dog Store · 49 modelos, nada publicado
 
 GO del propietario «GO importación catálogo iPhone prod-02» y, para el paso 5, «importa por servidor». Producción sigue en `ed9f5e0`, esquema `0184`; no se tocó código, Caddy, el CRM ni SUNAT. Scripts y registros en `/srv/blackdogstore/backups/release-p1/` (`imp_pre.sh`, `imp_state.py`, `imp_apply.py`, `imp_verify.py`) y `backups/imp-*.log`.
