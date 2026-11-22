@@ -154,6 +154,30 @@ describe('Catálogo de referencia', () => {
     expect(screen.getByRole('button', { name: /^Importar 4 modelo/ })).toBeDisabled();
   });
 
+  it('la vista previa lista los números de modelo con sus regiones, sólo como referencia', async () => {
+    await mountReference();
+    pick('Fono 10');
+    pick('Fono 2');
+    handlers['POST /admin/catalog/reference/preview/'] = () => reply(previewOf([
+      item('fono-10', 'Fono 10', 'new', { model_numbers: [
+        { number: 'Z1001', regions: 'País A, País B' }, { number: 'Z1002', regions: '' },
+      ] }),
+      item('fono-2', 'Fono 2', 'pending_review', { completeness: 'partial', needs_approval: true, model_numbers: [] }),
+    ]));
+    fireEvent.click(screen.getByRole('button', { name: 'Previsualizar (2)' }));
+    await screen.findByRole('list', { name: 'Modelos a importar' });
+    const numbers = screen.getByRole('list', { name: 'Números de modelo de Fono 10' });
+    const rows = within(numbers).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('Z1001');
+    expect(rows[0]).toHaveTextContent('País A, País B');
+    expect(rows[1]).toHaveTextContent('Z1002');
+    expect(rows[1]).toHaveTextContent('la fuente no indica regiones');
+    expect(screen.getByText(/sólo referencia: no se importan/i)).toBeInTheDocument();
+    // Un modelo sin números no muestra una lista vacía.
+    expect(screen.queryByRole('list', { name: 'Números de modelo de Fono 2' })).not.toBeInTheDocument();
+  });
+
   it('un conflicto se quita de la selección, la aprobación es obligatoria y la importación viaja con Idempotency-Key', async () => {
     await mountReference();
     pick('Fono 10 Pro');

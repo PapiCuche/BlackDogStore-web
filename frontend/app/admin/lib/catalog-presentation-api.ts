@@ -81,7 +81,11 @@ export type PreviewItem = {
   model_id: number | null; model_name: string; link_model: boolean; reason: string;
   warnings: string[]; attributes_new: AttributeRole[]; options: PreviewOption[];
   palette_add: string[]; exclusions_add: number; changes: boolean;
+  /** FASE 1.2: the reference model's numbers and the regions the source gives each ('' when none). Never imported. */
+  model_numbers?: ReferenceModelNumber[];
 };
+
+export type ReferenceModelNumber = { number: string; regions: string };
 
 export type ReferencePreview = {
   items: PreviewItem[];

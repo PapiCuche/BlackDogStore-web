@@ -121,6 +121,26 @@ class PreviewTest(_Shop, TestCase):
         self.assertEqual(item['exclusions_add'], 6)
         self.assertTrue(item['changes'])
 
+    def test_the_preview_lists_the_model_numbers_with_their_regions(self):
+        items = self.plan(['phone-9', 'phone-9-pro', 'phone-1'])
+        self.assertEqual(items['phone-9']['model_numbers'], [{'number': 'X9001', 'regions': 'Country A, Country B'},
+                                                             {'number': 'X9002', 'regions': ''}])
+        self.assertEqual(items['phone-9-pro']['model_numbers'], [{'number': 'X9101', 'regions': ''}])
+        self.assertEqual(items['phone-1']['model_numbers'], [])
+
+    def test_a_model_number_that_left_the_file_is_not_listed(self):
+        ReferenceModelNumber.objects.filter(number='X9002').update(in_dataset=False)
+        self.assertEqual([n['number'] for n in self.plan(['phone-9'])['phone-9']['model_numbers']], ['X9001'])
+
+    def test_model_numbers_take_one_query_whatever_the_number_of_models(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as three:
+            self.plan(['phone-9', 'phone-9-pro', 'phone-1'])
+        numbers = [q['sql'] for q in three.captured_queries if 'referencemodelnumber' in q['sql'].lower()]
+        self.assertEqual(len(numbers), 1, numbers)
+
     def test_default_is_no_model(self):
         response = self.api.post(PREVIEW + self.q, {}, format='json')
         self.assertEqual(response.status_code, 200, response.content)
