@@ -10,6 +10,7 @@ What is fixed here:
     missing one), and a replaced uploaded cover is released — deleted only when nothing else shows it;
   * an external address keeps working as before.
 """
+import atexit
 import os
 import shutil
 import tempfile
@@ -30,8 +31,10 @@ _ROOT = tempfile.mkdtemp(prefix='variant-images-')
 EXTERNAL = 'https://cdn.example.com/modelos/telefono-x.png'
 
 
-def tearDownModule():
-    shutil.rmtree(_ROOT, ignore_errors=True)
+# The parallel runner forks its workers after this module is imported, so they all share _ROOT. A tearDownModule
+# would run in each worker and delete files the others still use; only the process that created it removes it,
+# at exit (forked workers leave without running atexit). Guarded by test_parallel_tempdir_guard.
+atexit.register(shutil.rmtree, _ROOT, True)
 
 
 @override_settings(EVIDENCE_STORAGE_BACKEND='filesystem', EVIDENCE_STORAGE_ROOT=_ROOT,
