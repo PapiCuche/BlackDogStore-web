@@ -180,7 +180,9 @@ def _manage(request):
 
 
 def _option_payload(option):
-    return {'id': option.pk, 'label': option.label, 'swatch_hex': option.swatch_hex, 'sort_order': option.sort_order}
+    # FASE 1.2 · Y: whether the swatch is an approximation pending commercial validation (admin only).
+    return {'id': option.pk, 'label': option.label, 'swatch_hex': option.swatch_hex, 'sort_order': option.sort_order,
+            'swatch_is_approximate': option.swatch_is_approximate}
 
 
 def _attribute_payload(attribute):
@@ -388,10 +390,13 @@ class AdminAttributeDetailView(APIView):
 
 class AdminModelPaletteView(APIView):
     """
-    GET /api/admin/catalog/models/<pk>/palette/      the palette, every combination and its state
-    PUT /api/admin/catalog/models/<pk>/palette/      {"option_ids": [...], "expected_option_ids": [...]?} — the
+    GET   /api/admin/catalog/models/<pk>/palette/    the palette, every combination and its state
+    PUT   /api/admin/catalog/models/<pk>/palette/    {"option_ids": [...], "expected_option_ids": [...]?} — the
                                                      palette as a SET; `expected_option_ids` (the palette last
                                                      read) makes a save over someone else's a 409
+    PATCH /api/admin/catalog/models/<pk>/palette/    {"option_id", "swatch_hex"?, "swatch_is_approximate"?} — this
+                                                     model's own swatch for one colour of its palette ('' = the
+                                                     company's); FASE 1.2 · Y (`model_palette.set_model_swatch`)
 
     CATALOG-COMMERCIAL-01 · A1 («Opciones de este modelo»). `products.view` to
     read, `products.manage` to write. A model of another company answers 404;
@@ -445,6 +450,23 @@ class AdminModelPaletteView(APIView):
         except device_catalog.CatalogError as exc:
             return _error(exc)
         return Response({**model_palette.payload(model), 'changed': changed})
+
+    def patch(self, request, pk):
+        company, error = _manage(request)
+        if error:
+            return error
+        model = ProductModel.objects.filter(company=company, pk=pk).first()
+        if model is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            body = model_palette.set_model_swatch(
+                model, option_id=data.get('option_id'), swatch_hex=data.get('swatch_hex'),
+                swatch_is_approximate=data.get('swatch_is_approximate'), actor=request.user, request=request,
+            )
+        except device_catalog.CatalogError as exc:
+            return _error(exc)
+        return Response(body)
 
 
 class AdminModelAccessoriesView(APIView):
@@ -569,7 +591,8 @@ class AdminOptionDetailView(APIView):
         try:
             option = device_catalog.update_option(
                 option, label=request.data.get('label'), swatch_hex=request.data.get('swatch_hex'),
-                sort_order=request.data.get('sort_order'), actor=request.user, request=request,
+                sort_order=request.data.get('sort_order'),
+                swatch_is_approximate=request.data.get('swatch_is_approximate'), actor=request.user, request=request,
             )
         except device_catalog.CatalogError as exc:
             return _error(exc)
