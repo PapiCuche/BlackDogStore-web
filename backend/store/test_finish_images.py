@@ -674,6 +674,19 @@ class ColourChipTest(FinishApiBase):
         self.assertEqual(self.till_options()['Azul']['thumbnail'], verified_blue['url'])
         self.assertEqual(self.palette_options()['Azul']['thumbnail'], waiting_blue['url'])
 
+    def test_the_till_never_shows_a_demo_or_another_companys_file_even_verified(self):
+        # Review of #396: a VERIFIED demo is skipped by the demo rule (not by the licence one), and a verified file of
+        # another company behind a finish address is not this company's picture.
+        from django.utils import timezone
+
+        self.published(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})
+        self.assertIsNone(self.till_options()['Azul']['thumbnail'])
+        other = _p3_company('pc-chip-otra', 'Otra')
+        foreign = self.stored(company=other, raw=jpeg(size=(150, 90)))
+        StorefrontImage.objects.filter(pk=foreign.pk).update(license_verified_at=timezone.now())
+        self.place(self.black, primary=True, stored=foreign)
+        self.assertIsNone(self.till_options()['Negro']['thumbnail'])
+
 
 class PublicFinishGalleryTest(FinishApiBase):
     """`GET /api/catalog/models/<slug>/`: variant → its own pictures → its colour's → nothing and `image_pending`."""
