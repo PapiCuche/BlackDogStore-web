@@ -160,6 +160,23 @@ class FinishApiBase(FinishShop):
         self.assertEqual(res.status_code, 201, res.content)
         return res.json()
 
+    def verify(self, image, model=None):
+        """Records that someone checked the picture's licence (the panel's checkbox)."""
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.api.patch(self.url(f'{image["id"]}/', model=model), {'license_verified': True}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        return res.json()
+
+    def published(self, colour, provenance=None, **kwargs):
+        """An uploaded picture whose licence was verified: the only kind the shop shows (owner, 2026-11-23)."""
+        return self.verify(self.uploaded(colour, provenance, **kwargs), model=kwargs.get('model'))
+
+    def make_primary(self, image):
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.api.patch(self.url(f'{image["id"]}/'), {'is_primary': True}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        return res.json()
+
     def listing(self, api=None):
         res = (api or self.api).get(self.url())
         self.assertEqual(res.status_code, 200, res.content)
@@ -354,9 +371,11 @@ class FinishPermissionsTest(FinishApiBase):
 
 class CartPictureTest(FinishApiBase):
     """G (owner's path «photo per colour → cart»): a cart line of a NEW variant shows the picture the model page opens
-    on — its own, else its colour's first finish, else the pending marker — never another colour's photo and never the
-    model's cover on a model with colours; a demo resource is said (`image_is_demo`, «Imagen referencial» like the
-    page). One rule, batched for the whole cart: `device_catalog.variant_pictures`. Read through the cart endpoint."""
+    on — its own gallery's primary (else its first, else its own address), else its colour's finish's primary among the
+    PUBLIC pictures (licence verified; else the first of them), else the pending marker — never another colour's photo
+    and never the model's cover on a model with colours; a demo resource is said (`image_is_demo`, «Imagen referencial»
+    like the page). One rule, batched for the whole cart: `device_catalog.variant_pictures`. Read through the cart
+    endpoint. Owner, 2026-11-23: the cart and the checkout show the PRIMARY photo of the chosen colour."""
 
     SESSION = 'carrito-g'
 
@@ -384,40 +403,101 @@ class CartPictureTest(FinishApiBase):
         self.add(product)
         return self.cart()[product.pk]
 
-    def gallery_primary(self, product):
+    def page_gallery(self, product):
         rows = {row['product_id']: row for row in self.public.get(f'/api/catalog/models/{self.model.slug}/').json()['variants']}
-        gallery = rows[product.pk]['gallery']
-        # The page's main photo is the first of the gallery (the configurator opens on it).
-        return gallery[0]['url'] if gallery else ''
+        return rows[product.pk]['gallery']
 
-    def test_a_variant_without_its_own_picture_shows_its_colours_first_finish(self):
-        first = self.uploaded(self.blue, alt_text='Azul de frente')
-        self.uploaded(self.blue, alt_text='Azul dorso')
-        black = self.uploaded(self.black)
+    def gallery_primary(self, product):
+        # The photo the page opens on: the configurator's `gallery.findIndex(image => image.is_primary)`, else the first
+        # (`frontend/app/lib/model-configurator.ts`).
+        gallery = self.page_gallery(product)
+        primary = next((image for image in gallery if image['is_primary']), gallery[0] if gallery else None)
+        return primary['url'] if primary else ''
+
+    def own_gallery(self, product, count=2):
+        from store import product_media
+
+        return [product_media.add_image(product=product, actor=self.staff, uploaded=SimpleUploadedFile(
+            f'propia-{n}.png', png_with_transparency(), content_type='image/png')) for n in range(count)]
+
+    def make_own_primary(self, image):
+        from store.models import ProductImage
+
+        ProductImage.objects.filter(product_id=image.product_id).update(is_primary=False)
+        ProductImage.objects.filter(pk=image.pk).update(is_primary=True)
+
+    def test_a_variant_without_its_own_picture_shows_its_colours_primary_finish(self):
+        first = self.published(self.blue, alt_text='Azul de frente')
+        self.published(self.blue, alt_text='Azul dorso')
+        black = self.published(self.black)
         line = self.line(self.new128blue)
         self.assertEqual((line['image_url'], line['image_pending'], line['image_is_demo']), (first['url'], False, False))
         self.assertEqual(line['image_url'], self.gallery_primary(self.new128blue))
         self.assertNotEqual(line['image_url'], black['url'])
 
+    def test_the_finishs_primary_even_when_it_is_not_the_first(self):
+        first = self.published(self.blue, alt_text='Azul de frente')
+        second = self.make_primary(self.published(self.blue, alt_text='Azul dorso'))
+        self.assertEqual(self.page_gallery(self.new128blue)[0]['url'], first['url'])   # still first in the gallery
+        line = self.line(self.new128blue)
+        self.assertEqual((line['image_url'], line['image_pending']), (second['url'], False))
+        self.assertEqual(line['image_url'], self.gallery_primary(self.new128blue))
+
+    def test_its_own_gallerys_primary_even_when_it_is_not_the_first(self):
+        self.published(self.blue)
+        first, second = self.own_gallery(self.new128blue)
+        self.make_own_primary(second)
+        self.assertEqual(self.page_gallery(self.new128blue)[0]['url'], first.image_url)
+        line = self.line(self.new128blue)
+        self.assertEqual((line['image_url'], line['image_pending']), (second.image_url, False))
+        self.assertEqual(line['image_url'], self.gallery_primary(self.new128blue))
+
+    def test_an_unverified_primary_gives_way_to_the_first_public_picture(self):
+        public = self.published(self.blue)
+        hidden = self.make_primary(self.uploaded(self.blue, SUPPLIER))
+        self.assertFalse(hidden['source']['license_verified'])
+        line = self.line(self.new128blue)
+        self.assertEqual((line['image_url'], line['image_pending']), (public['url'], False))
+        self.assertEqual(line['image_url'], self.gallery_primary(self.new128blue))
+        self.assertNotIn(hidden['url'], str(self.page_gallery(self.new128blue)))
+
+    def test_a_finish_without_a_verified_licence_is_pending(self):
+        self.uploaded(self.blue)
+        self.uploaded(self.blue, SUPPLIER)
+        line = self.line(self.new128blue)
+        self.assertEqual((line['image_url'], line['image_pending'], line['image_is_demo']), ('', True, False))
+        self.assertEqual(self.gallery_primary(self.new128blue), '')
+
     def test_a_colour_without_pictures_is_pending_never_the_cover_nor_another_colour(self):
-        self.uploaded(self.black)
+        self.published(self.black)
         line = self.line(self.new128blue)
         self.assertEqual((line['image_url'], line['image_pending']), ('', True))
         self.assertEqual(self.gallery_primary(self.new128blue), '')
 
     def test_its_own_picture_comes_first(self):
-        self.uploaded(self.blue)
+        self.published(self.blue)
         Product.objects.filter(pk=self.new128blue.pk).update(image_url='/api/storefront/images/' + 'd' * 32)
         line = self.line(Product.objects.get(pk=self.new128blue.pk))
         self.assertEqual((line['image_url'], line['image_pending']), ('/api/storefront/images/' + 'd' * 32, False))
 
     def test_a_demo_finish_is_shown_and_said_like_on_the_model_page(self):
-        demo = self.uploaded(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})
+        demo = self.published(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})
         line = self.line(self.new128blue)
         self.assertEqual((line['image_url'], line['image_pending'], line['image_is_demo']), (demo['url'], False, True))
-        page = {row['product_id']: row for row in self.public.get(
-            f'/api/catalog/models/{self.model.slug}/').json()['variants']}[self.new128blue.pk]['gallery'][0]
+        page = self.page_gallery(self.new128blue)[0]
         self.assertEqual((page['url'], page['is_demo']), (demo['url'], True))
+
+    def test_another_companys_picture_is_never_public_even_verified(self):
+        from django.utils import timezone
+
+        other = _p3_company('pc-carrito-otra', 'Otra')
+        foreign = self.stored(company=other)
+        StorefrontImage.objects.filter(pk=foreign.pk).update(source_kind=StorefrontImage.SOURCE_OWN_PHOTO,
+                                                             license_verified_at=timezone.now())
+        self.place(self.blue, primary=True, stored=foreign)
+        line = self.line(self.new128blue)
+        self.assertEqual((line['image_url'], line['image_pending']), ('', True))
+        self.assertEqual(self.gallery_primary(self.new128blue), '')
 
     def test_a_colourless_model_shows_its_cover(self):
         plain = device_catalog.create_model(company=self.company, name='Cargador Z')
@@ -433,7 +513,7 @@ class CartPictureTest(FinishApiBase):
         from datetime import timedelta
         from django.utils import timezone
 
-        first = self.uploaded(self.blue)
+        first = self.published(self.blue)
         supplier = supply.create_supplier(company=self.company, name='Mayorista G')
         Product.objects.filter(pk=self.new128blue.pk).update(sale_mode=Product.SALE_MODE_STOCK_OR_ORDER)
         supply.create_offer(company=self.company, supplier_id=supplier.pk, product_id=self.new128blue.pk,
@@ -456,10 +536,16 @@ class CartPictureTest(FinishApiBase):
         self.assertNotIn('image_is_demo', line)
 
     def test_every_new_variant_agrees_with_the_model_page(self):
-        self.uploaded(self.black)
+        self.published(self.black)
+        self.make_primary(self.published(self.black))
+        self.uploaded(self.blue)                                 # not public: blue stays pending
+        _first, second = self.own_gallery(self.new256)
+        self.make_own_primary(second)
         pictures = device_catalog.variant_pictures([self.new128, self.new256, self.new128blue])
         for product in (self.new128, self.new256, self.new128blue):
             self.assertEqual(pictures[product.pk][0], self.gallery_primary(product), product.name)
+        self.assertEqual(pictures[self.new256.pk][0], second.image_url)
+        self.assertEqual(pictures[self.new128blue.pk], ('', True, False))
 
     def test_the_cart_reads_the_pictures_once_for_all_its_lines(self):
         from unittest import mock
@@ -467,8 +553,10 @@ class CartPictureTest(FinishApiBase):
         from django.db import connection
         from django.test.utils import CaptureQueriesContext
 
+        self.published(self.blue)
         self.uploaded(self.blue)
-        self.uploaded(self.black)
+        self.published(self.black)
+        self.own_gallery(self.new256)
         for product in (self.new128, self.new256, self.new128blue):
             self.receive(product)
             self.add(product)
@@ -588,8 +676,8 @@ class PublicFinishGalleryTest(FinishApiBase):
         return {row['product_id']: row for row in self.detail()['variants']}
 
     def test_each_colour_shows_its_own_finish(self):
-        black = self.uploaded(self.black, alt_text='Negro de frente')
-        blue = self.uploaded(self.blue, raw=jpeg(), name='azul.jpg')
+        black = self.published(self.black, alt_text='Negro de frente')
+        blue = self.published(self.blue, raw=jpeg(), name='azul.jpg')
         rows = self.variants()
         for product in (self.new128, self.new256):
             self.assertEqual([image['url'] for image in rows[product.pk]['gallery']], [black['url']])
@@ -600,7 +688,7 @@ class PublicFinishGalleryTest(FinishApiBase):
         self.assertEqual(rows[self.new128blue.pk]['gallery'][0]['alt_text'], 'Teléfono X Azul')
 
     def test_a_finish_without_pictures_is_pending_never_another_colours_photo(self):
-        black = self.uploaded(self.black)
+        black = self.published(self.black)
         row = self.variants()[self.new128blue.pk]
         self.assertEqual(row['gallery'], [])
         self.assertTrue(row['image_pending'])
@@ -617,7 +705,7 @@ class PublicFinishGalleryTest(FinishApiBase):
 
     def test_a_variants_own_pictures_come_first(self):
         from store import product_media
-        self.uploaded(self.black)
+        self.published(self.black)
         own = product_media.add_image(product=self.new128, actor=self.staff, uploaded=SimpleUploadedFile(
             'propia.png', png_with_transparency(), content_type='image/png'))
         rows = self.variants()
@@ -628,13 +716,13 @@ class PublicFinishGalleryTest(FinishApiBase):
         # A variant whose own address was written before galleries (no ProductImage) keeps showing it.
         from store.models import Product
         Product.objects.filter(pk=self.new256.pk).update(image_url='https://cdn.example.com/propia-256.png')
-        self.uploaded(self.black)
+        self.published(self.black)
         row = self.variants()[self.new256.pk]
         self.assertEqual([image['url'] for image in row['gallery']], ['https://cdn.example.com/propia-256.png'])
 
     def test_the_finish_map_is_an_allowlist_with_only_the_demo_flag(self):
-        self.uploaded(self.black, SUPPLIER)
-        self.uploaded(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})
+        self.published(self.black, SUPPLIER)
+        self.published(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})
         body = self.detail()
         finishes = body['finish_images']
         self.assertEqual(set(finishes), {str(self.black.pk), str(self.blue.pk)})
@@ -651,21 +739,125 @@ class PublicFinishGalleryTest(FinishApiBase):
     def test_a_colour_no_published_variant_uses_is_not_public(self):
         red = device_catalog.create_option(company=self.company, attribute_id=self.colour.pk, label='Rojo',
                                            swatch_hex='#B91C1C')
-        self.uploaded(red)
+        self.published(red)
         self.assertNotIn(str(red.pk), self.detail()['finish_images'])
 
     def test_the_count_of_queries_does_not_grow_with_the_pictures(self):
         from django.db import connection
         from django.test.utils import CaptureQueriesContext
-        self.uploaded(self.black)
+        self.published(self.black)
         with CaptureQueriesContext(connection) as before:
             self.detail()
         for _ in range(3):
-            self.uploaded(self.black)
-            self.uploaded(self.blue)
+            self.published(self.black)
+            self.published(self.blue)
+            self.uploaded(self.blue, SUPPLIER)          # not public: read in the same query
         with CaptureQueriesContext(connection) as after:
             self.detail()
         self.assertEqual(len(after.captured_queries), len(before.captured_queries))
+
+
+class PublicFinishLicenceTest(FinishApiBase):
+    """Owner, 2026-11-23: «Las nuevas fotografías requieren procedencia y autorización comprobables antes de
+    publicarse.» A finish picture is on the shop only when its `StorefrontImage` — of the SAME company, behind a managed
+    address — has its licence verified (`license_verified_at`), whatever its source kind; a verified demo is shown and
+    still said. Until then it stays in the panel, marked `public: false`, and the finish is `image_pending` on the shop.
+    A variant's OWN pictures are not gated (they are audited, not hidden)."""
+
+    def setUp(self):
+        super().setUp()
+        self.new128blue = self.variant('Teléfono X 128 GB Azul', 'tx-128-azul', '3100.00', [self.gb128, self.blue])
+        self.public = _client(host=self.host)
+
+    def detail(self):
+        res = self.public.get(f'/api/catalog/models/{self.model.slug}/')
+        self.assertEqual(res.status_code, 200, res.content)
+        return res.json()
+
+    def blue_row(self, body=None):
+        return {row['product_id']: row for row in (body or self.detail())['variants']}[self.new128blue.pk]
+
+    def assert_hidden(self, image):
+        body = self.detail()
+        self.assertNotIn(image['url'], str(body))
+        self.assertNotIn(str(self.blue.pk), body['finish_images'])
+        self.assertEqual((self.blue_row(body)['gallery'], self.blue_row(body)['image_pending']), ([], True))
+        self.assertEqual(device_catalog.variant_picture(self.new128blue), ('', True, False))
+
+    def panel_image(self, image):
+        return next(row for row in self.listing()[self.blue.pk]['images'] if row['id'] == image['id'])
+
+    def test_an_unverified_picture_of_any_source_is_not_public(self):
+        for provenance in (OWN, SUPPLIER, {'source_kind': 'licensed_stock', 'license': 'Licencia de banco, 2026'},
+                           {'source_kind': 'demo', 'license': 'Recurso de demostración interno'}):
+            with self.subTest(provenance['source_kind']):
+                image = self.uploaded(self.blue, provenance)
+                self.assert_hidden(image)
+                # It stays in the panel, said not to be public.
+                self.assertIs(self.panel_image(image)['public'], False)
+                self.assertTrue(self.listing()[self.blue.pk]['images'])
+                with self.captureOnCommitCallbacks(execute=True):
+                    self.api.delete(self.url(f'{image["id"]}/'))
+
+    def test_verifying_publishes_it_and_unverifying_hides_it_again(self):
+        image = self.uploaded(self.blue, SUPPLIER)
+        self.assert_hidden(image)
+        self.assertIs(self.verify(image)['public'], True)
+        row = self.blue_row()
+        self.assertEqual(([i['url'] for i in row['gallery']], row['image_pending']), ([image['url']], False))
+        self.assertEqual(device_catalog.variant_picture(self.new128blue), (image['url'], False, False))
+        self.assertIs(self.panel_image(image)['public'], True)
+        with self.captureOnCommitCallbacks(execute=True):
+            res = self.api.patch(self.url(f'{image["id"]}/'), {'license_verified': False}, format='json')
+        self.assertIs(res.json()['public'], False)
+        self.assert_hidden(image)
+
+    def test_changing_the_provenance_hides_it_until_it_is_verified_again(self):
+        image = self.published(self.blue, SUPPLIER)
+        with self.captureOnCommitCallbacks(execute=True):
+            self.api.patch(self.url(f'{image["id"]}/'), {'license': 'Otra autorización'}, format='json')
+        self.assert_hidden(image)
+
+    def test_a_verified_demo_is_public_and_still_said(self):
+        demo = self.published(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})
+        body = self.detail()
+        self.assertTrue(body['finish_images'][str(self.blue.pk)][0]['is_demo'])
+        self.assertTrue(self.blue_row(body)['gallery'][0]['is_demo'])
+        self.assertEqual(device_catalog.variant_picture(self.new128blue), (demo['url'], False, True))
+
+    def test_only_the_verified_pictures_of_a_finish_are_shown(self):
+        hidden = self.uploaded(self.blue, SUPPLIER)
+        shown = self.published(self.blue)
+        body = self.detail()
+        self.assertEqual([i['url'] for i in body['finish_images'][str(self.blue.pk)]], [shown['url']])
+        self.assertEqual([i['url'] for i in self.blue_row(body)['gallery']], [shown['url']])
+        self.assertNotIn(hidden['url'], str(body))
+
+    def test_a_picture_of_another_company_is_never_public_even_verified(self):
+        from django.utils import timezone
+
+        other = _p3_company('pc-licencia-otra', 'Otra')
+        foreign = self.stored(company=other)
+        StorefrontImage.objects.filter(pk=foreign.pk).update(source_kind=StorefrontImage.SOURCE_OWN_PHOTO,
+                                                             license_verified_at=timezone.now())
+        image = self.place(self.blue, primary=True, stored=foreign)
+        self.assert_hidden({'url': image.image_url})
+        self.assertIs(self.panel_image({'id': image.pk})['public'], False)
+
+    def test_an_address_that_is_not_a_managed_image_is_never_public(self):
+        image = ModelFinishImage.objects.create(company=self.company, model=self.model, color_option=self.blue,
+                                                image_url='https://cdn.example.com/azul.png', is_primary=True)
+        self.assert_hidden({'url': image.image_url})
+        self.assertIs(self.panel_image({'id': image.pk})['public'], False)
+
+    def test_a_variants_own_pictures_are_not_gated(self):
+        from store import product_media
+
+        own = product_media.add_image(product=self.new128blue, actor=self.staff, uploaded=SimpleUploadedFile(
+            'propia.png', png_with_transparency(), content_type='image/png'))
+        self.assertIsNone(StorefrontImage.objects.get(public_id=own.image_url.rsplit('/', 1)[-1]).license_verified_at)
+        self.assertEqual([i['url'] for i in self.blue_row()['gallery']], [own.image_url])
+        self.assertEqual(device_catalog.variant_picture(self.new128blue)[0], own.image_url)
 
 
 class LicensingReportTest(FinishApiBase):
@@ -803,7 +995,7 @@ class ColourDimensionTest(FinishApiBase):
     def test_a_colour_kind_without_the_role_is_the_colour_dimension(self):
         # Production today: the colour attribute kept the `other` role (0165).
         VariantAttribute.objects.filter(pk=self.colour.pk).update(role='other')
-        blue = self.uploaded(self.blue)
+        blue = self.published(self.blue)
         rows = self.variants()
         self.assertEqual([image['url'] for image in rows[self.new128blue.pk]['gallery']], [blue['url']])
         self.assertEqual(rows[self.new128.pk]['gallery'], [])

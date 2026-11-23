@@ -5,7 +5,8 @@ CATALOG-REFERENCE-01 · FASE 1.2 — photo coverage of every finish (model × co
 
 READ-ONLY: it writes nothing and audits nothing. The rows are `catalog_image_sources.finish_coverage` — every finish,
 with no cap (the admin API names at most `MAX_PENDING_FINISHES`). A finish is covered when it has at least one
-picture that is not a demo resource. `--only-missing` keeps the finishes that are not covered; the summary is always
+picture that is not a demo resource, and PUBLIC when one of its pictures is on the shop (licence verified, owner
+2026-11-23). `--only-missing` keeps the finishes that are not covered; the summary is always
 the whole catalogue's. In CSV the summary goes to stderr, so the standard output stays a clean CSV file.
 """
 import csv
@@ -21,7 +22,8 @@ from store.models import Company
 def _summary_line(company, summary) -> str:
     return (f'{company.slug}: {summary["finishes"]} acabado(s), {summary["covered"]} con al menos una foto no '
             f'demostrativa, {summary["without_photos"]} sin fotos, {summary["demo_only"]} sólo con fotos '
-            f'demostrativas; cobertura {summary["coverage_percent"]:.1f} %.')
+            f'demostrativas, {summary["public"]} visible(s) en la tienda (licencia verificada); cobertura '
+            f'{summary["coverage_percent"]:.1f} %.')
 
 
 class Command(BaseCommand):

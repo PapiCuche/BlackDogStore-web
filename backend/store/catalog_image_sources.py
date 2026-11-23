@@ -260,7 +260,7 @@ def licensing(company) -> dict:
 
 FINISH_COVERAGE_COLUMNS = (
     'model_id', 'model_name', 'option_id', 'option_label', 'photos', 'has_primary', 'license_verified', 'demo',
-    'own', 'supplier', 'licensed', 'unknown', 'covered',
+    'own', 'supplier', 'licensed', 'unknown', 'covered', 'public',
 )
 _BY_KIND = {
     StorefrontImage.SOURCE_OWN_PHOTO: 'own', StorefrontImage.SOURCE_SUPPLIER_AUTHORIZED: 'supplier',
@@ -273,7 +273,9 @@ def finish_coverage(company) -> dict:
     Read-only, one company, a fixed number of queries: one row per finish of the catalogue (`catalog_finishes`), with
     how many pictures it has and where they come from (the `StorefrontImage` of each one; a picture without one, or
     without provenance, is `unknown`). A finish is COVERED when at least one of its pictures is not a demo resource:
-    a demo picture fills the slot on the shop, never the catalogue. Every finish, no cap (the API's `licensing`
+    a demo picture fills the slot on the shop, never the catalogue. It is PUBLIC when at least one of its pictures
+    is on the shop: its licence was verified (`finish_media.is_public`, owner 2026-11-23; a verified demo too) — a
+    covered finish nobody verified still shows «Imagen pendiente». Every finish, no cap (the API's `licensing`
     keeps its own).
     """
     from .storefront_media import managed_public_id
@@ -301,7 +303,9 @@ def finish_coverage(company) -> dict:
                  .values_list('pk', 'name')) if finishes else {}
     rows = sorted(
         ({'model_id': model_id, 'model_name': names.get(model_id, ''), 'option_id': option_id,
-          'option_label': finishes[(model_id, option_id)], **row, 'covered': row['photos'] > row['demo']}
+          'option_label': finishes[(model_id, option_id)], **row, 'covered': row['photos'] > row['demo'],
+          # `stored` is this company's files only, so a verified one is exactly a public one.
+          'public': row['license_verified'] > 0}
          for (model_id, option_id), row in counts.items()),
         key=lambda row: (row['model_name'].casefold(), row['option_label'].casefold(), row['model_id'],
                          row['option_id']),
@@ -312,6 +316,7 @@ def finish_coverage(company) -> dict:
             'finishes': len(rows), 'covered': covered,
             'without_photos': sum(1 for row in rows if not row['photos']),
             'demo_only': sum(1 for row in rows if row['photos'] and not row['covered']),
+            'public': sum(1 for row in rows if row['public']),
             'coverage_percent': round(100 * covered / len(rows), 1) if rows else 0.0,
         },
         'rows': rows,

@@ -130,12 +130,41 @@ def colours_of(model, dimension=None) -> list[VariantOption]:
 
 
 def stored_of(images) -> dict[str, StorefrontImage]:
-    """The `StorefrontImage` behind each picture, by public id. One query whatever the number of pictures."""
+    """
+    The `StorefrontImage` behind each picture, by public id — only one of the pictures' own company (a file of another
+    company is not theirs: it answers like a missing one). One query whatever the number of pictures.
+    """
     ids = {storefront_media.managed_public_id(image.image_url) for image in images} - {None}
     if not ids:
         return {}
     return {row.public_id: row for row in
-            StorefrontImage.objects.filter(public_id__in=ids).select_related('license_verified_by')}
+            StorefrontImage.objects.filter(public_id__in=ids, company_id__in={image.company_id for image in images})
+            .select_related('license_verified_by')}
+
+
+def shop_states(addresses, company_ids) -> dict[tuple[int, str], tuple[bool, bool]]:
+    """
+    `(company id, public id)` → `(licence verified, is a demo resource)` of the `StorefrontImage` behind each managed
+    address, for the shop. One query whatever the number of addresses (none without one). An address that is not a
+    managed image, or whose file belongs to another company, has no entry: for a finish picture that means NOT PUBLIC.
+    """
+    ids = {storefront_media.managed_public_id(address) for address in addresses} - {None}
+    if not ids or not company_ids:
+        return {}
+    return {(company_id, public_id): (verified_at is not None, kind == StorefrontImage.SOURCE_DEMO)
+            for company_id, public_id, kind, verified_at in StorefrontImage.objects.filter(
+                company_id__in=set(company_ids), public_id__in=ids)
+            .values_list('company_id', 'public_id', 'source_kind', 'license_verified_at')}
+
+
+def is_public(stored: StorefrontImage | None, company_id) -> bool:
+    """
+    Owner, 2026-11-23: «Las nuevas fotografías requieren procedencia y autorización comprobables antes de publicarse.»
+    A finish picture is on the shop only when its file — a managed `StorefrontImage` of the same company — has its
+    licence verified, whatever its source kind (a verified demo is shown and said). The rule `public_model` and
+    `device_catalog.variant_pictures` apply through `shop_states`; this is the panel's reading of it.
+    """
+    return stored is not None and stored.company_id == company_id and stored.license_verified_at is not None
 
 
 def _source_payload(stored: StorefrontImage | None) -> dict:
@@ -178,6 +207,8 @@ def payload(image: ModelFinishImage, stored: StorefrontImage | None = None) -> d
         'width': image.width,
         'height': image.height,
         'source': _source_payload(stored),
+        # Owner, 2026-11-23: on the shop only once its licence is verified («No visible en la tienda…» otherwise).
+        'public': is_public(stored, image.company_id),
     }
 
 
