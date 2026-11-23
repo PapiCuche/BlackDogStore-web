@@ -1,0 +1,3 @@
+model,color,file,view,alt_text,is_primary,sort,source_kind,source_url,license,attribution
+modelo-de-ejemplo,color-de-ejemplo,modelo-de-ejemplo/color-de-ejemplo/frontal.png,front,Modelo de ejemplo en color de ejemplo de frente,true,0,licensed_stock,https://example.com/banco/foto-0001,Licencia comercial de ejemplo n.º 0000 (FICTICIA),Fotógrafo de Ejemplo / example.com
+modelo-de-ejemplo,Otro color de ejemplo,modelo-de-ejemplo/otro-color/posterior.webp,back,,false,,supplier_authorized,https://example.com/distribuidor/kit-de-prensa,Autorización escrita del distribuidor de ejemplo (FICTICIA),Distribuidor de Ejemplo S.A.C.
