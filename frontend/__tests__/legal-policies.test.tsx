@@ -10,7 +10,7 @@ import { Footer } from '@/app/components/Footer';
 import { StorefrontProvider } from '@/app/components/StorefrontProvider';
 import { NEUTRAL_CONFIG } from '@/app/lib/storefront';
 import { linkify, parseLegalText } from '@/app/lib/legal-text';
-import { fetchLegalPolicy } from '@/app/lib/legal-policies';
+import { LEGAL_PAGES, fetchLegalPolicy } from '@/app/lib/legal-policies';
 import { onOpenConsentPreferences } from '@/app/lib/consent';
 
 jest.mock('@/app/lib/catalog-categories', () => ({
@@ -57,7 +57,15 @@ describe('public document', () => {
     expect(opened).toHaveBeenCalledTimes(1); stop();
     const nav = screen.getByRole('navigation', { name: 'Otras políticas' });
     expect(within(nav).getByRole('link', { name: 'Política de privacidad' })).toHaveAttribute('href', '/privacy');
-    expect(within(nav).getByRole('link', { name: 'Privacidad de WhatsApp y CRM' })).toHaveAttribute('href', '/privacy/whatsapp');
+    expect(within(nav).getByRole('link', { name: 'Privacidad de mensajería y CRM' })).toHaveAttribute('href', '/privacy/whatsapp');
+  });
+
+  test('the messaging policy names WhatsApp, Instagram and Messenger in its title and keeps /privacy/whatsapp', () => {
+    render(<LegalDocument kind="whatsapp" policy={{ kind: 'whatsapp', text: '# Canales\nTexto.', published_at: null }} />);
+    expect(screen.getByRole('heading', { level: 1, name: 'Privacidad de mensajería (WhatsApp, Instagram y Messenger) y CRM' })).toBeInTheDocument();
+    expect(LEGAL_PAGES.whatsapp.href).toBe('/privacy/whatsapp');
+    const nav = screen.getByRole('navigation', { name: 'Otras políticas' });
+    expect(within(nav).getByRole('link', { name: 'Política de privacidad' })).toHaveAttribute('href', '/privacy');
   });
 
   test('fetchLegalPolicy: published text, or null when the backend answers 404 or fails', async () => {
@@ -81,7 +89,7 @@ describe('footer', () => {
     const nav = screen.getByRole('navigation', { name: 'Privacidad' });
     expect(within(nav).getByRole('link', { name: 'Política de privacidad' })).toHaveAttribute('href', '/privacy');
     expect(within(nav).getByRole('link', { name: 'Política de cookies' })).toHaveAttribute('href', '/cookies');
-    expect(within(nav).getByRole('link', { name: 'Privacidad de WhatsApp y CRM' })).toHaveAttribute('href', '/privacy/whatsapp');
+    expect(within(nav).getByRole('link', { name: 'Privacidad de mensajería y CRM' })).toHaveAttribute('href', '/privacy/whatsapp');
     expect(within(nav).getByRole('button', { name: 'Preferencias de cookies' })).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Privacidad' })).toBeNull();
     expect(document.body.textContent).not.toContain('CMAU');

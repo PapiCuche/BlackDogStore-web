@@ -24,7 +24,7 @@ const pages: [string, () => Mod, string][] = [
   ['servicio técnico', () => require('@/app/services/page'), '/services'],
   ['privacidad', () => require('@/app/privacy/page'), '/privacy'],
   ['cookies', () => require('@/app/cookies/page'), '/cookies'],
-  ['privacidad de WhatsApp', () => require('@/app/privacy/whatsapp/page'), '/privacy/whatsapp'],
+  ['privacidad de mensajería', () => require('@/app/privacy/whatsapp/page'), '/privacy/whatsapp'],
 ];
 /* eslint-enable @typescript-eslint/no-require-imports */
 
@@ -39,6 +39,14 @@ describe('SEO-03 · canónicas de las páginas públicas', () => {
   it.each(pages)('%s: sin host válido no hay canónica (nunca localhost)', async (_label, load) => {
     headerValues = { host: 'evil.example/<script>' };
     expect(await canonicalOf(load())).toBeUndefined();
+  });
+
+  it('la privacidad de mensajería nombra WhatsApp, Instagram y Messenger y conserva /privacy/whatsapp', async () => {
+    headerValues = { host: 'tienda.example', 'x-forwarded-proto': 'https' };
+    const meta = await pages[7][1]().generateMetadata!();
+    expect(meta.title).toBe('Privacidad de mensajería (WhatsApp, Instagram y Messenger) y CRM');
+    expect(meta.description).toMatch(/WhatsApp, Instagram Direct o Facebook Messenger/);
+    expect(meta.alternates?.canonical).toBe('https://tienda.example/privacy/whatsapp');
   });
 
   it('el catálogo tiene título propio (antes salía sólo el nombre de la tienda)', async () => {
