@@ -366,3 +366,50 @@ inventar datos comerciales y sin cambios masivos en producción sin GO. Auditor�
   auditorías; repetir no escribe. Caja: Capacidad → Color → SIM → Región, con 27 combinaciones. #19, #22 y #23 siguen
   `incompleta`. Los 11 productos públicos conservan nombre y precio. La vuelta atrás devuelve exactamente el estado
   anterior (sólo quedan las auditorías).
+
+## 10. Fase 1.2 · Z — fotos por acabado desde un manifiesto (`import_finish_images`)
+
+Para cargar más adelante, de una vez, fotos cuya licencia la empresa ya tiene. No trae ni versiona ninguna foto
+(AGENTS §9): lee una carpeta local que prepara una persona.
+
+```
+python manage.py import_finish_images --company <slug> --manifest <archivo.json|archivo.csv> \
+    --dir <carpeta> --actor <id o correo> [--dry-run]
+```
+
+**Formato.** CSV con cabecera (UTF-8) o JSON (lista de objetos). Ejemplo ficticio:
+`docs/finish-images-manifest.example.csv`. Un campo que no esté en esta lista es un error.
+
+| Campo | Qué es |
+|---|---|
+| `model` | Dirección (`slug`) del modelo en la empresa **o** su clave de referencia (`ProductModel.reference_key` = `ReferenceModel.key`, p. ej. `iphone-17-pro`): un manifiesto se prepara por modelo de referencia. Un modelo de otra empresa no existe. |
+| `color` | Clave de referencia del color (`negro-medianoche` o `color:negro-medianoche`) o la etiqueta del color en la empresa. Se busca **sólo entre los colores de ese modelo** (su paleta; sin paleta, los de sus variantes) con la regla de color de D-PRC-8. |
+| `file` | Ruta relativa dentro de `--dir`. Se rechazan las rutas absolutas, `..` y los enlaces que salen de la carpeta. |
+| `view` | `main` · `front` · `back` · `side` · `other` · `blank` (o vacío) = sin decir. |
+| `alt_text` | Texto alternativo (hasta 160). |
+| `is_primary` | `true`/`false`. Como mucho una principal por acabado en el manifiesto. Se fija con el servicio del panel (la anterior deja de serlo). |
+| `sort` | Opcional: ordena entre sí las fotos nuevas de un acabado. Se añaden **detrás** de las que ya tiene. |
+| `source_kind`, `source_url`, `license`, `attribution` | Procedencia, validada como en el panel (`finish_media.clean_provenance`): origen obligatorio (nunca `unknown`); licencia o autorización obligatoria salvo `own_photo`; `source_url` opcional, http/https. |
+
+**Reglas.**
+- Se valida **todo** el manifiesto antes de escribir y se informa fila por fila: `ok`, `skip-duplicate` o `error` con
+  el motivo. Con un error no se escribe nada y el comando termina con error (también con `--dry-run`).
+  `--dry-run` no escribe ni guarda ningún archivo.
+- Mismos límites y la misma tubería que el panel: tope de tamaño antes de leer, tipo decidido por el decodificador,
+  recodificación (`storefront_media.store`), `FINISH_IMAGE_MAX_PER_COLOUR` (contando las fotos que ya hay) y
+  `finish_media.place`, que bloquea el modelo y comprueba otra vez el color.
+- **Nunca sobrescribe**: añade. Una fila cuyo contenido ya está en ese acabado se omite, así que repetir el manifiesto
+  no crea nada. Sin columna nueva: se compara el SHA-256 del archivo de origen y el de su recodificación con el de los
+  archivos que ya muestra el acabado (leídos del almacenamiento) y con el SHA-256 de origen que guardó el resumen de
+  una importación anterior. La misma foto para dos colores de un modelo es un error.
+- Todo o nada: los archivos se guardan primero y se colocan en **una** transacción; si algo falla, cada archivo
+  guardado por la ejecución se libera con `storefront_media.release`.
+- Auditoría con empresa y actor: la de siempre por archivo (`storefront_image_uploaded`), por foto
+  (`finish_image_added`, `finish_image_primary_changed`) y un resumen `finish_images_imported` con los recuentos, el
+  SHA-256 del manifiesto y, por foto, su dirección y el SHA-256 de origen.
+- `--actor`: usuario activo con `products.manage` en esa empresa. La empresa sale del comando, nunca del manifiesto.
+
+**La licencia la verifica una persona en el panel, después.** El comando nunca marca una licencia como verificada:
+cada foto importada queda «sin verificar» y, salvo una foto propia, aparece en el informe F4 (`unverified_license`) hasta que alguien revisa
+el documento de la licencia y la marca en la galería del acabado (D-PRC-2). Las fotos de prensa de fabricantes siguen
+`BLOCKED: LICENSING` mientras no haya una licencia demostrada.
