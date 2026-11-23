@@ -153,7 +153,7 @@ from .storefront_content_views import (
 )
 from .print_views import (
     AdminPrintAgentDetailView, AdminPrintAgentListView, AdminPrinterDetailView,
-    AdminPrinterListView, AdminPrintJobListView, AdminPrintJobRetryView,
+    AdminPrinterListView, AdminPrintJobListView, AdminPrintJobRetryView, AdminLabelBatchPrintView,
 )
 from .mail_preview_views import MailPreviewIndexView, MailPreviewView
 from .measurement_views import MeasurementConfigView
@@ -571,6 +571,8 @@ urlpatterns = [
     path('admin/printing/agents/<int:pk>/', AdminPrintAgentDetailView.as_view(), name='admin-print-agent'),
     path('admin/printing/jobs/', AdminPrintJobListView.as_view(), name='admin-print-jobs'),
     path('admin/printing/jobs/<int:pk>/retry/', AdminPrintJobRetryView.as_view(), name='admin-print-job-retry'),
+    path('admin/printing/label-batches/<int:pk>/print/', AdminLabelBatchPrintView.as_view(),
+         name='admin-label-batch-print'),
     # M12F — contenido comercial del escaparate.
     path(
         'admin/storefront/page/',

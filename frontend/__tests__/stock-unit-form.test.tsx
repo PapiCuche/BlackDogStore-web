@@ -330,7 +330,7 @@ test('INV-UX-A1: a save hands the screen what «Siguiente paso» needs, label ba
   await waitFor(() => expect(onSaved).toHaveBeenCalled());
   expect(onSaved.mock.calls[0][1]).toEqual({
     product: { id: 10, name: 'iPhone 16 Pro Max', slug: 'p-10' }, published: true,
-    labelBatch: { count: 1, href: '/admin/inventory/labels' },
+    labelBatch: { count: 1, href: '/admin/inventory/labels', id: 4 },
   });
 });
 

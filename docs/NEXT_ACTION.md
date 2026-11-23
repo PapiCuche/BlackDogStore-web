@@ -1,5 +1,11 @@
 # NEXT ACTION — 2026-11-23
 
+## LABEL-04 — candidato local para impresoras automáticas de tickets y etiquetas
+
+El PR #367 sigue en borrador. Este candidato integra la rama con master y numera la migración como `0186`, después de `0185_finish_view_model_swatch`. Quedan pendientes la revisión y el CI del candidato, el ensayo de actualización sobre PostgreSQL y el GO del SHA exacto.
+
+En caja, actualizar el agente a 1.4 y asociar la Advance con la cola `POS-80-Series` y la HL80 con `HL80`. Confirmar el tamaño del rollo cargado antes de activar las etiquetas automáticas.
+
 ## FASE 1.2 — catálogo visual de equipos nuevos: en master `79058ac`, SIN DESPLEGAR
 
 **Hecho:** #387, #388, #389 y #390 están fusionados. Incluyen:
