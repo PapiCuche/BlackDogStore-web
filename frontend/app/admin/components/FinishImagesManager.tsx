@@ -11,6 +11,11 @@
  * address and the attribution are optional. Checking the licence records who and when (the server does). A demo
  * resource is labelled as such here and «Imagen referencial» in the shop.
  *
+ * FASE 1.2 · Y: each picture says WHICH VIEW it is (main, front, back, side, other — or not said), and «Reemplazar foto»
+ * gives it a new file keeping its place (order, primary, alt text, view): the new file says where it comes from and its
+ * licence check starts over. A colour's swatch may be flagged approximate (pending commercial validation), and a model
+ * may draw its own shade of a company colour («Ajustar muestra»); the panel says «Aproximada», the shop never does.
+ *
  * EACH CHANGE IS SAVED WHEN MADE (upload, primary, order, alt text, provenance, licence check, removal); the server
  * is the authority and answers the gallery as it stands. Order is changed with buttons, so the keyboard does it too,
  * and focus stays on the picture that moved. Seeing needs `products.view`; every change, `products.manage`.
@@ -21,9 +26,11 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { PRODUCT_IMAGE_ACCEPT } from "@/app/lib/admin";
 import { storefrontMediaStyle } from "@/app/lib/storefront-media";
 import {
-  SWATCH_UNSET_LABEL, deleteFinishImage, fetchFinishImages, patchFinishImage, provenanceErrors, reorderFinishImages,
-  uploadFinishImage,
-  type Finish, type FinishImage, type FinishImagePatch, type FinishListing, type Provenance, type SourceKind,
+  FINISH_VIEW_LABELS, SWATCH_APPROXIMATE_CHECKBOX, SWATCH_APPROXIMATE_LABEL, SWATCH_UNSET_LABEL, deleteFinishImage,
+  fetchFinishImages, finishViewLabel, patchFinishImage, provenanceErrors, reorderFinishImages, replaceFinishImage,
+  setModelSwatch, uploadFinishImage,
+  type Finish, type FinishImage, type FinishImagePatch, type FinishListing, type FinishView, type Provenance,
+  type SourceKind,
 } from "../lib/catalog-presentation-api";
 import { CatalogApiError, updateAttributeOption } from "../lib/internal-api";
 import { ImageDropzone } from "./ImageDropzone";
@@ -49,6 +56,50 @@ export const SOURCE_KIND_LABELS: Record<Exclude<SourceKind, "unknown">, string> 
 };
 
 const EMPTY_PROVENANCE: Provenance = { source_kind: "", license: "", source_url: "", attribution: "" };
+
+const HEX = /^#[0-9A-Fa-f]{6}$/;
+const validHex = (value: string) => (HEX.test(value.trim()) ? value.trim().toUpperCase() : null);
+
+/** FASE 1.2 · Y — which view of the object a picture is; "" = not said. */
+function ViewSelect({
+  value, onChange, disabled, id, label, ariaLabel,
+}: {
+  value: FinishView; onChange: (value: FinishView) => void; disabled?: boolean;
+  id?: string; label?: string; ariaLabel?: string;
+}) {
+  const own = useId();
+  const fieldId = id ?? own;
+  return (
+    <div>
+      {label ? <label htmlFor={fieldId} className="block text-xs text-muted">{label}</label> : null}
+      <select
+        id={fieldId}
+        aria-label={ariaLabel}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value as FinishView)}
+        className={`mt-1.5 ${touch} ${internalInputClass}`}
+      >
+        <option value="">Sin indicar</option>
+        {(Object.entries(FINISH_VIEW_LABELS) as [Exclude<FinishView, "">, string][]).map(([key, text]) => (
+          <option key={key} value={key}>{text}</option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/** «Aproximada»: a swatch chosen as an approximation, pending commercial validation. Panel only. */
+function ApproximateBadge() {
+  return (
+    <span
+      title="Muestra aproximada, pendiente de validación comercial"
+      className="rounded-full border border-warning-border bg-warning-surface px-2.5 py-1 text-[11px] font-semibold text-warning"
+    >
+      {SWATCH_APPROXIMATE_LABEL}
+    </span>
+  );
+}
 
 const formatDate = (iso: string | null) => {
   if (!iso) return "";
@@ -173,6 +224,7 @@ function UploadForm({
   const [fileError, setFileError] = useState<string | null>(null);
   const [provenance, setProvenance] = useState<Provenance>(EMPTY_PROVENANCE);
   const [alt, setAlt] = useState("");
+  const [view, setView] = useState<FinishView>("");
   const [errors, setErrors] = useState<Partial<Record<keyof Provenance, string>>>({});
   const [formError, setFormError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
@@ -199,7 +251,7 @@ function UploadForm({
     setSending(true);
     setFormError(null);
     try {
-      const image = await uploadFinishImage(modelId, finish.option.id, file, provenance, alt.trim(), companyId);
+      const image = await uploadFinishImage(modelId, finish.option.id, file, provenance, alt.trim(), companyId, view);
       onUploaded(image);
     } catch (error) {
       const { field, text } = serverFieldError(error);
@@ -246,6 +298,7 @@ function UploadForm({
           className={`mt-1.5 ${internalInputClass}`}
         />
       </label>
+      <ViewSelect id={`${id}-view`} label="Vista (opcional)" value={view} onChange={setView} disabled={sending} />
       {formError ? <p role="alert" className="text-xs text-danger">{formError}</p> : null}
       {Object.keys(errors).length ? (
         <p role="alert" className="text-xs text-danger">Revisa la procedencia: hay campos marcados.</p>
@@ -261,35 +314,43 @@ function UploadForm({
 }
 
 // ---------------------------------------------------------------------------
-// A colour whose swatch the company has not configured (G, owner's visual order 4)
+// A swatch value (shared by the company form and the model form)
 // ---------------------------------------------------------------------------
 
 /**
- * «Muestra sin configurar»: an imported colour still holding the importer's neutral default. The shop draws no dot
- * for it (only its name, or its finish picture); here the company picks its own swatch. Nothing is invented: no
- * official code is suggested and no photo is recoloured.
+ * A swatch value: the #RRGGBB field (it can be typed), a colour picker that fills it, and «Muestra aproximada». Nothing
+ * is invented: no official code is suggested and no photo is recoloured. Saves only a valid #RRGGBB.
  */
-function SwatchSetter({ colour, canManage, companyId, onSaved }: {
-  colour: { id: number; label: string };
-  canManage: boolean;
-  companyId: number | null;
-  onSaved: () => void;
+function SwatchForm({
+  fieldLabel, pickerLabel, initialHex = "", initialApproximate = false, submitLabel, onSave, children, fieldRef,
+}: {
+  /** The #RRGGBB field, for a host that moves focus to it. */
+  fieldRef?: React.Ref<HTMLInputElement>;
+  fieldLabel: string;
+  pickerLabel: string;
+  initialHex?: string;
+  initialApproximate?: boolean;
+  submitLabel: string;
+  onSave: (hex: string, approximate: boolean) => Promise<void>;
+  /** More actions beside «Guardar» (e.g. going back to the company's swatch). */
+  children?: React.ReactNode;
 }) {
-  // Review of #377: the field starts EMPTY (a colour picker always holds a colour, so starting it at black made
+  // Review of #377: an unset field starts EMPTY (a colour picker always holds a colour, so starting it at black made
   // «black» impossible to choose). The picker fills the field; the field can also be typed.
-  const [value, setValue] = useState("");
+  const [value, setValue] = useState(initialHex);
+  const [approximate, setApproximate] = useState(initialApproximate);
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const fieldId = useId();
   const pickerId = useId();
-  const hex = /^#[0-9A-Fa-f]{6}$/.test(value.trim()) ? value.trim().toUpperCase() : null;
+  const checkId = useId();
+  const hex = validHex(value);
   async function save() {
     if (!hex) return;
     setSaving(true);
     setFailed(null);
     try {
-      await updateAttributeOption(colour.id, { swatch_hex: hex }, companyId);
-      onSaved();
+      await onSave(hex, approximate);
     } catch (err) {
       setFailed(message(err, "No se pudo guardar la muestra."));
     } finally {
@@ -297,38 +358,275 @@ function SwatchSetter({ colour, canManage, companyId, onSaved }: {
     }
   }
   return (
+    <div className="flex flex-wrap items-center gap-2 text-xs">
+      <label htmlFor={fieldId} className="text-muted">{fieldLabel}</label>
+      <input
+        ref={fieldRef}
+        id={fieldId}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="#RRGGBB"
+        maxLength={7}
+        disabled={saving}
+        spellCheck={false}
+        className={`w-28 font-mono ${internalInputClass}`}
+      />
+      <label htmlFor={pickerId} className="sr-only">{pickerLabel}</label>
+      <input
+        id={pickerId}
+        type="color"
+        value={hex ?? "#808080"}
+        onInput={(e) => setValue((e.target as HTMLInputElement).value)}
+        onChange={(e) => setValue(e.target.value)}
+        disabled={saving}
+        className="h-11 w-11 cursor-pointer rounded-lg border border-bd-border bg-background p-1"
+      />
+      <label htmlFor={checkId} className={`flex items-center gap-2 text-foreground ${touch}`}>
+        <input
+          id={checkId}
+          type="checkbox"
+          className="h-4 w-4"
+          checked={approximate}
+          disabled={saving}
+          onChange={(e) => setApproximate(e.target.checked)}
+        />
+        {SWATCH_APPROXIMATE_CHECKBOX}
+      </label>
+      <button type="button" className={smallButton} disabled={!hex || saving} onClick={() => void save()}>
+        {saving ? "Guardando…" : submitLabel}
+      </button>
+      {children}
+      {failed ? <p role="alert" className="w-full text-danger">{failed}</p> : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A colour whose swatch the company has not configured (G, owner's visual order 4)
+// ---------------------------------------------------------------------------
+
+/**
+ * «Muestra sin configurar»: an imported colour still holding the importer's neutral default. The shop draws no dot
+ * for it (only its name, or its finish picture); here the company picks its own swatch — flagged approximate when it
+ * is not validated yet.
+ */
+function SwatchSetter({ colour, canManage, companyId, onSaved }: {
+  colour: { id: number; label: string };
+  canManage: boolean;
+  companyId: number | null;
+  onSaved: () => void;
+}) {
+  return (
     <div className="mt-2 flex flex-wrap items-center gap-2 text-xs" role="group" aria-label={`Muestra de ${colour.label}`}>
       <span className="rounded-full border border-dashed border-bd-border px-2 py-0.5 font-semibold text-muted">{SWATCH_UNSET_LABEL}</span>
       {canManage ? (
-        <>
-          <label htmlFor={fieldId} className="text-muted">Muestra de {colour.label} (#RRGGBB)</label>
-          <input
-            id={fieldId}
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="#RRGGBB"
-            maxLength={7}
-            disabled={saving}
-            spellCheck={false}
-            className={`w-28 font-mono ${internalInputClass}`}
-          />
-          <label htmlFor={pickerId} className="sr-only">Elegir la muestra de {colour.label}</label>
-          <input
-            id={pickerId}
-            type="color"
-            value={hex ?? "#808080"}
-            onInput={(e) => setValue((e.target as HTMLInputElement).value)}
-            onChange={(e) => setValue(e.target.value)}
-            disabled={saving}
-            className="h-11 w-11 cursor-pointer rounded-lg border border-bd-border bg-background p-1"
-          />
-          <button type="button" className={smallButton} disabled={!hex || saving} onClick={() => void save()}>
-            {saving ? "Guardando…" : "Guardar muestra"}
-          </button>
-        </>
+        <SwatchForm
+          fieldLabel={`Muestra de ${colour.label} (#RRGGBB)`}
+          pickerLabel={`Elegir la muestra de ${colour.label}`}
+          submitLabel="Guardar muestra"
+          onSave={async (hex, approximate) => {
+            await updateAttributeOption(colour.id, { swatch_hex: hex, swatch_is_approximate: approximate }, companyId);
+            onSaved();
+          }}
+        />
       ) : null}
-      {failed ? <p role="alert" className="w-full text-danger">{failed}</p> : null}
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// «Ajustar muestra»: the company's swatch (shared by every model) and this model's own (FASE 1.2 · Y)
+// ---------------------------------------------------------------------------
+
+function SwatchEditor({ finish, modelId, modelName, companyId, onSaved }: {
+  finish: Finish;
+  modelId: number;
+  modelName: string;
+  companyId: number | null;
+  onSaved: (notice: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const regionId = useId();
+  const option = finish.option;
+  const ownHex = option.model_swatch_hex ?? "";
+  const ownApproximate = option.model_swatch_is_approximate ?? false;
+  const companyApproximate = option.swatch_is_approximate ?? false;
+  // Review of #388: after «Usar la muestra de la empresa» its button is gone; focus goes to the model's field (a
+  // new one: the form is keyed on what the server holds, so it shows the value saved, never the old one).
+  const ownField = useRef<HTMLInputElement>(null);
+  const focusOwnField = useRef(false);
+  useEffect(() => {
+    if (!focusOwnField.current || ownHex) return;
+    focusOwnField.current = false;
+    ownField.current?.focus();
+  });
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        className={smallButton}
+        aria-expanded={open}
+        aria-controls={regionId}
+        onClick={() => setOpen((value) => !value)}
+      >
+        Ajustar muestra de {option.label}
+      </button>
+      {open ? (
+        <div id={regionId} className="mt-2 space-y-3 rounded-lg border border-bd-border p-3">
+          {option.swatch_set !== false ? (
+            <fieldset className="min-w-0 space-y-2">
+              <legend className="text-xs font-semibold text-foreground">Muestra de la empresa (todos los modelos con {option.label})</legend>
+              <SwatchForm
+                key={`${option.swatch_hex}|${companyApproximate}`}
+                fieldLabel={`Muestra de ${option.label} para la empresa (#RRGGBB)`}
+                pickerLabel={`Elegir la muestra de ${option.label} para la empresa`}
+                initialHex={option.swatch_hex}
+                initialApproximate={companyApproximate}
+                submitLabel="Guardar muestra de la empresa"
+                onSave={async (hex, approximate) => {
+                  await updateAttributeOption(option.id, { swatch_hex: hex, swatch_is_approximate: approximate }, companyId);
+                  onSaved(`Muestra de ${option.label} guardada para la empresa.`);
+                }}
+              />
+            </fieldset>
+          ) : null}
+          {option.model_swatch_editable ? (
+            <fieldset className="min-w-0 space-y-2">
+              <legend className="text-xs font-semibold text-foreground">Muestra solo para {modelName}</legend>
+              <p className="text-xs text-muted">
+                {ownHex ? `Este modelo usa su propia muestra (${ownHex}).` : "Vacía: este modelo usa la muestra de la empresa."}
+              </p>
+              <SwatchForm
+                key={`${ownHex}|${ownApproximate}`}
+                fieldRef={ownField}
+                fieldLabel={`Muestra de ${option.label} solo en ${modelName} (#RRGGBB)`}
+                pickerLabel={`Elegir la muestra de ${option.label} solo en ${modelName}`}
+                initialHex={ownHex}
+                initialApproximate={ownApproximate}
+                submitLabel="Guardar muestra de este modelo"
+                onSave={async (hex, approximate) => {
+                  await setModelSwatch(modelId, { option_id: option.id, swatch_hex: hex, swatch_is_approximate: approximate }, companyId);
+                  onSaved(`Muestra de ${option.label} guardada para ${modelName}.`);
+                }}
+              >
+                {ownHex ? (
+                  <UseCompanySwatch
+                    label={option.label}
+                    onClear={async () => {
+                      await setModelSwatch(modelId, { option_id: option.id, swatch_hex: "" }, companyId);
+                      focusOwnField.current = true;
+                      onSaved(`${modelName} vuelve a usar la muestra de ${option.label} de la empresa.`);
+                    }}
+                  />
+                ) : null}
+              </SwatchForm>
+            </fieldset>
+          ) : option.model_swatch_editable === false ? (
+            <p role="note" className="text-xs text-muted">
+              Para darle a {modelName} una muestra propia de {option.label}, márcalo antes en «Opciones de este modelo».
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function UseCompanySwatch({ label, onClear }: { label: string; onClear: () => Promise<void> }) {
+  const [busy, setBusy] = useState(false);
+  const [failed, setFailed] = useState<string | null>(null);
+  return (
+    <>
+      <button
+        type="button"
+        className={smallButton}
+        disabled={busy}
+        onClick={async () => {
+          setBusy(true);
+          setFailed(null);
+          try { await onClear(); } catch (err) { setFailed(message(err, "No se pudo guardar la muestra.")); } finally { setBusy(false); }
+        }}
+      >
+        Usar la muestra de {label} de la empresa
+      </button>
+      {failed ? <p role="alert" className="w-full text-danger">{failed}</p> : null}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// «Reemplazar foto»: a new file in the same place (FASE 1.2 · Y)
+// ---------------------------------------------------------------------------
+
+function ReplaceForm({
+  modelId, image, name, kinds, companyId, firstFieldRef, onReplaced, onCancel,
+}: {
+  modelId: number; image: FinishImage; name: string; kinds: { value: SourceKind; label: string }[];
+  companyId: number | null; firstFieldRef?: React.Ref<HTMLSelectElement>;
+  onReplaced: () => void; onCancel: () => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const [provenance, setProvenance] = useState<Provenance>(EMPTY_PROVENANCE);
+  const [errors, setErrors] = useState<Partial<Record<keyof Provenance, string>>>({});
+  const [formError, setFormError] = useState<string | null>(null);
+  const [sending, setSending] = useState(false);
+
+  function choose(files: File[]) {
+    const chosen = files[0];
+    if (!chosen) return;
+    const reason = rejectReason(chosen);
+    if (reason) { setFile(null); setFileError(`${chosen.name}: ${reason}.`); return; }
+    setFileError(null);
+    setFile(chosen);
+  }
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    const found = provenanceErrors(provenance);
+    setErrors(found);
+    if (!file) setFileError("Elige la foto nueva.");
+    if (!file || Object.keys(found).length) return;
+    setSending(true);
+    setFormError(null);
+    try {
+      await replaceFinishImage(modelId, image.id, file, provenance, companyId);
+      onReplaced();
+    } catch (error) {
+      const { field, text } = serverFieldError(error);
+      if (field === "file") setFileError(text);
+      else if (field && field !== "alt_text") setErrors({ [field]: text });
+      else setFormError(text);
+    } finally {
+      setSending(false);
+    }
+  }
+
+  return (
+    <form onSubmit={submit} noValidate aria-label={`Reemplazar la ${name}`} className="space-y-3 rounded-lg border border-bd-border p-3">
+      <p className="text-xs text-muted">
+        La foto nueva ocupa el mismo lugar: orden, principal, texto alternativo y vista se mantienen. Indica de dónde sale:
+        la verificación de la licencia empieza de nuevo.
+      </p>
+      <ImageDropzone
+        label={file ? "Elegir otra foto nueva" : "Elegir la foto nueva"}
+        accept={PRODUCT_IMAGE_ACCEPT}
+        multiple={false}
+        onFiles={choose}
+        disabled={sending}
+        hint="PNG (con transparencia), JPEG o WebP, hasta 8 MB."
+      />
+      {file ? <p className="min-w-0 break-all text-xs text-foreground">{file.name} · {formatBytes(file.size)}</p> : null}
+      {fileError ? <p role="alert" className="text-xs text-danger">{fileError}</p> : null}
+      <ProvenanceFields value={provenance} onChange={setProvenance} errors={errors} kinds={kinds} disabled={sending} firstFieldRef={firstFieldRef} />
+      {formError ? <p role="alert" className="text-xs text-danger">{formError}</p> : null}
+      <div className="flex flex-wrap justify-end gap-2">
+        <button type="button" className={smallButton} onClick={onCancel} disabled={sending}>Cancelar</button>
+        <button type="submit" className={`${touch} ${internalPrimaryButtonClass} text-xs`} disabled={sending}>
+          {sending ? "Reemplazando…" : "Reemplazar foto"}
+        </button>
+      </div>
+    </form>
   );
 }
 
@@ -337,11 +635,14 @@ function SwatchSetter({ colour, canManage, companyId, onSaved }: {
 // ---------------------------------------------------------------------------
 
 function ImageCard({
-  image, index, count, colour, modelName, kinds, canManage, busy, onPatch, onMove, onRemove,
+  image, index, count, colour, modelId, modelName, kinds, canManage, companyId, busy, onPatch, onMove, onRemove,
+  onReplaced,
 }: {
-  image: FinishImage; index: number; count: number; colour: string; modelName: string;
-  kinds: { value: SourceKind; label: string }[]; canManage: boolean; busy: boolean;
+  image: FinishImage; index: number; count: number; colour: string; modelId: number; modelName: string;
+  kinds: { value: SourceKind; label: string }[]; canManage: boolean; companyId: number | null; busy: boolean;
   onPatch: (data: FinishImagePatch) => Promise<boolean>; onMove: (step: -1 | 1) => void; onRemove: () => void;
+  /** FASE 1.2 · Y: the picture took a new file; the host re-reads the gallery and says so. */
+  onReplaced: () => void;
 }) {
   const position = index + 1;
   const name = `imagen ${position} de ${colour}`;
@@ -350,6 +651,7 @@ function ImageCard({
   const alt = altDraft ?? image.alt_text;
   const [confirming, setConfirming] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [replacing, setReplacing] = useState(false);
   const [provenance, setProvenance] = useState<Provenance>(EMPTY_PROVENANCE);
   const [errors, setErrors] = useState<Partial<Record<keyof Provenance, string>>>({});
   // Review of #374 (a11y): opening or closing a step never drops focus to the start of the page.
@@ -357,17 +659,24 @@ function ImageCard({
   const removeButton = useRef<HTMLButtonElement>(null);
   const editButton = useRef<HTMLButtonElement>(null);
   const originField = useRef<HTMLSelectElement>(null);
-  const focusNext = useRef<"confirm" | "remove" | "edit" | "origin" | null>(null);
+  const replaceButton = useRef<HTMLButtonElement>(null);
+  const replaceOrigin = useRef<HTMLSelectElement>(null);
+  const focusNext = useRef<"confirm" | "remove" | "edit" | "origin" | "replace" | "replaceOrigin" | null>(null);
   useEffect(() => {
     const target = focusNext.current;
     if (!target) return;
     focusNext.current = null;
-    ({ confirm: confirmYes, remove: removeButton, edit: editButton, origin: originField })[target].current?.focus();
+    ({
+      confirm: confirmYes, remove: removeButton, edit: editButton, origin: originField, replace: replaceButton,
+      replaceOrigin,
+    })[target].current?.focus();
   });
 
   function openConfirm() { focusNext.current = "confirm"; setConfirming(true); }
   function cancelConfirm() { focusNext.current = "remove"; setConfirming(false); }
   function closeEditing() { focusNext.current = "edit"; setEditing(false); }
+  function openReplacing() { focusNext.current = "replaceOrigin"; setReplacing(true); }
+  function closeReplacing() { focusNext.current = "replace"; setReplacing(false); }
 
   function startEditing() {
     setProvenance({
@@ -419,6 +728,7 @@ function ImageCard({
       </div>
 
       <dl className="mt-3 space-y-1 text-xs">
+        <div className="flex flex-wrap gap-x-1"><dt className="text-muted">Vista:</dt><dd className="text-foreground">{finishViewLabel(image.view)}</dd></div>
         <div className="flex flex-wrap gap-x-1"><dt className="text-muted">Origen:</dt><dd className="text-foreground">{image.source.kind_label}</dd></div>
         {image.source.license ? (
           <div className="flex flex-wrap gap-x-1"><dt className="text-muted">Licencia:</dt><dd className="break-words text-foreground">{image.source.license}</dd></div>
@@ -463,6 +773,13 @@ function ImageCard({
               className={`mt-1 ${internalInputClass}`}
             />
           </label>
+          <ViewSelect
+            label="Vista"
+            ariaLabel={`Vista de la ${name}`}
+            value={image.view ?? ""}
+            disabled={busy}
+            onChange={(view) => { if (view !== (image.view ?? "")) void onPatch({ view }); }}
+          />
           {ownPhoto && !verified ? null : (
           <label className={`flex items-center gap-2 text-xs text-foreground ${touch}`}>
             <input
@@ -487,6 +804,19 @@ function ImageCard({
                 <button type="submit" className={`${touch} ${internalPrimaryButtonClass} text-xs`} disabled={busy}>Guardar procedencia</button>
               </div>
             </form>
+          ) : null}
+
+          {replacing ? (
+            <ReplaceForm
+              modelId={modelId}
+              image={image}
+              name={name}
+              kinds={kinds}
+              companyId={companyId}
+              firstFieldRef={replaceOrigin}
+              onCancel={closeReplacing}
+              onReplaced={() => { setReplacing(false); onReplaced(); }}
+            />
           ) : null}
 
           {confirming ? (
@@ -515,6 +845,11 @@ function ImageCard({
                   Editar procedencia
                 </button>
               ) : null}
+              {!replacing ? (
+                <button ref={replaceButton} type="button" aria-label={`Reemplazar foto: ${name}`} disabled={busy} onClick={openReplacing} className={smallButton}>
+                  Reemplazar foto
+                </button>
+              ) : null}
               <button ref={removeButton} type="button" aria-label={`Quitar la ${name}`} disabled={busy} onClick={openConfirm} className="min-h-[44px] px-1 text-xs text-muted underline-offset-4 hover:text-danger hover:underline">
                 Quitar
               </button>
@@ -529,6 +864,13 @@ function ImageCard({
 // ---------------------------------------------------------------------------
 // The manager
 // ---------------------------------------------------------------------------
+
+/** The swatch a colour is drawn with on this model; an older server sends only the company's (and `swatch_set`). */
+const shownSwatch = (finish: Finish) => (
+  finish.option.shown_swatch_hex !== undefined
+    ? finish.option.shown_swatch_hex
+    : finish.option.swatch_set !== false ? finish.option.swatch_hex : ""
+);
 
 export function FinishImagesManager({
   modelId, modelName, canManage, companyId, onChanged,
@@ -553,6 +895,8 @@ export function FinishImagesManager({
   const focusAfterVerify = useRef<number | null>(null);
   // After «Guardar muestra»: the colour's heading (the control that had focus is gone once the swatch is set).
   const focusAfterSwatch = useRef<number | null>(null);
+  // After «Reemplazar foto»: the picture's card (its form is gone; the picture kept its place).
+  const focusAfterReplace = useRef<number | null>(null);
   const hostChanged = useRef(onChanged);
   useEffect(() => { hostChanged.current = onChanged; });
 
@@ -595,6 +939,13 @@ export function FinishImagesManager({
     if (colourId === null || !root.current) return;
     focusAfterSwatch.current = null;
     (root.current.querySelector<HTMLElement>(`#acabado-${colourId}`) ?? document.getElementById(`${PANEL_ID}-title`))?.focus();
+  }, [listing]);
+
+  useEffect(() => {
+    const imageId = focusAfterReplace.current;
+    if (imageId === null || !root.current) return;
+    focusAfterReplace.current = null;
+    (root.current.querySelector<HTMLElement>(`[data-image-id="${imageId}"]`) ?? document.getElementById(`${PANEL_ID}-title`))?.focus();
   }, [listing]);
 
   useEffect(() => {
@@ -676,11 +1027,13 @@ export function FinishImagesManager({
                   <li key={finish.option.id} data-finish-id={finish.option.id} aria-labelledby={`acabado-${finish.option.id}`} className="min-w-0 rounded-xl border border-bd-border p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="flex min-w-0 items-center gap-2">
-                        {finish.option.swatch_set !== false && /^#[0-9A-Fa-f]{6}$/.test(finish.option.swatch_hex) ? (
+                        {/* FASE 1.2 · Y: what is drawn — this model's own swatch, else the company's, else nothing. */}
+                        {HEX.test(shownSwatch(finish)) ? (
                           <span
                             aria-hidden="true"
+                            data-testid="finish-swatch"
                             className="h-6 w-6 shrink-0 rounded-full border border-foreground/25"
-                            style={{ backgroundColor: finish.option.swatch_hex }}
+                            style={{ backgroundColor: shownSwatch(finish) }}
                           />
                         ) : null}
                         <h3 id={`acabado-${finish.option.id}`} tabIndex={-1} className={`break-words text-sm font-semibold text-foreground ${FOCUS_RING_ON_SCRIPT}`}>{finish.option.label}</h3>
@@ -691,6 +1044,10 @@ export function FinishImagesManager({
                             {finish.images.length === 1 ? "1 imagen" : `${finish.images.length} imágenes`}
                           </span>
                         )}
+                        {finish.option.shown_swatch_is_approximate ? <ApproximateBadge /> : null}
+                        {finish.option.model_swatch_hex ? (
+                          <span className="text-[11px] text-muted">Muestra propia de este modelo</span>
+                        ) : null}
                       </div>
                       {canManage && !finish.not_colour && uploadingFor !== finish.option.id ? (
                         <button
@@ -713,6 +1070,19 @@ export function FinishImagesManager({
                           setNotice(`Muestra de ${finish.option.label} guardada.`);
                           // Review of #377: the control leaves with the saved swatch; focus goes to the colour.
                           focusAfterSwatch.current = finish.option.id;
+                          void load();
+                          hostChanged.current?.();
+                        }}
+                      />
+                    ) : null}
+                    {canManage && !finish.not_colour ? (
+                      <SwatchEditor
+                        finish={finish}
+                        modelId={modelId}
+                        modelName={modelName}
+                        companyId={companyId}
+                        onSaved={(text) => {
+                          setNotice(text);
                           void load();
                           hostChanged.current?.();
                         }}
@@ -748,9 +1118,11 @@ export function FinishImagesManager({
                             index={index}
                             count={finish.images.length}
                             colour={finish.option.label}
+                            modelId={modelId}
                             modelName={modelName}
                             kinds={kinds}
                             canManage={canManage}
+                            companyId={companyId}
                             busy={busy !== null}
                             onPatch={(data) => {
                               if ("license_verified" in data) focusAfterVerify.current = image.id;
@@ -760,6 +1132,13 @@ export function FinishImagesManager({
                             onRemove={() => {
                               focusAfterRemoval.current = { colourId: finish.option.id, index };
                               void act(image.id, () => deleteFinishImage(modelId, image.id, companyId), `Imagen quitada de ${finish.option.label}.`);
+                            }}
+                            onReplaced={() => {
+                              focusAfterReplace.current = image.id;
+                              setActionError(null);
+                              setNotice(`Imagen ${index + 1} de ${finish.option.label} reemplazada.`);
+                              void load();
+                              hostChanged.current?.();
                             }}
                           />
                         ))}

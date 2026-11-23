@@ -40,6 +40,7 @@ import {
   type CosmeticGradeRow,
 } from "../lib/internal-api";
 import { ROLE_LABELS, ROLE_ORDER } from "../lib/palette";
+import { SWATCH_APPROXIMATE_CHECKBOX, SWATCH_APPROXIMATE_LABEL } from "../lib/catalog-presentation-api";
 import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
 import { ClaimsHint } from "./ClaimsHint";
 import { DescriptionEditor } from "./DescriptionEditor";
@@ -265,6 +266,12 @@ function OptionChip({ option, kind }: { option: AdminAttributeOption; kind: "tex
       ) : null}
       {option.label}
       {kind === "color" && option.swatch_hex ? <span className="font-mono text-muted">{option.swatch_hex}</span> : null}
+      {/* FASE 1.2 · Y: a swatch chosen as an approximation, pending commercial validation (panel only). */}
+      {kind === "color" && option.swatch_is_approximate ? (
+        <span title="Muestra aproximada, pendiente de validación comercial" className="rounded-full border border-warning-border bg-warning-surface px-1.5 text-[11px] font-semibold text-warning">
+          {SWATCH_APPROXIMATE_LABEL}
+        </span>
+      ) : null}
     </span>
   );
 }
@@ -274,13 +281,16 @@ function OptionForm({
   kind, initial, submitLabel, onSubmit, onCancel,
 }: {
   kind: "text" | "color";
-  initial?: { label: string; swatch_hex: string; sort_order?: number };
+  initial?: { label: string; swatch_hex: string; sort_order?: number; swatch_is_approximate?: boolean };
   submitLabel: string;
-  onSubmit: (body: { label: string; swatch_hex?: string; sort_order?: number }) => Promise<void>;
+  onSubmit: (body: { label: string; swatch_hex?: string; sort_order?: number; swatch_is_approximate?: boolean }) => Promise<void>;
   onCancel?: () => void;
 }) {
   const [label, setLabel] = useState(initial?.label ?? "");
   const [hex, setHex] = useState(initial?.swatch_hex ?? "");
+  // FASE 1.2 · Y: offered when EDITING a colour (the swatch is then the company's, shared by every model).
+  const [approximate, setApproximate] = useState(initial?.swatch_is_approximate ?? false);
+  const approximateId = useId();
   const [order, setOrder] = useState(initial?.sort_order !== undefined ? String(initial.sort_order) : "");
   const [hexError, setHexError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -298,6 +308,7 @@ function OptionForm({
         label: label.trim(),
         ...(kind === "color" ? { swatch_hex: hex.toUpperCase() } : {}),
         ...(initial && order.trim() !== "" && Number.isFinite(Number(order)) ? { sort_order: Number(order) } : {}),
+        ...(initial && kind === "color" ? { swatch_is_approximate: approximate } : {}),
       });
       if (!initial) { setLabel(""); setHex(""); }
     } catch (err) {
@@ -317,6 +328,12 @@ function OptionForm({
         <div className="min-w-48 flex-1">
           <SwatchInput value={hex} onChange={(v) => { setHex(v); if (hexError && isValidSwatchHex(v)) setHexError(null); }} error={hexError} />
         </div>
+      ) : null}
+      {initial && kind === "color" ? (
+        <label htmlFor={approximateId} className="flex min-h-[44px] items-center gap-2 text-xs text-foreground">
+          <input id={approximateId} type="checkbox" className="h-4 w-4" checked={approximate} onChange={(e) => setApproximate(e.target.checked)} />
+          {SWATCH_APPROXIMATE_CHECKBOX}
+        </label>
       ) : null}
       {initial ? (
         <label className="block w-24 text-xs text-muted">

@@ -230,9 +230,14 @@ def configurations(company, model, branch, authority: Authority) -> dict:
         if attribute.role == VariantAttribute.ROLE_COLOR or attribute.kind == VariantAttribute.KIND_COLOR:
             if pictures is None:
                 pictures = finish_media.chip_pictures(model)
-            attribute_rows[-1]['options'] = [
-                {'id': o.pk, 'label': o.label, 'swatch_hex': device_catalog.shown_swatch(o),
-                 'thumbnail': pictures.get(o.pk)} for o in options]
+                own_swatches = model_palette.model_swatches(model)
+            # FASE 1.2 · Y: the model's own swatch, else the company's, else none; and whether it is approximate.
+            rows = []
+            for o in options:
+                swatch, approximate = device_catalog.resolved_swatch(o, *own_swatches.get(o.pk, ('', False)))
+                rows.append({'id': o.pk, 'label': o.label, 'swatch_hex': swatch,
+                             'swatch_is_approximate': approximate, 'thumbnail': pictures.get(o.pk)})
+            attribute_rows[-1]['options'] = rows
     every_option = {pk for column in columns for pk in column}
     excluded = [pair for pair in (palette.excluded if palette else set()) if pair <= every_option]
 

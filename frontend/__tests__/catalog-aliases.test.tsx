@@ -655,6 +655,31 @@ describe('chips de color de la paleta (G, revisión de #377)', () => {
   });
 });
 
+describe('muestra propia del modelo y aproximadas en la paleta (FASE 1.2 · Y)', () => {
+  it('el chip dibuja la muestra resuelta del modelo y rotula «Aproximada»', () => {
+    const palette = {
+      ...PALETTE,
+      attributes: [PALETTE.attributes[0], { ...PALETTE.attributes[1], options: [
+        { ...option(21, 'Azul', true, '#1F3A93'), swatch_set: true, thumbnail: null, model_swatch_hex: '#2563EB',
+          shown_swatch_hex: '#2563EB', shown_swatch_is_approximate: true },
+        // The company never configured it, but this model draws its own: a dot, no «Muestra sin configurar».
+        { ...option(22, 'Negro', true, '#9CA3AF'), swatch_set: false, thumbnail: null, model_swatch_hex: '#0A0A0A',
+          shown_swatch_hex: '#0A0A0A', shown_swatch_is_approximate: false },
+      ] }],
+    } as unknown as AdminModelPalette;
+    render(<ModelPalettePanel modelId={5} companyId={null} canManage palette={palette} error={null} onSaved={() => {}}
+      vocabulary={VOCABULARY} vocabularyError={null} />);
+    const panel = screen.getByRole('region', { name: 'Opciones de este modelo' });
+    const azul = within(panel).getByRole('checkbox', { name: /^Azul/ }).closest('label')!;
+    expect(azul.querySelector('[style*="background"]')).toHaveStyle({ backgroundColor: '#2563EB' });
+    expect(azul).toHaveTextContent('Aproximada');
+    const negro = within(panel).getByRole('checkbox', { name: /^Negro/ }).closest('label')!;
+    expect(negro.querySelector('[style*="background"]')).toHaveStyle({ backgroundColor: '#0A0A0A' });
+    expect(negro).not.toHaveTextContent('Muestra sin configurar');
+    expect(negro).not.toHaveTextContent('Aproximada');
+  });
+});
+
 describe('los alias en la paleta del modelo', () => {
   it('cada opción con alias muestra cuántos y los despliega con un enlace al vocabulario', () => {
     render(<ModelPalettePanel modelId={5} companyId={null} canManage palette={PALETTE} error={null} onSaved={() => {}}

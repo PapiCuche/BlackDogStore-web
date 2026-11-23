@@ -45,6 +45,7 @@ export type CatalogModelCard = {
 
 export type CatalogModelList = { lines: Lines; results: CatalogModelCard[] };
 
+/** `swatch_hex`: the swatch the server resolved for THIS model (its own, else the company's; '' = none). */
 export type AttributeOption = { id: number; label: string; swatch_hex: string; sort_order: number };
 
 /**
@@ -74,6 +75,8 @@ export type VariantImage = {
   url: string; alt_text: string; is_primary: boolean; width: number; height: number;
   /** CATALOG-REFERENCE-01 · PR C: a demo resource (labelled «Imagen referencial»). Absent: not one. */
   is_demo?: boolean;
+  /** FASE 1.2 · Y: a finish picture's view (main, front, back, side, other; '' or absent = not said). */
+  view?: string;
 };
 
 /**
@@ -324,7 +327,7 @@ export function availabilityLabel(variant: Pick<Variant, "available" | "availabi
 /**
  * CATALOG-REFERENCE-01 · G (owner's visual order 4): the picture a colour chip shows — its finish's primary picture,
  * else its first, never a demo resource (a chip never presents a demo as the product). `null`: no picture, and the
- * chip falls back to the company's swatch, or to its name alone.
+ * chip falls back to its swatch (the model's own, else the company's: resolved by the server), or to its name alone.
  */
 export function chipPicture(finishImages: Record<string, VariantImage[]> | undefined, optionId: number): string | null {
   const own = (finishImages?.[String(optionId)] ?? []).filter((image) => !image.is_demo);
