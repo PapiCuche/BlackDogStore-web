@@ -10,12 +10,19 @@
  * Sólo lectura. Qué es externo, de qué empresa y hasta cuántas filas por página lo decide el servidor
  * (`GET /admin/catalog/image-sources/`, `products.view`). Subir en lote exige `products.manage`: sin él no se
  * ofrece un enlace que respondería 403.
+ *
+ * «Fotos por acabado y licencias» (`licensing` de la misma respuesta, CATALOG-REFERENCE-01 · PR C): los acabados
+ * (modelo × color) sin ninguna foto, cada uno enlazado a las fotos de su modelo, y las subidas en uso sin origen o
+ * sin licencia verificada. El total es del catálogo entero; la lista llega recortada por el servidor y se dice
+ * cuántos faltan.
  */
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import { fetchImageSources, type ImageSourceKind, type ImageSourcesReport as Report } from "../lib/internal-api";
+import {
+  fetchImageSources, type ImageLicensing, type ImageSourceKind, type ImageSourcesReport as Report,
+} from "../lib/internal-api";
 import { EmptyBox, Panel, Spinner } from "./InventoryUi";
 import { internalButtonClass } from "./internal-ui";
 
@@ -49,6 +56,58 @@ const rowHostLabel = (host: string) => (host === SITE_PATH ? "Ruta de este sitio
 
 const touch = "min-h-[44px]";
 const badge = "inline-flex rounded-full border px-2 py-0.5 text-[11px] font-semibold";
+
+/** The finish manager's panel on the model page (`FinishImagesManager`'s `PANEL_ID`); the page scrolls to it. */
+const FINISHES_ANCHOR = "acabados";
+
+function LicensingPanel({ licensing }: { licensing: ImageLicensing }) {
+  const { finishes_without_images: missing, pending_finishes: pending, uploads } = licensing;
+  const rest = Math.max(0, missing - pending.length);
+  const counters: [string, number][] = [
+    ["Acabados sin fotos", missing],
+    ["Subidas en uso", uploads.total],
+    ["Sin origen registrado", uploads.unknown_source],
+    ["Licencia sin verificar", uploads.unverified_license],
+    ["Recursos demostrativos", uploads.demo],
+  ];
+  return (
+    <Panel id="licencias" title="Fotos por acabado y licencias"
+      description="Cada acabado (modelo y color) sin fotos se ve en la tienda como «Imagen pendiente». Las subidas cuentan una vez aunque se muestren en varios lugares.">
+      <div className="space-y-4">
+        <ul aria-label="Contadores de fotos y licencias" className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
+          {counters.map(([label, value]) => (
+            <li key={label} className="min-w-0 rounded-xl border border-bd-border px-3 py-2">
+              <span className="block break-words text-xs text-muted">{label}</span>
+              <span className="block text-lg font-semibold tabular-nums text-foreground">{value}</span>
+            </li>
+          ))}
+        </ul>
+        {missing === 0 ? (
+          <p className="text-sm text-foreground">Todos los acabados del catálogo tienen al menos una foto.</p>
+        ) : (
+          <div className="space-y-2">
+            <ul aria-label="Acabados sin fotos" className="divide-y divide-bd-border rounded-xl border border-bd-border">
+              {pending.map((row) => (
+                <li key={`${row.model_id}-${row.option_id}`} className="flex flex-wrap items-center gap-3 px-4 py-3">
+                  <p className="min-w-0 flex-1 text-sm">
+                    <span className="break-words font-medium text-foreground">{row.model_name}</span>
+                    {" · "}
+                    <span className="break-words text-muted">{row.option_label}</span>
+                  </p>
+                  <Link href={`/admin/products/models/${row.model_id}#${FINISHES_ANCHOR}`} className={`${touch} ${internalButtonClass}`}
+                    aria-label={`Fotos de «${row.model_name}» en «${row.option_label}»`}>
+                    Fotos del acabado
+                  </Link>
+                </li>
+              ))}
+            </ul>
+            {rest > 0 ? <p className="text-sm text-muted">y {rest} más.</p> : null}
+          </div>
+        )}
+      </div>
+    </Panel>
+  );
+}
 
 export function ImageSourcesReport({ companyId, canManage }: { companyId: number | null; canManage: boolean }) {
   const [page, setPage] = useState(1);
@@ -115,6 +174,7 @@ export function ImageSourcesReport({ companyId, canManage }: { companyId: number
           <EmptyBox message="Todas las imágenes del catálogo son propias: las subió la tienda. No hay nada que reemplazar." />
         </div>
         {bulk}
+        {data.licensing ? <LicensingPanel licensing={data.licensing} /> : null}
       </div>
     );
   }
@@ -178,6 +238,8 @@ export function ImageSourcesReport({ companyId, canManage }: { companyId: number
           ) : null}
         </div>
       </Panel>
+
+      {data.licensing ? <LicensingPanel licensing={data.licensing} /> : null}
     </div>
   );
 }

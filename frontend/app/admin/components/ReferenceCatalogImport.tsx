@@ -469,6 +469,23 @@ function PreviewRow({
         {!item.changes ? " · sin cambios" : ""}
       </p>
 
+      {item.model_numbers?.length ? (
+        <div className="mt-2 min-w-0 text-xs">
+          <p id={`${id}-numbers`} className="font-semibold text-foreground">
+            Números de modelo <span className="font-normal text-muted">(sólo referencia: no se importan)</span>
+          </p>
+          <ul aria-label={`Números de modelo de ${item.name}`} aria-describedby={`${id}-numbers`} className="mt-1 space-y-0.5">
+            {item.model_numbers.map((entry) => (
+              <li key={entry.number} className="min-w-0 break-words text-muted">
+                <span className="font-mono text-foreground">{entry.number}</span>
+                {" · "}
+                {entry.regions || "la fuente no indica regiones"}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {item.reason ? <p className="mt-2 text-sm text-danger">{item.reason}</p> : null}
 
       {item.warnings.length ? (

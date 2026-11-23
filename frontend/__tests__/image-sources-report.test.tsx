@@ -158,6 +158,71 @@ it('pasa de página pidiéndola al servidor', async () => {
   expect(within(screen.getByRole('list', { name: 'Fichas con imágenes externas' })).getAllByRole('listitem')).toHaveLength(1);
 });
 
+describe('fotos por acabado y licencias', () => {
+  const finish = (model_id: number, model_name: string, option_id: number, option_label: string) => ({
+    model_id, model_name, option_id, option_label, admin_url: `/admin/products/models/${model_id}`,
+  });
+  const licensing = (over: Partial<NonNullable<Report['licensing']>> = {}): NonNullable<Report['licensing']> => ({
+    finishes_without_images: 2,
+    pending_finishes: [finish(7, 'Teléfono X', 3, 'Azul niebla'), finish(8, 'Teléfono Y', 4, 'Arena')],
+    uploads: { total: 6, unknown_source: 1, unverified_license: 2, demo: 1 },
+    ...over,
+  });
+
+  it('cuenta los acabados sin fotos y las subidas sin licencia verificada, y enlaza cada acabado a sus fotos', async () => {
+    answer = () => reply(report([MODEL], { licensing: licensing() }));
+    render(<ImageSourcesReport companyId={9} canManage />);
+    const panel = await screen.findByRole('region', { name: 'Fotos por acabado y licencias' });
+    const counters = within(panel).getByRole('list', { name: 'Contadores de fotos y licencias' });
+    expect(within(counters).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      'Acabados sin fotos2', 'Subidas en uso6', 'Sin origen registrado1', 'Licencia sin verificar2', 'Recursos demostrativos1',
+    ]);
+    const pending = within(panel).getByRole('list', { name: 'Acabados sin fotos' });
+    const rows = within(pending).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent('Teléfono X');
+    expect(rows[0]).toHaveTextContent('Azul niebla');
+    expect(within(rows[0]).getByRole('link', { name: 'Fotos de «Teléfono X» en «Azul niebla»' }))
+      .toHaveAttribute('href', '/admin/products/models/7#acabados');
+    expect(within(panel).queryByText(/más\.?$/)).not.toBeInTheDocument();
+  });
+
+  it('cuando el servidor recorta la lista dice cuántos faltan', async () => {
+    answer = () => reply(report([MODEL], { licensing: licensing({ finishes_without_images: 250 }) }));
+    render(<ImageSourcesReport companyId={9} canManage />);
+    const panel = await screen.findByRole('region', { name: 'Fotos por acabado y licencias' });
+    expect(within(panel).getByText('y 248 más.')).toBeInTheDocument();
+  });
+
+  it('también se ve cuando todas las imágenes son propias, y sin pendientes lo dice', async () => {
+    answer = () => reply(report([], {
+      summary: { models: 0, variants: 0, products: 0, items: 0, images: 0, hosts: [] },
+      licensing: licensing({ finishes_without_images: 0, pending_finishes: [], uploads: { total: 3, unknown_source: 0, unverified_license: 0, demo: 0 } }),
+    }));
+    render(<ImageSourcesReport companyId={9} canManage />);
+    expect(await screen.findByRole('status')).toHaveTextContent('Todas las imágenes del catálogo son propias');
+    const panel = screen.getByRole('region', { name: 'Fotos por acabado y licencias' });
+    expect(panel).toHaveTextContent('Todos los acabados del catálogo tienen al menos una foto.');
+    expect(within(panel).queryByRole('list', { name: 'Acabados sin fotos' })).not.toBeInTheDocument();
+  });
+
+  it('sin el bloque en la respuesta no muestra el panel', async () => {
+    render(<ImageSourcesReport companyId={9} canManage />);
+    await screen.findByRole('region', { name: 'Resumen' });
+    expect(screen.queryByRole('region', { name: 'Fotos por acabado y licencias' })).not.toBeInTheDocument();
+  });
+
+  it('una lista larga no desborda: cada fila envuelve su texto', async () => {
+    const long = finish(9, 'Teléfono con un nombre larguísimo que no cabe en una pantalla de 320 píxeles', 5, 'Color con nombre también muy largo');
+    answer = () => reply(report([MODEL], { licensing: licensing({ finishes_without_images: 1, pending_finishes: [long] }) }));
+    render(<ImageSourcesReport companyId={9} canManage />);
+    const pending = await screen.findByRole('list', { name: 'Acabados sin fotos' });
+    const row = within(pending).getByRole('listitem');
+    expect(row.className).toMatch(/flex-wrap/);
+    expect(within(row).getByText(long.model_name).className).toMatch(/break-words/);
+  });
+});
+
 describe('la entrada del menú', () => {
   const mod = INTERNAL_MODULES.find((x) => x.id === 'products.images');
 

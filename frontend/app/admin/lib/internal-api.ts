@@ -2667,13 +2667,44 @@ export type ImageSourceEntry = {
 
 export type ImageSourceHost = { host: string; items: number; images: number };
 
+/** A finish (model × colour) of the catalogue without any picture (`catalog_image_sources.licensing`). */
+export type PendingFinish = { model_id: number; model_name: string; option_id: number; option_label: string; admin_url: string };
+
+/**
+ * CATALOG-REFERENCE-01 · PR C — finishes without pictures (the count is the whole catalogue's; the list stops at the
+ * server's cap) and the shop's uploads in use whose source is unknown or whose licence nobody checked.
+ */
+export type ImageLicensing = {
+  finishes_without_images: number;
+  pending_finishes: PendingFinish[];
+  uploads: { total: number; unknown_source: number; unverified_license: number; demo: number };
+};
+
 export type ImageSourcesReport = {
   summary: { models: number; variants: number; products: number; items: number; images: number; hosts: ImageSourceHost[] };
   count: number;
   page: number;
   page_size: number;
   results: ImageSourceEntry[];
+  /** Absent from a server older than PR C: then the panel does not show it. */
+  licensing?: ImageLicensing;
 };
+
+const reportCount = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0);
+
+function licensingOf(raw: unknown): ImageLicensing | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const data = raw as Partial<ImageLicensing>;
+  const uploads = (data.uploads ?? {}) as Partial<ImageLicensing["uploads"]>;
+  return {
+    finishes_without_images: reportCount(data.finishes_without_images),
+    pending_finishes: Array.isArray(data.pending_finishes) ? data.pending_finishes : [],
+    uploads: {
+      total: reportCount(uploads.total), unknown_source: reportCount(uploads.unknown_source),
+      unverified_license: reportCount(uploads.unverified_license), demo: reportCount(uploads.demo),
+    },
+  };
+}
 
 /**
  * P2 · F4 — `GET /admin/catalog/image-sources/?page=&page_size=` (`products.view`): the models and products of the
@@ -2701,6 +2732,7 @@ export function fetchImageSources(
     page: data?.page ?? page,
     page_size: data?.page_size ?? pageSize,
     results: Array.isArray(data?.results) ? data.results : [],
+    licensing: licensingOf(data?.licensing),
   }));
 }
 
