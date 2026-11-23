@@ -94,7 +94,7 @@ function ApproximateBadge() {
   return (
     <span
       title="Muestra aproximada, pendiente de validación comercial"
-      className="rounded-full border border-warning-border bg-warning-surface px-2.5 py-1 text-[11px] font-semibold text-warning"
+      className="whitespace-nowrap rounded-full border border-warning-border bg-warning-surface px-2.5 py-1 text-[11px] font-semibold text-warning"
     >
       {SWATCH_APPROXIMATE_LABEL}
     </span>
@@ -1026,7 +1026,8 @@ export function FinishImagesManager({
                 return (
                   <li key={finish.option.id} data-finish-id={finish.option.id} aria-labelledby={`acabado-${finish.option.id}`} className="min-w-0 rounded-xl border border-bd-border p-4">
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="flex min-w-0 items-center gap-2">
+                      {/* E2E 1.2: on a phone the header wraps between whole pieces; a status pill never breaks inside. */}
+                      <div className="flex min-w-0 flex-wrap items-center gap-2">
                         {/* FASE 1.2 · Y: what is drawn — this model's own swatch, else the company's, else nothing. */}
                         {HEX.test(shownSwatch(finish)) ? (
                           <span
@@ -1038,9 +1039,9 @@ export function FinishImagesManager({
                         ) : null}
                         <h3 id={`acabado-${finish.option.id}`} tabIndex={-1} className={`break-words text-sm font-semibold text-foreground ${FOCUS_RING_ON_SCRIPT}`}>{finish.option.label}</h3>
                         {finish.image_pending ? (
-                          <span className="rounded-full border border-warning-border bg-warning-surface px-2.5 py-1 text-[11px] font-semibold text-warning">Imagen pendiente</span>
+                          <span className="whitespace-nowrap rounded-full border border-warning-border bg-warning-surface px-2.5 py-1 text-[11px] font-semibold text-warning">Imagen pendiente</span>
                         ) : (
-                          <span className="rounded-full border border-bd-border px-2.5 py-1 text-[11px] font-semibold text-muted">
+                          <span className="whitespace-nowrap rounded-full border border-bd-border px-2.5 py-1 text-[11px] font-semibold text-muted">
                             {finish.images.length === 1 ? "1 imagen" : `${finish.images.length} imágenes`}
                           </span>
                         )}
