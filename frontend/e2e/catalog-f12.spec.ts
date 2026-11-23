@@ -26,8 +26,8 @@ import { apiBase, imei, shell, TAG } from "./inventory-first-support";
  *   6. Aislamiento: otra empresa no ve ni toca las fotos por acabado de ésta (API).
  *   7. Revisión visual a 360, 390, 768 y 1440 px: sin desborde, foco visible y tokens V4 sólo dentro de
  *      [data-design="v4"]. Con `E2E_SCREENSHOTS=<carpeta>` deja las capturas (fuera del repositorio).
- *
- * La cobertura de fotos en «Fuentes de imágenes» (#387) no se prueba aquí: no está en master todavía.
+ *   8. Cobertura (#387): «Fotos por acabado y licencias» lista el acabado sin fotos con su enlace, y deja de listarlo
+ *      cuando recibe una foto.
  */
 
 const SHOTS = process.env.E2E_SCREENSHOTS ?? "";
@@ -817,4 +817,64 @@ test("revisión visual a 360, 390, 768 y 1440 px: sin desborde, foco visible y V
   await shopper.close();
   await context.close();
   expect(problems, problems.join("\n")).toEqual([]);
+});
+
+test("cobertura: «Fotos por acabado y licencias» lista el acabado sin fotos y lo quita al recibir una", async ({ browser }) => {
+  test.setTimeout(180_000);
+  type Licensing = {
+    finishes_without_images: number;
+    pending_finishes: { model_id: number; option_id: number; model_name: string; option_label: string }[];
+    uploads: { total: number; unknown_source: number; unverified_license: number; demo: number };
+  };
+  const report = async () => {
+    const reply = await api<{ licensing: Licensing }>(adminApi, "GET", "/admin/catalog/image-sources/");
+    expect(reply.status).toBe(200);
+    return reply.body.licensing;
+  };
+  const before = await report();
+  // This model: only Verde salvia lacks pictures (its other colours have them).
+  expect(before.pending_finishes.filter((row) => row.model_id === seed.id).map((row) => row.option_id)).toEqual([seed.colours.salvia]);
+  // Titanio arena's back is a demo resource and Azul glaciar's replacement waits for its licence check.
+  expect(before.uploads.demo).toBeGreaterThanOrEqual(1);
+  expect(before.uploads.unverified_license).toBeGreaterThanOrEqual(2);
+
+  const { context, page } = await adminPage(browser);
+  for (const viewport of [VIEWPORTS[0], VIEWPORTS[3]]) {
+    await page.setViewportSize(viewport);
+    await page.goto("/admin/products/images", { waitUntil: "networkidle" });
+    const panel = page.getByRole("region", { name: "Fotos por acabado y licencias" });
+    await expect(panel).toBeVisible({ timeout: 30_000 });
+    const counter = panel.getByRole("list", { name: "Contadores de fotos y licencias" }).getByRole("listitem")
+      .filter({ hasText: "Acabados sin fotos" });
+    await expect(counter).toContainText(String(before.finishes_without_images));
+    await expect(panel.getByRole("link", { name: `Fotos de «${seed.name}» en «Verde salvia»` })).toBeVisible();
+    expect(await overflow(page), `cobertura ${viewport.width}: desborde horizontal`).toBeLessThanOrEqual(1);
+    // «Subir imágenes en lote» sits below its explanation, never over its last line.
+    const bulk = page.getByRole("link", { name: "Subir imágenes en lote" });
+    const text = page.getByText(/cada archivo va a su producto por el código\./);
+    const [linkBox, textBox] = [await bulk.boundingBox(), await text.boundingBox()];
+    expect(linkBox!.y, `cobertura ${viewport.width}: el botón tapa el texto`).toBeGreaterThanOrEqual(textBox!.y + textBox!.height);
+    await shot(page, `cobertura-${viewport.width}x${viewport.height}`);
+  }
+  // The link opens the model's finish manager.
+  await page.getByRole("region", { name: "Fotos por acabado y licencias" })
+    .getByRole("link", { name: `Fotos de «${seed.name}» en «Verde salvia»` }).click();
+  await page.waitForURL(new RegExp(`/admin/products/models/${seed.id}#acabados$`));
+  await expect(finishItem(page.getByRole("region", { name: "Imágenes por acabado" }), "Verde salvia").getByText("Imagen pendiente"))
+    .toBeVisible({ timeout: 30_000 });
+
+  // Verde salvia receives its picture: the report stops listing it, one finish less.
+  const placed = await api<FinishImage>(adminApi, "POST", finishes(seed.id), { multipart: {
+    file: png("salvia-principal.png", drawing([62, 107, 72])), color_option_id: String(seed.colours.salvia), view: "main",
+    source_kind: "own_photo", alt_text: `${seed.name} Verde salvia`,
+  } });
+  expect(placed.status, JSON.stringify(placed.body)).toBe(201);
+  const after = await report();
+  expect(after.finishes_without_images).toBe(before.finishes_without_images - 1);
+  expect(after.pending_finishes.filter((row) => row.model_id === seed.id)).toEqual([]);
+  expect(after.uploads.total).toBe(before.uploads.total + 1);
+  await page.goto("/admin/products/images", { waitUntil: "networkidle" });
+  await expect(page.getByRole("region", { name: "Fotos por acabado y licencias" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("link", { name: `Fotos de «${seed.name}» en «Verde salvia»` })).toHaveCount(0);
+  await context.close();
 });
