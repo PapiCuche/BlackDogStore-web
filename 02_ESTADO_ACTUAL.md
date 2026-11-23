@@ -3,6 +3,23 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-19 — LABEL-04 · Impresora de etiquetas automática junto a la de tickets — en PR (migración `0186`)
+
+- **Pedido del propietario:** tener siempre conectadas las dos impresoras; el ticket sale solo en la de tickets y las etiquetas solas en la de etiquetas.
+- **Qué cambia:**
+  - `Printer.role` (`ticket`/`label`, `db_default` ticket) y `label_roll` (rollo cargado); una automática por (sucursal, tipo);
+  - `PrintJob` admite `label_batch` (con `label_size`), con restricción de que un trabajo es de pedido o de lote, nunca de los dos;
+  - al crear un lote de etiquetas por un ingreso, se encola en la automática de etiquetas de la sucursal: un trabajo por tamaño, sólo el del rollo cargado, tope 100; si falla, el ingreso sigue (punto de guardado propio);
+  - renderizado TSPL (`store/labels/tspl.py`): el mismo diseño del PDF como bitmap a 203 ppp, fuentes Vera de reportlab (acentos y Ñ), logo recortado a la derecha;
+  - `POST /api/admin/printing/label-batches/<id>/print/` con `labels.print`, sucursal visible (si no, 404), Idempotency-Key y `AdminAuditLog` con `company`;
+  - agente 1.4: tipo de trabajo frente a tipo de impresora; el servidor cancela los cruzados;
+  - panel: tipo y rollo de cada impresora; línea de impresión en el resumen del lote.
+- **Revisión adversaria (corregida):** copias en un solo bitmap (`PRINT 1,n`) y lotes grandes partidos en tramos de menos de 600 KB (`label_part`, límite del agente 1 MiB); se cuenta antes de dibujar (tope 100 automático, 1000 manual); el agente declara `kinds` y sólo recibe etiquetas con su rollo cargado (si no, esperan sin gastar intentos); una unidad que cambió de sucursal se omite (antes 500); lote sin nada imprimible se cancela; repetición con la misma clave da 200 sin segunda auditoría; reintentar etiquetas exige `inventory.labels.print`; el resumen dice el estado real y si hay impresora de etiquetas.
+- **Migración `0186`:** las impresoras existentes quedan como tickets. Ensayo en base desechable: ida, coexistencia de una automática de cada tipo en el mismo local, vuelta atrás **negada** con impresoras o trabajos de etiquetas y correcta sin ellos (la de tickets se conserva), ida otra vez; `makemigrations --check` sin cambios.
+- **Verificado en papel (HL80, 30×20):** orientación, acentos, logo, nada cortado, EAN-13 escaneado, tres seguidas como un ingreso real.
+- **Pruebas:** `test_label_printing` y regresión de impresión y etiquetas en verde; frontend tsc, eslint y jest en verde.
+- **Pendiente:** CI del PR; rollo 50×25 en papel (opcional); instalador con dos colas; despliegue con GO del propietario.
+
 ## 2026-11-23 — FASE 1.2 · catálogo visual de equipos nuevos · en master `79058ac`, SIN DESPLEGAR
 
 Orden del propietario «FASE 1.2 — catálogo visual premium de iPhone». La auditoría previa mostró que la Fase 1 ya cubría la mayor parte. La Fase 1.2 completa lo que faltaba. Clasificación y decisiones D-F12-1…5 en `docs/adr-catalog-reference.md` §10–§11.
