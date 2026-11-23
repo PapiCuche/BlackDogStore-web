@@ -322,8 +322,10 @@ function UploadForm({
  * is invented: no official code is suggested and no photo is recoloured. Saves only a valid #RRGGBB.
  */
 function SwatchForm({
-  fieldLabel, pickerLabel, initialHex = "", initialApproximate = false, submitLabel, onSave, children,
+  fieldLabel, pickerLabel, initialHex = "", initialApproximate = false, submitLabel, onSave, children, fieldRef,
 }: {
+  /** The #RRGGBB field, for a host that moves focus to it. */
+  fieldRef?: React.Ref<HTMLInputElement>;
   fieldLabel: string;
   pickerLabel: string;
   initialHex?: string;
@@ -359,6 +361,7 @@ function SwatchForm({
     <div className="flex flex-wrap items-center gap-2 text-xs">
       <label htmlFor={fieldId} className="text-muted">{fieldLabel}</label>
       <input
+        ref={fieldRef}
         id={fieldId}
         value={value}
         onChange={(e) => setValue(e.target.value)}
@@ -446,6 +449,17 @@ function SwatchEditor({ finish, modelId, modelName, companyId, onSaved }: {
   const regionId = useId();
   const option = finish.option;
   const ownHex = option.model_swatch_hex ?? "";
+  const ownApproximate = option.model_swatch_is_approximate ?? false;
+  const companyApproximate = option.swatch_is_approximate ?? false;
+  // Review of #388: after «Usar la muestra de la empresa» its button is gone; focus goes to the model's field (a
+  // new one: the form is keyed on what the server holds, so it shows the value saved, never the old one).
+  const ownField = useRef<HTMLInputElement>(null);
+  const focusOwnField = useRef(false);
+  useEffect(() => {
+    if (!focusOwnField.current || ownHex) return;
+    focusOwnField.current = false;
+    ownField.current?.focus();
+  });
   return (
     <div className="mt-2">
       <button
@@ -463,10 +477,11 @@ function SwatchEditor({ finish, modelId, modelName, companyId, onSaved }: {
             <fieldset className="min-w-0 space-y-2">
               <legend className="text-xs font-semibold text-foreground">Muestra de la empresa (todos los modelos con {option.label})</legend>
               <SwatchForm
+                key={`${option.swatch_hex}|${companyApproximate}`}
                 fieldLabel={`Muestra de ${option.label} para la empresa (#RRGGBB)`}
                 pickerLabel={`Elegir la muestra de ${option.label} para la empresa`}
                 initialHex={option.swatch_hex}
-                initialApproximate={option.swatch_is_approximate ?? false}
+                initialApproximate={companyApproximate}
                 submitLabel="Guardar muestra de la empresa"
                 onSave={async (hex, approximate) => {
                   await updateAttributeOption(option.id, { swatch_hex: hex, swatch_is_approximate: approximate }, companyId);
@@ -482,10 +497,12 @@ function SwatchEditor({ finish, modelId, modelName, companyId, onSaved }: {
                 {ownHex ? `Este modelo usa su propia muestra (${ownHex}).` : "Vacía: este modelo usa la muestra de la empresa."}
               </p>
               <SwatchForm
+                key={`${ownHex}|${ownApproximate}`}
+                fieldRef={ownField}
                 fieldLabel={`Muestra de ${option.label} solo en ${modelName} (#RRGGBB)`}
                 pickerLabel={`Elegir la muestra de ${option.label} solo en ${modelName}`}
                 initialHex={ownHex}
-                initialApproximate={option.model_swatch_is_approximate ?? false}
+                initialApproximate={ownApproximate}
                 submitLabel="Guardar muestra de este modelo"
                 onSave={async (hex, approximate) => {
                   await setModelSwatch(modelId, { option_id: option.id, swatch_hex: hex, swatch_is_approximate: approximate }, companyId);
@@ -497,6 +514,7 @@ function SwatchEditor({ finish, modelId, modelName, companyId, onSaved }: {
                     label={option.label}
                     onClear={async () => {
                       await setModelSwatch(modelId, { option_id: option.id, swatch_hex: "" }, companyId);
+                      focusOwnField.current = true;
                       onSaved(`${modelName} vuelve a usar la muestra de ${option.label} de la empresa.`);
                     }}
                   />

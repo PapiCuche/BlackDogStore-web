@@ -259,6 +259,54 @@ describe('Muestras aproximadas y muestra propia del modelo', () => {
     }));
   });
 
+  it('tras volver a la muestra de la empresa, el formulario se vacía y el foco queda en su campo', async () => {
+    listing.finishes[0].option = { ...listing.finishes[0].option, model_swatch_hex: '#2563EB',
+      model_swatch_is_approximate: true, shown_swatch_hex: '#2563EB', shown_swatch_is_approximate: true };
+    await mount();
+    fireEvent.click(screen.getByRole('button', { name: 'Ajustar muestra de Azul' }));
+    const own = () => screen.getByRole('group', { name: 'Muestra solo para Equipo Z' });
+    const field = () => within(own()).getByLabelText('Muestra de Azul solo en Equipo Z (#RRGGBB)');
+    const check = () => within(own()).getByRole('checkbox', { name: 'Muestra aproximada (pendiente de validación comercial)' });
+    expect(field()).toHaveValue('#2563EB');
+    expect(check()).toBeChecked();
+    handlers['PATCH /admin/catalog/models/5/palette/'] = () => {
+      listing.finishes[0].option = { ...listing.finishes[0].option, model_swatch_hex: '',
+        model_swatch_is_approximate: false, shown_swatch_hex: '#1F3A93', shown_swatch_is_approximate: false };
+      return reply({ model_id: 5, option_id: 21, label: 'Azul', swatch_hex: '', swatch_is_approximate: false,
+        shown_swatch_hex: '#1F3A93', shown_swatch_is_approximate: false });
+    };
+    const clear = within(own()).getByRole('button', { name: 'Usar la muestra de Azul de la empresa' });
+    clear.focus();
+    fireEvent.click(clear);
+    expect(await screen.findByText('Equipo Z vuelve a usar la muestra de Azul de la empresa.')).toBeInTheDocument();
+    // The form shows what the server now holds: nothing of this model's own, not the old value to save again.
+    await waitFor(() => expect(field()).toHaveValue(''));
+    expect(check()).not.toBeChecked();
+    expect(within(own()).getByText('Vacía: este modelo usa la muestra de la empresa.')).toBeInTheDocument();
+    expect(within(own()).getByRole('button', { name: 'Guardar muestra de este modelo' })).toBeDisabled();
+    // The button that had focus is gone: focus lands on the model's swatch field, never on the page.
+    await waitFor(() => expect(document.activeElement).toBe(field()));
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it('la muestra de la empresa se vuelve a leer tras guardarla', async () => {
+    await mount();
+    fireEvent.click(screen.getByRole('button', { name: 'Ajustar muestra de Azul' }));
+    const company = () => screen.getByRole('group', { name: 'Muestra de la empresa (todos los modelos con Azul)' });
+    const field = () => within(company()).getByLabelText('Muestra de Azul para la empresa (#RRGGBB)');
+    fireEvent.change(field(), { target: { value: '#1e40af' } });
+    handlers['PATCH /admin/catalog/options/21/'] = () => {
+      // The server normalises it (upper case) and holds it as approximate.
+      listing.finishes[0].option = { ...listing.finishes[0].option, swatch_hex: '#1E40AF', swatch_is_approximate: true,
+        shown_swatch_hex: '#1E40AF', shown_swatch_is_approximate: true };
+      return reply({ id: 21, label: 'Azul', swatch_hex: '#1E40AF', sort_order: 0, swatch_is_approximate: true });
+    };
+    fireEvent.click(within(company()).getByRole('button', { name: 'Guardar muestra de la empresa' }));
+    expect(await screen.findByText('Muestra de Azul guardada para la empresa.')).toBeInTheDocument();
+    await waitFor(() => expect(field()).toHaveValue('#1E40AF'));
+    expect(within(company()).getByRole('checkbox', { name: 'Muestra aproximada (pendiente de validación comercial)' })).toBeChecked();
+  });
+
   it('un color fuera de la paleta del modelo no ofrece muestra propia y dice por qué', async () => {
     await mount();
     fireEvent.click(screen.getByRole('button', { name: 'Ajustar muestra de Negro' }));
