@@ -259,8 +259,16 @@ def set_palette(model, *, option_ids, actor=None, request=None, expected_option_
                            field='option_ids', code='stale')
     to_add = [o for o in options if o.pk not in current]
     to_remove = sorted(current - set(wanted))
+    # FASE 1.2 · Y: a row taken out may hold this model's own swatch; the audit keeps it so it can be read back.
+    removed_swatches = {}
     if to_remove:
-        ModelOption.objects.filter(model=model, company=company, option_id__in=to_remove).delete()
+        leaving = ModelOption.objects.filter(model=model, company=company, option_id__in=to_remove)
+        removed_swatches = {
+            str(option_id): {'swatch_hex': hex_value, 'swatch_is_approximate': approximate}
+            for option_id, hex_value, approximate in
+            leaving.exclude(swatch_hex='').values_list('option_id', 'swatch_hex', 'swatch_is_approximate')
+        }
+        leaving.delete()
     try:
         for option in to_add:
             ModelOption.objects.create(company=company, model=model, option=option)
@@ -269,7 +277,7 @@ def set_palette(model, *, option_ids, actor=None, request=None, expected_option_
                            field='option_ids', code='stale') from None
     _audit('product_model_palette_set', company=company, actor=actor, request=request,
            target_type='product_model', target_id=model.pk, model_name=model.name,
-           added=[o.pk for o in to_add], removed=to_remove, total=len(wanted))
+           added=[o.pk for o in to_add], removed=to_remove, removed_swatches=removed_swatches, total=len(wanted))
     return {'added': len(to_add), 'removed': len(to_remove), 'total': len(wanted)}
 
 

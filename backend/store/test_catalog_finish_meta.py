@@ -466,6 +466,23 @@ class ModelSwatchTest(SwatchBase):
         self.assertEqual(self.public_colours()['Negro']['swatch_hex'], '#0A0A0A')
         self.assertEqual(self.listed()['Negro']['shown_swatch_hex'], '#0A0A0A')
 
+    def test_taking_a_colour_out_of_the_palette_keeps_its_swatch_in_the_audit(self):
+        self.with_palette()
+        self.model_swatch({'option_id': self.blue.pk, 'swatch_hex': '#2563EB', 'swatch_is_approximate': True})
+        model_palette.set_palette(self.model, option_ids=[self.gb128.pk, self.gb256.pk, self.black.pk],
+                                  actor=self.staff)
+        self.assertFalse(ModelOption.objects.filter(model=self.model, option=self.blue).exists())
+        log = AdminAuditLog.objects.filter(action='product_model_palette_set').order_by('pk').last()
+        self.assertEqual(log.company_id, self.company.pk)
+        self.assertEqual(log.metadata['removed'], [self.blue.pk])
+        self.assertEqual(log.metadata['removed_swatches'],
+                         {str(self.blue.pk): {'swatch_hex': '#2563EB', 'swatch_is_approximate': True}})
+        # A removed colour without a swatch of its own leaves nothing there.
+        model_palette.set_palette(self.model, option_ids=[self.gb128.pk, self.gb256.pk], actor=self.staff)
+        log = AdminAuditLog.objects.filter(action='product_model_palette_set').order_by('pk').last()
+        self.assertEqual(log.metadata['removed'], [self.black.pk])
+        self.assertEqual(log.metadata['removed_swatches'], {})
+
     def test_a_colour_outside_the_palette_is_not_editable_per_model(self):
         listed = self.listed()
         self.assertIs(listed['Azul']['model_swatch_editable'], False)
