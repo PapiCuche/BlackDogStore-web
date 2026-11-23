@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-23 — Fase 1.2: foto principal en el carrito y fotos públicas sólo con licencia verificada (#393)
+
+**Changed**
+- El carrito y el checkout muestran la foto principal del color elegido. Nunca muestran la de otro acabado.
+- Una foto de acabado sale en la tienda sólo cuando su licencia está verificada en el panel. Hasta entonces el color sigue con «Imagen pendiente».
+
+**Added**
+- Aviso en el panel «No visible en la tienda hasta verificar la licencia».
+- Las fotos propias se verifican con «Confirmé que es una foto propia de la tienda».
+
+**Fixed**
+- Los resúmenes del panel (presentación, licencias y cobertura) cuentan como pendientes las fotos que esperan la verificación.
+
+Sin migración nueva. La release es `d32f43b` (incluye `0185`) y está sin desplegar.
+
 ## 2026-11-19 — LABEL-04 · Las etiquetas salen solas en su impresora
 
 **Added**

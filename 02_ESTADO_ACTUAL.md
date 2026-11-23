@@ -3,6 +3,56 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-23 — CIERRE FASES 1.1 Y 1.2 · release `d32f43b` preparada y ensayada · SIN DESPLEGAR
+
+Orden del propietario «CIERRE PRODUCTIVO FASES 1.1 Y 1.2». Producción no cambió: sigue en `ed9f5e0`, esquema `0184`. No se tocaron Caddy, el CRM, SUNAT, Good Doggy ni datos.
+
+- **#393** (`d32f43b`, sin migración) aplica dos decisiones del propietario:
+  - el carrito y el checkout abren en la foto **principal** del color elegido y nunca usan la de otro acabado;
+  - una foto de acabado sólo es pública cuando su licencia está verificada en el panel (`finish_media.shop_states` / `is_public`).
+- **#393 en el panel:**
+  - las fotos sin verificar llevan el aviso «No visible en la tienda hasta verificar la licencia»;
+  - una foto propia se verifica con «Confirmé que es una foto propia de la tienda»;
+  - los resúmenes cuentan los acabados sin foto pública y las fotos pendientes de licencia.
+  - Revisión independiente: los resúmenes contradecían la puerta; se corrigió con pruebas.
+  - CI verde.
+- **Release:** `d32f43b` sustituye a `79058ac`. No cambian `deploy/`, el compose ni las migraciones (sólo `0185`). Imágenes `rc-d32f43b` construidas en prod-02. Runbook en `backups/release-f12/RUNBOOK-d32f43b-prod02.md`.
+- **Baseline revalidado** (sólo lectura):
+  - `ed9f5e0` y `0184`; md5 de Caddy y del CRM iguales;
+  - 52 modelos (30 publicados), 0 fotos de acabado, 16 imágenes subidas sin verificar;
+  - 0 colores fuera de la matriz en paletas y variantes.
+- **Fase 1.1:**
+  - Se ensayó otra vez el 2026-11-23 sobre `db-20261123-103646`, con la misma huella `1689fd2825cc5724`.
+  - Un fallo o una huella equivocada dejan 0 diferencias; repetirla no escribe nada; la vuelta atrás es exacta.
+  - No toca #19, #22 ni #23. Va antes del despliegue porque `f11p_go.sh` exige `ed9f5e0`.
+- **Ensayo encadenado** sobre la copia de `db-20261123-130907`, sin salida a internet:
+  - normalización 1.1 con la imagen de producción;
+  - `0185` en 6 s con datos idénticos;
+  - el código anterior funciona sobre `0185` (humo 32/32);
+  - la imagen nueva: humo 32/32, reimpresión histórica e importación sintética idempotente;
+  - 621 pruebas OK, frontend y rutas OK;
+  - 205/205 muestras aproximadas con vuelta atrás exacta;
+  - `0185` → `0184` → `0185` funciona.
+- **Puerta de licencias en el ensayo:**
+  - La primera sonda midió en el iPhone 17 Pro, cuya única variante publicada (#23) no tiene color. Daba 0 por diseño.
+  - Repetida sobre el iPhone 15 Negro (#22): 0 fotos públicas antes de verificar y 1 después.
+- **Auditoría de procedencia de imágenes** (sólo lectura; nada borrado ni despublicado):
+  - 29 portadas de modelo y 11 productos enlazan imágenes de otros sitios; 40 de esas referencias están en filas publicadas.
+  - Las portadas: 22 del CDN de la tienda de Apple, 4 de `images.openai.com` (posibles imágenes generadas), 2 de otros dominios de Apple y 1 de un distribuidor.
+  - Los productos: 5 del CDN de Apple y 6 de tiendas minoristas.
+  - 16 imágenes subidas tienen origen «desconocido»; 2 no se usan.
+  - El CSV queda fuera del repositorio.
+- **Preparado fuera del repositorio**, en el kit `release-f12/` de prod-02 y local:
+  - hoja de revisión de las 205 muestras aproximadas, con capturas de escritorio y móvil por modelo;
+  - plantilla del manifiesto de fotos (205 filas, 49 modelos) con instrucciones.
+- **GO pedidos, por orden:** normalización 1.1, despliegue `d32f43b`, muestras aproximadas, fotos. Detalle en `docs/NEXT_ACTION.md`.
+- **BLOCKED (propietario):**
+  - fotos con licencia (0 de 205);
+  - qué hacer con las imágenes enlazadas y las subidas sin procedencia;
+  - aprobar las muestras;
+  - si la caja puede mostrar miniaturas sin verificar;
+  - #19, #22 y #23.
+
 ## 2026-11-19 — LABEL-04 · Impresora de etiquetas automática junto a la de tickets — en PR (migración `0186`)
 
 - **Pedido del propietario:** tener siempre conectadas las dos impresoras; el ticket sale solo en la de tickets y las etiquetas solas en la de etiquetas.
