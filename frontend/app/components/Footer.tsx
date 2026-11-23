@@ -242,7 +242,7 @@ export function Footer() {
         <nav aria-label="Privacidad" className="mt-6 flex flex-wrap gap-x-6 gap-y-3 text-xs text-muted">
           <Link href="/privacy" className="underline underline-offset-4 transition hover:text-foreground">Política de privacidad</Link>
           <Link href="/cookies" className="underline underline-offset-4 transition hover:text-foreground">Política de cookies</Link>
-          <Link href="/privacy/whatsapp" className="underline underline-offset-4 transition hover:text-foreground">Privacidad de WhatsApp y CRM</Link>
+          <Link href="/privacy/whatsapp" className="underline underline-offset-4 transition hover:text-foreground">Privacidad de mensajería y CRM</Link>
           <button
             type="button"
             onClick={openConsentPreferences}

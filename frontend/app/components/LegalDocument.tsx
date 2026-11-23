@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { LEGAL_PAGES, type LegalKind, type PublishedLegalPolicy } from "../lib/legal-policies";
+import { LEGAL_PAGES, legalHeading, type LegalKind, type PublishedLegalPolicy } from "../lib/legal-policies";
 import { CookiePreferencesButton } from "./CookiePreferencesButton";
 import { LegalText } from "./LegalText";
 
@@ -17,7 +17,7 @@ export function LegalDocument({ kind, policy }: { kind: LegalKind; policy: Publi
   return (
     <main className="bg-background text-foreground">
       <article className="v3-container max-w-3xl px-4 py-14 sm:px-6 lg:py-20">
-        <h1 className="font-display text-3xl font-bold text-balance">{LEGAL_PAGES[kind].title}</h1>
+        <h1 className="font-display text-3xl font-bold text-balance">{legalHeading(kind)}</h1>
         {date ? <p className="mt-3 text-sm text-muted">Publicada el {date}.</p> : null}
         <div className="mt-8">
           <LegalText text={policy.text} />

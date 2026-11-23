@@ -16,11 +16,26 @@ export type PublishedLegalPolicy = {
   published_at: string | null;
 };
 
-export const LEGAL_PAGES: Record<LegalKind, { title: string; href: string }> = {
+/**
+ * `title` is the short name used in links and tabs; `heading` (when present) is the
+ * page's own title. The «whatsapp» kind keeps its key and its address
+ * `/privacy/whatsapp` (Meta may already reference it) but covers every messaging
+ * channel the CRM answers: WhatsApp, Instagram Direct and Facebook Messenger.
+ */
+export const LEGAL_PAGES: Record<LegalKind, { title: string; href: string; heading?: string }> = {
   privacy: { title: "Política de privacidad", href: "/privacy" },
   cookies: { title: "Política de cookies", href: "/cookies" },
-  whatsapp: { title: "Privacidad de WhatsApp y CRM", href: "/privacy/whatsapp" },
+  whatsapp: {
+    title: "Privacidad de mensajería y CRM",
+    heading: "Privacidad de mensajería (WhatsApp, Instagram y Messenger) y CRM",
+    href: "/privacy/whatsapp",
+  },
 };
+
+/** The page title of a legal document: its `heading`, or its short `title`. */
+export function legalHeading(kind: LegalKind): string {
+  return LEGAL_PAGES[kind].heading ?? LEGAL_PAGES[kind].title;
+}
 
 export async function fetchLegalPolicy(kind: LegalKind): Promise<PublishedLegalPolicy | null> {
   try {
