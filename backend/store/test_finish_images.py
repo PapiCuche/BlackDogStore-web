@@ -886,12 +886,20 @@ class LicensingReportTest(FinishApiBase):
             'sin-origen.png', png_with_transparency(), content_type='image/png'))
         supplier = self.uploaded(self.black, SUPPLIER)
         self.uploaded(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración'})
-        self.uploaded(self.blue, OWN)
+        own = self.uploaded(self.blue, OWN)
         self.stored()   # uploaded, shown nowhere in the catalogue: not counted
+        # The shop's own photo as the model's cover: not a finish picture, so not gated and nothing to verify.
+        cover = self.stored()
+        StorefrontImage.objects.filter(pk=cover.pk).update(source_kind=StorefrontImage.SOURCE_OWN_PHOTO)
+        ProductModel.objects.filter(pk=self.model.pk).update(image_url=cover.url)
         data = self.report()['uploads']
-        self.assertEqual(data, {'total': 4, 'unknown_source': 1, 'unverified_license': 2, 'demo': 1})
+        # Owner, 2026-11-23: a finish picture is published only once verified, the shop's own photo too — so an own
+        # photo a finish shows counts as unverified until somebody checks it.
+        self.assertEqual(data, {'total': 5, 'unknown_source': 1, 'unverified_license': 3, 'demo': 1})
         with self.captureOnCommitCallbacks(execute=True):
             self.api.patch(self.url(f'{supplier["id"]}/'), {'license_verified': True}, format='json')
+        self.assertEqual(self.report()['uploads']['unverified_license'], 2)
+        self.verify(own)
         self.assertEqual(self.report()['uploads']['unverified_license'], 1)
 
     def test_another_companys_uploads_are_never_counted(self):

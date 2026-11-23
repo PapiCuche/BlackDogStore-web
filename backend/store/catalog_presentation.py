@@ -9,7 +9,7 @@ Each part comes from the screen (and service) that already owns it; the panel li
   * visibility        `ProductModel.is_published_online`, `is_featured` (PR E), `sort_order`   — the model's form
   * palette           `ModelOption` per role and `ModelOptionExclusion`                           — `model_palette`
   * variants / price  `Product` of the model, its line, price, publication, sale mode             — variants table
-  * finishes          `finish_media.listing` (colours without pictures = «Imagen pendiente»)    — finish manager
+  * finishes          `finish_media.listing` (colours without a PUBLIC picture = «Imagen pendiente»)  — finish manager
   * suppliers         active `SupplierOffer` of its variants, per supplier                        — supplier offers
   * promotions        `Promotion` with an item among its variants                                 — promotions
 
@@ -85,7 +85,14 @@ def commercial_summary(model, *, may_view_costs: bool, may_view_promotions: bool
             'pending_drafts': sum(1 for p in variants if p.is_pending_draft),
             'on_order': sum(1 for p in variants if p.sale_mode == Product.SALE_MODE_STOCK_OR_ORDER),
         },
-        'finishes': {'colours': len(finishes), 'pending': sum(1 for row in finishes if row['image_pending'])},
+        # Owner, 2026-11-23: the shop shows a finish picture only once its licence is verified, so a colour is
+        # pending there until one of its pictures is public; `unverified` = pending colours that have pictures.
+        'finishes': {
+            'colours': len(finishes),
+            'pending': sum(1 for row in finishes if not any(image['public'] for image in row['images'])),
+            'unverified': sum(1 for row in finishes
+                              if row['images'] and not any(image['public'] for image in row['images'])),
+        },
         'suppliers': supplier_rows,
         'promotions': promotions,
     }

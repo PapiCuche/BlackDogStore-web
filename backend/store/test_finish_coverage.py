@@ -65,10 +65,10 @@ class FinishCoverageServiceTest(_Coverage):
         self.assertTrue(black['covered'])
         blue = rows['Azul']
         self.assertEqual((blue['photos'], blue['has_primary'], blue['covered']), (0, False, False))
-        self.assertTrue(black['public'])
-        self.assertFalse(blue['public'])
+        self.assertTrue(black['verified_photo'])
+        self.assertFalse(blue['verified_photo'])
         self.assertEqual(report['summary'], {'finishes': 2, 'covered': 1, 'without_photos': 1, 'demo_only': 0,
-                                             'public': 1, 'coverage_percent': 50.0})
+                                             'verified_photo': 1, 'coverage_percent': 50.0})
 
     def test_demo_photos_do_not_cover_a_finish(self):
         self.uploaded(self.blue, DEMO)
@@ -77,25 +77,25 @@ class FinishCoverageServiceTest(_Coverage):
         blue = next(row for row in report['rows'] if row['option_id'] == self.blue.pk)
         self.assertEqual((blue['photos'], blue['demo'], blue['has_primary'], blue['covered']), (2, 2, True, False))
         self.assertEqual(report['summary'], {'finishes': 2, 'covered': 0, 'without_photos': 1, 'demo_only': 1,
-                                             'public': 0, 'coverage_percent': 0.0})
+                                             'verified_photo': 0, 'coverage_percent': 0.0})
         self.uploaded(self.blue, OWN)
         self.assertEqual(sources.finish_coverage(self.company)['summary']['covered'], 1)
 
-    def test_a_covered_finish_is_public_only_with_a_verified_licence(self):
+    def test_a_covered_finish_has_a_verified_photo_only_once_its_licence_is_checked(self):
         # Owner, 2026-11-23: a finish picture is on the shop only once its licence is verified, whatever its source.
         own = self.uploaded(self.blue, OWN)
         demo = self.uploaded(self.black, DEMO)
         rows = {row['option_label']: row for row in sources.finish_coverage(self.company)['rows']}
-        self.assertEqual((rows['Azul']['covered'], rows['Azul']['public']), (True, False))
-        self.assertEqual((rows['Negro']['covered'], rows['Negro']['public']), (False, False))
+        self.assertEqual((rows['Azul']['covered'], rows['Azul']['verified_photo']), (True, False))
+        self.assertEqual((rows['Negro']['covered'], rows['Negro']['verified_photo']), (False, False))
         self.verify(own)
         self.verify(demo)
         report = sources.finish_coverage(self.company)
         rows = {row['option_label']: row for row in report['rows']}
-        self.assertEqual((rows['Azul']['covered'], rows['Azul']['public']), (True, True))
+        self.assertEqual((rows['Azul']['covered'], rows['Azul']['verified_photo']), (True, True))
         # A verified demo is on the shop («Imagen referencial») but still covers nothing.
-        self.assertEqual((rows['Negro']['covered'], rows['Negro']['public']), (False, True))
-        self.assertEqual((report['summary']['covered'], report['summary']['public']), (1, 2))
+        self.assertEqual((rows['Negro']['covered'], rows['Negro']['verified_photo']), (False, True))
+        self.assertEqual((report['summary']['covered'], report['summary']['verified_photo']), (1, 2))
 
     def test_a_palette_colour_without_variants_is_a_finish(self):
         red = device_catalog.create_option(company=self.company, attribute_id=self.colour.pk, label='Rojo',
@@ -169,9 +169,9 @@ class FinishCoverageCommandTest(_Coverage):
         self.assertIn('1 con al menos una foto no demostrativa', summary)
         self.assertIn('1 sin fotos', summary)
         self.assertIn('50.0 %', summary)
-        # Covered is not visible: nobody verified the licence yet (owner, 2026-11-23).
-        self.assertEqual(by_label['Negro']['public'], 'no')
-        self.assertIn('0 visible(s) en la tienda', summary)
+        # Covered is not verified: nobody checked the licence yet (owner, 2026-11-23).
+        self.assertEqual(by_label['Negro']['verified_photo'], 'no')
+        self.assertIn('0 con foto de licencia verificada', summary)
 
     def test_json_and_only_missing(self):
         self.uploaded(self.black, OWN)
