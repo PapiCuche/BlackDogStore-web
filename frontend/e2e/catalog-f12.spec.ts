@@ -396,7 +396,7 @@ test("panel: subir con vista, reemplazar en su sitio y muestra propia del modelo
   const notPublic = (item: Locator) => item.getByText("No visible en la tienda hasta verificar la licencia");
   await expect(notPublic(second)).toBeVisible();
   await expect(notPublic(arena.getByRole("listitem", { name: "Imagen 1 de Titanio arena" }))).toHaveCount(0);
-  await second.getByRole("checkbox", { name: "Licencia verificada: imagen 2 de Titanio arena" }).check();
+  await second.getByRole("checkbox", { name: "Licencia verificada: imagen 2 de Titanio arena" }).click();
   await expect(notPublic(second)).toHaveCount(0, { timeout: 30_000 });
   expect(finishOf(await listing(), seed.colours.arena).images.map((image) => image.public)).toEqual([true, true]);
 
@@ -426,7 +426,7 @@ test("panel: subir con vista, reemplazar en su sitio y muestra propia del modelo
   ids.glaciarNew = publicId(replaced.url);
   // The new file is not on the shop until somebody verifies it again.
   await expect(notPublic(card)).toBeVisible();
-  await card.getByRole("checkbox", { name: "Licencia verificada: imagen 1 de Azul glaciar" }).check();
+  await card.getByRole("checkbox", { name: "Licencia verificada: imagen 1 de Azul glaciar" }).click();
   await expect(notPublic(card)).toHaveCount(0, { timeout: 30_000 });
   await expect(term(card, "Sin verificar")).toHaveCount(0);
   expect(ids.glaciarNew).not.toBe(ids.glaciarOld);
@@ -849,12 +849,20 @@ test("cobertura: «Fotos por acabado y licencias» lista el acabado sin fotos y 
     expect(reply.status).toBe(200);
     return reply.body.licensing;
   };
+  // The panel step verified this run's pictures (owner, 2026-11-23: verified before they are published); one more,
+  // authorised by a supplier and not checked yet, waits for its licence check.
+  const pending = await api<FinishImage>(adminApi, "POST", finishes(seed.id), { multipart: {
+    file: png("arena-lateral.png", drawing(ARENA, { mark: true, back: true })), color_option_id: String(seed.colours.arena),
+    view: "side", source_kind: "supplier_authorized", license: "Autorización del distribuidor por revisar (prueba E2E)",
+  } });
+  expect(pending.status, JSON.stringify(pending.body)).toBe(201);
+  expect(pending.body.public).toBe(false);
   const before = await report();
   // This model: only Verde salvia lacks pictures (its other colours have them).
   expect(before.pending_finishes.filter((row) => row.model_id === seed.id).map((row) => row.option_id)).toEqual([seed.colours.salvia]);
-  // Titanio arena's back is a demo resource and Azul glaciar's replacement waits for its licence check.
+  // Titanio arena's back is a demo resource and its side picture waits for its licence check.
   expect(before.uploads.demo).toBeGreaterThanOrEqual(1);
-  expect(before.uploads.unverified_license).toBeGreaterThanOrEqual(2);
+  expect(before.uploads.unverified_license).toBeGreaterThanOrEqual(1);
 
   const { context, page } = await adminPage(browser);
   for (const viewport of [VIEWPORTS[0], VIEWPORTS[3]]) {
