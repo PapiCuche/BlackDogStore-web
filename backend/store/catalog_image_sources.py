@@ -212,7 +212,8 @@ def licensing(company) -> dict:
     * `finishes_without_images` / `pending_finishes`: each (model, colour) the catalogue has — a colour
       (`finish_media.colour_attribute_ids`) of the model's palette or of one of its active variants — without a finish
       picture. The shop shows those variants
-      «Imagen pendiente» unless the variant has pictures of its own.
+      «Imagen pendiente» unless the variant has pictures of its own — and so it does for a finish whose pictures
+      nobody verified yet (owner, 2026-11-23), which is not counted here: `finish_coverage` says it (`public`).
     * `uploads`: the shop's own uploads shown somewhere in the catalogue (model cover, a product's picture or
       gallery, a finish), each counted once: `unknown_source` (no provenance: uploaded before PR C or through a slot
       that does not ask), `unverified_license` (provenance given, not the shop's own photo, nobody checked it yet),

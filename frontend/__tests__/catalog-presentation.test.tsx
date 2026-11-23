@@ -271,7 +271,7 @@ function listingWith(blackImages: ReturnType<typeof picture>[]): FinishListing {
   };
 }
 
-let gallery: ReturnType<typeof picture>[];
+let gallery: (ReturnType<typeof picture> & { public?: boolean })[];
 
 async function mountFinishes(canManage = true) {
   mockApi({ '/admin/catalog/models/5/finish-images/': () => listingWith(gallery) });
@@ -371,17 +371,28 @@ describe('Imágenes por acabado', () => {
     expect(await screen.findByText(/Sí, por Ana Ruiz el/)).toBeInTheDocument();
   });
 
-  it('una foto propia sin verificar no es «Sin verificar»: la verificación no aplica y no se ofrece', async () => {
-    // Fixture: imagen 1 = foto propia sin verificar; imagen 2 = demostrativa sin verificar.
+  it('una foto sin la licencia verificada, también la propia, no se ve en la tienda y ofrece la casilla (2026-11-23)', async () => {
+    // Fixture: imagen 1 = foto propia sin verificar; imagen 2 = demostrativa sin verificar; imagen 3 = verificada.
+    gallery = [...gallery, picture(3, 22, 2, { public: true, source: source({ kind: 'supplier_authorized',
+      kind_label: 'Material autorizado por proveedor', license: 'Autorización', license_verified: true,
+      license_verified_at: '2026-11-20T10:00:00Z', license_verified_by: 'Ana Ruiz' }) })];
+    gallery[0] = { ...gallery[0], public: false };
     await mountFinishes();
     const black = screen.getByRole('listitem', { name: 'Negro' });
     const own = within(black).getByRole('listitem', { name: 'Imagen 1 de Negro' });
-    expect(within(own).getByText('No aplica (foto propia)')).toHaveClass('text-muted');
-    expect(within(own).queryByText('Sin verificar')).not.toBeInTheDocument();
-    expect(within(own).queryByRole('checkbox', { name: /Licencia verificada/ })).not.toBeInTheDocument();
+    expect(within(own).getByText('No visible en la tienda hasta verificar la licencia')).toBeInTheDocument();
+    expect(within(own).getByText('Sin verificar (foto propia)')).toHaveClass('text-warning');
+    expect(within(own).queryByText('No aplica (foto propia)')).not.toBeInTheDocument();
+    const ownCheck = within(own).getByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' });
+    expect(ownCheck).toBeEnabled();
+    expect(within(own).getByText('Confirmé que es una foto propia de la tienda')).toBeInTheDocument();
+    // Without `public` (an older server) the panel reads it from the licence check.
     const demo = within(black).getByRole('listitem', { name: 'Imagen 2 de Negro' });
     expect(within(demo).getByText('Sin verificar')).toBeInTheDocument();
+    expect(within(demo).getByText('No visible en la tienda hasta verificar la licencia')).toBeInTheDocument();
     expect(within(demo).getByRole('checkbox', { name: 'Licencia verificada: imagen 2 de Negro' })).toBeInTheDocument();
+    const verified = within(black).getByRole('listitem', { name: 'Imagen 3 de Negro' });
+    expect(within(verified).queryByText('No visible en la tienda hasta verificar la licencia')).not.toBeInTheDocument();
   });
 
   it('el foco: confirmar quitar va a «Sí, quitar» y cancelar vuelve a «Quitar»', async () => {
@@ -461,7 +472,7 @@ describe('Imágenes por acabado', () => {
     }
   });
 
-  it('desmarcar la licencia de una foto propia verificada no tira el foco: pasa a su tarjeta', async () => {
+  it('desmarcar la licencia de una foto propia verificada no tira el foco: se queda en su casilla', async () => {
     gallery = [picture(1, 22, 0, { source: source({ license_verified: true, license_verified_by: 'Ana Ruiz',
       license_verified_at: '2026-11-20T10:00:00Z' }) }), gallery[1]];
     await mountFinishes();
@@ -473,9 +484,11 @@ describe('Imágenes por acabado', () => {
     const check = screen.getByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' });
     check.focus();
     fireEvent.click(check);
-    // Una foto propia sin verificar ya no ofrece la casilla: el foco va a la tarjeta de esa imagen.
-    await waitFor(() => expect(screen.queryByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' })).not.toBeInTheDocument());
-    await waitFor(() => expect(screen.getByRole('listitem', { name: 'Imagen 1 de Negro' })).toHaveFocus());
+    // 2026-11-23: una foto propia también se verifica antes de publicarse, así que la casilla se queda y el foco con ella.
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' })).not.toBeChecked());
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' })).toHaveFocus());
+    expect(within(screen.getByRole('listitem', { name: 'Imagen 1 de Negro' }))
+      .getByText('No visible en la tienda hasta verificar la licencia')).toBeInTheDocument();
   });
 
   it('verificar la licencia de otra imagen deja el foco en su casilla', async () => {

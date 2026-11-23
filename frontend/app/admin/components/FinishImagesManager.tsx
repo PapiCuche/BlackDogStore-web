@@ -701,8 +701,11 @@ function ImageCard({
   }
 
   const verified = image.source.license_verified;
-  // PR C: the shop's own photo never counts as an unverified licence (`catalog_image_sources`): nothing to check.
   const ownPhoto = image.source.kind === "own_photo";
+  // Owner, 2026-11-23: «Las nuevas fotografías requieren procedencia y autorización comprobables antes de publicarse.»
+  // The shop shows a finish picture only once its licence is verified, whatever its origin (an own photo too); the
+  // server says so (`public`), and an older server is read from the licence check.
+  const shownOnShop = image.public ?? verified;
   const positionLabel = `Imagen ${position} de ${colour}`;
   return (
     <li
@@ -744,12 +747,17 @@ function ImageCard({
         ) : null}
         <div className="flex flex-wrap gap-x-1">
           <dt className="text-muted">Licencia verificada:</dt>
-          <dd className={verified ? "text-success" : ownPhoto ? "text-muted" : "text-warning"}>
+          <dd className={verified ? "text-success" : "text-warning"}>
             {verified
               ? `Sí${image.source.license_verified_by ? `, por ${image.source.license_verified_by}` : ""}${image.source.license_verified_at ? ` el ${formatDate(image.source.license_verified_at)}` : ""}`
-              : ownPhoto ? "No aplica (foto propia)" : "Sin verificar"}
+              : ownPhoto ? "Sin verificar (foto propia)" : "Sin verificar"}
           </dd>
         </div>
+        {shownOnShop ? null : (
+          <p data-testid="finish-image-not-public" className="font-semibold text-warning">
+            No visible en la tienda hasta verificar la licencia
+          </p>
+        )}
         {image.source.is_demo ? (
           <p className="text-warning">Recurso demostrativo: la tienda lo rotula «Imagen referencial».</p>
         ) : null}
@@ -780,7 +788,6 @@ function ImageCard({
             disabled={busy}
             onChange={(view) => { if (view !== (image.view ?? "")) void onPatch({ view }); }}
           />
-          {ownPhoto && !verified ? null : (
           <label className={`flex items-center gap-2 text-xs text-foreground ${touch}`}>
             <input
               type="checkbox"
@@ -791,9 +798,8 @@ function ImageCard({
               onChange={(e) => void onPatch({ license_verified: e.target.checked })}
               aria-label={`Licencia verificada: ${name}`}
             />
-            Revisé la licencia o la autorización
+            {ownPhoto ? "Confirmé que es una foto propia de la tienda" : "Revisé la licencia o la autorización"}
           </label>
-          )}
 
           {editing ? (
             <form onSubmit={saveProvenance} noValidate aria-label={`Procedencia de la ${name}`} className="space-y-3 rounded-lg border border-bd-border p-3">
@@ -890,8 +896,8 @@ export function FinishImagesManager({
   // Review of #374 (a11y): after a removal, the picture now in its place (or the one before), else the colour,
   // else (a colour outside the palette leaves the listing with its last picture) the panel's title.
   const focusAfterRemoval = useRef<{ colourId: number; index: number } | null>(null);
-  // After «Revisé la licencia»: its checkbox again, or the picture's card when the checkbox is gone (an own photo
-  // that is no longer verified has nothing to verify). A checkbox disabled while saving loses focus in a browser.
+  // After «Revisé la licencia»: its checkbox again, or the picture's card when the checkbox cannot take focus (the
+  // picture is gone or its origin is unknown). A checkbox disabled while saving loses focus in a browser.
   const focusAfterVerify = useRef<number | null>(null);
   // After «Guardar muestra»: the colour's heading (the control that had focus is gone once the swatch is set).
   const focusAfterSwatch = useRef<number | null>(null);

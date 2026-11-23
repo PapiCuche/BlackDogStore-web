@@ -115,6 +115,9 @@ for colour, rgb in ((colours['color:silver'], (205, 205, 210)), (colours['color:
         finish_media.add_image(model=model, color_option_id=colour.pk, actor=actor,
                                uploaded=SimpleUploadedFile('acabado.png', png(rgb), content_type='image/png'),
                                provenance={'source_kind': 'own_photo'}, alt_text=model.name + ' ' + colour.label)
+    # Owner, 2026-11-23: on the shop only once its licence is verified (our own drawings; a rerun verifies them too).
+    for image in finish_media.gallery(model, colour):
+        finish_media.update_image(image=image, actor=actor, license_verified=True)
     pictured.append(colour.label)
 unset = colours['color:deep-blue']
 VariantOption.objects.filter(pk=unset.pk).update(swatch_hex=device_catalog.NEUTRAL_SWATCH)

@@ -164,6 +164,11 @@ export type FinishImage = {
     /** PR E: who verified it (absent from an older server). */
     license_verified_by?: string | null;
   };
+  /**
+   * Owner, 2026-11-23: whether the shop shows it — only once its licence is verified, whatever its origin (absent from
+   * an older server: read `source.license_verified`).
+   */
+  public?: boolean;
 };
 
 /**

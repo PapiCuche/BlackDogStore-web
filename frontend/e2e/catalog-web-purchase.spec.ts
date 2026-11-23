@@ -112,6 +112,8 @@ for key, colour, rgb in (('grafito', grafito, (59, 59, 61)), ('niebla', niebla, 
     placed = finish_media.add_image(model=model, color_option_id=colour.pk, actor=actor,
                                     uploaded=SimpleUploadedFile(key + '.png', png(rgb), content_type='image/png'),
                                     provenance={'source_kind': 'own_photo'}, alt_text=name + ' ' + colour.label)
+    # Owner, 2026-11-23: on the shop only once its licence is verified (a synthetic drawing of this run).
+    finish_media.update_image(image=placed, actor=actor, license_verified=True)
     images[key] = [placed.image_url.rstrip('/').rsplit('/', 1)[-1]]
 out({'slug': model.slug, 'name': name, 'branch': branch.pk, 'a': a, 'b': b, 'c': c, 'd': d,
      'supplier': supplier.name, 'images': images})
