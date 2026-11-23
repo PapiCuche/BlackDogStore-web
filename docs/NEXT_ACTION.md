@@ -1,49 +1,42 @@
-# NEXT ACTION — 2026-11-22
+# NEXT ACTION — 2026-11-23
 
-## CATALOG-REFERENCE-01 · Fase 1 ampliada: DESPLEGADA el 2026-11-22 (`ed9f5e0`); catálogo IMPORTADO el 2026-11-22 (49 modelos, nada publicado)
+## FASE 1.2 — catálogo visual de equipos nuevos: en master `79058ac`, SIN DESPLEGAR
 
-**Qué está hecho:**
-- PR A–F están fusionados en master `33513cc2`: #370, #371, #372, #373, #374 y #376.
-- PR G (cierre) está en la rama `feat/catalog-phase1-closeout`. Trae:
-  - la matriz de pruebas, `docs/catalog-reference-test-matrix.md`;
-  - las pruebas que faltaban: compra web completa, métricas móviles, precio por variante, modelo sin stock propio y dos cajas que crean la misma variante;
-  - los seguimientos de foco de #374;
-  - el arreglo de `rich-description.spec.ts`;
-  - el borrador de la lista de comprobación del release, en el ADR §7.
-- Migraciones aditivas `0181`–`0184`.
-- Detalle en la entrada del 2026-11-20 de `02_ESTADO_ACTUAL.md`. Diseño y decisiones en `docs/adr-catalog-reference.md`.
+**Hecho:** #387, #388, #389 y #390 están fusionados. Incluyen:
+- la matriz verificable y los números de modelo;
+- el informe de cobertura y los acabados sin foto en el panel;
+- la vista de cada foto y «Reemplazar foto»;
+- las muestras aproximadas y la muestra propia por modelo;
+- el importador de fotos por manifiesto;
+- las pruebas E2E: 48/48, con capturas de escritorio y móvil.
 
-**Orden de despliegue** (confirmado por el propietario el 2026-11-20). Cada paso necesita su propio GO:
-1. ~~**R12b**~~ **HECHO:** `4a3ce34` desplegada en prod-02 el 2026-11-21 a las 22:24 (`0177`–`0180`).
-2. ~~**Release de la Fase 1**~~ **HECHO:** `ed9f5e0` desplegada en prod-02 el 2026-11-22 a las 08:11 (`0181`–`0184`), sin tocar Caddy ni el CRM.
-3. ~~**Importar el catálogo**~~ **HECHO** el 2026-11-22 a las 11:46 (49 modelos completos; 6 parciales fuera). Texto original: al final y con una autorización aparte. Antes, una simulación: `load_reference_catalog --dry-run` y una vista previa de la importación por empresa que muestre qué modelos serían nuevos, cuáles reutilizados, cuáles en conflicto y cuáles duplicados.
+La única migración es `0185`, aditiva. Detalle en la entrada del 2026-11-23 de `02_ESTADO_ACTUAL.md` y en `docs/adr-catalog-reference.md` §10–§11.
 
-Las fases 2 (seminuevos) y 3 (inventario general) no se han empezado.
+**GO pedidos.** Cada uno es independiente y ninguno se da por concedido:
+1. **«GO despliegue 79058ac prod-02»**
+   - Cómo: en `/srv/blackdogstore`, `sh backups/release-f12/d_deploy_f12.sh 79058acd64c9b44050ede2c0e025c19a2c1460b7`. Las imágenes `rc-79058ac` ya están construidas en prod-02.
+   - El script exige producción en `ed9f5e0` con el esquema `0184`, y que el SHA no cambie `deploy/` ni el compose.
+   - Antes de cambiar nada: backup y huella.
+   - Aplica `0185` antes de cambiar el código y recrea sólo backend y frontend. No toca Caddy ni el CRM, no importa fotos, no cambia muestras y no normaliza el catálogo.
+   - Vuelta atrás: `sh backups/release-f12/rollback_f12.sh` devuelve sólo el código, porque el de `ed9f5e0` funciona con `0185` (ensayado). `rollback_f12.sh schema` además deshace `0185` y pierde las vistas y las muestras guardadas desde entonces.
+2. **«GO normalización catálogo prod-02»** (Fase 1.1): sin cambios, ver abajo. Funciona antes o después del despliegue.
+3. **«GO muestras aproximadas prod-02»**: sólo después del punto 1.
+   - Aplica 205 muestras por modelo, todas marcadas «aproximada (pendiente de validación comercial)», desde la propuesta `backups/release-f12/swatch-approx-proposal.json`. No son códigos oficiales.
+   - Pasa por la vista del panel en una sola transacción, con una auditoría que guarda los valores anteriores. La vuelta atrás es exacta.
+   - Script: `f12s_ops.py`, con su ensayo `f12s_rehearse.sh`.
+   - El propietario puede cambiar o quitar valores antes del GO.
+4. **Fotos:**
+   - El propietario consigue fotos propias o con licencia comprobable y prepara la carpeta y el manifiesto (formato en el ADR §10). Después se ensaya la importación y se pide «GO importación fotos prod-02».
+   - Las fotos de apple.com no se copian (`BLOCKED: LICENSING`).
 
-**Lo que necesita al propietario:**
-1. ~~**Release**~~ hecho. El catálogo de referencia está vacío en producción y no se importó nada.
-2. **Catálogo de referencia en producción:** necesita otro GO, aparte del release. `load_reference_catalog --file backend/catalog_reference/apple-iphone.json` es un comando de **plataforma**: carga las tablas de referencia y no lo ve ninguna empresa. La importación para cada empresa se hace desde el panel, en «Productos › Modelos › Catálogo de referencia». Ninguna de las dos cosas publica nada.
-3. **Fotos de acabado:** las sube cada empresa con su origen y su licencia. Las fotos de prensa de fabricantes siguen `BLOCKED: LICENSING`; mientras falten, la tienda muestra «Imagen pendiente».
+**Decisiones del propietario (BLOCKED):**
+- fotos con licencia (0 de 205);
+- qué hacer con los 14 productos que enlazan fotos de sitios ajenos (5 del CDN de Apple);
+- códigos de color aprobados (la propuesta los deja «aproximados»);
+- si una foto sin licencia verificada puede salir en la tienda (hoy sí, y la tienda no lo indica);
+- si el carrito debe usar la foto «principal» en vez de la primera.
 
-**Trampas del release** (lista completa en el ADR §7):
-- **(0) #366 CRM-INGRESS ya está en master** (fusionado el 2026-11-20 a las 14:27 UTC desde la cuenta del propietario): toca `deploy/Caddyfile`, `backup.sh`, `restore.sh` y el compose del CRM. El propietario decide si la release de la Fase 1 lo incluye o si se revierte o se aísla antes del GO.
-- **(a) Migraciones.** `0181`–`0184` son aditivas. Se aplican **antes** de cambiar el código, con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`, como en los releases anteriores. Con R12b se suman `0177`–`0180`.
-- **(b) Caddy — resuelto sin recarga (2026-11-21).** El Caddyfile vivo ya es idéntico byte a byte al de master (`ed9f5e07`), incluida la línea `@limit_image` con `finish-images`, y Caddy arrancó con él el 2026-11-20 a las 14:27 UTC. La Fase 1 no toca Caddy. Lo que sigue es el texto original:
-- **(b, original) Reconciliar Caddy.** PR C cambió en `deploy/Caddyfile` la línea `@limit_image`: añade `catalog/models/[0-9]+/finish-images`. Sin ese cambio, Caddy no aplica el tope de imagen a las subidas de fotos de acabado. Producción tiene una edición local de `deploy/Caddyfile`, así que **no se copia el archivo del repositorio**. Pasos:
-  1. Comparar el archivo vivo con el del SHA (`diff`).
-  2. Llevar a mano los cambios del alcance aprobado, sin tocar las modificaciones locales:
-     - siempre, la línea `@limit_image` nueva;
-     - si el GO incluye #366, también las líneas de CRM-INGRESS (punto 0);
-     - si no las incluye, ninguna, y #366 se revierte o se aísla antes.
-  3. Ejecutar `caddy validate`.
-  4. Ejecutar `caddy reload`.
-  5. Comprobar dentro del contenedor que Caddy lee el archivo editado (trampa del bind mount).
-- **(c) R12b.** R12b (`4a3ce34`) ya está **dentro** de master: no existe un release de la Fase 1 sin R12b. Por eso R12b va primero, con su GO (ver «Orden de despliegue»).
-- **(d) Catálogo.** `load_reference_catalog` es un comando de plataforma, auditado sin empresa. La importación por empresa se hace sólo desde el panel, con `products.manage`.
-
-**Revisión visual de PR G:** carrito y checkout con la foto del color, equipos nuevos sin «Batería», capacidades por tamaño y chips de color sin el gris del importador. Todo arreglado con pruebas (ADR D-PRG-5…8).
-
-**Decisión abierta del propietario:** ¿la ficha debe abrir en la foto marcada «principal»? Hoy abre en la primera por orden.
+Siguen sin empezar las fases 2 (seminuevos) y 3 (inventario general), y el cambio masivo de fotos.
 
 ## Producción vigente: Fase 1 `ed9f5e0` (esquema `0184`), desplegada el 2026-11-22 08:11 en prod-02
 

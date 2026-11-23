@@ -3,6 +3,27 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-23 — FASE 1.2 · catálogo visual de equipos nuevos · en master `79058ac`, SIN DESPLEGAR
+
+Orden del propietario «FASE 1.2 — catálogo visual premium de iPhone». La auditoría previa mostró que la Fase 1 ya cubría la mayor parte. La Fase 1.2 completa lo que faltaba. Clasificación y decisiones D-F12-1…5 en `docs/adr-catalog-reference.md` §10–§11.
+
+- **#387** (`e7f7c70`, sin migración):
+  - `reference_matrix`: matriz modelo × capacidad × color × SIM/versión con los números de modelo, en `docs/catalog-reference-matrix.csv` (1520 filas, comprobada contra el dataset).
+  - Números de modelo en la vista previa de importación.
+  - `report_finish_coverage` y la lista de acabados sin foto en «Imágenes» del panel.
+- **#388** (`e57e640`, migración aditiva `0185_finish_view_model_swatch`):
+  - vista de cada foto;
+  - reemplazar una foto sin perder su lugar;
+  - muestras «aproximadas» y muestra propia por modelo, editables en el panel.
+- **#389** (`1fa8f4c`): `import_finish_images`, que importa fotos desde un manifiesto con licencia. Todo o nada, idempotente, sin enlaces simbólicos, y nunca verifica una licencia.
+- **#390** (`79058ac`):
+  - E2E `catalog-f12` (8 pruebas) más los 10 recorridos del catálogo: 48/48;
+  - capturas a 360, 390, 768 y 1440 px;
+  - corrige «Llegó el equipo» en la base SQLite de desarrollo y dos cortes de texto en móvil.
+- **Producción (sólo lectura):** Fase 1.1 sin aplicar (roles «Otro», «128Gb» en orden 0). 0 de 205 acabados con foto. Los 14 productos enlazan fotos de sitios ajenos (5 del CDN de Apple) y las 16 imágenes subidas tienen origen desconocido: `BLOCKED: LICENSING`.
+- **Ensayo de la release `79058ac`** sobre una copia aislada: verde (detalle en el ADR §11). Kit y runbook en `backups/release-f12/` de prod-02.
+- **BLOCKED (propietario):** fotos con licencia; códigos de color (hay una propuesta de 205 aproximaciones fuera del repositorio, para aplicar sólo con GO); el resto de la lista de la Fase 1.1.
+
 ## 2026-11-22 — FASE 1.1 (CATALOG-F11) · catálogo de equipos nuevos listo para normalizar · producción SIN CAMBIOS
 
 Orden del propietario «Fase 1.1 — preparación comercial y validación de equipos nuevos». Auditoría en producción sólo lectura; código fusionado; ensayo sobre una copia aislada. Detalle, decisiones D-F11-1…8 y ensayo en `docs/adr-catalog-reference.md` §9.

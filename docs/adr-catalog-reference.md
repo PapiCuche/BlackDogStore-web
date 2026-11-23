@@ -418,3 +418,47 @@ python manage.py import_finish_images --company <slug> --manifest <archivo.json|
 cada foto importada queda «sin verificar» y, salvo una foto propia, aparece en el informe F4 (`unverified_license`) hasta que alguien revisa
 el documento de la licencia y la marca en la galería del acabado (D-PRC-2). Las fotos de prensa de fabricantes siguen
 `BLOCKED: LICENSING` mientras no haya una licencia demostrada.
+
+## 11. Fase 1.2 — catálogo visual de equipos nuevos (2026-11-22/23)
+
+Orden del propietario «FASE 1.2 — catálogo visual premium de iPhone». Primero se auditó qué había: casi todo lo que pide
+la orden ya estaba en la Fase 1 (PR A–G). La Fase 1.2 completa lo que faltaba sin rehacer nada.
+
+**Clasificación (código de master `79058ac`):**
+
+| Pedido | Estado | Dónde |
+|---|---|---|
+| Colores, capacidades, SIM y versiones por modelo (sin compartir entre generaciones) | IMPLEMENTADO | dataset §5; 49 completos, 6 parciales |
+| Matriz verificable modelo × capacidad × color × SIM/versión | IMPLEMENTADO (#387) | `reference_matrix`; `docs/catalog-reference-matrix.csv` (1520 filas, una prueba exige que coincida con el dataset) |
+| Números de modelo visibles | IMPLEMENTADO (#387) | vista previa de importación del panel; columnas `model_numbers` (enlazados por región) y `model_numbers_unlinked` |
+| Galería por acabado con procedencia, licencia, alt y orden | IMPLEMENTADO (Fase 1) | §4, PR C/E |
+| Vista de cada foto (principal, frontal, posterior, lateral) | IMPLEMENTADO (#388, `0185`) | `ModelFinishImage.view` |
+| Reemplazar una foto sin perder su lugar | IMPLEMENTADO (#388) | POST `…/finish-images/` con `replace=<id>`; la licencia vuelve a «sin verificar» |
+| Cobertura de fotos y colores sin fotos | IMPLEMENTADO (#387) | `report_finish_coverage`; «Imágenes» del panel lista los acabados sin foto |
+| Importar fotos de forma segura e idempotente | IMPLEMENTADO (#389) | `import_finish_images`, §10 |
+| Muestras de color configurables, aproximaciones marcadas | IMPLEMENTADO (#388, `0185`) | `swatch_is_approximate` (empresa y modelo); muestra propia por modelo (`ModelOption.swatch_hex`) |
+| Configurador: color cambia foto y miniaturas, enlace navegable, sin parpadeo | IMPLEMENTADO (Fase 1, PR D) | `?variante=`; E2E `catalog-f12` |
+| Carrito, checkout y caja conservan foto y configuración | IMPLEMENTADO (Fase 1, PR F/G) | E2E `catalog-f12`, `pos-quick-device` |
+| Fotos autorizadas por color | **BLOCKED: LICENSING** | 0 de 205 acabados con foto |
+| Códigos de color aprobados | **BLOCKED: propietario** | propuesta de 205 aproximaciones fuera del repositorio |
+
+**Decisiones:**
+- **D-F12-1.** Una muestra por modelo tiene prioridad sobre la de la empresa: «Azul» del iPhone 13 y del iPhone 15 comparten la opción de la empresa, pero no el tono. El orden en todas partes es foto real, luego muestra del modelo, luego muestra de la empresa, luego sólo el nombre.
+- **D-F12-2.** «Aproximada» se ve sólo en el panel. La tienda muestra el color; la API pública no dice si es aproximado ni de dónde viene la foto.
+- **D-F12-3.** La marca «aproximada» cambia sólo cuando se envía. Guardar un código nuevo sin la marca conserva la anterior, y quitar la muestra del modelo la borra también. Quitar un color de la paleta guarda la muestra del modelo en la auditoría (`removed_swatches`).
+- **D-F12-4.** Reemplazar una foto es otra foto: hay que dar su procedencia y su licencia queda sin verificar. El archivo anterior se borra sólo si nada lo usa.
+- **D-F12-5.** Ninguna aproximación de color entra al repositorio: no es un dato verificado del fabricante. Se aplica a una empresa sólo con su GO, siempre marcada «aproximada».
+
+**Licencias en producción (lectura del 2026-11-22):**
+- Los 14 productos tienen la foto enlazada a sitios ajenos: 5 al CDN de Apple, 3 a la propia API, y el resto a Mercado Libre, Coolbox, Ripley, Falabella y una tienda local.
+- Las 16 imágenes subidas desde el panel tienen el origen «desconocido» y ninguna licencia verificada.
+- Nada de eso se cambió. El propietario decide si las reemplaza, y queda como `BLOCKED: LICENSING`.
+
+**Ensayo de la release** (`79058ac` sobre una copia aislada del backup del día, imagen de producción construida en prod-02, salida a internet bloqueada):
+- `0185` tarda unos 6 s y los datos no cambian.
+- El código de `ed9f5e0` funciona sobre el esquema nuevo: humo 32/32 e inserciones con el ORM anterior.
+- La importación sintética entra a la primera y repetirla escribe 0.
+- Ninguna licencia queda verificada sola.
+- Pruebas de la fase dentro de la imagen OK.
+- Volver a `0184` y avanzar de nuevo funciona.
+- Kit en `backups/release-f12/` de prod-02.

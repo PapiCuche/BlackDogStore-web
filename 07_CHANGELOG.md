@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-23 — Fase 1.2: catálogo visual de equipos nuevos (#387–#390)
+
+**Added**
+- `manage.py reference_matrix` y `docs/catalog-reference-matrix.csv`: modelo × capacidad × color × SIM/versión, con los números de modelo.
+- `manage.py report_finish_coverage`: qué colores de cada modelo tienen foto. El panel («Imágenes») lista los que no tienen.
+- `manage.py import_finish_images`: fotos por acabado desde un manifiesto con procedencia y licencia. Todo o nada e idempotente.
+- Vista de cada foto (principal, frontal, posterior, lateral) y «Reemplazar foto» sin perder su lugar.
+- Muestras de color «aproximadas (pendiente de validación comercial)» y muestra propia por modelo.
+
+**Fixed**
+- «Llegó el equipo» en la base de desarrollo SQLite.
+- Textos cortados en móvil en la galería por acabado y en «Imágenes».
+
+Migración `0185` (aditiva). Sin desplegar. Detalle en `docs/adr-catalog-reference.md` §10–§11.
+
 ## 2026-11-22 — Fase 1.1: «Región» es procedencia; #23 fuera de la normalización
 
 «Región» indica el mercado donde Apple vendió el equipo, no dónde funciona. La variante #23 no tiene equipo que lo compruebe, así que queda como está; la normalización se limita a los roles y las capacidades. Simulación v2 verde; producción sin cambios. Detalle en `docs/adr-catalog-reference.md` §9.5.
