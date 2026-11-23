@@ -647,8 +647,9 @@ class ColourChipTest(FinishApiBase):
 
     def test_the_chip_picture_is_the_first_authorized_finish_never_a_demo(self):
         self.uploaded(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})
-        own_blue = self.uploaded(self.blue)
-        own_black = self.uploaded(self.black)
+        # Verified: since 2026-11-23 the till shows only those (`test_the_till_shows_only_finish_pictures_…`).
+        own_blue = self.published(self.blue, raw=jpeg(), name='azul.jpg')
+        own_black = self.published(self.black, raw=jpeg(size=(130, 90)), name='negro.jpg')
         till = self.till_options()
         self.assertEqual((till['Azul']['thumbnail'], till['Negro']['thumbnail'], till['Rojo']['thumbnail']),
                          (own_blue['url'], own_black['url'], None))
@@ -657,6 +658,21 @@ class ColourChipTest(FinishApiBase):
         # Capacities carry no picture.
         self.assertNotIn('thumbnail', next(a for a in model_palette.payload(self.model)['attributes']
                                            if a['role'] == 'capacity')['options'][0])
+
+    def test_the_till_shows_only_finish_pictures_whose_licence_is_verified(self):
+        # Owner, 2026-11-23: «Tratar el POS como una pantalla potencialmente visible por clientes». The till's chips
+        # follow the shop's licence gate; the admin palette, staff only, still shows every authorized picture.
+        # Three different files: a licence is verified per file, and the same bytes are one file.
+        waiting_blue = self.uploaded(self.blue)
+        verified_black = self.published(self.black, raw=jpeg(), name='negro.jpg')
+        till = self.till_options()
+        self.assertEqual((till['Azul']['thumbnail'], till['Negro']['thumbnail']), (None, verified_black['url']))
+        self.assertEqual(self.palette_options()['Azul']['thumbnail'], waiting_blue['url'])
+        # A verified picture of the same finish is the till's chip while the primary still waits for its check.
+        verified_blue = self.published(self.blue, raw=jpeg(size=(140, 90)), name='azul.jpg')
+        self.assertTrue(waiting_blue['is_primary'])
+        self.assertEqual(self.till_options()['Azul']['thumbnail'], verified_blue['url'])
+        self.assertEqual(self.palette_options()['Azul']['thumbnail'], waiting_blue['url'])
 
 
 class PublicFinishGalleryTest(FinishApiBase):
