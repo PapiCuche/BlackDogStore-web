@@ -199,6 +199,9 @@ class NewDeviceTest(RegistrationFixture):
         self.assertEqual(movement.quantity, 2)
         self.assertEqual(sorted(movement.metadata['unit_ids']), sorted(devices.values_list('pk', flat=True)))
         self.assertEqual(movement.reference_type, 'stock_units')
+        # The answer names that entry line: taken from the receipt itself, never by a JSON containment lookup
+        # (`metadata__unit_ids__contains`), which the development SQLite database cannot run.
+        self.assertEqual(data['movements'], [movement.pk])
 
         self.assertTrue(ProductBarcode.objects.filter(product=product, code='IP15-128-NEG', is_primary=True).exists())
         self.assertEqual(data['links']['product'], f'/admin/products/{product.pk}')
