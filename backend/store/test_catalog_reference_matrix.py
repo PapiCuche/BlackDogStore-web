@@ -8,8 +8,10 @@ Lo que estas pruebas fijan:
   * una fila por modelo × capacidad × color × par SIM/región que el archivo permite; los pares SIM × región son los
     mismos que usa el importador (`catalog_reference.pairs_of`): un par excluido nunca aparece;
   * un modelo sin colores o sin SIM sigue en la matriz (una fila con ese campo vacío), marcado por su `completeness`;
-  * los números de modelo se unen a una entrada SIM sólo cuando el archivo nombra las mismas regiones; si no, van
-    todos los del modelo y la columna `model_numbers_link` lo dice;
+  * `model_numbers`: sólo los números unidos a ESA entrada SIM porque el archivo nombra las mismas regiones (vacío si
+    ninguno); `model_numbers_unlinked`: los del modelo que no se unen a ninguna de sus entradas, para que se vean sin
+    atribuir. Un número unido a otra entrada nunca aparece en una fila ajena;
+  * la matriz versionada (`docs/catalog-reference-matrix.csv`) es exactamente la que genera el comando;
   * la salida es determinista y el comando no toca la base (SimpleTestCase no admite consultas);
   * el motor no nombra fabricante, modelo ni color (AGENTS §2).
 
@@ -74,25 +76,56 @@ class MatrixRowsTest(SimpleTestCase):
         self.assertEqual(row['sources'], ['https://support.maker.test/specs/9'])
         self.assertEqual(row['verified_at'], '2026-11-20')
 
-    def test_model_numbers_follow_the_region_names_or_fall_back_to_the_whole_model(self):
+    def test_model_numbers_are_only_those_of_the_entry_and_the_unattributed_ones_are_said(self):
         numbers = [{'number': 'X9001', 'regions': 'Country A'}, {'number': 'X9003', 'regions': 'Country B'},
-                   {'number': 'X9004', 'regions': 'Country C'}, {'number': 'X9002', 'regions': None}]
+                   {'number': 'X9004', 'regions': 'Country C'}, {'number': 'X9002', 'regions': None},
+                   {'number': 'X9005', 'regions': 'other countries and regions'}]
         rows = ref.matrix_rows(dataset(model(model_numbers=numbers)))
         by_pair = {(r['sim_key'], r['region_key']): r for r in rows}
         a_b = by_pair[('esim-only', 'country-a-country-b')]
-        self.assertEqual((a_b['model_numbers'], a_b['model_numbers_link']), (['X9001', 'X9003'], 'region'))
+        self.assertEqual(a_b['model_numbers'], ['X9001', 'X9003'])
         c = by_pair[('dual-nano-sim', 'country-c')]
-        self.assertEqual((c['model_numbers'], c['model_numbers_link']), (['X9004'], 'region'))
-        # «default» names no region of its own: every number of the model, said so.
+        self.assertEqual(c['model_numbers'], ['X9004'])
+        # «default» names no region of its own: no number is its own, and it never takes another entry's numbers.
         default = by_pair[('nano-sim-esim', 'default')]
-        self.assertEqual((default['model_numbers'], default['model_numbers_link']),
-                         (['X9001', 'X9003', 'X9004', 'X9002'], 'model'))
+        self.assertEqual(default['model_numbers'], [])
+        # The numbers linked to NO entry of the model, on every row of the model.
+        for row in rows:
+            self.assertEqual(row['model_numbers_unlinked'], ['X9002', 'X9005'])
+        self.assertNotIn('model_numbers_link', ref.MATRIX_COLUMNS)
 
     def test_a_number_naming_a_region_outside_the_entry_is_not_linked(self):
         numbers = [{'number': 'X9001', 'regions': 'Country A, Country Z'}]
         rows = ref.matrix_rows(dataset(model(model_numbers=numbers)))
         row = next(r for r in rows if r['sim_key'] == 'esim-only')
-        self.assertEqual((row['model_numbers'], row['model_numbers_link']), (['X9001'], 'model'))
+        self.assertEqual((row['model_numbers'], row['model_numbers_unlinked']), ([], ['X9001']))
+
+    def test_a_model_without_sim_entries_has_every_number_unattributed(self):
+        rows = ref.matrix_rows(dataset(old(model_numbers=[{'number': 'X1001', 'regions': 'Country A'}])))
+        self.assertEqual([(r['model_numbers'], r['model_numbers_unlinked']) for r in rows], [([], ['X1001'])])
+
+    def test_in_the_real_files_a_number_is_never_on_a_row_of_an_entry_it_is_not_linked_to(self):
+        for path in sorted(DATA_DIR.glob('*.json')):
+            data = ref.load(path)
+            rows = ref.matrix_rows(data)
+            for m in data['models']:
+                mine = [r for r in rows if r['model_key'] == m['key']]
+                linked = {}       # number -> the pairs whose rows carry it as their own
+                for r in mine:
+                    for number in r['model_numbers']:
+                        linked.setdefault(number, set()).add((r['sim_key'], r['region_key']))
+                every = [n['number'] for n in m.get('model_numbers') or []]
+                for r in mine:
+                    pair = (r['sim_key'], r['region_key'])
+                    for number in r['model_numbers']:
+                        self.assertIn(pair, linked[number])
+                    # A number linked elsewhere is never listed here, neither as own nor as unattributed.
+                    for number, pairs in linked.items():
+                        if pair not in pairs:
+                            self.assertNotIn(number, r['model_numbers'], (m['key'], pair, number))
+                            self.assertNotIn(number, r['model_numbers_unlinked'], (m['key'], pair, number))
+                    # Own + unattributed never lose a number of the model.
+                    self.assertTrue(set(r['model_numbers_unlinked']) | set(linked) == set(every), m['key'])
 
     def test_a_model_without_colours_or_sim_is_kept_and_flagged(self):
         rows = [r for r in ref.matrix_rows(dataset()) if r['model_key'] == 'phone-1']
@@ -131,7 +164,7 @@ class MatrixCommandTest(SimpleTestCase):
         self.assertEqual(len(rows), 19)
         self.assertEqual(list(rows[0]), list(ref.MATRIX_COLUMNS))
         self.assertEqual(rows[0]['model_numbers'], 'X9001')
-        self.assertEqual(rows[0]['model_numbers_link'], 'region')
+        self.assertEqual(rows[0]['model_numbers_unlinked'], 'X9002')
         self.assertEqual(rows[0]['sources'], 'https://support.maker.test/specs/9')
 
     def test_json_and_one_model(self):
@@ -140,7 +173,8 @@ class MatrixCommandTest(SimpleTestCase):
         self.assertEqual(data['count'], 12)
         self.assertEqual(len(data['rows']), 12)
         self.assertEqual(data['rows'][0]['model_numbers'], ['X9001'])
-        self.assertEqual(data['rows'][2]['model_numbers'], ['X9001', 'X9002'])   # default
+        self.assertEqual(data['rows'][2]['model_numbers'], [])   # default
+        self.assertEqual(data['rows'][2]['model_numbers_unlinked'], ['X9002'])
 
     def test_the_output_is_deterministic_and_can_go_to_a_file(self):
         first = _run('--file', str(self.path))
@@ -173,6 +207,15 @@ class MatrixCommandTest(SimpleTestCase):
             self.skipTest('more than one reference file: --file is required')
         rows = list(csv.DictReader(io.StringIO(_run())))
         self.assertEqual(len(rows), sum(_expected(m) for m in ref.load(files[0])['models']))
+
+    def test_the_committed_matrix_is_what_the_command_writes(self):
+        files = sorted(DATA_DIR.glob('*.json'))
+        if len(files) != 1:
+            self.skipTest('more than one reference file: the committed matrix is of one file')
+        committed = (DATA_DIR.parent.parent / 'docs' / 'catalog-reference-matrix.csv').read_text(encoding='utf-8')
+        self.assertEqual(_run('--sources-once'), committed,
+                         'regenerate: python manage.py reference_matrix --sources-once '
+                         '--output ../docs/catalog-reference-matrix.csv')
 
     def test_the_command_names_nothing(self):
         from store.management.commands import reference_matrix

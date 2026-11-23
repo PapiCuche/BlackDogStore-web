@@ -366,16 +366,18 @@ def pairs_of(model) -> set[tuple[str, str]]:
 # without SIM entries still gets its rows, with that field empty, and its `completeness` says why.
 #
 # Model numbers: the file does not tie a number to a SIM entry. A number is linked to an entry only when every region
-# it names is one of the regions the entry names, by the same text (`model_numbers_link: region`); when no number
-# of the model is linked that way, the row carries all of them (`model_numbers_link: model`). Nothing is guessed.
+# it names is one of the regions the entry names, by the same text. `model_numbers` holds only the numbers linked to
+# the row's entry (empty when none is); `model_numbers_unlinked` holds the numbers of the model linked to NO entry of
+# it, on every row, so they show as unattributed. A number linked to one entry never appears on another entry's row.
+# Nothing is guessed.
 
 MATRIX_COLUMNS = (
     'model_key', 'model_name', 'completeness', 'missing', 'capacity_gb', 'color_key', 'color_label_es',
     'color_official_es_419', 'color_official_es_es', 'sim_key', 'sim_label_es', 'region_key', 'region_label_es',
-    'model_numbers', 'model_numbers_link', 'sources', 'verified_at',
+    'model_numbers', 'model_numbers_unlinked', 'sources', 'verified_at',
 )
 #: The columns that hold lists, and how the CSV joins each one.
-MATRIX_LISTS = {'missing': ' | ', 'model_numbers': ' ', 'sources': ' '}
+MATRIX_LISTS = {'missing': ' | ', 'model_numbers': ' ', 'model_numbers_unlinked': ' ', 'sources': ' '}
 
 
 def _region_names(text) -> set[str]:
@@ -388,12 +390,10 @@ def _region_names(text) -> set[str]:
     return names
 
 
-def _numbers_for(entry, numbers) -> tuple[list[str], str]:
+def _numbers_for(entry, numbers) -> list[str]:
+    """The numbers linked to `entry`: every region a number names is one the entry names (none for no entry)."""
     names = _region_names(entry['regions']) if entry is not None else set()
-    linked = [n['number'] for n in numbers if names and (own := _region_names(n.get('regions'))) and own <= names]
-    if linked:
-        return linked, 'region'
-    return [n['number'] for n in numbers], 'model'
+    return [n['number'] for n in numbers if names and (own := _region_names(n.get('regions'))) and own <= names]
 
 
 def matrix_rows(data, model_key=None) -> list[dict]:
@@ -410,11 +410,13 @@ def matrix_rows(data, model_key=None) -> list[dict]:
             if pair not in seen:
                 seen.add(pair)
                 entries.append((pair, entry))
+        own = {pair: _numbers_for(entry, numbers) for pair, entry in entries}
+        attributed = {number for linked in own.values() for number in linked}
+        unlinked = [n['number'] for n in numbers if n['number'] not in attributed]
         for gb in m.get('capacities_gb') or [None]:
             for colour in m.get('colors') or [None]:
                 official = (colour or {}).get('official') or {}
-                for pair, entry in entries or [(('', ''), None)]:
-                    linked, how = _numbers_for(entry, numbers)
+                for pair, _entry in entries or [(('', ''), None)]:
                     rows.append({
                         'model_key': m['key'], 'model_name': m['name'], 'completeness': m['completeness'],
                         'missing': list(m.get('missing') or []), 'capacity_gb': gb,
@@ -424,7 +426,7 @@ def matrix_rows(data, model_key=None) -> list[dict]:
                         'color_official_es_es': official.get('es_es') or '',
                         'sim_key': pair[0], 'sim_label_es': labels.get(('sim', pair[0]), ''),
                         'region_key': pair[1], 'region_label_es': labels.get(('region', pair[1]), ''),
-                        'model_numbers': linked, 'model_numbers_link': how,
+                        'model_numbers': list(own.get(pair, [])), 'model_numbers_unlinked': list(unlinked),
                         'sources': list(m.get('sources') or []), 'verified_at': m['verified_at'],
                     })
     return rows
