@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-23 — Fases 1.1 y 1.2: base de producción `16189e4`
+
+El despliegue de LABEL-04 (`16189e4`) llevó a producción el código de la Fase 1.2 (`0185`). La normalización y las muestras están ensayadas de nuevo sobre esa base y siguen pendientes de su GO; de las muestras sólo se aplicarían las 167 aplicables. La caja sólo mostrará fotos con licencia verificada (#396).
+
 ## 2026-11-23 — Fases 1.1 y 1.2: preparación del GO (sin cambios en el código)
 
 Las precondiciones de la normalización están revalidadas, igual que los colores y capacidades oficiales (0 fuera de la matriz).

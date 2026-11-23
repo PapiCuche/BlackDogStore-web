@@ -3,6 +3,27 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-23 — FASES 1.1 Y 1.2 · producción pasó a `16189e4` (LABEL-04, con la Fase 1.2 dentro); kits ajustados y ensayados de nuevo
+
+Orden del propietario «CIERRE OPERATIVO FASES 1.1 Y 1.2». Mi sesión no escribió nada en producción.
+
+- **Despliegue de otra sesión:** LABEL-04 `16189e4`, entre las 16:39 y las 16:42. Incluye `d32f43b`, así que el código de la Fase 1.2 y la migración `0185` ya están en producción, con `0186`.
+  - «GO despliegue d32f43b» queda obsoleto.
+  - Caddy y el CRM no cambiaron.
+  - Humo en sólo lectura: rutas en 200; 0 fotos de acabado, 0 muestras y 0 licencias verificadas.
+- **Kits** ajustados a `16189e4`/`0186`/`release-16189e4`; las copias anteriores se conservan. Ensayos en verde sobre la copia `db-20261123-164855`:
+  - normalización 1.1: huella `1689fd2825cc5724`, fallos sin diferencias, se aplica, repetirla no escribe nada y la vuelta atrás es exacta;
+  - muestras por lotes: 167, después 38, y vueltas atrás en orden.
+- **Muestras:** las 38 dudosas quedan fuera de la carga automática. `f12s_go.sh` rechaza una propuesta con dudosas o sin la marca «aproximada».
+- **Caja visible por clientes:** el #396 (fusionado `8899bf9`, sin desplegar) hace que la caja sólo muestre fotos de acabado con licencia verificada.
+  - Pruebas: la caja no muestra una foto sin verificar, una demo verificada ni el archivo de otra empresa.
+  - Una mutación que quitaba la regla de demos fue detectada.
+  - Antes de importar fotos hace falta una release con el #396.
+- **Sustitución de fotos:** plan con prioridades y manifiesto de 58 filas, en el kit.
+  - Producto 12: la tienda real muestra la imagen rota. Hay captura.
+  - Producto 7: está inactivo (404), así que hoy no lo ve ningún cliente.
+  - #19, #22 y #23 no se tocan.
+
 ## 2026-11-23 — FASES 1.1 Y 1.2 · biblioteca visual, muestras por lotes y comprobaciones previas al GO · producción SIN CAMBIOS
 
 Orden del propietario «CIERRE FASE 1.1 Y DESPLIEGUE FASE 1.2». No hubo escrituras productivas: producción sigue en `ed9f5e0`, esquema `0184`.

@@ -6,103 +6,52 @@ El PR #367 sigue en borrador. Este candidato integra la rama con master y numera
 
 En caja, actualizar el agente a 1.4 y asociar la Advance con la cola `POS-80-Series` y la HL80 con `HL80`. Confirmar el tamaño del rollo cargado antes de activar las etiquetas automáticas.
 
-## FASES 1.1 Y 1.2 — cierre productivo: release `d32f43b` preparada, SIN DESPLEGAR
+## FASES 1.1 Y 1.2 — código de la Fase 1.2 EN PRODUCCIÓN con `16189e4`; normalización y muestras preparadas, SIN EJECUTAR
 
-Orden del propietario «CIERRE PRODUCTIVO FASES 1.1 Y 1.2» (2026-11-23).
-- El SHA a desplegar es ahora **`d32f43b`**: `79058ac` más el #393.
-- Entre las dos versiones no cambian `deploy/`, el compose ni las migraciones. La única migración sigue siendo `0185`, aditiva.
-- `d32f43b` no incluye LABEL-04 (#367, migración `0186`), que se fusionó después.
+**Producción cambió (2026-11-23, 16:39–16:42):**
+- Otra sesión desplegó LABEL-04 (`16189e4`, el #367). Su script está en `backups/deploy-label04-16189e4-retry.sh` y su backup en `backups/label04-20261123-164229/`.
+- `16189e4` contiene `d32f43b`. Por eso el **código de la Fase 1.2 y la migración `0185` ya están en producción**, junto con `0186`.
+- El paso «GO despliegue d32f43b prod-02» queda **obsoleto**: su script exige `ed9f5e0`/`0184` y abortaría sin hacer nada.
+- Ese despliegue no tocó Caddy ni el CRM: md5 del enrutamiento iguales y 9 contenedores `crm-`.
+- Comprobación en sólo lectura (16:47): rutas de la tienda y del panel en 200; 0 fotos de acabado, 0 muestras por modelo y 0 licencias verificadas.
+- Que ese despliegue incluyera la Fase 1.2 debe confirmarlo el propietario.
 
-Decisiones del propietario que aplica el #393:
-- El carrito y el checkout muestran la foto **principal** del color elegido, nunca la de otro acabado.
-- Una foto de acabado sale en la tienda sólo cuando su licencia está **verificada** en el panel. Hasta entonces el acabado sigue con «Imagen pendiente».
-- El panel avisa «No visible en la tienda hasta verificar la licencia». Una foto propia se verifica marcando «Confirmé que es una foto propia de la tienda».
+**Kits ajustados a la línea base real** (HEAD `16189e4`, esquema `0186_label_printing`, imagen `release-16189e4`). Runbook: `backups/release-f12/RUNBOOK-16189e4-prod02.md`.
+- **Normalización 1.1**, ensayada otra vez sobre una copia posterior a LABEL-04 (`db-20261123-164855`, `backups/f11p-rehearsal-16189e4.log`):
+  - huella `1689fd2825cc5724`;
+  - un paso fallido, un fallo provocado o una huella equivocada dejan 0 diferencias;
+  - se aplica con 2 roles, 4 capacidades y 7 auditorías;
+  - repetirla no escribe nada y la vuelta atrás es exacta;
+  - la caja pasa a preguntar Capacidad → Color → SIM → Región.
+  - Precondiciones en producción: OK.
+- **Muestras**, ensayadas por lotes sobre la misma copia (`backups/f12s-batch-rehearsal-16189e4.log`), todo en verde.
+  - Con el GO se aplican sólo **167 de 40 modelos**, marcadas «aproximada» y editables.
+  - Las **38 dudosas quedan fuera de la carga automática** (decisión del propietario). `f12s_go.sh` rechaza cualquier propuesta que contenga una dudosa o una fila sin la marca «aproximada».
+- **Caja visible por clientes** (decisión del propietario). El #396 (fusionado `8899bf9`, sin desplegar) hace que la miniatura de color de la caja sólo use fotos con licencia verificada; la paleta del panel, interna, no cambia.
+  - Hoy no hay fotos de acabado, así que no hay exposición.
+  - **El «GO importación fotos prod-02» exige antes una release con el #396.**
+- **Sustitución de fotos**: plan y manifiesto con las 58 filas en orden de prioridad, en el kit `release-f12/biblioteca-visual/SUSTITUCIONES.md`.
+  - **Producto 12**: activo, publicado y con 90 en stock. **La ficha muestra el icono de imagen rota**, según la captura de la tienda real.
+  - **Producto 7**: la foto mezcla cuatro acabados. El producto está **inactivo** (404 en la tienda), así que hoy no lo ve ningún cliente. Esto corrige lo que se registró antes («es la foto del carrito»).
+  - #19, #22 y #23 no se tocan.
 
-Producción revalidada el 2026-11-23, sólo lectura:
-- `ed9f5e0`, esquema `0184`, contenedores sanos;
-- md5 de Caddy y del CRM sin cambios;
-- 0 fotos de acabado y 16 imágenes subidas (ninguna verificada);
-- 52 modelos, 30 publicados;
-- 0 colores fuera de la matriz.
-
-Imágenes candidatas `rc-d32f43b` construidas en prod-02. Runbook: `backups/release-f12/RUNBOOK-d32f43b-prod02.md`.
-
-**Ensayo encadenado** sobre una copia aislada de `db-20261123-130907`, sin salida a internet:
-- la normalización 1.1 con la imagen de producción (huella `1689fd2825cc5724`);
-- `0185` en 6 s, con datos idénticos;
-- el código de `ed9f5e0` sobre `0185`: humo 32/32;
-- la imagen nueva: humo 32/32, reimpresión histórica, importación sintética idempotente y 621 pruebas OK;
-- frontend y rutas OK;
-- 205/205 muestras aproximadas con vuelta atrás exacta;
-- `0185` → `0184` → `0185` funciona.
-
-La puerta de licencias se midió aparte, sobre otra copia normalizada: 0 fotos públicas antes de verificar y 1 después.
-
-**Comprobaciones posteriores (orden «CIERRE FASE 1.1 Y DESPLIEGUE FASE 1.2», 2026-11-23, sólo lectura):**
-- Precondiciones de la normalización: el modo `check` da «preconditions OK» con la huella `1689fd2825cc5724`, sin cambios.
-- Colores y capacidades oficiales: 49 modelos revisados contra la matriz, con 158 capacidades y 205 colores en las paletas. Ninguno está fuera de la matriz, ni en las paletas ni en las variantes.
-- Caja, carrito y tienda:
-  - la miniatura de cada color en la caja sale sólo de las fotos de ese acabado; si no hay foto, se ve el círculo de color;
-  - el carrito nunca usa la foto de otro color;
-  - excepción: la foto propia del producto 7 «iPhone 17 Pro Azul» muestra cuatro acabados (ver la biblioteca visual).
-- Biblioteca visual: informe clasificado y plan de sustituciones en el kit `release-f12/biblioteca-visual/`. Es sólo lectura y no cambió nada.
-
-**GO pedidos, en este orden.** Cada uno es independiente y ninguno se da por concedido:
-1. **«GO normalización catálogo prod-02»** (Fase 1.1)
-   - Se ejecuta con `sh backups/release-p1/f11p_go.sh`, sin cambios.
-   - Exige `ed9f5e0`, `0184` y la imagen `release-ed9f5e0`, así que va **antes** del despliegue.
-   - Cambia sólo 2 roles de atributo y 4 etiquetas u órdenes de capacidad.
-   - No toca las variantes #19, #22 ni #23.
-   - Ensayada otra vez el 2026-11-23: misma huella; un fallo o una huella equivocada dejan 0 diferencias; la vuelta atrás es exacta.
-2. **«GO despliegue d32f43b prod-02»**
-   - Se ejecuta con `sh /tmp/d_deploy_f12.sh d32f43b0efbe60c520323da99dfd3b611ee1e0d1`, según el runbook.
-   - Hace backup y huella, aplica `0185` antes de cambiar el código y recrea sólo backend y frontend.
-   - No toca Caddy ni el CRM.
-   - Vuelta atrás de sólo el código con `rollback_f12.sh` (ensayada). Con `rollback_f12.sh schema` también vuelve a `0184`.
-3. **«GO muestras aproximadas prod-02»** (sólo después del punto 2)
-   - Aplica **167 muestras de 40 modelos** (`swatch-approx-aplicables.json`), marcadas «aproximada» y editables en el panel. No son códigos oficiales de Apple.
-   - Las **38 dudosas de 9 modelos** (`swatch-approx-dudosas.json`) **no** se aplican sin la aprobación expresa del propietario:
-     - Plata y Glaciar casi iguales en el iPhone 18 Pro y el 18 Pro Max;
-     - Blanco estelar y Rosa casi iguales en el iPhone 13 y el 13 mini, que se revisan enteros;
-     - los acabados de titanio del 15 Pro, 15 Pro Max, 16 Pro y 16 Pro Max;
-     - el iPhone Duo y el 18 Pro, por ser recientes y no tener un equipo de referencia.
-   - Pasa por la vista del panel, con auditoría y vuelta atrás exacta. `f12s_go.sh` exige `d32f43b` y `0185`, y recibe el archivo de propuesta.
-   - Ensayo por lotes (`backups/f12s-batch-rehearsal-d32f43b.log`): A, después B encima; la primera vuelta atrás deshace sólo B y la segunda deshace A. Se corrigió `f12s_ops.py`, que antes revertía siempre el último lote aunque ya estuviera revertido.
-   - La hoja de revisión comercial marca las dudosas. Tiene capturas de escritorio y móvil y está fuera del repositorio, en el kit `release-f12/swatch-review/`.
-4. **«GO importación fotos prod-02»** (cuando el propietario entregue las fotos)
-   - La plantilla del manifiesto tiene 205 filas, y las instrucciones están en el kit `release-f12/fotos-lote/`.
-   - Antes del GO se ensaya sobre una copia.
-   - Después, una persona verifica cada licencia en el panel.
+**GO pedidos**, cada uno por separado:
+1. **«GO normalización catálogo prod-02»**: `sh backups/release-p1/f11p_go.sh`.
+2. **«GO muestras aproximadas prod-02»**: sólo las 167, con `sh /tmp/f12s_go.sh /tmp/swatch-approx-aplicables.json`.
+3. **«GO quitar enlace roto producto 12 prod-02»**: opcional y provisional. La tienda mostraría su marcador neutro en lugar del icono roto.
+4. **«GO importación fotos prod-02»**: cuando haya fotos y, antes, una release con el #396.
 
 **Decisiones del propietario (BLOCKED):**
-- **Fotos con licencia: 0 de 205.** No se copian fotos de apple.com ni se generan imágenes que parezcan oficiales.
-  - Una foto verificada sólo se ve si su color lo tiene una variante publicada.
-  - Hoy la única variante publicada con color es la #22 (iPhone 15, Negro).
-- **Biblioteca visual** (informe clasificado, 58 referencias, 54 publicadas). Que una imagen ya esté publicada no la autoriza.
-  - Propias con procedencia verificada: **0**.
-  - De proveedor con licencia comprobada: **0**.
-  - De terceros sin autorización demostrada: **36**. Son 25 portadas (24 de Apple y 1 de un distribuidor) y 11 productos (5 de Apple y 6 de tiendas minoristas).
-  - De origen desconocido: **22**. Son 18 referencias a los 16 archivos subidos y 4 portadas copiadas de la caché de `images.openai.com`.
-  - Revisión visual:
-    - el producto 7 «iPhone 17 Pro Azul» muestra cuatro acabados, y es la foto del carrito;
-    - la foto del producto 12 (Ripley) está rota;
-    - 4 imágenes posiblemente generadas: producto 4 y su galería, la categoría iPhone y la imagen de servicios;
-    - la portada «Seminuevos» muestra equipos nuevos.
-  - No se borró ni se despublicó nada. Cada sustitución necesita la decisión del propietario y su GO.
-- **Muestras de color:** aprobar, corregir o quitar las 38 dudosas, y revisar las 167 aplicables antes del GO.
-- **Caja y paleta del panel:** siguen mostrando fotos sin verificar porque son pantallas internas. Falta confirmar que la pantalla de caja nunca la ve un cliente.
-- **Siguen abiertos:**
-  - SIM y país de venta de #22: no se deducen;
-  - completar o renombrar #23: sólo con los datos del equipo;
-  - #19 queda para la Fase 2 (equipo usado).
-- No se crean stock ni variantes ficticias.
-- **Propuesta para una fase posterior, sin aplicar:** que el atributo «Región» se muestre como «Versión (país de venta)».
-  - «Región» indica el mercado donde Apple vendió el equipo, según su número de modelo (ADR §9.5), no dónde funciona.
-  - El cambio sería sólo de etiqueta, por el panel, con su propio GO.
+- confirmar el despliegue de `16189e4`, con la Fase 1.2 incluida;
+- fotos propias o con licencia: para el producto 12, para el producto 7 antes de reactivarlo, y para las otras 56 imágenes del manifiesto;
+- las 38 muestras dudosas;
+- #22: SIM y país de venta, que no se deducen;
+- #23: completarla o renombrarla, sólo con datos del equipo;
+- #19: queda para la Fase 2.
 
-Siguen sin empezar las fases 2 (seminuevos) y 3 (inventario general), y el cambio masivo de fotos.
+**Propuesta para una fase posterior, sin aplicar:** «Versión (país de venta)» como etiqueta de «Región». No se crean stock ni variantes ficticias. La Fase 2 de seminuevos no se abre.
 
-## Producción vigente: Fase 1 `ed9f5e0` (esquema `0184`), desplegada el 2026-11-22 08:11 en prod-02
+## Producción anterior: Fase 1 `ed9f5e0` (esquema `0184`), desplegada el 2026-11-22 08:11 en prod-02 (sustituida el 2026-11-23 16:42 por `16189e4`)
 
 - Detalle y verificación en la entrada del 2026-11-22 de `02_ESTADO_ACTUAL.md`.
 - **Vuelta atrás de la Fase 1:** `sh backups/release-p1/rollback_p1.sh` en `/srv/blackdogstore` (sólo código, a `release-4a3ce34`). Repone los tres archivos de enrutamiento del CRM desde `backups/p1-routing-20261122-081143/`: en `ed9f5e0` están versionados y un checkout simple a R12b borraría dos de ellos.
