@@ -551,11 +551,9 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
         if batch:
             label_batch_ids.append(batch.pk)
         label_failed += batch is label_batches.FAILED
-        movements = list(
-            StockMovement.objects.filter(product=product, reference_type='stock_units',
-                                         metadata__unit_ids__contains=[received[0].pk])
-            .values_list('pk', flat=True)
-        )
+        # The receipt carries its own Kardex line. Not a `metadata__unit_ids__contains` query: the development
+        # SQLite database has no JSON containment lookup, and the units were just created, so no other line names them.
+        movements = [received.movement.pk] if received.movement is not None else []
     for branch, quantity, unit_cost, index in stock_rows:
         try:
             movement = apply_initial_stock(branch=branch, product=product, quantity=quantity, actor=actor,
