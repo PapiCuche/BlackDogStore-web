@@ -438,6 +438,17 @@ describe('chips de color (G · orden visual 4 del propietario)', () => {
     expect(blanco).toHaveTextContent('Blanco');
   });
 
+  it('FASE 1.2 · Y: dibuja la muestra que el servidor resolvió para este modelo y nunca dice «aproximada»', () => {
+    // The server sends the model's own swatch in place of the company's; the shop never learns it is approximate.
+    model.finish_images = { ...model.finish_images, [ROJO]: [] };
+    model.attributes = model.attributes.map((a) => (a.kind !== 'color' ? a : {
+      ...a, options: a.options.map((o) => (o.label === 'Rojo' ? { ...o, swatch_hex: '#C2410C' } : o)),
+    }));
+    renderPage();
+    expect(chip(/^Rojo/).querySelector('.v4-swatch')).toHaveStyle({ backgroundColor: '#C2410C' });
+    expect(screen.queryByText(/aproximad/i)).toBeNull();
+  });
+
   it('la elección no se dice sólo con color: el chip elegido lo marca aria-checked y el nombre se escribe', () => {
     renderPage();
     expect(chip(/^Azul/)).toHaveAttribute('aria-checked', 'true');

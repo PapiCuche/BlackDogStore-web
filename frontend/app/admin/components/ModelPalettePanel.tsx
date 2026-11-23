@@ -40,7 +40,7 @@ import {
   rebaseSelection, sameSelection, suggestionMissing, variantNamePreview, type PaletteChange,
 } from "../lib/palette";
 import { ProductImage } from "@/app/components/ProductImage";
-import { SWATCH_UNSET_LABEL } from "../lib/catalog-presentation-api";
+import { SWATCH_APPROXIMATE_LABEL, SWATCH_UNSET_LABEL } from "../lib/catalog-presentation-api";
 import { EmptyBox, ErrorBox, Panel, Spinner, Td, Th } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -63,11 +63,14 @@ export function PaletteStatusBadge({ status }: { status: PaletteStatus }) {
 }
 
 function OptionChoice({
-  attribute, optionId, label, swatch, swatchSet = true, thumbnail = null, checked, disabled, onChange, describedBy,
+  attribute, optionId, label, swatch, swatchSet = true, approximate = false, thumbnail = null, checked, disabled,
+  onChange, describedBy,
 }: {
   attribute: PaletteAttribute; optionId: number; label: string; swatch: string; checked: boolean; disabled: boolean;
-  /** A colour only: false = the company has not configured its swatch; no dot is drawn, the panel says so. */
+  /** A colour only: false = nothing is drawn for it (no swatch of the company nor of this model); the panel says so. */
   swatchSet?: boolean;
+  /** A colour only (FASE 1.2 · Y): the swatch drawn is an approximation pending commercial validation. */
+  approximate?: boolean;
   /** A colour only: its finish picture, drawn before any swatch. */
   thumbnail?: string | null;
   onChange: (id: number, checked: boolean) => void;
@@ -101,6 +104,11 @@ function OptionChoice({
       <span>{label}</span>
       {attribute.kind === "color" && !swatchSet ? (
         <span className="rounded-full border border-dashed border-bd-border px-1.5 text-[11px] text-muted">{SWATCH_UNSET_LABEL}</span>
+      ) : null}
+      {attribute.kind === "color" && swatchSet && approximate ? (
+        <span title="Muestra aproximada, pendiente de validación comercial" className="rounded-full border border-warning-border bg-warning-surface px-1.5 text-[11px] font-semibold text-warning">
+          {SWATCH_APPROXIMATE_LABEL}
+        </span>
       ) : null}
     </label>
   );
@@ -589,8 +597,11 @@ export function ModelPalettePanel({
                             attribute={attribute}
                             optionId={option.id}
                             label={option.label}
-                            swatch={option.swatch_hex}
-                            swatchSet={option.swatch_set !== false}
+                            // FASE 1.2 · Y: what this model draws (its own, else the company's); an older server
+                            // sends only the company's swatch and whether it is set.
+                            swatch={option.shown_swatch_hex ?? option.swatch_hex}
+                            swatchSet={option.shown_swatch_hex !== undefined ? option.shown_swatch_hex !== "" : option.swatch_set !== false}
+                            approximate={option.shown_swatch_is_approximate ?? false}
                             thumbnail={option.thumbnail ?? null}
                             checked={chosen.has(option.id)}
                             disabled={!canManage || saving || creating || conflict !== null}

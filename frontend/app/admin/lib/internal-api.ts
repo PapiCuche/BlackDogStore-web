@@ -2356,7 +2356,11 @@ export type AdminCatalogModelWrite = Partial<{
   is_featured: boolean;
 }>;
 
-export type AdminAttributeOption = { id: number; label: string; swatch_hex: string; sort_order: number };
+export type AdminAttributeOption = {
+  id: number; label: string; swatch_hex: string; sort_order: number;
+  /** FASE 1.2 · Y: the swatch is an approximation pending commercial validation (absent from an older server). */
+  swatch_is_approximate?: boolean;
+};
 
 export type AdminCatalogAttribute = {
   id: number;
@@ -2374,6 +2378,11 @@ export type PaletteOption = AdminAttributeOption & {
   /** A colour only (CATALOG-REFERENCE-01 · G): whether the swatch is the company's, and its finish picture. */
   swatch_set?: boolean;
   thumbnail?: string | null;
+  /** A colour only (FASE 1.2 · Y): this model's own swatch and what is drawn ("" = the name alone). */
+  model_swatch_hex?: string;
+  model_swatch_is_approximate?: boolean;
+  shown_swatch_hex?: string;
+  shown_swatch_is_approximate?: boolean;
 };
 
 export type PaletteAttribute = {
@@ -2770,7 +2779,8 @@ export function createAttributeOption(
 }
 
 export function updateAttributeOption(
-  optionId: number, body: Partial<{ label: string; swatch_hex: string; sort_order: number }>, companyId?: number | null,
+  optionId: number, body: Partial<{ label: string; swatch_hex: string; sort_order: number; swatch_is_approximate: boolean }>,
+  companyId?: number | null,
 ): Promise<AdminAttributeOption> {
   return catalogCall(
     `/admin/catalog/options/${optionId}/${companyQuery(companyId)}`,
