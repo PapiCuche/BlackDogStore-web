@@ -212,21 +212,24 @@ def payload(image: ModelFinishImage, stored: StorefrontImage | None = None) -> d
     }
 
 
-def chip_pictures(model) -> dict[int, str]:
+def chip_pictures(model, *, verified_only: bool = False) -> dict[int, str]:
     """
     G (owner's visual order 4): colour option id → the address of the picture its chip shows — the finish's primary,
     else its first by order — skipping demo resources (a chip never presents a demo as the product). Two queries.
+
+    `verified_only` (owner, 2026-11-23: «Tratar el POS como una pantalla potencialmente visible por clientes»): only
+    pictures whose licence is verified, the shop's rule (`is_public`). The till asks for it; the admin palette, seen
+    by staff only, does not. A colour without such a picture gets no thumbnail and its chip shows the swatch.
     """
     rows = list(gallery(model).order_by('color_option_id', '-is_primary', 'sort_order', 'pk')
                 .values_list('color_option_id', 'image_url'))
-    ids = {storefront_media.managed_public_id(address) for _colour, address in rows} - {None}
-    demo = set(StorefrontImage.objects.filter(company_id=model.company_id, public_id__in=ids,
-                                              source_kind=StorefrontImage.SOURCE_DEMO)
-               .values_list('public_id', flat=True)) if ids else set()
+    states = shop_states([address for _colour, address in rows], {model.company_id})
     chosen: dict[int, str] = {}
     for colour, address in rows:
-        if colour not in chosen and storefront_media.managed_public_id(address) not in demo:
-            chosen[colour] = address
+        verified, demo = states.get((model.company_id, storefront_media.managed_public_id(address)), (False, False))
+        if colour in chosen or demo or (verified_only and not verified):
+            continue
+        chosen[colour] = address
     return chosen
 
 

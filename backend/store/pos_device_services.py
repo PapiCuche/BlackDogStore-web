@@ -229,7 +229,8 @@ def configurations(company, model, branch, authority: Authority) -> dict:
         })
         if attribute.role == VariantAttribute.ROLE_COLOR or attribute.kind == VariantAttribute.KIND_COLOR:
             if pictures is None:
-                pictures = finish_media.chip_pictures(model)
+                # The till may be seen by customers: only pictures whose licence is verified (owner, 2026-11-23).
+                pictures = finish_media.chip_pictures(model, verified_only=True)
                 own_swatches = model_palette.model_swatches(model)
             # FASE 1.2 · Y: the model's own swatch, else the company's, else none; and whether it is approximate.
             rows = []
