@@ -17,8 +17,14 @@ THE RULES (owner's):
 ALL OR NOTHING. Every row is validated first (decoder, size, path, provenance, colour, limits) and reported; any error
 and nothing is written. Then the files are stored (`storefront_media.store`, the panel's re-encoding) and placed in ONE
 transaction (`finish_media.place`, the panel's lock and checks; the primary through `finish_media.update_image`) with
-one summary audit row. If placing fails, every file stored by the run is released (`storefront_media.release`), as
-`finish_media.add_image` does for one.
+one summary audit row. If anything fails — an interruption included — every file stored by the run is released
+(`storefront_media.release`), as `finish_media.add_image` does for one. Under each model's lock the duplicate check is
+repeated, so a picture placed meanwhile (another run, the panel) is skipped there, or refuses the run if it is the same
+photo in another colour.
+
+FILES. Every component of a row's path is opened from a descriptor of `--dir` WITHOUT FOLLOWING LINKS (`O_NOFOLLOW`):
+there is no window between checking a path and opening it. The file's identity (device, inode) and hash are remembered
+and checked again when it is read for storing.
 
 IDEMPOTENCY WITHOUT A NEW COLUMN. A stored file is a re-encoding, so its bytes are not the source file's. A row is a
 duplicate when its source hash or the hash of its re-encoding equals the hash of a file that finish already shows (read
@@ -28,14 +34,16 @@ encoder's output changes between runs).
 from __future__ import annotations
 
 import csv
+import errno
 import hashlib
 import io
 import json
+import os
 import re
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from django.core.files import File
 from django.db import transaction
 from django.db.models import Q
 
@@ -70,7 +78,8 @@ class Row:
     reason: str = ''
     model: ProductModel | None = None
     colour: VariantOption | None = None
-    path: Path | None = None
+    identity: tuple[int, int] | None = None
+    digests: set = field(default_factory=set)
     view: str = ''
     alt_text: str = ''
     is_primary: bool = False
@@ -241,37 +250,80 @@ class _Resolver:
             raise RowError(str(exc)) from None
 
 
-def safe_path(root: Path, value: str) -> Path:
-    """`value` as a file INSIDE `root`: relative, no `..`, and its real path (symlinks followed) still inside."""
+def _parts(value: str) -> tuple[str, ...]:
+    """`value` as path components inside `--dir`: relative, no `..`, no backslash."""
     if not value:
         raise RowError('Falta el archivo.')
     if '\x00' in value or '\\' in value:
         raise RowError('El nombre del archivo no es válido.')
     if value.startswith('/') or _DRIVE.match(value) or PurePosixPath(value).is_absolute():
         raise RowError('El archivo debe ser una ruta relativa dentro de la carpeta.')
-    if '..' in PurePosixPath(value).parts:
+    parts = PurePosixPath(value).parts
+    if '..' in parts:
         raise RowError('El archivo no puede salir de la carpeta («..»).')
-    base = root.resolve()
-    try:
-        real = (base / value).resolve(strict=True)
-    except (OSError, RuntimeError):
-        raise RowError(f'No existe el archivo «{value}» en la carpeta.') from None
-    if not real.is_relative_to(base):
-        raise RowError('El archivo apunta fuera de la carpeta.')
-    if not real.is_file():
-        raise RowError(f'«{value}» no es un archivo.')
-    return real
+    if not parts:
+        raise RowError('Falta el archivo.')
+    return parts
 
 
-def read_file(path: Path) -> bytes:
-    """The bytes, with the panel's size cap applied BEFORE reading (`storefront_media.read_upload`)."""
+def _open_error(exc: OSError, value: str) -> RowError:
+    if exc.errno in (errno.ELOOP, errno.EMLINK):
+        return RowError('El archivo pasa por un enlace simbólico: no se siguen enlaces.')
+    if exc.errno == errno.ENOENT:
+        return RowError(f'No existe el archivo «{value}» en la carpeta.')
+    if exc.errno == errno.ENOTDIR:
+        return RowError(f'No existe el archivo «{value}» en la carpeta (o pasa por un enlace simbólico).')
+    return RowError('No se pudo leer el archivo.')
+
+
+def open_inside(root: Path, value: str) -> int:
+    """
+    A descriptor of the regular file `value` INSIDE `root`, opened component by component from a descriptor of `root`
+    with `O_NOFOLLOW`: no link is followed (in or out of the folder), so nothing can be swapped between a check and
+    the open. Non-blocking, so a FIFO is refused instead of waiting.
+    """
+    parts = _parts(value)
+    nofollow = getattr(os, 'O_NOFOLLOW', 0)
+    directory = getattr(os, 'O_DIRECTORY', 0)
     try:
-        with path.open('rb') as handle:
-            return storefront_media.read_upload(File(handle))
-    except storefront_media.StorefrontImageError as exc:
-        raise RowError(str(exc)) from None
+        current = os.open(root, os.O_RDONLY | directory)
     except OSError:
-        raise RowError('No se pudo leer el archivo.') from None
+        raise RowError('No se pudo abrir la carpeta.') from None
+    try:
+        for part in parts[:-1]:
+            following = os.open(part, os.O_RDONLY | directory | nofollow, dir_fd=current)
+            os.close(current)
+            current = following
+        descriptor = os.open(parts[-1], os.O_RDONLY | nofollow | getattr(os, 'O_NONBLOCK', 0), dir_fd=current)
+    except OSError as exc:
+        raise _open_error(exc, value) from None
+    finally:
+        os.close(current)
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise RowError(f'«{value}» no es un archivo.')
+    return descriptor
+
+
+class _Sized:
+    """What `storefront_media.read_upload` reads: the size from `fstat` (cap before reading) and `read`."""
+
+    def __init__(self, handle, size):
+        self.size, self.read = size, handle.read
+
+
+def read_inside(root: Path, value: str) -> tuple[bytes, tuple[int, int]]:
+    """The bytes (with the panel's size cap applied BEFORE reading) and the file's identity (device, inode)."""
+    descriptor = open_inside(root, value)
+    with os.fdopen(descriptor, 'rb') as handle:
+        info = os.fstat(handle.fileno())
+        try:
+            raw = storefront_media.read_upload(_Sized(handle, info.st_size))
+        except storefront_media.StorefrontImageError as exc:
+            raise RowError(str(exc)) from None
+        except OSError:
+            raise RowError('No se pudo leer el archivo.') from None
+    return raw, (info.st_dev, info.st_ino)
 
 
 def _hashes(raw: bytes) -> tuple[str, set[str]]:
@@ -295,15 +347,27 @@ def _recorded_sources(company) -> dict[str, set[str]]:
     return recorded
 
 
+UNREADABLE = ('No se pudo leer una foto que ya tiene este modelo para compararla con esta: revisa su galería en el '
+              'panel antes de importar.')
+
+
 class _Known:
-    """Per model: content hash → the colours that already show it (existing pictures and rows accepted so far)."""
+    """
+    Per model: content hash → the colours that already show it (existing pictures and rows accepted so far).
+
+    A picture of the model whose file cannot be read, and that no earlier import recorded, cannot be compared: every
+    row of that model is refused (`UNREADABLE`) rather than risk a duplicate or another colour's photo.
+    """
 
     def __init__(self, company):
         self.company = company
         self._by_model: dict[int, dict[str, set[int]]] = {}
+        self._unreadable: set[int] = set()
         self._recorded = None
 
     def of(self, model) -> dict[str, set[int]]:
+        if model.pk in self._unreadable:
+            raise RowError(UNREADABLE)
         if model.pk not in self._by_model:
             if self._recorded is None:
                 self._recorded = _recorded_sources(self.company)
@@ -311,14 +375,20 @@ class _Known:
             images = list(finish_media.gallery(model))
             stored = finish_media.stored_of(images)
             for image in images:
-                digests = set(self._recorded.get(image.image_url, ()))
+                recorded = set(self._recorded.get(image.image_url, ()))
+                digests = set(recorded)
                 row = stored.get(storefront_media.managed_public_id(image.image_url))
+                read = False
                 if row is not None:
                     try:
                         with evidence_storage.open_stream(row.storage_key) as handle:
                             digests.add(hashlib.sha256(handle.read()).hexdigest())
+                        read = True
                     except (evidence_storage.EvidenceStorageError, OSError):
-                        pass        # an unreadable file cannot be compared; the recorded hash may still be
+                        pass
+                if not read and not recorded:
+                    self._unreadable.add(model.pk)
+                    raise RowError(UNREADABLE)
                 for digest in digests:
                     known.setdefault(digest, set()).add(image.color_option_id)
             self._by_model[model.pk] = known
@@ -350,16 +420,14 @@ def validate(company, rows: list[dict], root: Path) -> list[Row]:
                     {name: _text(data.get(name)) for name in finish_media.PROVENANCE_FIELDS})
             except finish_media.FinishMediaError as exc:
                 raise RowError(str(exc)) from None
-            row.path = safe_path(root, _text(data.get('file')))
-            row.sha256, digests = _hashes(read_file(row.path))
+            raw, row.identity = read_inside(root, _text(data.get('file')))
+            row.sha256, row.digests = _hashes(raw)
+            del raw
 
             finish = (row.model.pk, row.colour.pk)
             seen = known.of(row.model)
-            colours = set().union(*(seen.get(digest, set()) for digest in digests))
-            if row.colour.pk in colours:
+            if _duplicate(seen, row):
                 row.status, row.reason = SKIP, 'ese acabado ya tiene esta foto'
-            elif colours:
-                raise RowError('Esa misma foto ya está en otro color de este modelo.')
             if row.is_primary:
                 if finish in primaries:
                     raise RowError('Sólo una foto principal por acabado en el manifiesto.')
@@ -371,19 +439,79 @@ def validate(company, rows: list[dict], root: Path) -> list[Row]:
             if counts[finish] >= limit:
                 raise RowError(f'Un acabado admite hasta {limit} imágenes (contando las que ya tiene).')
             counts[finish] += 1
-            for digest in digests:
-                seen.setdefault(digest, set()).add(row.colour.pk)
+            _remember(seen, row)
         except RowError as exc:
             row.status, row.reason = ERROR, str(exc)
     return report
+
+
+def _duplicate(seen: dict[str, set[int]], row: Row) -> bool:
+    """True when that finish already shows this content; another colour of the model showing it is an error."""
+    colours = set().union(*(seen.get(digest, set()) for digest in row.digests))
+    if row.colour.pk in colours:
+        return True
+    if colours:
+        raise RowError('Esa misma foto ya está en otro color de este modelo.')
+    return False
+
+
+def _remember(seen: dict[str, set[int]], row: Row) -> None:
+    for digest in row.digests:
+        seen.setdefault(digest, set()).add(row.colour.pk)
 
 
 # ---------------------------------------------------------------------------
 # Importing
 # ---------------------------------------------------------------------------
 
-class ManifestChanged(Exception):
-    """A file changed between validation and import."""
+class _Refused(Exception):
+    """A row that stopped being importable after validation: the run is undone and that row reported."""
+
+    def __init__(self, row: Row, reason: str):
+        super().__init__(reason)
+        self.row, self.reason = row, reason
+
+
+def _read_again(root: Path, row: Row) -> bytes:
+    """The row's file again — the same file (device, inode) with the same bytes it had when validated."""
+    try:
+        raw, identity = read_inside(root, row.file)
+    except RowError as exc:
+        raise _Refused(row, str(exc)) from None
+    if identity != row.identity or hashlib.sha256(raw).hexdigest() != row.sha256:
+        raise _Refused(row, 'El archivo cambió después de validarlo: vuelve a ejecutar el manifiesto.')
+    return raw
+
+
+def _place_under_lock(company, stored, actor) -> tuple[list[dict], list[str]]:
+    """
+    Places the stored files, one model at a time: lock the model, compute its gallery's hashes AGAIN (a picture may
+    have been placed since validation) and skip a row that finish now shows, or refuse the run when another colour
+    does. Returns the placed pictures and the addresses of the files stored for rows skipped here.
+    """
+    placed, skipped = [], []
+    known = _Known(company)
+    locked: set[int] = set()
+    for row, image in stored:
+        if row.model.pk not in locked:
+            ProductModel.objects.select_for_update().get(pk=row.model.pk, company=company)
+            locked.add(row.model.pk)
+        try:
+            seen = known.of(row.model)
+            if _duplicate(seen, row):
+                row.status, row.reason = SKIP, 'ese acabado ya tenía esta foto al importar'
+                skipped.append(image.url)
+                continue
+        except RowError as exc:
+            raise _Refused(row, str(exc)) from None
+        _remember(seen, row)
+        finish_image = finish_media.place(model=row.model, colour=row.colour, address=image.url, actor=actor,
+                                          alt_text=row.alt_text, view=row.view)
+        if row.is_primary and not finish_image.is_primary:
+            finish_image = finish_media.update_image(image=finish_image, actor=actor, is_primary=True)
+        placed.append({'row': row.number, 'image_id': finish_image.pk, 'model_id': row.model.pk,
+                       'color_option_id': row.colour.pk, 'address': image.url, 'source_sha256': row.sha256})
+    return placed, skipped
 
 
 def run(*, company, manifest: Path, root: Path, actor, dry_run: bool) -> Report:
@@ -398,29 +526,29 @@ def run(*, company, manifest: Path, root: Path, actor, dry_run: bool) -> Report:
     try:
         stored = []
         for row in pending:
-            raw = read_file(row.path)
-            if hashlib.sha256(raw).hexdigest() != row.sha256:
-                raise ManifestChanged(f'El archivo de la fila {row.number} cambió durante la importación.')
+            raw = _read_again(root, row)
             image = storefront_media.store(company=company, actor=actor, raw=raw, provenance=row.provenance)
             addresses.append(image.url)
             stored.append((row, image))
         with transaction.atomic():
-            placed = []
-            for row, image in stored:
-                finish_image = finish_media.place(model=row.model, colour=row.colour, address=image.url, actor=actor,
-                                                  alt_text=row.alt_text, view=row.view)
-                if row.is_primary and not finish_image.is_primary:
-                    finish_image = finish_media.update_image(image=finish_image, actor=actor, is_primary=True)
-                placed.append({'row': row.number, 'image_id': finish_image.pk, 'model_id': row.model.pk,
-                               'color_option_id': row.colour.pk, 'address': image.url, 'source_sha256': row.sha256})
-            AdminAuditLog.log(
-                actor=actor, action=SUMMARY_ACTION, target_type='company', target_id=company.pk, company=company,
-                metadata={'manifest_sha256': digest, 'manifest_name': manifest.name[:120], 'rows': len(report.rows),
-                          'imported': len(placed), 'skipped': report.skipped, 'images': placed},
-            )
-    except Exception:
-        # Stored but never placed: nothing of a failed run is left behind.
+            placed, skipped = _place_under_lock(company, stored, actor)
+            if placed:
+                AdminAuditLog.log(
+                    actor=actor, action=SUMMARY_ACTION, target_type='company', target_id=company.pk,
+                    company=company,
+                    metadata={'manifest_sha256': digest, 'manifest_name': manifest.name[:120],
+                              'rows': len(report.rows), 'imported': len(placed), 'skipped': report.skipped,
+                              'images': placed},
+                )
+    except _Refused as refused:
+        storefront_media.release(addresses, company=company, actor=actor, reason='never_placed')
+        refused.row.status, refused.row.reason = ERROR, refused.reason
+        return report
+    except BaseException:
+        # Stored but never placed — an interruption included: nothing of a failed run is left behind.
         storefront_media.release(addresses, company=company, actor=actor, reason='never_placed')
         raise
+    # Files stored for rows that turned out to be duplicates under the lock: nothing shows them.
+    storefront_media.release(skipped, company=company, actor=actor, reason='never_placed')
     report.imported = len(placed)
     return report

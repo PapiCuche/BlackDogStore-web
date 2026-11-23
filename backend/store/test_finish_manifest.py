@@ -29,7 +29,7 @@ from django.core.management.base import CommandError
 from django.test import override_settings
 from PIL import Image
 
-from store import device_catalog, finish_media, model_palette, storefront_media
+from store import device_catalog, evidence_storage, finish_manifest, finish_media, model_palette, storefront_media
 from store.models import AdminAuditLog, ModelFinishImage, StorefrontImage
 from store.test_finish_images import FinishShop
 from store.tests import _p2d_member, _p3_company
@@ -336,11 +336,25 @@ class PathSafetyTest(ManifestShop):
         self.assertEqual(output.count('· error ·'), 3)
         self.assertEqual(self.snapshot(), before)
 
-    def test_a_symlink_inside_the_folder_is_allowed(self):
+    def test_no_symlink_is_followed_even_inside_the_folder(self):
+        # Every component is opened without following links (no check-then-open window).
         self.file('real.png', seed=1)
+        self.file('sub/otra.png', seed=2)
         os.symlink(self.folder / 'real.png', self.folder / 'alias.png')
-        self.do_import(self.manifest([row(file='alias.png')]))
+        os.symlink(self.folder / 'sub', self.folder / 'enlace-carpeta')
+        output = self.fails(self.manifest([row(file='alias.png'), row(file='enlace-carpeta/otra.png')]))
+        self.assertEqual(output.count('enlace simbólico'), 2)
+        self.assertEqual(ModelFinishImage.objects.count(), 0)
+
+    def test_a_file_in_a_subfolder_is_read(self):
+        self.file('negro/frente.png', seed=1)
+        self.do_import(self.manifest([row(file='negro/./frente.png')]))
         self.assertEqual(finish_media.gallery(self.model, self.black).count(), 1)
+
+    def test_a_fifo_is_refused_without_blocking(self):
+        os.mkfifo(self.folder / 'tuberia.png')
+        output = self.fails(self.manifest([row(file='tuberia.png')]))
+        self.assertIn('no es un archivo', output)
 
 
 class ResolutionTest(ManifestShop):
@@ -429,10 +443,144 @@ class ExampleManifestTest(ManifestShop):
         from store import finish_manifest
 
         example = Path(settings.BASE_DIR).parent / 'docs' / 'finish-images-manifest.example.csv'
-        if not example.exists():
-            self.skipTest('docs/ is not next to the backend in this checkout')
+        # Listed in scripts/affected_tests.py EXTERNAL_INPUTS and the workflow's paths: CI checks it out.
+        self.assertTrue(example.exists(), example)
         rows, _digest = finish_manifest.read_manifest(example)
         self.assertEqual(len(rows), 2)
         for item in rows:
             self.assertEqual(set(item), set(finish_manifest.FIELDS))
             self.assertTrue(item['source_url'].startswith('https://example.com/'))
+
+
+class ReviewHardeningTest(ManifestShop):
+    """#389 review: interruption, unreadable gallery files, the re-check under the lock and swapped files."""
+
+    def _command(self, manifest):
+        return ['import_finish_images', '--company', self.company.slug, '--manifest', str(manifest),
+                '--dir', str(self.folder), '--actor', str(self.staff.pk)]
+
+    def test_an_interruption_while_storing_releases_what_was_stored(self):
+        self.file('negro-1.png', seed=1)
+        self.file('negro-2.png', seed=2)
+        before = self.snapshot()
+        real_store = storefront_media.store
+        calls = []
+
+        def interrupted(**kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                raise KeyboardInterrupt
+            return real_store(**kwargs)
+
+        manifest = self.manifest([row(file='negro-1.png'), row(file='negro-2.png')])
+        with mock.patch('store.finish_manifest.storefront_media.store', side_effect=interrupted), \
+                self.assertRaises(KeyboardInterrupt), self.captureOnCommitCallbacks(execute=True):
+            call_command(*self._command(manifest), stdout=io.StringIO())
+        count, stored, _logs, files = self.snapshot()
+        self.assertEqual((count, stored, files), (before[0], before[1], before[3]))
+
+    def test_an_interruption_while_placing_releases_every_stored_file(self):
+        self.file('negro-1.png', seed=1)
+        before = self.snapshot()
+        manifest = self.manifest([row(file='negro-1.png')])
+        with mock.patch('store.finish_manifest.finish_media.place', side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt), self.captureOnCommitCallbacks(execute=True):
+            call_command(*self._command(manifest), stdout=io.StringIO())
+        count, stored, _logs, files = self.snapshot()
+        self.assertEqual((count, stored, files), (before[0], before[1], before[3]))
+
+    def _panel_upload(self, raw, colour):
+        return finish_media.add_image(model=self.model, color_option_id=colour.pk, actor=self.staff,
+                                      uploaded=storefront_media_upload(raw), provenance={'source_kind': 'own_photo'})
+
+    def test_an_unreadable_gallery_file_is_an_error_for_that_models_rows(self):
+        self._panel_upload(picture(9), self.blue)
+        self.file('negro-1.png', seed=1)
+        before = self.snapshot()
+        with mock.patch('store.finish_manifest.evidence_storage.open_stream',
+                        side_effect=evidence_storage.EvidenceStorageError('x')):
+            output = self.fails(self.manifest([row()]))
+        self.assertIn('No se pudo leer una foto que ya tiene este modelo', output)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_recorded_source_hash_covers_an_unreadable_gallery_file(self):
+        self.file('negro-1.png', seed=1)
+        self.file('negro-2.png', seed=2)
+        self.do_import(self.manifest([row(file='negro-1.png')]))
+        with mock.patch('store.finish_manifest.evidence_storage.open_stream',
+                        side_effect=evidence_storage.EvidenceStorageError('x')):
+            output = self.do_import(self.manifest([row(file='negro-1.png'), row(file='negro-2.png')]))
+        self.assertIn('fila 1 · skip-duplicate', output)
+        self.assertIn('fila 2 · ok', output)
+        self.assertEqual(finish_media.gallery(self.model, self.black).count(), 2)
+
+    def _after_validation(self, action):
+        real_validate = finish_manifest.validate
+
+        def validate_then(*args, **kwargs):
+            report = real_validate(*args, **kwargs)
+            action()
+            return report
+
+        return mock.patch('store.finish_manifest.validate', side_effect=validate_then)
+
+    def test_the_same_picture_placed_meanwhile_in_that_finish_is_skipped_under_the_lock(self):
+        raw = picture(1)
+        self.file('negro-1.png', raw)
+        self.file('negro-2.png', seed=2)
+        with self._after_validation(lambda: self._panel_upload(raw, self.black)):
+            output = self.do_import(self.manifest([row(file='negro-1.png'), row(file='negro-2.png')]))
+        self.assertIn('fila 1 · skip-duplicate', output)
+        self.assertEqual(finish_media.gallery(self.model, self.black).count(), 2)   # the panel's + negro-2
+        summary = AdminAuditLog.objects.get(action='finish_images_imported')
+        self.assertEqual((summary.metadata['imported'], summary.metadata['skipped']), (1, 1))
+        # The file stored for the skipped row is not left behind.
+        self.assertEqual(StorefrontImage.objects.filter(company=self.company).count(), 2)
+
+    def test_the_same_picture_placed_meanwhile_in_another_colour_refuses_the_run(self):
+        raw = picture(1)
+        self.file('negro-1.png', raw)
+        self.file('negro-2.png', seed=2)
+        state = {}
+
+        def meanwhile():
+            self._panel_upload(raw, self.blue)
+            state['before'] = self.snapshot()
+
+        with self._after_validation(meanwhile):
+            output = self.fails(self.manifest([row(file='negro-2.png'), row(file='negro-1.png')]))
+        self.assertIn('fila 2 · error', output)
+        self.assertIn('otro color', output)
+        count, stored, _logs, files = self.snapshot()
+        self.assertEqual((count, stored, files), (state['before'][0], state['before'][1], state['before'][3]))
+        self.assertFalse(AdminAuditLog.objects.filter(action='finish_images_imported').exists())
+
+    def test_a_file_swapped_for_a_symlink_after_validation_is_refused(self):
+        raw = picture(1)
+        self.file('negro-1.png', raw)
+        outside = self.work / 'fuera-igual.png'
+        outside.write_bytes(raw)
+
+        def swap():
+            (self.folder / 'negro-1.png').unlink()
+            os.symlink(outside, self.folder / 'negro-1.png')
+
+        before = self.snapshot()
+        with self._after_validation(swap):
+            output = self.fails(self.manifest([row()]))
+        self.assertIn('fila 1 · error', output)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_a_file_replaced_by_another_after_validation_is_refused(self):
+        self.file('negro-1.png', seed=1)
+
+        def replace():
+            # Same bytes, another file: written first and renamed over, so it cannot reuse the old inode.
+            self.file('nuevo.tmp', seed=1)
+            os.replace(self.folder / 'nuevo.tmp', self.folder / 'negro-1.png')
+
+        before = self.snapshot()
+        with self._after_validation(replace):
+            output = self.fails(self.manifest([row()]))
+        self.assertIn('cambió', output)
+        self.assertEqual(self.snapshot(), before)
