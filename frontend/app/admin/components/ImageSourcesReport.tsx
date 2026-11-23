@@ -13,7 +13,8 @@
  *
  * «Fotos por acabado y licencias» (`licensing` de la misma respuesta, CATALOG-REFERENCE-01 · PR C): los acabados
  * (modelo × color) sin ninguna foto, cada uno enlazado a las fotos de su modelo, y las subidas en uso sin origen o
- * sin licencia verificada. El total es del catálogo entero; la lista llega recortada por el servidor y se dice
+ * sin licencia verificada (una foto propia cuenta sólo si la muestra un acabado: desde 2026-11-23 toda foto de acabado
+ * se verifica antes de publicarse). El total es del catálogo entero; la lista llega recortada por el servidor y se dice
  * cuántos faltan.
  */
 
@@ -72,7 +73,7 @@ function LicensingPanel({ licensing }: { licensing: ImageLicensing }) {
   ];
   return (
     <Panel id="licencias" title="Fotos por acabado y licencias"
-      description="Cada acabado (modelo y color) sin fotos se ve en la tienda como «Imagen pendiente». Las subidas cuentan una vez aunque se muestren en varios lugares.">
+      description="Cada acabado (modelo y color) sin fotos, o cuyas fotos nadie verificó todavía, se ve en la tienda como «Imagen pendiente». Las subidas cuentan una vez aunque se muestren en varios lugares.">
       <div className="space-y-4">
         <ul aria-label="Contadores de fotos y licencias" className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-5">
           {counters.map(([label, value]) => (

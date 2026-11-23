@@ -849,20 +849,26 @@ test("cobertura: «Fotos por acabado y licencias» lista el acabado sin fotos y 
     expect(reply.status).toBe(200);
     return reply.body.licensing;
   };
-  // The panel step verified this run's pictures (owner, 2026-11-23: verified before they are published); one more,
-  // authorised by a supplier and not checked yet, waits for its licence check.
-  const pending = await api<FinishImage>(adminApi, "POST", finishes(seed.id), { multipart: {
-    file: png("arena-lateral.png", drawing(ARENA, { mark: true, back: true })), color_option_id: String(seed.colours.arena),
-    view: "side", source_kind: "supplier_authorized", license: "Autorización del distribuidor por revisar (prueba E2E)",
-  } });
-  expect(pending.status, JSON.stringify(pending.body)).toBe(201);
-  expect(pending.body.public).toBe(false);
+  // The panel step verified this run's pictures (owner, 2026-11-23: verified before they are published); two more
+  // wait for their check: one authorised by a supplier and one of the shop's own photos (a finish shows it, so it
+  // is verified before it is published, and counts as unverified until then).
+  for (const [name, view, origin] of [
+    ["arena-lateral.png", "side", { source_kind: "supplier_authorized", license: "Autorización del distribuidor por revisar (prueba E2E)" }],
+    ["arena-frontal.png", "front", { source_kind: "own_photo" }],
+  ] as const) {
+    const pending = await api<FinishImage>(adminApi, "POST", finishes(seed.id), { multipart: {
+      file: png(name, drawing(ARENA, { mark: true, back: view === "side" })), color_option_id: String(seed.colours.arena),
+      view, ...origin,
+    } });
+    expect(pending.status, JSON.stringify(pending.body)).toBe(201);
+    expect(pending.body.public).toBe(false);
+  }
   const before = await report();
   // This model: only Verde salvia lacks pictures (its other colours have them).
   expect(before.pending_finishes.filter((row) => row.model_id === seed.id).map((row) => row.option_id)).toEqual([seed.colours.salvia]);
-  // Titanio arena's back is a demo resource and its side picture waits for its licence check.
+  // Titanio arena's back is a demo resource; its side and front pictures wait for their licence check.
   expect(before.uploads.demo).toBeGreaterThanOrEqual(1);
-  expect(before.uploads.unverified_license).toBeGreaterThanOrEqual(1);
+  expect(before.uploads.unverified_license).toBeGreaterThanOrEqual(2);
 
   const { context, page } = await adminPage(browser);
   for (const viewport of [VIEWPORTS[0], VIEWPORTS[3]]) {

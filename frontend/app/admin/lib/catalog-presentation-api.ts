@@ -317,7 +317,11 @@ export type CommercialSummary = {
   content: { has_description: boolean; has_cover: boolean; reference_key: string };
   palette: { has_palette: boolean; options: Partial<Record<AttributeRole, number>>; exclusions: number };
   variants: { total: number; new: number; used: number; published: number; priced: number; pending_drafts: number; on_order: number };
-  finishes: { colours: number; pending: number };
+  /**
+   * `pending`: colours without a picture the shop shows (none, or none with its licence verified — owner, 2026-11-23).
+   * `unverified`: of those, the ones that do have pictures, waiting for the licence check (absent from an older server).
+   */
+  finishes: { colours: number; pending: number; unverified?: number };
   /** `lowest_agreed_cost` only comes to a caller with `costs.view`. */
   suppliers: { id: number; name: string; offers: number; variants: number; lowest_agreed_cost?: string | null }[];
   /** null: the caller may not see promotions (not «there are none»). */

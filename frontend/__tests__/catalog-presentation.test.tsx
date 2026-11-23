@@ -589,12 +589,22 @@ const SUMMARY: CommercialSummary = {
   content: { has_description: false, has_cover: true, reference_key: 'fono-10' },
   palette: { has_palette: true, options: { capacity: 2, color: 3, sim: 2, region: 1 }, exclusions: 1 },
   variants: { total: 3, new: 2, used: 1, published: 1, priced: 1, pending_drafts: 1, on_order: 1 },
-  finishes: { colours: 3, pending: 2 },
+  finishes: { colours: 3, pending: 2, unverified: 1 },
   suppliers: [{ id: 8, name: 'Mayorista Uno', offers: 2, variants: 1, lowest_agreed_cost: '2800.00' }],
   promotions: null,
 };
 
 describe('Configuración comercial', () => {
+  it('un color con fotos sin verificar sigue pendiente: nunca «todos con imagen» (2026-11-23)', () => {
+    const { unmount } = render(<SummaryRows summary={{ ...SUMMARY, finishes: { colours: 2, pending: 2, unverified: 2 } }} canSeeCosts={false} />);
+    expect(screen.getByText(/2 colores · 2 con «Imagen pendiente» \(2 con fotos sin verificar\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/todos con imagen/)).not.toBeInTheDocument();
+    unmount();
+    // An older server sends no `unverified`: nothing is said about it.
+    render(<SummaryRows summary={{ ...SUMMARY, finishes: { colours: 3, pending: 0 } }} canSeeCosts={false} />);
+    expect(screen.getByText('3 colores, todos con imagen')).toBeInTheDocument();
+  });
+
   it('sin costs.view no muestra el costo aunque el servidor lo envíe; con él, sí', () => {
     const { unmount } = render(<SummaryRows summary={SUMMARY} canSeeCosts={false} />);
     expect(screen.getByText('Mayorista Uno')).toBeInTheDocument();
@@ -609,7 +619,7 @@ describe('Configuración comercial', () => {
     render(<SummaryRows summary={SUMMARY} canSeeCosts={false} />);
     expect(screen.getByText(/destacado \(va primero en la lista\)/)).toBeInTheDocument();
     expect(screen.getByText(/2 capacidades · 3 colores · 2 SIM · 1 región · 1 combinación que no existe/)).toBeInTheDocument();
-    expect(screen.getByText(/3 colores · 2 con «Imagen pendiente»/)).toBeInTheDocument();
+    expect(screen.getByText(/3 colores · 2 con «Imagen pendiente» \(1 con fotos sin verificar\)/)).toBeInTheDocument();
     expect(screen.getByText(/1 variante admite venta bajo pedido/)).toBeInTheDocument();
     expect(screen.getByText('No tienes permiso para ver promociones.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Ir a las imágenes: Imágenes por acabado' })).toHaveAttribute('href', '#acabados');
