@@ -139,7 +139,8 @@ export function ImageSourcesReport({ companyId, canManage }: { companyId: number
         pueden subir muchas a la vez: cada archivo va a su producto por el código.
       </p>
       {canManage ? (
-        <Link href={BULK_IMAGES_HREF} className={`${touch} ${internalButtonClass} mt-3`}>Subir imágenes en lote</Link>
+        // An inline link with padding draws over the line above it: a box of its own, below the text.
+        <Link href={BULK_IMAGES_HREF} className={`${touch} ${internalButtonClass} mt-3 inline-flex items-center`}>Subir imágenes en lote</Link>
       ) : (
         <p className="mt-2 text-xs text-muted">
           Subir imágenes en lote exige permiso para administrar productos. Pídeselo a quien administra el catálogo.
