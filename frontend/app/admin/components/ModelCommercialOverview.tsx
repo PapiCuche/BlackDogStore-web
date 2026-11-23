@@ -136,7 +136,8 @@ export function SummaryRows({ summary, canSeeCosts }: { summary: CommercialSumma
       </Row>
       <Row title="Imágenes por acabado" tone={finishes.colours && !finishes.pending ? "ok" : "todo"} href="#acabados" action="Ir a las imágenes">
         {finishes.colours === 0 ? "Sin colores todavía."
-          : finishes.pending ? `${count(finishes.colours, "color", "colores")} · ${finishes.pending} con «Imagen pendiente»`
+          : finishes.pending ? `${count(finishes.colours, "color", "colores")} · ${finishes.pending} con «Imagen pendiente»${
+            finishes.unverified ? ` (${finishes.unverified} con fotos sin verificar)` : ""}`
             : `${count(finishes.colours, "color", "colores")}, todos con imagen`}
       </Row>
       <Row title="Bajo pedido" tone="info" href="#variantes" action="Ir a las variantes">

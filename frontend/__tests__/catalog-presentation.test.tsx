@@ -271,7 +271,7 @@ function listingWith(blackImages: ReturnType<typeof picture>[]): FinishListing {
   };
 }
 
-let gallery: ReturnType<typeof picture>[];
+let gallery: (ReturnType<typeof picture> & { public?: boolean })[];
 
 async function mountFinishes(canManage = true) {
   mockApi({ '/admin/catalog/models/5/finish-images/': () => listingWith(gallery) });
@@ -371,17 +371,28 @@ describe('Imágenes por acabado', () => {
     expect(await screen.findByText(/Sí, por Ana Ruiz el/)).toBeInTheDocument();
   });
 
-  it('una foto propia sin verificar no es «Sin verificar»: la verificación no aplica y no se ofrece', async () => {
-    // Fixture: imagen 1 = foto propia sin verificar; imagen 2 = demostrativa sin verificar.
+  it('una foto sin la licencia verificada, también la propia, no se ve en la tienda y ofrece la casilla (2026-11-23)', async () => {
+    // Fixture: imagen 1 = foto propia sin verificar; imagen 2 = demostrativa sin verificar; imagen 3 = verificada.
+    gallery = [...gallery, picture(3, 22, 2, { public: true, source: source({ kind: 'supplier_authorized',
+      kind_label: 'Material autorizado por proveedor', license: 'Autorización', license_verified: true,
+      license_verified_at: '2026-11-20T10:00:00Z', license_verified_by: 'Ana Ruiz' }) })];
+    gallery[0] = { ...gallery[0], public: false };
     await mountFinishes();
     const black = screen.getByRole('listitem', { name: 'Negro' });
     const own = within(black).getByRole('listitem', { name: 'Imagen 1 de Negro' });
-    expect(within(own).getByText('No aplica (foto propia)')).toHaveClass('text-muted');
-    expect(within(own).queryByText('Sin verificar')).not.toBeInTheDocument();
-    expect(within(own).queryByRole('checkbox', { name: /Licencia verificada/ })).not.toBeInTheDocument();
+    expect(within(own).getByText('No visible en la tienda hasta verificar la licencia')).toBeInTheDocument();
+    expect(within(own).getByText('Sin verificar (foto propia)')).toHaveClass('text-warning');
+    expect(within(own).queryByText('No aplica (foto propia)')).not.toBeInTheDocument();
+    const ownCheck = within(own).getByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' });
+    expect(ownCheck).toBeEnabled();
+    expect(within(own).getByText('Confirmé que es una foto propia de la tienda')).toBeInTheDocument();
+    // Without `public` (an older server) the panel reads it from the licence check.
     const demo = within(black).getByRole('listitem', { name: 'Imagen 2 de Negro' });
     expect(within(demo).getByText('Sin verificar')).toBeInTheDocument();
+    expect(within(demo).getByText('No visible en la tienda hasta verificar la licencia')).toBeInTheDocument();
     expect(within(demo).getByRole('checkbox', { name: 'Licencia verificada: imagen 2 de Negro' })).toBeInTheDocument();
+    const verified = within(black).getByRole('listitem', { name: 'Imagen 3 de Negro' });
+    expect(within(verified).queryByText('No visible en la tienda hasta verificar la licencia')).not.toBeInTheDocument();
   });
 
   it('el foco: confirmar quitar va a «Sí, quitar» y cancelar vuelve a «Quitar»', async () => {
@@ -461,7 +472,7 @@ describe('Imágenes por acabado', () => {
     }
   });
 
-  it('desmarcar la licencia de una foto propia verificada no tira el foco: pasa a su tarjeta', async () => {
+  it('desmarcar la licencia de una foto propia verificada no tira el foco: se queda en su casilla', async () => {
     gallery = [picture(1, 22, 0, { source: source({ license_verified: true, license_verified_by: 'Ana Ruiz',
       license_verified_at: '2026-11-20T10:00:00Z' }) }), gallery[1]];
     await mountFinishes();
@@ -473,9 +484,11 @@ describe('Imágenes por acabado', () => {
     const check = screen.getByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' });
     check.focus();
     fireEvent.click(check);
-    // Una foto propia sin verificar ya no ofrece la casilla: el foco va a la tarjeta de esa imagen.
-    await waitFor(() => expect(screen.queryByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' })).not.toBeInTheDocument());
-    await waitFor(() => expect(screen.getByRole('listitem', { name: 'Imagen 1 de Negro' })).toHaveFocus());
+    // 2026-11-23: una foto propia también se verifica antes de publicarse, así que la casilla se queda y el foco con ella.
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' })).not.toBeChecked());
+    await waitFor(() => expect(screen.getByRole('checkbox', { name: 'Licencia verificada: imagen 1 de Negro' })).toHaveFocus());
+    expect(within(screen.getByRole('listitem', { name: 'Imagen 1 de Negro' }))
+      .getByText('No visible en la tienda hasta verificar la licencia')).toBeInTheDocument();
   });
 
   it('verificar la licencia de otra imagen deja el foco en su casilla', async () => {
@@ -576,12 +589,22 @@ const SUMMARY: CommercialSummary = {
   content: { has_description: false, has_cover: true, reference_key: 'fono-10' },
   palette: { has_palette: true, options: { capacity: 2, color: 3, sim: 2, region: 1 }, exclusions: 1 },
   variants: { total: 3, new: 2, used: 1, published: 1, priced: 1, pending_drafts: 1, on_order: 1 },
-  finishes: { colours: 3, pending: 2 },
+  finishes: { colours: 3, pending: 2, unverified: 1 },
   suppliers: [{ id: 8, name: 'Mayorista Uno', offers: 2, variants: 1, lowest_agreed_cost: '2800.00' }],
   promotions: null,
 };
 
 describe('Configuración comercial', () => {
+  it('un color con fotos sin verificar sigue pendiente: nunca «todos con imagen» (2026-11-23)', () => {
+    const { unmount } = render(<SummaryRows summary={{ ...SUMMARY, finishes: { colours: 2, pending: 2, unverified: 2 } }} canSeeCosts={false} />);
+    expect(screen.getByText(/2 colores · 2 con «Imagen pendiente» \(2 con fotos sin verificar\)/)).toBeInTheDocument();
+    expect(screen.queryByText(/todos con imagen/)).not.toBeInTheDocument();
+    unmount();
+    // An older server sends no `unverified`: nothing is said about it.
+    render(<SummaryRows summary={{ ...SUMMARY, finishes: { colours: 3, pending: 0 } }} canSeeCosts={false} />);
+    expect(screen.getByText('3 colores, todos con imagen')).toBeInTheDocument();
+  });
+
   it('sin costs.view no muestra el costo aunque el servidor lo envíe; con él, sí', () => {
     const { unmount } = render(<SummaryRows summary={SUMMARY} canSeeCosts={false} />);
     expect(screen.getByText('Mayorista Uno')).toBeInTheDocument();
@@ -596,7 +619,7 @@ describe('Configuración comercial', () => {
     render(<SummaryRows summary={SUMMARY} canSeeCosts={false} />);
     expect(screen.getByText(/destacado \(va primero en la lista\)/)).toBeInTheDocument();
     expect(screen.getByText(/2 capacidades · 3 colores · 2 SIM · 1 región · 1 combinación que no existe/)).toBeInTheDocument();
-    expect(screen.getByText(/3 colores · 2 con «Imagen pendiente»/)).toBeInTheDocument();
+    expect(screen.getByText(/3 colores · 2 con «Imagen pendiente» \(1 con fotos sin verificar\)/)).toBeInTheDocument();
     expect(screen.getByText(/1 variante admite venta bajo pedido/)).toBeInTheDocument();
     expect(screen.getByText('No tienes permiso para ver promociones.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Ir a las imágenes: Imágenes por acabado' })).toHaveAttribute('href', '#acabados');

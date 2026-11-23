@@ -62,6 +62,14 @@ class PresentationShop(PaletteShop, TestCase):
         attribute = next(a for a in body['attributes'] if a['id'] == self.colour.pk)
         return [option['label'] for option in attribute['options']]
 
+    def _root(self):
+        import shutil
+        import tempfile
+
+        root = tempfile.mkdtemp(prefix='presentation-')
+        self.addCleanup(shutil.rmtree, root, True)
+        return root
+
 
 class SchemaDefaultsTest(PresentationShop):
     def test_a_model_is_not_featured_and_an_option_is_not_placed_by_default(self):
@@ -285,9 +293,31 @@ class CommercialSummaryTest(PresentationShop):
         self.assertEqual(body['variants']['total'], 3)
         self.assertEqual(body['variants']['new'], 2)
         self.assertEqual(body['variants']['on_order'], 1)
-        self.assertEqual(body['finishes'], {'colours': 2, 'pending': 2})
+        self.assertEqual(body['finishes'], {'colours': 2, 'pending': 2, 'unverified': 0})
         self.assertEqual(body['suppliers'], [{'id': self.supplier.pk, 'name': 'Mayorista Uno', 'offers': 1,
                                               'variants': 1}])
+
+    def test_a_colour_whose_pictures_nobody_verified_is_still_pending(self):
+        # Owner, 2026-11-23: the shop shows a finish picture only once its licence is verified, so a colour whose
+        # pictures are all unverified still shows «Imagen pendiente» there; the summary says so and counts it apart.
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        from store.test_storefront_media import png_with_transparency
+
+        self.palette(self.gb128, self.black, self.blue)
+        finishes = lambda: _client(self.viewer).get(self.url()).json()['finishes']  # noqa: E731
+        with self.settings(EVIDENCE_STORAGE_BACKEND='filesystem',
+                           EVIDENCE_STORAGE_ROOT=self._root()):
+            res = self.api.post(
+                f'/api/admin/catalog/models/{self.model.pk}/finish-images/{self.q}',
+                {'file': SimpleUploadedFile('negro.png', png_with_transparency(), content_type='image/png'),
+                 'color_option_id': self.black.pk, 'source_kind': 'own_photo'}, format='multipart')
+            self.assertEqual(res.status_code, 201, res.content)
+            self.assertEqual(finishes(), {'colours': 2, 'pending': 2, 'unverified': 1})
+            res = self.api.patch(f'/api/admin/catalog/models/{self.model.pk}/finish-images/{res.json()["id"]}/{self.q}',
+                                 {'license_verified': True}, format='json')
+            self.assertEqual(res.status_code, 200, res.content)
+            self.assertEqual(finishes(), {'colours': 2, 'pending': 1, 'unverified': 0})
 
     def test_no_cost_without_costs_view(self):
         self.offer(self.new128)
@@ -350,11 +380,3 @@ class FinishListingPresentationTest(PresentationShop):
                                  {'license_verified': True}, format='json')
         self.assertEqual(res.status_code, 200, res.content)
         self.assertEqual(res.json()['source']['license_verified_by'], self.staff.username)
-
-    def _root(self):
-        import shutil
-        import tempfile
-
-        root = tempfile.mkdtemp(prefix='presentation-')
-        self.addCleanup(shutil.rmtree, root, True)
-        return root

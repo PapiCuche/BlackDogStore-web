@@ -212,11 +212,13 @@ def licensing(company) -> dict:
     * `finishes_without_images` / `pending_finishes`: each (model, colour) the catalogue has — a colour
       (`finish_media.colour_attribute_ids`) of the model's palette or of one of its active variants — without a finish
       picture. The shop shows those variants
-      «Imagen pendiente» unless the variant has pictures of its own.
+      «Imagen pendiente» unless the variant has pictures of its own — and so it does for a finish whose pictures
+      nobody verified yet (owner, 2026-11-23), which is not counted here: `finish_coverage` says it (`public`).
     * `uploads`: the shop's own uploads shown somewhere in the catalogue (model cover, a product's picture or
       gallery, a finish), each counted once: `unknown_source` (no provenance: uploaded before PR C or through a slot
-      that does not ask), `unverified_license` (provenance given, not the shop's own photo, nobody checked it yet),
-      `demo` (a demo resource, flagged on the shop).
+      that does not ask), `unverified_license` (provenance given, nobody checked it yet — the shop's own photo only
+      when a finish shows it: a finish picture is published only once verified, whatever its origin, owner
+      2026-11-23; elsewhere an own photo has no licence to check), `demo` (a demo resource, flagged on the shop).
     """
     finishes = catalog_finishes(company)
     pictured = set(ModelFinishImage.objects.filter(company=company).values_list('model_id', 'color_option_id'))
@@ -230,20 +232,21 @@ def licensing(company) -> dict:
         key=lambda row: (row['model_name'].casefold(), row['option_label'].casefold(), row['option_id']),
     )
 
+    finish_ids = _managed_ids(ModelFinishImage.objects.filter(company=company).values_list('image_url', flat=True))
     ids = (_managed_ids(ProductModel.objects.filter(company=company).exclude(image_url='')
                         .values_list('image_url', flat=True))
            | _managed_ids(Product.objects.filter(company=company).exclude(image_url='')
                           .values_list('image_url', flat=True))
            | _managed_ids(ProductImage.objects.filter(company=company).values_list('image_url', flat=True))
-           | _managed_ids(ModelFinishImage.objects.filter(company=company).values_list('image_url', flat=True)))
+           | finish_ids)
     uploads = {'total': 0, 'unknown_source': 0, 'unverified_license': 0, 'demo': 0}
     if ids:
-        for kind, verified_at in (StorefrontImage.objects.filter(company=company, public_id__in=ids)
-                                  .values_list('source_kind', 'license_verified_at')):
+        for public_id, kind, verified_at in (StorefrontImage.objects.filter(company=company, public_id__in=ids)
+                                             .values_list('public_id', 'source_kind', 'license_verified_at')):
             uploads['total'] += 1
             if kind == StorefrontImage.SOURCE_UNKNOWN:
                 uploads['unknown_source'] += 1
-            elif kind != StorefrontImage.SOURCE_OWN_PHOTO and verified_at is None:
+            elif verified_at is None and (kind != StorefrontImage.SOURCE_OWN_PHOTO or public_id in finish_ids):
                 uploads['unverified_license'] += 1
             if kind == StorefrontImage.SOURCE_DEMO:
                 uploads['demo'] += 1
@@ -260,7 +263,7 @@ def licensing(company) -> dict:
 
 FINISH_COVERAGE_COLUMNS = (
     'model_id', 'model_name', 'option_id', 'option_label', 'photos', 'has_primary', 'license_verified', 'demo',
-    'own', 'supplier', 'licensed', 'unknown', 'covered',
+    'own', 'supplier', 'licensed', 'unknown', 'covered', 'verified_photo',
 )
 _BY_KIND = {
     StorefrontImage.SOURCE_OWN_PHOTO: 'own', StorefrontImage.SOURCE_SUPPLIER_AUTHORIZED: 'supplier',
@@ -273,8 +276,11 @@ def finish_coverage(company) -> dict:
     Read-only, one company, a fixed number of queries: one row per finish of the catalogue (`catalog_finishes`), with
     how many pictures it has and where they come from (the `StorefrontImage` of each one; a picture without one, or
     without provenance, is `unknown`). A finish is COVERED when at least one of its pictures is not a demo resource:
-    a demo picture fills the slot on the shop, never the catalogue. Every finish, no cap (the API's `licensing`
-    keeps its own).
+    a demo picture fills the slot on the shop, never the catalogue. It has a VERIFIED PHOTO (`verified_photo`) when
+    at least one of its pictures has its licence verified (a verified demo too): only those may reach the shop
+    (`finish_media.is_public`, owner 2026-11-23) — a covered finish nobody verified still shows «Imagen pendiente».
+    It does NOT say a published variant uses that colour (the shop shows a finish only through one). Every finish, no
+    cap (the API's `licensing` keeps its own).
     """
     from .storefront_media import managed_public_id
 
@@ -301,7 +307,9 @@ def finish_coverage(company) -> dict:
                  .values_list('pk', 'name')) if finishes else {}
     rows = sorted(
         ({'model_id': model_id, 'model_name': names.get(model_id, ''), 'option_id': option_id,
-          'option_label': finishes[(model_id, option_id)], **row, 'covered': row['photos'] > row['demo']}
+          'option_label': finishes[(model_id, option_id)], **row, 'covered': row['photos'] > row['demo'],
+          # `stored` is this company's files only: a verified one is one the shop may show.
+          'verified_photo': row['license_verified'] > 0}
          for (model_id, option_id), row in counts.items()),
         key=lambda row: (row['model_name'].casefold(), row['option_label'].casefold(), row['model_id'],
                          row['option_id']),
@@ -312,6 +320,7 @@ def finish_coverage(company) -> dict:
             'finishes': len(rows), 'covered': covered,
             'without_photos': sum(1 for row in rows if not row['photos']),
             'demo_only': sum(1 for row in rows if row['photos'] and not row['covered']),
+            'verified_photo': sum(1 for row in rows if row['verified_photo']),
             'coverage_percent': round(100 * covered / len(rows), 1) if rows else 0.0,
         },
         'rows': rows,

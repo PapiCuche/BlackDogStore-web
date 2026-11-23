@@ -98,7 +98,8 @@ class FinishImageViewTest(FinishApiBase):
         self.assertEqual(self.patch(image['id'], {'view': 'side'}, api=_client(viewer)).status_code, 403)
 
     def test_the_public_gallery_says_the_view(self):
-        self.uploaded(self.black, {**OWN, 'view': 'main'})
+        # Only a picture whose licence was verified is on the shop (owner, 2026-11-23).
+        self.published(self.black, {**OWN, 'view': 'main'})
         body = _client(host=self.host).get(f'/api/catalog/models/{self.model.slug}/').json()
         picture = body['finish_images'][str(self.black.pk)][0]
         self.assertEqual(picture['view'], 'main')

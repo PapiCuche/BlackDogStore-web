@@ -16,7 +16,8 @@ import { apiBase, imei, shell, TAG } from "./inventory-first-support";
  * procedencia «foto propia», «autorizada por proveedor» o «recurso demostrativo».
  *
  *   1. Panel: subir con vista, reemplazar en su sitio (posición y principal se quedan, la verificación de la licencia
- *      se borra), muestra propia del modelo marcada «aproximada».
+ *      se borra), muestra propia del modelo marcada «aproximada». Una foto sin la licencia verificada dice «No visible
+ *      en la tienda hasta verificar la licencia» (propietario, 2026-11-23) hasta que se marca la casilla.
  *   2. Configurador público: cada color enseña SOLO sus fotos (principal y miniaturas); ?variante= restaura la
  *      elección; un color sin fotos enseña «Imagen pendiente», nunca otra foto; el chip usa la muestra del modelo.
  *   3. «Usar la muestra de la empresa» devuelve el chip a la muestra de la empresa.
@@ -199,7 +200,7 @@ const publicId = (address: string) => address.replace(/\/+$/, "").split("/").pop
 const finishes = (model: number) => `/admin/catalog/models/${model}/finish-images/`;
 
 type FinishImage = {
-  id: number; url: string; view: string; is_primary: boolean; sort_order: number;
+  id: number; url: string; view: string; is_primary: boolean; sort_order: number; public: boolean;
   source: { kind: string; license: string; license_verified: boolean };
 };
 type Listing = { finishes: { option: Record<string, unknown> & { id: number }; images: FinishImage[]; image_pending: boolean }[] };
@@ -315,8 +316,12 @@ test.beforeAll(async ({ playwright }) => {
     source_kind: "own_photo", alt_text: `${seed.name} Titanio arena`,
   } });
   expect(main.status, JSON.stringify(main.body)).toBe(201);
-  expect(main.body).toMatchObject({ view: "main", is_primary: true });
+  expect(main.body).toMatchObject({ view: "main", is_primary: true, public: false });
   ids.arenaMain = publicId(main.body.url);
+  // Owner, 2026-11-23: a finish picture reaches the shop only once somebody verified it, an own photo too.
+  const mainVerified = await api<FinishImage>(adminApi, "PATCH", `${finishes(seed.id)}${main.body.id}/`, { json: { license_verified: true } });
+  expect(mainVerified.status, JSON.stringify(mainVerified.body)).toBe(200);
+  expect(mainVerified.body.public).toBe(true);
 
   const front = await api<FinishImage>(adminApi, "POST", finishes(seed.id), { multipart: {
     file: png("glaciar-frontal.png", drawing(GLACIAR)), color_option_id: String(seed.colours.glaciar), view: "front",
@@ -387,6 +392,13 @@ test("panel: subir con vista, reemplazar en su sitio y muestra propia del modelo
   let stored = finishOf(await listing(), seed.colours.arena);
   expect(stored.images.map((image) => [image.view, image.is_primary])).toEqual([["main", true], ["back", false]]);
   ids.arenaBack = publicId(stored.images[1].url);
+  // Not on the shop until its licence is verified (owner, 2026-11-23); ticking the box publishes it.
+  const notPublic = (item: Locator) => item.getByText("No visible en la tienda hasta verificar la licencia");
+  await expect(notPublic(second)).toBeVisible();
+  await expect(notPublic(arena.getByRole("listitem", { name: "Imagen 1 de Titanio arena" }))).toHaveCount(0);
+  await second.getByRole("checkbox", { name: "Licencia verificada: imagen 2 de Titanio arena" }).click();
+  await expect(notPublic(second)).toHaveCount(0, { timeout: 30_000 });
+  expect(finishOf(await listing(), seed.colours.arena).images.map((image) => image.public)).toEqual([true, true]);
 
   // 2. Replace in place: Azul glaciar's only picture (primary, verified licence) takes a new file.
   const glaciar = finishItem(region, "Azul glaciar");
@@ -410,7 +422,13 @@ test("panel: subir con vista, reemplazar en su sitio y muestra propia del modelo
   const replaced = stored.images[0];
   expect(replaced).toMatchObject({ id: glaciarImage, view: "front", is_primary: true, sort_order: 0 });
   expect(replaced.source).toMatchObject({ kind: "supplier_authorized", license_verified: false });
+  expect(replaced.public).toBe(false);
   ids.glaciarNew = publicId(replaced.url);
+  // The new file is not on the shop until somebody verifies it again.
+  await expect(notPublic(card)).toBeVisible();
+  await card.getByRole("checkbox", { name: "Licencia verificada: imagen 1 de Azul glaciar" }).click();
+  await expect(notPublic(card)).toHaveCount(0, { timeout: 30_000 });
+  await expect(term(card, "Sin verificar")).toHaveCount(0);
   expect(ids.glaciarNew).not.toBe(ids.glaciarOld);
   // The old file is gone from the public address (nothing else showed it).
   const gone = await adminApi.get(`${apiBase()}/storefront/images/${ids.glaciarOld}`);
@@ -831,10 +849,24 @@ test("cobertura: «Fotos por acabado y licencias» lista el acabado sin fotos y 
     expect(reply.status).toBe(200);
     return reply.body.licensing;
   };
+  // The panel step verified this run's pictures (owner, 2026-11-23: verified before they are published); two more
+  // wait for their check: one authorised by a supplier and one of the shop's own photos (a finish shows it, so it
+  // is verified before it is published, and counts as unverified until then).
+  for (const [name, view, origin] of [
+    ["arena-lateral.png", "side", { source_kind: "supplier_authorized", license: "Autorización del distribuidor por revisar (prueba E2E)" }],
+    ["arena-frontal.png", "front", { source_kind: "own_photo" }],
+  ] as const) {
+    const pending = await api<FinishImage>(adminApi, "POST", finishes(seed.id), { multipart: {
+      file: png(name, drawing(ARENA, { mark: true, back: view === "side" })), color_option_id: String(seed.colours.arena),
+      view, ...origin,
+    } });
+    expect(pending.status, JSON.stringify(pending.body)).toBe(201);
+    expect(pending.body.public).toBe(false);
+  }
   const before = await report();
   // This model: only Verde salvia lacks pictures (its other colours have them).
   expect(before.pending_finishes.filter((row) => row.model_id === seed.id).map((row) => row.option_id)).toEqual([seed.colours.salvia]);
-  // Titanio arena's back is a demo resource and Azul glaciar's replacement waits for its licence check.
+  // Titanio arena's back is a demo resource; its side and front pictures wait for their licence check.
   expect(before.uploads.demo).toBeGreaterThanOrEqual(1);
   expect(before.uploads.unverified_license).toBeGreaterThanOrEqual(2);
 
