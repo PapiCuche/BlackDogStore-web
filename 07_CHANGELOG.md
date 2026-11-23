@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-23 — LEGAL-MSG-01: privacidad de mensajería con Instagram y Messenger
+
+**Changed**
+- La política de WhatsApp y CRM pasa a llamarse «Privacidad de mensajería y CRM» en el pie, en los enlaces entre políticas y en el panel. Su página se titula «Privacidad de mensajería (WhatsApp, Instagram y Messenger) y CRM» y sigue en `/privacy/whatsapp`.
+- La descripción de la página nombra WhatsApp, Instagram Direct y Facebook Messenger.
+
+El texto de cada empresa no cambia con este PR: se publica desde Administración › Configuración › Políticas legales. Sin migraciones. Sin desplegar.
+
 ## 2026-11-23 — Fase 1.2: catálogo visual de equipos nuevos (#387–#390)
 
 **Added**

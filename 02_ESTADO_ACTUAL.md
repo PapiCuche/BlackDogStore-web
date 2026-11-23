@@ -3,6 +3,24 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-23 — LEGAL-MSG-01 · privacidad de mensajería: Instagram Direct y Messenger · PR abierto, SIN DESPLEGAR
+
+El CRM (Good Doggy CRM, en el subdominio `crm.` de la tienda) va a recibir y responder mensajes de Instagram Direct y Facebook Messenger por las API oficiales de Meta. Meta pide un texto público de privacidad que cubra esos canales. Clasificación: **PARCIAL**.
+
+- **Código (este PR, sólo frontend):**
+  - el documento `whatsapp` conserva su clave y su dirección `/privacy/whatsapp` (Meta puede tenerla registrada);
+  - nombre corto en el pie, en los enlaces entre políticas y en el panel: «Privacidad de mensajería y CRM»;
+  - título de la página: «Privacidad de mensajería (WhatsApp, Instagram y Messenger) y CRM», también en el mensaje de «sin publicar»;
+  - la descripción de la página nombra WhatsApp, Instagram Direct y Facebook Messenger.
+- **Los textos legales no están en el código** (§2: son datos de la empresa, en `CompanyLegalPolicy`). Las versiones nuevas de los textos de la tienda piloto (`whatsapp` y `privacy`) están preparadas fuera del repositorio, partiendo de lo publicado el 2026-11-15:
+  - qué datos: nombre de perfil o @usuario, identificador que asigna Meta, mensajes, archivos y estado (enviado, entregado, leído);
+  - Meta Platforms como proveedor de los canales; los mensajes se tratan en Meta y en el CRM;
+  - finalidad: responder la consulta y dar seguimiento a la venta;
+  - conservación y eliminación: las mismas reglas que ya tenía el texto, sin plazos nuevos, con el correo de privacidad existente;
+  - el texto no tenía palabras clave de baja (STOP/BAJA): no se añaden.
+- **BLOCKED (propietario):** publicar los textos nuevos desde Administración › Configuración › Políticas legales, o con `load_legal_policy --publish` tras un GO. Antes, comparar con lo publicado hoy: el propietario pudo editarlo desde el 2026-11-15. No los ha revisado un abogado.
+- **Sin cambio en el backend:** la etiqueta del modelo («Política de WhatsApp y CRM») sólo se ve en el admin de Django; cambiarla exige una migración.
+
 ## 2026-11-23 — FASE 1.2 · catálogo visual de equipos nuevos · en master `79058ac`, SIN DESPLEGAR
 
 Orden del propietario «FASE 1.2 — catálogo visual premium de iPhone». La auditoría previa mostró que la Fase 1 ya cubría la mayor parte. La Fase 1.2 completa lo que faltaba. Clasificación y decisiones D-F12-1…5 en `docs/adr-catalog-reference.md` §10–§11.
