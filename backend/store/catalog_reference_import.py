@@ -43,8 +43,8 @@ from .catalog_proposal import (
 )
 from .configuration_resolver import colour_key, phrase_key
 from .models import (
-    AdminAuditLog, Company, ModelOption, ModelOptionExclusion, ProductModel, ReferenceModel, VariantAttribute,
-    VariantOption,
+    AdminAuditLog, Company, ModelOption, ModelOptionExclusion, ProductModel, ReferenceModel, ReferenceModelNumber,
+    VariantAttribute, VariantOption,
 )
 
 APPLIED = 'catalog_reference_applied'
@@ -101,6 +101,12 @@ class _Plan:
         self._new_labels: dict[tuple[str, str], str] = {}
         # Review of #371: which reference key each EXISTING option is taken for in this plan. Two keys never share one.
         self._claimed: dict[int, str] = {}
+        # FASE 1.2: the model numbers of the chosen models, read once, for reference only (never imported).
+        self._numbers: dict[int, list[dict]] = {}
+        for model_id, number, regions in (ReferenceModelNumber.objects.filter(
+                model_id__in=[m.pk for m in found.values()], in_dataset=True)
+                .order_by('model_id', 'sort_order', 'number').values_list('model_id', 'number', 'regions')):
+            self._numbers.setdefault(model_id, []).append({'number': number, 'regions': regions})
         self.items = [self._item(found[k]) for k in keys]
 
     # -- attributes ------------------------------------------------------------
@@ -235,6 +241,7 @@ class _Plan:
             'options': [{k: e[k] for k in ('reference_key', 'role', 'label', 'status', 'option_id', 'reason')}
                         for e in entries],
             'palette_add': palette_add, 'exclusions_add': len(exclusions_add), 'changes': changes,
+            'model_numbers': self._numbers.get(ref.pk, []),
             '_pairs': exclusions_add, '_ref': ref,
         }
 

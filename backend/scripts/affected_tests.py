@@ -68,6 +68,7 @@ EXTERNAL_INPUTS: dict[str, tuple[str, ...]] = {
     'docs/internal-parity-matrix.md': ('store.tests.Ip1ParityManifestTest',),
     'docs/finish-images-manifest.example.csv': ('store.test_finish_manifest.ExampleManifestTest',),
     'docs/catalog-commercial/**': ('store.test_configuration_resolver',),
+    'docs/catalog-reference-matrix.csv': ('store.test_catalog_reference_matrix',),
     'frontend/app/admin/**': ('store.tests.H412bFrontendLegacyRoleParityTest',),
     'frontend/__tests__/support/inventory-ai/**': ('store.test_inventory_ai_recognizer_path',),
     'frontend/app/auth/components/DevQuickLogin.tsx': ('store.tests.DemoAccountsSingleSourceTest',),

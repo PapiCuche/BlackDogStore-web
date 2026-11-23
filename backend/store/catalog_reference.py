@@ -355,3 +355,78 @@ def options_of(model) -> list[dict]:
 def pairs_of(model) -> set[tuple[str, str]]:
     """The SIM × region pairs that exist for one model: one per `sim` entry, as (sim key, region key)."""
     return {(entry['key'], region_key(entry['regions'])) for entry in model.get('sim') or []}
+
+
+# ---------------------------------------------------------------------------
+# FASE 1.2 — the verifiable matrix: every configuration a model of a VALID file allows (pure; no database)
+# ---------------------------------------------------------------------------
+#
+# One row per model × capacity × colour × SIM/region pair. The pairs are exactly `pairs_of` (one per `sim` entry, in
+# the file's order): a pair the importer excludes never becomes a row. A model the file leaves without colours or
+# without SIM entries still gets its rows, with that field empty, and its `completeness` says why.
+#
+# Model numbers: the file does not tie a number to a SIM entry. A number is linked to an entry only when every region
+# it names is one of the regions the entry names, by the same text. `model_numbers` holds only the numbers linked to
+# the row's entry (empty when none is); `model_numbers_unlinked` holds the numbers of the model linked to NO entry of
+# it, on every row, so they show as unattributed. A number linked to one entry never appears on another entry's row.
+# Nothing is guessed.
+
+MATRIX_COLUMNS = (
+    'model_key', 'model_name', 'completeness', 'missing', 'capacity_gb', 'color_key', 'color_label_es',
+    'color_official_es_419', 'color_official_es_es', 'sim_key', 'sim_label_es', 'region_key', 'region_label_es',
+    'model_numbers', 'model_numbers_unlinked', 'sources', 'verified_at',
+)
+#: The columns that hold lists, and how the CSV joins each one.
+MATRIX_LISTS = {'missing': ' | ', 'model_numbers': ' ', 'model_numbers_unlinked': ' ', 'sources': ' '}
+
+
+def _region_names(text) -> set[str]:
+    """The regions a text names, folded: its comma-separated parts (a leading «and» dropped), before any parenthesis."""
+    names = set()
+    for part in region_text(text or '').split(','):
+        part = re.sub(r'^and\s+', '', part.strip(), flags=re.I).strip().casefold()
+        if part:
+            names.add(part)
+    return names
+
+
+def _numbers_for(entry, numbers) -> list[str]:
+    """The numbers linked to `entry`: every region a number names is one the entry names (none for no entry)."""
+    names = _region_names(entry['regions']) if entry is not None else set()
+    return [n['number'] for n in numbers if names and (own := _region_names(n.get('regions'))) and own <= names]
+
+
+def matrix_rows(data, model_key=None) -> list[dict]:
+    """The rows of the matrix of a file that passed `validate`, in the file's order; `model_key` keeps one model."""
+    rows = []
+    for m in data.get('models') or []:
+        if model_key is not None and m['key'] != model_key:
+            continue
+        labels = {(o['role'], o['key']): o['label_es'] for o in options_of(m)}
+        numbers = [n for n in m.get('model_numbers') or [] if isinstance(n, dict)]
+        entries, seen = [], set()
+        for entry in m.get('sim') or []:
+            pair = (entry['key'], region_key(entry['regions']))
+            if pair not in seen:
+                seen.add(pair)
+                entries.append((pair, entry))
+        own = {pair: _numbers_for(entry, numbers) for pair, entry in entries}
+        attributed = {number for linked in own.values() for number in linked}
+        unlinked = [n['number'] for n in numbers if n['number'] not in attributed]
+        for gb in m.get('capacities_gb') or [None]:
+            for colour in m.get('colors') or [None]:
+                official = (colour or {}).get('official') or {}
+                for pair, _entry in entries or [(('', ''), None)]:
+                    rows.append({
+                        'model_key': m['key'], 'model_name': m['name'], 'completeness': m['completeness'],
+                        'missing': list(m.get('missing') or []), 'capacity_gb': gb,
+                        'color_key': colour['key'] if colour else '',
+                        'color_label_es': colour['label_es'] if colour else '',
+                        'color_official_es_419': official.get('es_419') or '',
+                        'color_official_es_es': official.get('es_es') or '',
+                        'sim_key': pair[0], 'sim_label_es': labels.get(('sim', pair[0]), ''),
+                        'region_key': pair[1], 'region_label_es': labels.get(('region', pair[1]), ''),
+                        'model_numbers': list(own.get(pair, [])), 'model_numbers_unlinked': list(unlinked),
+                        'sources': list(m.get('sources') or []), 'verified_at': m['verified_at'],
+                    })
+    return rows
