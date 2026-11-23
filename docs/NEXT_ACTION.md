@@ -6,41 +6,72 @@ El PR #367 sigue en borrador. Este candidato integra la rama con master y numera
 
 En caja, actualizar el agente a 1.4 y asociar la Advance con la cola `POS-80-Series` y la HL80 con `HL80`. Confirmar el tamaño del rollo cargado antes de activar las etiquetas automáticas.
 
-## FASE 1.2 — catálogo visual de equipos nuevos: en master `79058ac`, SIN DESPLEGAR
+## FASES 1.1 Y 1.2 — cierre productivo: release `d32f43b` preparada, SIN DESPLEGAR
 
-**Hecho:** #387, #388, #389 y #390 están fusionados. Incluyen:
-- la matriz verificable y los números de modelo;
-- el informe de cobertura y los acabados sin foto en el panel;
-- la vista de cada foto y «Reemplazar foto»;
-- las muestras aproximadas y la muestra propia por modelo;
-- el importador de fotos por manifiesto;
-- las pruebas E2E: 48/48, con capturas de escritorio y móvil.
+Orden del propietario «CIERRE PRODUCTIVO FASES 1.1 Y 1.2» (2026-11-23).
+- El SHA a desplegar es ahora **`d32f43b`**: `79058ac` más el #393.
+- Entre las dos versiones no cambian `deploy/`, el compose ni las migraciones. La única migración sigue siendo `0185`, aditiva.
+- `d32f43b` no incluye LABEL-04 (#367, migración `0186`), que se fusionó después.
 
-La única migración es `0185`, aditiva. Detalle en la entrada del 2026-11-23 de `02_ESTADO_ACTUAL.md` y en `docs/adr-catalog-reference.md` §10–§11.
+Decisiones del propietario que aplica el #393:
+- El carrito y el checkout muestran la foto **principal** del color elegido, nunca la de otro acabado.
+- Una foto de acabado sale en la tienda sólo cuando su licencia está **verificada** en el panel. Hasta entonces el acabado sigue con «Imagen pendiente».
+- El panel avisa «No visible en la tienda hasta verificar la licencia». Una foto propia se verifica marcando «Confirmé que es una foto propia de la tienda».
 
-**GO pedidos.** Cada uno es independiente y ninguno se da por concedido:
-1. **«GO despliegue 79058ac prod-02»**
-   - Cómo: en `/srv/blackdogstore`, `sh backups/release-f12/d_deploy_f12.sh 79058acd64c9b44050ede2c0e025c19a2c1460b7`. Las imágenes `rc-79058ac` ya están construidas en prod-02.
-   - El script exige producción en `ed9f5e0` con el esquema `0184`, y que el SHA no cambie `deploy/` ni el compose.
-   - Antes de cambiar nada: backup y huella.
-   - Aplica `0185` antes de cambiar el código y recrea sólo backend y frontend. No toca Caddy ni el CRM, no importa fotos, no cambia muestras y no normaliza el catálogo.
-   - Vuelta atrás: `sh backups/release-f12/rollback_f12.sh` devuelve sólo el código, porque el de `ed9f5e0` funciona con `0185` (ensayado). `rollback_f12.sh schema` además deshace `0185` y pierde las vistas y las muestras guardadas desde entonces.
-2. **«GO normalización catálogo prod-02»** (Fase 1.1): sin cambios, ver abajo. Funciona antes o después del despliegue.
-3. **«GO muestras aproximadas prod-02»**: sólo después del punto 1.
-   - Aplica 205 muestras por modelo, todas marcadas «aproximada (pendiente de validación comercial)», desde la propuesta `backups/release-f12/swatch-approx-proposal.json`. No son códigos oficiales.
-   - Pasa por la vista del panel en una sola transacción, con una auditoría que guarda los valores anteriores. La vuelta atrás es exacta.
-   - Script: `f12s_ops.py`, con su ensayo `f12s_rehearse.sh`.
-   - El propietario puede cambiar o quitar valores antes del GO.
-4. **Fotos:**
-   - El propietario consigue fotos propias o con licencia comprobable y prepara la carpeta y el manifiesto (formato en el ADR §10). Después se ensaya la importación y se pide «GO importación fotos prod-02».
-   - Las fotos de apple.com no se copian (`BLOCKED: LICENSING`).
+Producción revalidada el 2026-11-23, sólo lectura:
+- `ed9f5e0`, esquema `0184`, contenedores sanos;
+- md5 de Caddy y del CRM sin cambios;
+- 0 fotos de acabado y 16 imágenes subidas (ninguna verificada);
+- 52 modelos, 30 publicados;
+- 0 colores fuera de la matriz.
+
+Imágenes candidatas `rc-d32f43b` construidas en prod-02. Runbook: `backups/release-f12/RUNBOOK-d32f43b-prod02.md`.
+
+**Ensayo encadenado** sobre una copia aislada de `db-20261123-130907`, sin salida a internet:
+- la normalización 1.1 con la imagen de producción (huella `1689fd2825cc5724`);
+- `0185` en 6 s, con datos idénticos;
+- el código de `ed9f5e0` sobre `0185`: humo 32/32;
+- la imagen nueva: humo 32/32, reimpresión histórica, importación sintética idempotente y 621 pruebas OK;
+- frontend y rutas OK;
+- 205/205 muestras aproximadas con vuelta atrás exacta;
+- `0185` → `0184` → `0185` funciona.
+
+La puerta de licencias se midió aparte, sobre otra copia normalizada: 0 fotos públicas antes de verificar y 1 después.
+
+**GO pedidos, en este orden.** Cada uno es independiente y ninguno se da por concedido:
+1. **«GO normalización catálogo prod-02»** (Fase 1.1)
+   - Se ejecuta con `sh backups/release-p1/f11p_go.sh`, sin cambios.
+   - Exige `ed9f5e0`, `0184` y la imagen `release-ed9f5e0`, así que va **antes** del despliegue.
+   - Cambia sólo 2 roles de atributo y 4 etiquetas u órdenes de capacidad.
+   - No toca las variantes #19, #22 ni #23.
+   - Ensayada otra vez el 2026-11-23: misma huella; un fallo o una huella equivocada dejan 0 diferencias; la vuelta atrás es exacta.
+2. **«GO despliegue d32f43b prod-02»**
+   - Se ejecuta con `sh /tmp/d_deploy_f12.sh d32f43b0efbe60c520323da99dfd3b611ee1e0d1`, según el runbook.
+   - Hace backup y huella, aplica `0185` antes de cambiar el código y recrea sólo backend y frontend.
+   - No toca Caddy ni el CRM.
+   - Vuelta atrás de sólo el código con `rollback_f12.sh` (ensayada). Con `rollback_f12.sh schema` también vuelve a `0184`.
+3. **«GO muestras aproximadas prod-02»** (sólo después del punto 2)
+   - Aplica 205 muestras de 49 modelos, marcadas «aproximada». No son códigos oficiales de Apple.
+   - Pasa por la vista del panel, con auditoría y vuelta atrás exacta. `f12s_go.sh` exige `d32f43b` y `0185`.
+   - La hoja de revisión comercial, con capturas de escritorio y móvil por modelo, está fuera del repositorio, en el kit `release-f12/swatch-review/`.
+4. **«GO importación fotos prod-02»** (cuando el propietario entregue las fotos)
+   - La plantilla del manifiesto tiene 205 filas, y las instrucciones están en el kit `release-f12/fotos-lote/`.
+   - Antes del GO se ensaya sobre una copia.
+   - Después, una persona verifica cada licencia en el panel.
 
 **Decisiones del propietario (BLOCKED):**
-- fotos con licencia (0 de 205);
-- qué hacer con los 14 productos que enlazan fotos de sitios ajenos (5 del CDN de Apple);
-- códigos de color aprobados (la propuesta los deja «aproximados»);
-- si una foto sin licencia verificada puede salir en la tienda (hoy sí, y la tienda no lo indica);
-- si el carrito debe usar la foto «principal» en vez de la primera.
+- **Fotos con licencia: 0 de 205.** No se copian fotos de apple.com ni se generan imágenes que parezcan oficiales.
+  - Una foto verificada sólo se ve si su color lo tiene una variante publicada.
+  - Hoy la única variante publicada con color es la #22 (iPhone 15, Negro).
+- **Imágenes ya publicadas sin procedencia.** La auditoría de procedencia es de sólo lectura y no cambió nada.
+  - 29 portadas de modelo y 11 productos enlazan imágenes de otros sitios.
+  - Las portadas: 22 del CDN de la tienda de Apple, 4 de `images.openai.com` (posibles imágenes generadas: iPhone 11 Pro, 11 Pro Max, 12 y 13 Pro Max), 2 de otros dominios de Apple y 1 de un distribuidor.
+  - Los productos: 5 del CDN de Apple y 6 de tiendas minoristas.
+  - Hay 16 imágenes subidas con origen «desconocido», sin verificar; 2 no se usan.
+  - No se borró ni se despublicó nada. Falta decidir si se retiran o se sustituyen.
+- **Códigos de color:** aprobar, corregir o quitar las 205 aproximaciones de la hoja de revisión.
+- **Caja y paleta del panel:** siguen mostrando fotos sin verificar porque son pantallas internas. Falta confirmar que la pantalla de caja nunca la ve un cliente.
+- **Siguen abiertos:** SIM y región de #22, nombre de #23, y #19 con un equipo usado (Fase 2).
 
 Siguen sin empezar las fases 2 (seminuevos) y 3 (inventario general), y el cambio masivo de fotos.
 
