@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-23 — Fases 1.1 y 1.2: preparación del GO (sin cambios en el código)
+
+Las precondiciones de la normalización están revalidadas, igual que los colores y capacidades oficiales (0 fuera de la matriz).
+
+El informe clasificado de imágenes queda fuera del repositorio:
+- 0 propias verificadas;
+- 36 de terceros sin autorización;
+- 22 de origen desconocido.
+
+Las muestras aproximadas se aplican en dos lotes: 167 con el GO y 38 dudosas sólo si se aprueban. Producción sin cambios.
+
 ## 2026-11-23 — Fase 1.2: foto principal en el carrito y fotos públicas sólo con licencia verificada (#393)
 
 **Changed**
