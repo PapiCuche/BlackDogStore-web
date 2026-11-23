@@ -3,6 +3,39 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-23 — FASES 1.1 Y 1.2 · biblioteca visual, muestras por lotes y comprobaciones previas al GO · producción SIN CAMBIOS
+
+Orden del propietario «CIERRE FASE 1.1 Y DESPLIEGUE FASE 1.2». No hubo escrituras productivas: producción sigue en `ed9f5e0`, esquema `0184`.
+
+- **Precondiciones de la normalización** (sólo lectura): exactas, con la huella `1689fd2825cc5724` sin cambios.
+- **Colores y capacidades oficiales:**
+  - 49 modelos revisados contra la matriz, con 158 capacidades y 205 colores de paleta;
+  - ninguno fuera de la matriz, ni en las paletas ni en las variantes.
+- **Acabado correcto en caja, carrito y tienda** (revisión del código de `d32f43b`):
+  - la miniatura de cada color en la caja sale sólo de las fotos de ese acabado;
+  - el carrito nunca usa la foto de otro color.
+  - Fuera del código: la foto propia del producto 7 «iPhone 17 Pro Azul» muestra cuatro acabados.
+- **Biblioteca visual** (sólo lectura; nada borrado, cambiado ni despublicado):
+  - 58 referencias revisadas una por una con una hoja de capturas.
+  - Clasificación: 0 propias verificadas, 0 de proveedor con licencia, 36 de terceros sin autorización demostrada y 22 de origen desconocido.
+  - Marcas de la revisión visual: 4 de origen no trazable (caché de `images.openai.com`), 4 posiblemente generadas, 3 inexactas, 1 rota y 2 con el acabado sin comprobar.
+  - El informe y el plan de sustituciones están en el kit `release-f12/biblioteca-visual/`, fuera del repositorio.
+- **Muestras aproximadas:**
+  - 167 aplicables, de 40 modelos;
+  - 38 dudosas, de 9 modelos, que no se aplican sin aprobación expresa: colores casi iguales, titanio metálico y modelos recientes sin equipo de referencia;
+  - la hoja de revisión marca las dudosas;
+  - `f12s_go.sh` recibe el archivo de propuesta.
+- **Muestras: corrección del kit y ensayo:**
+  - `f12s_ops.py` revertía siempre el último lote, aunque ya estuviera revertido; ahora salta los lotes revertidos.
+  - Ensayo por lotes en una copia aislada: A con 167, después B con 38; la vuelta atrás deshace B y después A; una tercera vuelta atrás no escribe nada.
+- **Pendientes comerciales:**
+  - #19 queda para la Fase 2;
+  - no se deducen la SIM ni el país de venta de #22;
+  - #23 no se completa ni se renombra sin datos;
+  - se propone «Versión (país de venta)» como etiqueta de «Región» en una fase posterior;
+  - no se crean stock ni variantes ficticias.
+- **GO pedidos:** «GO normalización catálogo prod-02» y, después de verificarla, «GO despliegue d32f43b prod-02».
+
 ## 2026-11-23 — CIERRE FASES 1.1 Y 1.2 · release `d32f43b` preparada y ensayada · SIN DESPLEGAR
 
 Orden del propietario «CIERRE PRODUCTIVO FASES 1.1 Y 1.2». Producción no cambió: sigue en `ed9f5e0`, esquema `0184`. No se tocaron Caddy, el CRM, SUNAT, Good Doggy ni datos.

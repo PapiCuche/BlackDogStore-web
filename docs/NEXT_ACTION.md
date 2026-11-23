@@ -38,6 +38,15 @@ Imágenes candidatas `rc-d32f43b` construidas en prod-02. Runbook: `backups/rele
 
 La puerta de licencias se midió aparte, sobre otra copia normalizada: 0 fotos públicas antes de verificar y 1 después.
 
+**Comprobaciones posteriores (orden «CIERRE FASE 1.1 Y DESPLIEGUE FASE 1.2», 2026-11-23, sólo lectura):**
+- Precondiciones de la normalización: el modo `check` da «preconditions OK» con la huella `1689fd2825cc5724`, sin cambios.
+- Colores y capacidades oficiales: 49 modelos revisados contra la matriz, con 158 capacidades y 205 colores en las paletas. Ninguno está fuera de la matriz, ni en las paletas ni en las variantes.
+- Caja, carrito y tienda:
+  - la miniatura de cada color en la caja sale sólo de las fotos de ese acabado; si no hay foto, se ve el círculo de color;
+  - el carrito nunca usa la foto de otro color;
+  - excepción: la foto propia del producto 7 «iPhone 17 Pro Azul» muestra cuatro acabados (ver la biblioteca visual).
+- Biblioteca visual: informe clasificado y plan de sustituciones en el kit `release-f12/biblioteca-visual/`. Es sólo lectura y no cambió nada.
+
 **GO pedidos, en este orden.** Cada uno es independiente y ninguno se da por concedido:
 1. **«GO normalización catálogo prod-02»** (Fase 1.1)
    - Se ejecuta con `sh backups/release-p1/f11p_go.sh`, sin cambios.
@@ -51,9 +60,15 @@ La puerta de licencias se midió aparte, sobre otra copia normalizada: 0 fotos p
    - No toca Caddy ni el CRM.
    - Vuelta atrás de sólo el código con `rollback_f12.sh` (ensayada). Con `rollback_f12.sh schema` también vuelve a `0184`.
 3. **«GO muestras aproximadas prod-02»** (sólo después del punto 2)
-   - Aplica 205 muestras de 49 modelos, marcadas «aproximada». No son códigos oficiales de Apple.
-   - Pasa por la vista del panel, con auditoría y vuelta atrás exacta. `f12s_go.sh` exige `d32f43b` y `0185`.
-   - La hoja de revisión comercial, con capturas de escritorio y móvil por modelo, está fuera del repositorio, en el kit `release-f12/swatch-review/`.
+   - Aplica **167 muestras de 40 modelos** (`swatch-approx-aplicables.json`), marcadas «aproximada» y editables en el panel. No son códigos oficiales de Apple.
+   - Las **38 dudosas de 9 modelos** (`swatch-approx-dudosas.json`) **no** se aplican sin la aprobación expresa del propietario:
+     - Plata y Glaciar casi iguales en el iPhone 18 Pro y el 18 Pro Max;
+     - Blanco estelar y Rosa casi iguales en el iPhone 13 y el 13 mini, que se revisan enteros;
+     - los acabados de titanio del 15 Pro, 15 Pro Max, 16 Pro y 16 Pro Max;
+     - el iPhone Duo y el 18 Pro, por ser recientes y no tener un equipo de referencia.
+   - Pasa por la vista del panel, con auditoría y vuelta atrás exacta. `f12s_go.sh` exige `d32f43b` y `0185`, y recibe el archivo de propuesta.
+   - Ensayo por lotes (`backups/f12s-batch-rehearsal-d32f43b.log`): A, después B encima; la primera vuelta atrás deshace sólo B y la segunda deshace A. Se corrigió `f12s_ops.py`, que antes revertía siempre el último lote aunque ya estuviera revertido.
+   - La hoja de revisión comercial marca las dudosas. Tiene capturas de escritorio y móvil y está fuera del repositorio, en el kit `release-f12/swatch-review/`.
 4. **«GO importación fotos prod-02»** (cuando el propietario entregue las fotos)
    - La plantilla del manifiesto tiene 205 filas, y las instrucciones están en el kit `release-f12/fotos-lote/`.
    - Antes del GO se ensaya sobre una copia.
@@ -63,15 +78,27 @@ La puerta de licencias se midió aparte, sobre otra copia normalizada: 0 fotos p
 - **Fotos con licencia: 0 de 205.** No se copian fotos de apple.com ni se generan imágenes que parezcan oficiales.
   - Una foto verificada sólo se ve si su color lo tiene una variante publicada.
   - Hoy la única variante publicada con color es la #22 (iPhone 15, Negro).
-- **Imágenes ya publicadas sin procedencia.** La auditoría de procedencia es de sólo lectura y no cambió nada.
-  - 29 portadas de modelo y 11 productos enlazan imágenes de otros sitios.
-  - Las portadas: 22 del CDN de la tienda de Apple, 4 de `images.openai.com` (posibles imágenes generadas: iPhone 11 Pro, 11 Pro Max, 12 y 13 Pro Max), 2 de otros dominios de Apple y 1 de un distribuidor.
-  - Los productos: 5 del CDN de Apple y 6 de tiendas minoristas.
-  - Hay 16 imágenes subidas con origen «desconocido», sin verificar; 2 no se usan.
-  - No se borró ni se despublicó nada. Falta decidir si se retiran o se sustituyen.
-- **Códigos de color:** aprobar, corregir o quitar las 205 aproximaciones de la hoja de revisión.
+- **Biblioteca visual** (informe clasificado, 58 referencias, 54 publicadas). Que una imagen ya esté publicada no la autoriza.
+  - Propias con procedencia verificada: **0**.
+  - De proveedor con licencia comprobada: **0**.
+  - De terceros sin autorización demostrada: **36**. Son 25 portadas (24 de Apple y 1 de un distribuidor) y 11 productos (5 de Apple y 6 de tiendas minoristas).
+  - De origen desconocido: **22**. Son 18 referencias a los 16 archivos subidos y 4 portadas copiadas de la caché de `images.openai.com`.
+  - Revisión visual:
+    - el producto 7 «iPhone 17 Pro Azul» muestra cuatro acabados, y es la foto del carrito;
+    - la foto del producto 12 (Ripley) está rota;
+    - 4 imágenes posiblemente generadas: producto 4 y su galería, la categoría iPhone y la imagen de servicios;
+    - la portada «Seminuevos» muestra equipos nuevos.
+  - No se borró ni se despublicó nada. Cada sustitución necesita la decisión del propietario y su GO.
+- **Muestras de color:** aprobar, corregir o quitar las 38 dudosas, y revisar las 167 aplicables antes del GO.
 - **Caja y paleta del panel:** siguen mostrando fotos sin verificar porque son pantallas internas. Falta confirmar que la pantalla de caja nunca la ve un cliente.
-- **Siguen abiertos:** SIM y región de #22, nombre de #23, y #19 con un equipo usado (Fase 2).
+- **Siguen abiertos:**
+  - SIM y país de venta de #22: no se deducen;
+  - completar o renombrar #23: sólo con los datos del equipo;
+  - #19 queda para la Fase 2 (equipo usado).
+- No se crean stock ni variantes ficticias.
+- **Propuesta para una fase posterior, sin aplicar:** que el atributo «Región» se muestre como «Versión (país de venta)».
+  - «Región» indica el mercado donde Apple vendió el equipo, según su número de modelo (ADR §9.5), no dónde funciona.
+  - El cambio sería sólo de etiqueta, por el panel, con su propio GO.
 
 Siguen sin empezar las fases 2 (seminuevos) y 3 (inventario general), y el cambio masivo de fotos.
 
