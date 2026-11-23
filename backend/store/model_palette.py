@@ -259,8 +259,16 @@ def set_palette(model, *, option_ids, actor=None, request=None, expected_option_
                            field='option_ids', code='stale')
     to_add = [o for o in options if o.pk not in current]
     to_remove = sorted(current - set(wanted))
+    # FASE 1.2 · Y: a row taken out may hold this model's own swatch; the audit keeps it so it can be read back.
+    removed_swatches = {}
     if to_remove:
-        ModelOption.objects.filter(model=model, company=company, option_id__in=to_remove).delete()
+        leaving = ModelOption.objects.filter(model=model, company=company, option_id__in=to_remove)
+        removed_swatches = {
+            str(option_id): {'swatch_hex': hex_value, 'swatch_is_approximate': approximate}
+            for option_id, hex_value, approximate in
+            leaving.exclude(swatch_hex='').values_list('option_id', 'swatch_hex', 'swatch_is_approximate')
+        }
+        leaving.delete()
     try:
         for option in to_add:
             ModelOption.objects.create(company=company, model=model, option=option)
@@ -269,7 +277,7 @@ def set_palette(model, *, option_ids, actor=None, request=None, expected_option_
                            field='option_ids', code='stale') from None
     _audit('product_model_palette_set', company=company, actor=actor, request=request,
            target_type='product_model', target_id=model.pk, model_name=model.name,
-           added=[o.pk for o in to_add], removed=to_remove, total=len(wanted))
+           added=[o.pk for o in to_add], removed=to_remove, removed_swatches=removed_swatches, total=len(wanted))
     return {'added': len(to_add), 'removed': len(to_remove), 'total': len(wanted)}
 
 
@@ -324,6 +332,8 @@ def option_order(model) -> dict:
     `set_option_order` first (1, 2, 3…), then the rest in the company's own order (`VariantOption.sort_order`,
     label). Attributes in reading order (capacity, colour, SIM, region, other). Admin only.
     """
+    from .device_catalog import resolved_swatch
+
     rows = list(
         ModelOption.objects.filter(model=model, company_id=model.company_id)
         .select_related('option__attribute')
@@ -340,7 +350,9 @@ def option_order(model) -> dict:
                                                        r.option.label.lower(), r.option.pk))
         attributes.append({
             'id': attribute.pk, 'name': attribute.name, 'kind': attribute.kind, 'role': attribute.role,
-            'options': [{'id': r.option.pk, 'label': r.option.label, 'swatch_hex': r.option.swatch_hex,
+            # FASE 1.2 · Y: the swatch this model draws (its own, else the company's, else none).
+            'options': [{'id': r.option.pk, 'label': r.option.label,
+                         'swatch_hex': resolved_swatch(r.option, r.swatch_hex, r.swatch_is_approximate)[0],
                          'placed': bool(r.sort_order)} for r in ordered],
         })
     return {'model_id': model.pk, 'has_palette': bool(rows), 'attributes': attributes}
@@ -394,6 +406,103 @@ def set_option_order(model, *, attribute_id, option_ids, actor=None, request=Non
            target_type='product_model', target_id=model.pk, model_name=model.name, attribute_id=attribute.pk,
            option_ids=list(option_ids), changed=changed)
     return option_order(model)
+
+
+def model_swatches(model) -> dict[int, tuple[str, bool]]:
+    """FASE 1.2 · Y: option id → (this model's own swatch, approximate) for the colours that have one. One query."""
+    return {option_id: (hex_value, approximate) for option_id, hex_value, approximate in
+            ModelOption.objects.filter(model=model, company_id=model.company_id).exclude(swatch_hex='')
+            .values_list('option_id', 'swatch_hex', 'swatch_is_approximate')}
+
+
+def swatch_fields(option, own=None, *, editable=None) -> dict:
+    """
+    FASE 1.2 · Y — what the PANEL says of a colour's swatch on one model (admin only; the shop gets only the resolved
+    hex): the company's flag, the model's own swatch ('' = inherits) and flag, and what is drawn
+    (`device_catalog.resolved_swatch`). `editable`: whether the model may have its own (the colour is in its palette).
+    """
+    from .device_catalog import resolved_swatch
+
+    model_hex, model_approximate = own or ('', False)
+    shown, approximate = resolved_swatch(option, model_hex, model_approximate)
+    fields = {'swatch_is_approximate': option.swatch_is_approximate, 'model_swatch_hex': model_hex,
+              'model_swatch_is_approximate': bool(model_hex and model_approximate),
+              'shown_swatch_hex': shown, 'shown_swatch_is_approximate': approximate}
+    if editable is not None:
+        fields['model_swatch_editable'] = editable
+    return fields
+
+
+@transaction.atomic
+def set_model_swatch(model, *, option_id, swatch_hex=None, swatch_is_approximate=None, actor=None,
+                     request=None) -> dict:
+    """
+    FASE 1.2 · Y — `model`'s OWN swatch for one colour of its palette, without touching the company's colour (which
+    every other model shares). `swatch_hex` '' goes back to the company's; `swatch_is_approximate` says the value is
+    an approximation pending commercial validation (never an official code) and needs a swatch of the model's own.
+    Setting a value without the flag is allowed (an owner-approved value); the flag changes only when it is sent.
+
+    An option of another company answers like a missing one (`not_found`); a model without a palette has no row to
+    hold it (`no_palette`); the option must be a colour (`not_a_colour`) of this palette (`not_in_palette`). Under the
+    model's lock, like every palette write, and audited with its company and the previous values.
+    """
+    from .device_catalog import CatalogError, _audit
+    from .finish_media import colour_attribute_ids
+    from .models import validate_swatch_hex
+    from django.core.exceptions import ValidationError
+
+    if isinstance(option_id, bool) or not isinstance(option_id, int) or option_id <= 0:
+        raise CatalogError('Elige el color.', field='option_id')
+    if swatch_hex is None:
+        if swatch_is_approximate is None:
+            raise CatalogError('Escribe la muestra (#RRGGBB) o déjala vacía para usar la de la empresa.',
+                               field='swatch_hex')
+    elif not isinstance(swatch_hex, str):
+        raise CatalogError('La muestra se escribe como #RRGGBB.', field='swatch_hex')
+    if swatch_is_approximate is not None and not isinstance(swatch_is_approximate, bool):
+        raise CatalogError('«Muestra aproximada» es verdadero o falso.', field='swatch_is_approximate')
+    company = model.company
+    model = type(model).objects.select_for_update().get(pk=model.pk)
+    option = VariantOption.objects.filter(company=company, pk=option_id).select_related('attribute').first()
+    if option is None:
+        raise CatalogError('Ese color no existe.', field='option_id', code='not_found')
+    if (option.attribute.kind != VariantAttribute.KIND_COLOR
+            and option.attribute_id not in colour_attribute_ids(company.pk)):
+        raise CatalogError('Esa opción no es un color.', field='option_id', code='not_a_colour')
+    rows = ModelOption.objects.filter(model=model, company=company)
+    row = rows.select_for_update().filter(option=option).first()
+    if row is None:
+        if not rows.exists():
+            raise CatalogError('Este modelo no tiene paleta: elige primero sus opciones.', field='option_id',
+                               code='no_palette')
+        raise CatalogError('Ese color no está entre las opciones de este modelo.', field='option_id',
+                           code='not_in_palette')
+
+    value = row.swatch_hex
+    if swatch_hex is not None:
+        value = swatch_hex.strip().upper()
+        try:
+            validate_swatch_hex(value)
+        except ValidationError as exc:
+            raise CatalogError(exc.messages[0], field='swatch_hex') from None
+    # Like the company's flag, it changes only when sent; going back to the company's swatch clears it.
+    approximate = row.swatch_is_approximate if swatch_is_approximate is None else swatch_is_approximate
+    if swatch_hex is not None and not value and swatch_is_approximate is None:
+        approximate = False
+    if approximate and not value:
+        raise CatalogError('Escribe primero la muestra de este modelo: sin ella se usa la de la empresa.',
+                           field='swatch_is_approximate')
+
+    previous = {'swatch_hex': row.swatch_hex, 'swatch_is_approximate': row.swatch_is_approximate}
+    row.swatch_hex, row.swatch_is_approximate = value, approximate
+    row.save(update_fields=['swatch_hex', 'swatch_is_approximate'])
+    _audit('product_model_swatch_set', company=company, actor=actor, request=request,
+           target_type='product_model', target_id=model.pk, model_name=model.name, option_id=option.pk,
+           label=option.label, swatch_hex=value, swatch_is_approximate=approximate, previous=previous)
+    return {'model_id': model.pk, 'option_id': option.pk, 'label': option.label, 'swatch_hex': value,
+            'swatch_is_approximate': approximate,
+            **{key: val for key, val in swatch_fields(option, (value, approximate)).items()
+               if key.startswith('shown_')}}
 
 
 def _clean_pairs(pairs) -> set[tuple[int, int]]:
@@ -516,6 +625,7 @@ def payload(model) -> dict:
             from .finish_media import chip_pictures
 
             pictures = chip_pictures(model)
+            own_swatches = model_swatches(model)
         options = []
         for option in attribute.options.all():
             if option.company_id == model.company_id:
@@ -526,7 +636,9 @@ def payload(model) -> dict:
                 # G (owner's visual order 4): the chip's picture, and whether the swatch is the company's.
                 from .device_catalog import swatch_is_set
 
-                row.update(swatch_set=swatch_is_set(option), thumbnail=pictures.get(option.pk))
+                row.update(swatch_set=swatch_is_set(option), thumbnail=pictures.get(option.pk),
+                           # FASE 1.2 · Y: the model's own swatch and what is drawn; approximations (panel only).
+                           **swatch_fields(option, own_swatches.get(option.pk)))
             options.append(row)
         attribute_rows.append({'id': attribute.pk, 'name': attribute.name, 'kind': attribute.kind,
                                'role': attribute.role, 'sort_order': attribute.sort_order, 'options': options})

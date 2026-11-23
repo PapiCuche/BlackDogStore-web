@@ -87,6 +87,24 @@ describe('muestra de color de una opción', () => {
     expect(writes).toEqual([{ method: 'POST', path: '/admin/catalog/attributes/4/options/', body: { label: 'Verde', swatch_hex: '#14A44D' } }]);
   });
 
+  it('FASE 1.2 · Y: una muestra aproximada se rotula y la casilla se guarda al editar', async () => {
+    const blue = ATTRIBUTES[1].options[0] as Record<string, unknown>;
+    blue.swatch_is_approximate = true;
+    try {
+      const color = await colourAttribute();
+      expect(within(color).getByText('Aproximada')).toBeInTheDocument();
+      fireEvent.click(within(color).getByRole('button', { name: 'Editar Azul' }));
+      const check = within(color).getByRole('checkbox', { name: 'Muestra aproximada (pendiente de validación comercial)' });
+      expect(check).toBeChecked();
+      fireEvent.click(check);
+      await act(async () => { fireEvent.click(within(color).getByRole('button', { name: 'Guardar' })); });
+      expect(writes.at(-1)).toEqual({ method: 'PATCH', path: '/admin/catalog/options/21/',
+        body: { label: 'Azul', swatch_hex: '#1F3A93', sort_order: 0, swatch_is_approximate: false } });
+    } finally {
+      delete blue.swatch_is_approximate;
+    }
+  });
+
   it('una opción de texto no pide color', async () => {
     render(<CatalogModelsManager canManage companyId={null} />);
     const capacity = await screen.findByRole('listitem', { name: 'Capacidad' });

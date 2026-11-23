@@ -3,10 +3,16 @@ CATALOG-REFERENCE-01 · PR C — the finish galleries of a model (model + colour
 
     GET    /api/admin/catalog/models/<id>/finish-images/           every finish and its pictures   products.view
     POST   /api/admin/catalog/models/<id>/finish-images/           uploads one (multipart: file,   products.manage
-                                                                   color_option_id, alt_text, source_kind,
+                                                                   color_option_id, alt_text, view, source_kind,
                                                                    license, source_url, attribution)
-    PATCH  /api/admin/catalog/models/<id>/finish-images/<image>/   text / primary / provenance /   products.manage
-                                                                   license_verified
+                                                                   — or, with `replace=<image id>`, gives that
+                                                                   picture a new file keeping its place (file +
+                                                                   provenance; FASE 1.2 · Y)
+    PATCH  /api/admin/catalog/models/<id>/finish-images/<image>/   text / view / primary /         products.manage
+                                                                   provenance / license_verified
+
+WHY A REPLACEMENT IS A POST TO THE UPLOAD ROUTE (and not a route of its own): the proxy admits an image-sized body
+only on the upload routes (`request_limits`, deploy/Caddyfile); a new route would be cut at the default size.
     DELETE /api/admin/catalog/models/<id>/finish-images/<image>/   removes it                      products.manage
     POST   /api/admin/catalog/models/<id>/finish-images/order/     {color_option_id, order}        products.manage
 
@@ -83,12 +89,20 @@ class AdminModelFinishImageListView(_FinishGalleryView):
             return Response({'detail': f'La imagen pesa más de {megabytes} MB.', 'field': 'file'},
                             status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         provenance = {field: request.data.get(field, '') for field in finish_media.PROVENANCE_FIELDS}
+        replacing = 'replace' in request.data
         try:
-            image = finish_media.add_image(
-                model=model, color_option_id=request.data.get('color_option_id'), actor=request.user,
-                uploaded=uploaded, provenance=provenance, alt_text=request.data.get('alt_text', ''),
-                request=request,
-            )
+            if replacing:
+                # The slot keeps its colour, text and view: only the file and its provenance travel.
+                image = finish_media.replace_image(
+                    model=model, image_id=request.data.get('replace'), actor=request.user, uploaded=uploaded,
+                    provenance=provenance, request=request,
+                )
+            else:
+                image = finish_media.add_image(
+                    model=model, color_option_id=request.data.get('color_option_id'), actor=request.user,
+                    uploaded=uploaded, provenance=provenance, alt_text=request.data.get('alt_text', ''),
+                    view=request.data.get('view', ''), request=request,
+                )
         except finish_media.FinishMediaError as exc:
             return _refused(exc)
         except storefront_media.StorefrontImageError as exc:
@@ -98,7 +112,8 @@ class AdminModelFinishImageListView(_FinishGalleryView):
             # `claim`: the stored file vanished before it was placed (a concurrent sweep).
             return Response({'detail': '; '.join(exc.messages), 'field': 'file', 'code': 'invalid'},
                             status=status.HTTP_400_BAD_REQUEST)
-        return Response(finish_media.payload(image), status=status.HTTP_201_CREATED)
+        return Response(finish_media.payload(image),
+                        status=status.HTTP_200_OK if replacing else status.HTTP_201_CREATED)
 
 
 class AdminModelFinishImageDetailView(_FinishGalleryView):
@@ -126,6 +141,10 @@ class AdminModelFinishImageDetailView(_FinishGalleryView):
         if alt_text is not None and not isinstance(alt_text, str):
             return Response({'detail': 'El texto alternativo debe ser texto.', 'field': 'alt_text'},
                             status=status.HTTP_400_BAD_REQUEST)
+        view = request.data.get('view')
+        if view is not None and not isinstance(view, str):
+            return Response({'detail': 'La vista se escribe como texto.', 'field': 'view', 'code': 'invalid'},
+                            status=status.HTTP_400_BAD_REQUEST)
         provenance = {}
         for field in finish_media.PROVENANCE_FIELDS:
             if field in request.data:
@@ -135,7 +154,8 @@ class AdminModelFinishImageDetailView(_FinishGalleryView):
                 provenance[field] = request.data[field]
         try:
             image = finish_media.update_image(
-                image=image, actor=request.user, alt_text=alt_text, provenance=provenance, request=request, **flags,
+                image=image, actor=request.user, alt_text=alt_text, provenance=provenance, view=view, request=request,
+                **flags,
             )
         except finish_media.FinishMediaError as exc:
             return _refused(exc)

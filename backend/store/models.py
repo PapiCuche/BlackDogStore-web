@@ -11277,6 +11277,9 @@ class VariantOption(models.Model):
     label = models.CharField(max_length=60)
     sort_order = models.PositiveIntegerField(default=0)
     swatch_hex = models.CharField(max_length=7, blank=True, default='', validators=[validate_swatch_hex])
+    #: CATALOG FASE 1.2 · Y: the swatch is an APPROXIMATION a person chose, pending commercial validation (never an
+    #: official code). Said only in the panel; the shop draws the colour and says nothing of it.
+    swatch_is_approximate = models.BooleanField(default=False, db_default=False)
     #: CATALOG-REFERENCE-01 · PR B: `<role>:<ReferenceOption.key>` of the reference option this one IS, so a
     #: re-import reuses it even after the company renamed it (D-REF-3). '' = not linked.
     reference_key = models.CharField(max_length=80, blank=True, default='', db_default='')
@@ -11353,6 +11356,13 @@ class ModelOption(models.Model):
     #: saved): those follow the placed ones in the company's own order. Written only by
     #: `model_palette.set_option_order`.
     sort_order = models.PositiveIntegerField(default=0, db_default=0)
+    #: CATALOG FASE 1.2 · Y: this MODEL's own swatch for this colour (a company colour is shared by every model and
+    #: generation that has it). '' = the company's (`VariantOption.swatch_hex`). Written only by
+    #: `model_palette.set_model_swatch`; resolved by `device_catalog.resolved_swatch`.
+    swatch_hex = models.CharField(max_length=7, blank=True, default='', db_default='',
+                                  validators=[validate_swatch_hex])
+    #: That swatch is an approximation pending commercial validation (panel only). False whenever `swatch_hex` is ''.
+    swatch_is_approximate = models.BooleanField(default=False, db_default=False)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -11366,6 +11376,7 @@ class ModelOption(models.Model):
     def save(self, *args, **kwargs):
         if not (self.model.company_id == self.company_id == self.option.company_id):
             raise ValueError('El modelo y la opción tienen que ser de la misma empresa.')
+        validate_swatch_hex(self.swatch_hex)
         return super().save(*args, **kwargs)
 
 
@@ -11412,12 +11423,27 @@ class ModelFinishImage(models.Model):
     Written ONLY by `finish_media`.
     """
 
+    #: CATALOG FASE 1.2 · Y: which view of the object the picture is. '' = not said (every picture before 0185).
+    VIEW_MAIN = 'main'
+    VIEW_FRONT = 'front'
+    VIEW_BACK = 'back'
+    VIEW_SIDE = 'side'
+    VIEW_OTHER = 'other'
+    VIEW_CHOICES = [
+        (VIEW_MAIN, 'Principal'),
+        (VIEW_FRONT, 'Frontal'),
+        (VIEW_BACK, 'Posterior'),
+        (VIEW_SIDE, 'Lateral'),
+        (VIEW_OTHER, 'Otra'),
+    ]
+
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
     model = models.ForeignKey(ProductModel, on_delete=models.CASCADE, related_name='finish_images')
     color_option = models.ForeignKey(VariantOption, on_delete=models.PROTECT, related_name='finish_images')
     image_url = models.CharField(max_length=255, validators=[validate_asset_url])
     #: For people who do not see the picture. Empty means «<model> <colour>».
     alt_text = models.CharField(max_length=160, blank=True, default='')
+    view = models.CharField(max_length=8, choices=VIEW_CHOICES, blank=True, default='', db_default='')
     width = models.PositiveIntegerField(default=0)
     height = models.PositiveIntegerField(default=0)
     sort_order = models.PositiveIntegerField(default=0)

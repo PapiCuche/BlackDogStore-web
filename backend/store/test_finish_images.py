@@ -639,7 +639,7 @@ class PublicFinishGalleryTest(FinishApiBase):
         finishes = body['finish_images']
         self.assertEqual(set(finishes), {str(self.black.pk), str(self.blue.pk)})
         self.assertEqual(sorted(finishes[str(self.black.pk)][0]),
-                         ['alt_text', 'height', 'is_demo', 'is_primary', 'url', 'width'])
+                         ['alt_text', 'height', 'is_demo', 'is_primary', 'url', 'view', 'width'])
         self.assertFalse(finishes[str(self.black.pk)][0]['is_demo'])
         self.assertTrue(finishes[str(self.blue.pk)][0]['is_demo'])
         self.assertTrue(self.variants()[self.new128blue.pk]['gallery'][0]['is_demo'])

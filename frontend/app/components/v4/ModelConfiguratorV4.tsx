@@ -83,12 +83,15 @@ type Chip = {
   label: string;
   /** «agotado» / «no disponible» go into the accessible name too. */
   state?: "available" | "sold-out" | "unavailable";
-  /** A colour: its company swatch ('' = not configured: no dot) and its finish picture (drawn first). */
+  /**
+   * A colour: its swatch as the server resolves it for this model (FASE 1.2 · Y: the model's own, else the company's;
+   * '' = none configured: no dot) and its finish picture (drawn first).
+   */
   swatch?: string;
   picture?: string | null;
 };
 
-/** G (owner's visual order 4): finish picture → company swatch → nothing; the name is always written beside it. */
+/** G (owner's visual order 4): finish picture → swatch (model's, else company's) → nothing; the name is always beside it. */
 function ChipMark({ chip }: { chip: Chip }) {
   if (chip.picture) {
     return (

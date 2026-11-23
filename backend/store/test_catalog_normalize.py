@@ -254,7 +254,9 @@ class ServiceAuditTest(_Shop, TestCase):
     def test_the_option_audit_says_what_it_was(self):
         device_catalog.update_option(self.opts['16 GB'], sort_order=17)
         row = AdminAuditLog.objects.get(action='variant_option_updated')
-        self.assertEqual(row.metadata['previous'], {'label': '16 GB', 'sort_order': 16, 'swatch_hex': ''})
+        # FASE 1.2 · Y: the previous approximation flag is part of what the option was.
+        self.assertEqual(row.metadata['previous'], {'label': '16 GB', 'sort_order': 16, 'swatch_hex': '',
+                                                    'swatch_is_approximate': False})
         self.assertEqual(row.metadata['sort_order'], 17)
 
     def test_a_negative_option_order_is_refused(self):

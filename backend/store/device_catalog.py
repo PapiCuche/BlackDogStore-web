@@ -261,9 +261,11 @@ def _clean_sort_order(value) -> int:
     return int(text)
 
 
-def update_option(option, *, label=None, swatch_hex=None, sort_order=None, actor=None, request=None) -> VariantOption:
+def update_option(option, *, label=None, swatch_hex=None, sort_order=None, swatch_is_approximate=None, actor=None,
+                  request=None) -> VariantOption:
     # CATALOG-F11: the audit says what the option was, so a rename or a reorder can be read back (and undone).
-    previous = {'label': option.label, 'sort_order': option.sort_order, 'swatch_hex': option.swatch_hex}
+    previous = {'label': option.label, 'sort_order': option.sort_order, 'swatch_hex': option.swatch_hex,
+                'swatch_is_approximate': option.swatch_is_approximate}
     if label is not None:
         option.label = _text(label, 'el valor', 'label', max_length=60)
         if option.attribute.options.exclude(pk=option.pk).filter(label__iexact=option.label).exists() \
@@ -275,10 +277,18 @@ def update_option(option, *, label=None, swatch_hex=None, sort_order=None, actor
         option.swatch_hex = _clean_swatch(option.attribute, swatch_hex)
     if sort_order is not None:
         option.sort_order = _clean_sort_order(sort_order)
+    if swatch_is_approximate is not None:
+        # FASE 1.2 · Y: a swatch a person chose as an APPROXIMATION, pending commercial validation. Changed only when
+        # sent: a new value without it is the company's own (owner-approved) choice and keeps whatever flag it had.
+        if not isinstance(swatch_is_approximate, bool):
+            raise CatalogError('«Muestra aproximada» es verdadero o falso.', field='swatch_is_approximate')
+        if swatch_is_approximate and option.attribute.kind != VariantAttribute.KIND_COLOR:
+            raise CatalogError('Sólo una opción de color lleva muestra.', field='swatch_is_approximate')
+        option.swatch_is_approximate = swatch_is_approximate
     option.save()
     _audit('variant_option_updated', company=option.company, actor=actor, request=request,
            target_type='variant_option', target_id=option.pk, label=option.label, sort_order=option.sort_order,
-           swatch_hex=option.swatch_hex, previous=previous)
+           swatch_hex=option.swatch_hex, swatch_is_approximate=option.swatch_is_approximate, previous=previous)
     return option
 
 
@@ -1373,6 +1383,19 @@ def shown_swatch(option) -> str:
     return option.swatch_hex if swatch_is_set(option) else ''
 
 
+def resolved_swatch(option, model_swatch_hex='', model_swatch_is_approximate=False) -> tuple[str, bool]:
+    """
+    CATALOG FASE 1.2 · Y — the swatch a colour is DRAWN with on one model, and whether it is an approximation: the
+    model's own (`ModelOption.swatch_hex`) when it has one, else the company's (`shown_swatch`), else '' (a name-only
+    chip). A company colour is shared by every model that has it (one «Azul» for several generations), so a model
+    that needs its own shade says so on its palette row, without touching the others. The flag is for the panel only.
+    """
+    if model_swatch_hex:
+        return model_swatch_hex.upper(), bool(model_swatch_is_approximate)
+    shown = shown_swatch(option)
+    return shown, bool(shown and option.swatch_is_approximate)
+
+
 def variant_pictures(products) -> dict[int, tuple[str, bool, bool]]:
     """
     The picture each NEW variant opens on, by `public_model`'s rule, for a surface that shows a few lines (the cart):
@@ -1479,7 +1502,7 @@ def public_model(model, branch) -> dict:
     `color` role or `color` kind attribute (D-PRC-8).
     Of a picture's provenance only `is_demo` is public.
     """
-    from django.db.models import OuterRef, Prefetch, Subquery
+    from django.db.models import OuterRef, Prefetch, Subquery, Value
     from django.db.models.functions import Coalesce
 
     from .accessory_compat import for_model_public
@@ -1500,7 +1523,11 @@ def public_model(model, branch) -> dict:
             # query as the links: no query more than before.
             Prefetch('variant_options', queryset=ProductVariantOption.objects.annotate(model_rank=Coalesce(
                 Subquery(ModelOption.objects.filter(model_id=model.pk, option_id=OuterRef('option_id'))
-                         .values('sort_order')[:1]), 0))),
+                         .values('sort_order')[:1]), 0),
+                # FASE 1.2 · Y: this model's own swatch for the option ('' = the company's), in the same query.
+                model_swatch=Coalesce(
+                    Subquery(ModelOption.objects.filter(model_id=model.pk, option_id=OuterRef('option_id'))
+                             .values('swatch_hex')[:1]), Value('')))),
             'variant_options__option__attribute',
         )
         .order_by('pk')
@@ -1531,7 +1558,9 @@ def public_model(model, branch) -> dict:
                 'sort_order': attribute.sort_order, 'options': {},
             })
             entry['options'][link.option.pk] = {
-                'id': link.option.pk, 'label': link.option.label, 'swatch_hex': shown_swatch(link.option),
+                # FASE 1.2 · Y: the model's own swatch, else the company's; never whether it is approximate.
+                'id': link.option.pk, 'label': link.option.label,
+                'swatch_hex': resolved_swatch(link.option, link.model_swatch)[0],
                 'sort_order': link.option.sort_order, '_rank': link.model_rank,
             }
             selection[str(attribute.pk)] = link.option.pk
