@@ -62935,12 +62935,15 @@ class SvcCollectPresetTest(TestCase):
         # …USED-READY-01 (0187, `inventory.units.inspect`) starts where SALES-EMAIL-03 ended…
         inspect_used = self.migration('0187_used_unit_readiness')
         self.assertEqual(copies.ADMIN_PREVIOUS | set(copies.NEW_CAPABILITIES), inspect_used.ADMIN_PREVIOUS)
+        # …VARIANT-SAFE-01 (0188, `products.delete`) starts where USED-READY-01 ended…
+        variant_safe = self.migration('0188_variant_safe')
+        self.assertEqual(inspect_used.ADMIN_PREVIOUS | set(inspect_used.NEW_CAPABILITIES), variant_safe.ADMIN_PREVIOUS)
         # …and THE TRIPWIRE: the last one ends at today's preset (the catalogue
         # minus the explicit grants). It fails when the catalogue grows, and the
         # node that grows it is the one that has to say what happens to this preset.
         from .capabilities import DEFAULT_ADMIN_CAPABILITY_CODES
         self.assertEqual(
-            inspect_used.ADMIN_PREVIOUS | set(inspect_used.NEW_CAPABILITIES),
+            variant_safe.ADMIN_PREVIOUS | set(variant_safe.NEW_CAPABILITIES),
             frozenset(DEFAULT_ADMIN_CAPABILITY_CODES),
         )
         self.assertTrue(DEFAULT_ADMIN_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES)

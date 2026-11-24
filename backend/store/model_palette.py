@@ -574,7 +574,7 @@ def _variant_rows(model):
     for product in (model.variants.annotate(image_count=Count('images')).order_by('condition_line', 'pk')
                     # `product_model` too: the related manager reads it on every row; deferred, it cost a query per row.
                     .only('pk', 'product_model', 'name', 'condition_line', 'draft_origin', 'sale_enabled_at', 'price',
-                          'image_url', 'is_published_online', 'is_active', 'is_serialized')):
+                          'image_url', 'is_published_online', 'is_active', 'is_serialized', 'archived_at')):
         own = sorted(links.get(product.pk, []), key=lambda l: attribute_sort_key(l.attribute))
         rows.append({
             'product_id': product.pk, 'name': product.name, 'condition_line': product.condition_line,
@@ -587,6 +587,8 @@ def _variant_rows(model):
             'is_published_online': product.is_published_online,
             'is_active': product.is_active,
             'is_serialized': product.is_serialized,
+            # VARIANT-SAFE-01: kept in the list (it holds its combination), out of the «existing» set.
+            'archived': product.archived_at is not None,
         })
     return rows
 
@@ -596,11 +598,31 @@ def _needs_review(row) -> bool:
     A1b-2: a variant the cockpit lists under «Revisar» — a pending draft, a new-line variant without a
     price (a used one is priced device by device), or one standing outside / short of the palette.
     """
+    if row.get('archived'):
+        return False    # VARIANT-SAFE-01: nobody prices or publishes an archived variant
     return bool(
         row['draft_pending']
         or (row['condition_line'] == Product.CONDITION_NEW and not row['price_set'])
         or row['status'] in (STATUS_OUTSIDE, STATUS_INCOMPLETE)
     )
+
+
+def _combination(key, ids, combo, labels, by_key) -> dict:
+    """
+    One configuration of the matrix. VARIANT-SAFE-01: a configuration only ARCHIVED variants hold says so
+    (`archived`): it is not «existing» (nothing sells it) and it is not offered to be created (the archived row
+    keeps the combination), and the panel reads it «Archivada».
+    """
+    rows = by_key.get(key, [])
+    products = [{'product_id': r['product_id'], 'name': r['name'], 'condition_line': r['condition_line'],
+                 'archived': r['archived']} for r in rows]
+    return {
+        'key': key, 'option_ids': ids,
+        'labels': {str(attribute_id): labels[option_id] for attribute_id, option_id in combo},
+        'status': STATUS_EXISTING if products else STATUS_VALID,
+        'archived': bool(rows) and all(r['archived'] for r in rows),
+        'products': products,
+    }
 
 
 def payload(model) -> dict:
@@ -667,14 +689,7 @@ def payload(model) -> dict:
             if len(combinations) >= MAX_COMBINATIONS:
                 continue
             key = variant_key(ids)
-            products = [{'product_id': r['product_id'], 'name': r['name'], 'condition_line': r['condition_line']}
-                        for r in by_key.get(key, [])]
-            combinations.append({
-                'key': key, 'option_ids': ids,
-                'labels': {str(attribute_id): labels[option_id] for attribute_id, option_id in combo},
-                'status': STATUS_EXISTING if products else STATUS_VALID,
-                'products': products,
-            })
+            combinations.append(_combination(key, ids, combo, labels, by_key))
     elif palette:
         # One column per attribute, in reading order; options in the company's own order within each.
         columns = []
@@ -690,22 +705,20 @@ def payload(model) -> dict:
                 break
             ids = [option_id for _attribute_id, option_id in combo]
             key = variant_key(ids)
-            products = [{'product_id': r['product_id'], 'name': r['name'], 'condition_line': r['condition_line']}
-                        for r in by_key.get(key, [])]
-            combinations.append({
-                'key': key, 'option_ids': ids,
-                'labels': {str(attribute_id): labels[option_id] for attribute_id, option_id in combo},
-                'status': STATUS_EXISTING if products else STATUS_VALID,
-                'products': products,
-            })
+            combinations.append(_combination(key, ids, combo, labels, by_key))
 
     # Counted over the variants, not over the (possibly cut) list of combinations.
-    existing_keys = {variant_key(r['option_ids']) for r in variants if r['status'] == STATUS_EXISTING}
+    existing_keys = {variant_key(r['option_ids']) for r in variants
+                     if r['status'] == STATUS_EXISTING and not r['archived']}
+    # VARIANT-SAFE-01: configurations only archived variants hold: neither existing nor creatable.
+    archived_keys = {variant_key(r['option_ids']) for r in variants
+                     if r['status'] == STATUS_EXISTING and r['archived']} - existing_keys
     # Review of #371: a variant that already is an EXCLUDED combination is not one of the offered ones; it is counted
     # apart (only for a model with exclusions), so `existing` + `valid_without_variant` = `combinations`.
     excluded_keys = {variant_key(r['option_ids']) for r in variants if r['status'] == STATUS_EXISTING
                      and any(pair <= set(r['option_ids']) for pair in excluded)} if excluded else set()
     existing_keys -= excluded_keys
+    archived_keys -= excluded_keys
     # A1b-2: the roles the company has attributes for that the palette does not cover (empty without a
     # palette: nothing is «missing» from a model that admits anything). In reading order.
     roles_missing = []
@@ -729,7 +742,8 @@ def payload(model) -> dict:
         'summary': {
             'combinations': total,
             'existing': len(existing_keys),
-            'valid_without_variant': max(total - len(existing_keys), 0) if palette else 0,
+            'valid_without_variant': max(total - len(existing_keys) - len(archived_keys), 0) if palette else 0,
+            'archived': len(archived_keys),
             'outside': sum(1 for r in variants if r['status'] == STATUS_OUTSIDE),
             'incomplete': sum(1 for r in variants if r['status'] == STATUS_INCOMPLETE),
             # A1b-2: what the cockpit's «Revisar» holds, and the roles the palette lacks.

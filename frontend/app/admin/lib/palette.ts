@@ -42,6 +42,7 @@ export const RESOLVER_STATUS_LABELS: Record<ResolverStatus, string> = {
   nombre_con_opciones: "Nombre con opciones",
   opcion_desconocida: "Opción desconocida",
   sin_paleta: "Sin paleta",
+  variante_archivada: "Archivada",
 };
 
 /** One short sentence per state: what it means and what a person may do. Nothing is ever done by itself. */
@@ -55,12 +56,13 @@ export const RESOLVER_STATUS_HELP: Record<ResolverStatus, string> = {
   nombre_con_opciones: "El modelo sólo se encontró quitando opciones escritas dentro de su nombre: la descripción completa queda para revisar.",
   opcion_desconocida: "Hay un texto que no es ninguna opción ni alias de la empresa.",
   sin_paleta: "El modelo no tiene paleta y ninguna variante es exactamente esa configuración: no se puede validar.",
+  variante_archivada: "Hay una variante que es exactamente esa configuración, pero está archivada: no se usa en cargas, caja ni tienda. Desarchívala en el modelo si vuelve a usarse.",
 };
 
 /** The order the statuses are listed in (the resolver's precedence: the first that applies wins). */
 export const RESOLVER_STATUS_ORDER: ResolverStatus[] = [
   "modelo_desconocido", "ambigua", "nombre_con_opciones", "opcion_desconocida", "fuera_de_paleta", "incompleta",
-  "variante_existente", "combinacion_valida_sin_variante", "sin_paleta",
+  "variante_existente", "combinacion_valida_sin_variante", "sin_paleta", "variante_archivada",
 ];
 
 /** The option ids the palette holds now. */

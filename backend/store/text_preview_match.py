@@ -198,11 +198,16 @@ def _match_device(company, candidate, cache) -> dict:
     except device_catalog.CatalogError as exc:
         return {'status': 'none', 'reason': str(exc), 'options': []}
     exact = device_catalog.find_variant(company, spec)
+    if exact is not None and exact.archived_at is not None:
+        # VARIANT-SAFE-01: an archived variant is never what a pasted text is matched to.
+        from .variant_lifecycle import archived_refusal
+
+        return {'status': 'none', 'reason': archived_refusal(exact), 'options': []}
     if exact is not None:
         # Final review: without a capacity a device is never sure — an option-less product only «fits».
         return _answer([exact], '', exact=bool(candidate['capacity']))
     fitting = Product.objects.filter(company=company, product_model_id=spec['model_id'],
-                                     condition_line=spec['condition_line'])
+                                     condition_line=spec['condition_line'], archived_at__isnull=True)
     if spec['option_ids']:
         holders = (ProductVariantOption.objects.filter(company_id=company.pk, option_id__in=spec['option_ids'])
                    .values('product_id').annotate(n=Count('option_id', distinct=True))

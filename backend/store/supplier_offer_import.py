@@ -880,11 +880,16 @@ def _by_model(company, fields, *, cache=None, notes=None):
     except device_catalog.CatalogError as exc:
         return None, str(exc)
     product = device_catalog.find_variant(company, spec)
+    if product is not None and product.archived_at is not None:
+        # VARIANT-SAFE-01: a supplier's list never offers an archived variant.
+        from .variant_lifecycle import archived_refusal
+
+        return None, archived_refusal(product)
     if product is not None:
         return product, None
     # Fewer options than the variant has: several variants may fit. Never pick one.
     fitting = Product.objects.filter(company=company, product_model_id=spec['model_id'],
-                                     condition_line=spec['condition_line'])
+                                     condition_line=spec['condition_line'], archived_at__isnull=True)
     if spec['option_ids']:
         holders = (ProductVariantOption.objects.filter(company_id=company.pk, option_id__in=spec['option_ids'])
                    .values('product_id').annotate(n=Count('option_id', distinct=True))

@@ -506,6 +506,11 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
         existing = device_catalog.find_variant(company, {
             'model_id': model.pk, 'condition_line': line, 'variant_key': device_catalog.variant_key(option_ids),
         })
+        if existing is not None and existing.archived_at is not None:
+            # VARIANT-SAFE-01: the guided registration never adds devices to an archived variant.
+            from .variant_lifecycle import archived_refusal
+
+            raise RegistrationError(archived_refusal(existing), step='model', field='options')
         if existing is not None:
             product, created = existing, False
             warnings.append(

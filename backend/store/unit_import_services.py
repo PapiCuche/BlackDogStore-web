@@ -453,7 +453,12 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                     match_error = str(exc)
             else:
                 variant = device_catalog.find_variant(company, spec)
-                if variant is None:
+                if variant is not None and variant.archived_at is not None:
+                    # VARIANT-SAFE-01: devices are never loaded into an archived variant.
+                    from .variant_lifecycle import archived_refusal
+
+                    match_error = archived_refusal(variant)
+                elif variant is None:
                     match_error = (f'«{spec["model_name"]}» no tiene esa variante. '
                                    f'Créala en Catálogo › Modelos.')
                 else:
@@ -465,6 +470,11 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             errors.append(match_error)
         elif product is None:
             errors.append('No existe un producto con ese código o nombre en esta empresa.')
+        elif product.archived_at is not None:
+            from .variant_lifecycle import archived_refusal
+
+            errors.append(archived_refusal(product))
+            product = None
         elif not product.is_serialized:
             errors.append(
                 f'«{product.name}» no se controla por número de serie. Actívalo en Inventario › Equipos '

@@ -2331,6 +2331,11 @@ export type AdminModelVariant = {
   removal?: VariantEditRule;
   /** A1: how it stands against the model's palette; null when the model has none. Reported, never corrected. */
   palette_status?: PaletteStatus | null;
+  /** VARIANT-SAFE-01 (absent from an older server): deactivated, and archived with its reason. */
+  is_active?: boolean;
+  archived?: boolean;
+  archived_at?: string | null;
+  archive_reason?: string;
 };
 
 export type VariantHistory = {
@@ -2403,7 +2408,9 @@ export type PaletteCombination = {
   /** attribute id → option label. */
   labels: Record<string, string>;
   status: PaletteStatus;
-  products: { product_id: number; name: string; condition_line: CatalogLine }[];
+  /** VARIANT-SAFE-01: only archived variants hold it — not «existing», never offered to be created. */
+  archived?: boolean;
+  products: { product_id: number; name: string; condition_line: CatalogLine; archived?: boolean }[];
 };
 
 export type PaletteVariant = {
@@ -2425,6 +2432,8 @@ export type PaletteVariant = {
   is_published_online?: boolean;
   is_active?: boolean;
   is_serialized?: boolean;
+  /** VARIANT-SAFE-01: kept in the list (it holds its combination), out of the «existing» set. */
+  archived?: boolean;
 };
 
 /** `GET/PUT /admin/catalog/models/<id>/palette/` — the palette, every combination and its state. */
@@ -2444,6 +2453,8 @@ export type AdminModelPalette = {
   excluded_pairs?: number[][];
   summary: {
     combinations: number; existing: number; valid_without_variant: number; outside: number; incomplete: number;
+    /** VARIANT-SAFE-01: configurations only archived variants hold. */
+    archived?: number;
     /** A1b-2 (absent from an older server): drafts still pending, variants under «Revisar», roles the palette lacks. */
     pending_drafts?: number; needs_review?: number; roles_missing?: AttributeRole[];
   };
@@ -2845,6 +2856,75 @@ export function setProductVariant(
   );
 }
 
+// ---------------------------------------------------------------------------
+// VARIANT-SAFE-01 — deactivate, archive, delete
+// ---------------------------------------------------------------------------
+
+/** One reason a variant cannot be deleted, with how many rows, in the server's words. */
+export type VariantBlocker = { code: string; count: number; label: string };
+
+/** What the shelves still hold of a variant: it is not archived while any of these is above zero. */
+export type VariantStockCounts = {
+  available_units: number; reserved_units: number; in_transit_units: number; stock: number;
+};
+
+/** `GET /api/admin/products/<pk>/deletion-check/`: what deleting or archiving would meet, and what the caller may do. */
+export type VariantDeletionCheck = {
+  product_id: number;
+  name: string;
+  is_variant: boolean;
+  is_active: boolean;
+  archived: boolean;
+  archived_at: string | null;
+  archive_reason: string;
+  deletable: boolean;
+  archivable: boolean;
+  blockers: VariantBlocker[];
+  stock: VariantStockCounts;
+  /** `products.manage` (archive) and `products.manage` + `products.delete` (delete). The server decides again. */
+  can_archive: boolean;
+  can_delete: boolean;
+};
+
+export function fetchVariantDeletionCheck(productId: number, companyId?: number | null): Promise<VariantDeletionCheck> {
+  return catalogCall(
+    `/admin/products/${productId}/deletion-check/${companyQuery(companyId)}`, {},
+    "No se pudo revisar qué depende de la variante.",
+  );
+}
+
+/** Deletes a variant WITHOUT history for good: the reason and its exact name typed back. 409 `has_dependencies` otherwise. */
+export function deleteVariant(
+  productId: number, body: { reason: string; confirm_name: string }, companyId?: number | null,
+): Promise<{ deleted: true; product_id: number; name: string }> {
+  return catalogCall(
+    `/admin/products/${productId}/${companyQuery(companyId)}`, jsonInit("DELETE", body),
+    "No se pudo eliminar la variante.",
+  );
+}
+
+export function archiveVariant(productId: number, reason: string, companyId?: number | null): Promise<VariantDeletionCheck> {
+  return catalogCall(
+    `/admin/products/${productId}/archive/${companyQuery(companyId)}`, jsonInit("POST", { reason }),
+    "No se pudo archivar la variante.",
+  );
+}
+
+export function unarchiveVariant(productId: number, reason: string, companyId?: number | null): Promise<VariantDeletionCheck> {
+  return catalogCall(
+    `/admin/products/${productId}/unarchive/${companyQuery(companyId)}`, jsonInit("POST", { reason }),
+    "No se pudo desarchivar la variante.",
+  );
+}
+
+/** Deactivate (or reactivate) a product through its ordinary edit. An archived one is refused (`is_active`). */
+export function setProductActive(productId: number, active: boolean, companyId?: number | null): Promise<unknown> {
+  return catalogCall(
+    `/admin/products/${productId}/${companyQuery(companyId)}`, jsonInit("PATCH", { is_active: active }),
+    active ? "No se pudo activar la variante." : "No se pudo desactivar la variante.",
+  );
+}
+
 export function fetchCosmeticGrades(companyId?: number | null): Promise<CosmeticGradeRow[]> {
   return catalogCall<CosmeticGradeRow[] | { results: CosmeticGradeRow[] }>(
     `/admin/catalog/grades/${companyQuery(companyId)}`, {}, "No se pudo cargar la escala de estado.",
@@ -3016,7 +3096,9 @@ export type ResolverStatus =
   | "ambigua"
   | "nombre_con_opciones"
   | "opcion_desconocida"
-  | "sin_paleta";
+  | "sin_paleta"
+  /** VARIANT-SAFE-01: a variant IS it, but it is archived — never acted on. */
+  | "variante_archivada";
 
 export type ResolveModelStatus = "exact" | "alias" | "model_word" | "name_with_options" | "ambiguous" | "unknown";
 

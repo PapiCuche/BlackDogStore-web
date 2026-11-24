@@ -502,6 +502,11 @@ def _resolve(company, model, options, palette):
 
 
 def _usable(product):
+    if product.archived_at is not None:
+        # VARIANT-SAFE-01: the till never receives into (nor creates again) an archived variant.
+        from .variant_lifecycle import archived_refusal
+
+        raise QuickSaleError(archived_refusal(product), code='variant_archived', field='option_ids', status=409)
     if product.is_pending_draft:
         raise QuickSaleError(
             f'«{product.name}» es un borrador sin habilitar para la venta: habilítalo en Catálogo › Modelos antes de '
