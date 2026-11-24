@@ -55,6 +55,9 @@ const press = async (target: Locator, touch: boolean) => {
   if (touch) await target.tap({ timeout: 30_000 }); else await target.click({ timeout: 30_000 });
 };
 const button = (page: Page, name: string | RegExp) => page.getByRole("button", { name });
+/** One device in «Equipos seminuevos»: its table row from `md`, its card below (only the visible one has a role). */
+const usedEntry = (page: Page, text: string) => page.getByTestId("used-units-table").getByRole("row")
+  .or(page.getByTestId("used-units-cards").getByRole("listitem")).filter({ hasText: text });
 
 async function noOverflow(page: Page, where: string) {
   const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
@@ -161,7 +164,7 @@ for (const env of ENVS) {
       // «Equipos seminuevos»: completa la batería; el precio es de sólo lectura y se dice por qué.
       await press(follow.getByRole("link", { name: "Completar datos y fotos" }), env.touch);
       await expect(page.getByRole("heading", { name: "Seminuevos", exact: true })).toBeVisible({ timeout: 60_000 });
-      const line = page.getByRole("row").filter({ hasText: serial });
+      const line = usedEntry(page, serial);
       await expect(line).toContainText("Sin precio (pendiente)");
       await expect(page.getByText(/puede ver los precios, no cambiarlos/)).toBeVisible();
       await press(button(page, `Editar ${serial}`), env.touch);
@@ -210,9 +213,9 @@ for (const env of ENVS) {
       await expect(page.getByRole("heading", { name: "Seminuevos", exact: true })).toBeVisible({ timeout: 60_000 });
       expect(new URL(page.url()).searchParams.get("precio")).toBe("sin");
       await expect(page.getByLabel("Precio de venta")).toHaveValue("no");
-      const line = page.getByRole("row").filter({ hasText: serials[1] });
+      const line = usedEntry(page, serials[1]);
       await expect(line).toContainText("Sin precio (pendiente)");
-      await expect(page.getByRole("row").filter({ hasText: serials[0] })).toHaveCount(0); // ya tiene precio
+      await expect(usedEntry(page, serials[0])).toHaveCount(0); // ya tiene precio
       await press(button(page, `Editar ${serials[1]}`), env.touch);
       const dialog = page.getByRole("dialog");
       await dialog.getByLabel(/Precio de venta \(S\/\)/).fill("0");

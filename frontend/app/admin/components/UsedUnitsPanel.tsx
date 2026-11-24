@@ -481,7 +481,7 @@ export function UnitListingDialog({
           <section aria-label="Inspección y publicación" className="space-y-3 rounded-lg border border-bd-border p-3 sm:p-4">
             <h3 className="text-xs font-semibold uppercase tracking-widest text-muted">Inspección y publicación</h3>
             <p className="flex flex-wrap items-center gap-2 text-sm">
-              <span data-testid="unit-inspection" className={`rounded-full border px-2.5 py-1 text-[11px] ${INSPECTION_TONE[inspection]}`}>
+              <span data-testid="unit-inspection" className={`inline-block whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px] ${INSPECTION_TONE[inspection]}`}>
                 {INSPECTION_TEXT[inspection]}
               </span>
               <span data-testid="unit-publication" className="text-xs text-muted">
@@ -566,6 +566,37 @@ export function UnitListingDialog({
   );
 }
 
+/** STOCK-UX-WALK — the pills of a device's row or card. They never wrap: three lines read as three states. */
+function UnitPills({ unit, only }: { unit: StockUnit; only?: "status" | "inspection" }) {
+  const pill = "inline-block whitespace-nowrap rounded-full border px-2.5 py-1 text-[11px]";
+  return (
+    <>
+      {only !== "inspection" ? <span className={`${pill} ${STATUS_TONE[unit.status]}`}>{unit.status_label}</span> : null}
+      {only !== "status" ? (
+        <span className={`${pill} ${INSPECTION_TONE[inspectionOf(unit)]}`}>{INSPECTION_TEXT[inspectionOf(unit)]}</span>
+      ) : null}
+    </>
+  );
+}
+
+function PriceCell({ unit }: { unit: StockUnit }) {
+  return hasUsablePrice(unit.sale_price)
+    ? <>{formatSoles(unit.sale_price!)}</>
+    : <span className="text-warning">Sin precio (pendiente)</span>;
+}
+
+function WebCell({ unit }: { unit: StockUnit }) {
+  if (!unit.web) return <>—</>;
+  return unit.web.offered
+    ? <span className="text-success">Se ofrece</span>
+    : <span title={webStatusText(unit) ?? undefined}>No · {unitWebReasonText(String(unit.web.reasons[0] ?? ""))}</span>;
+}
+
+/** UNIT-PHOTO-02: confirmed (shown in the shop) of all. */
+function PhotoCount({ unit }: { unit: StockUnit }) {
+  return <span title="Confirmadas como de este equipo / todas">{publicPhotoCount(unit.photos)}/{unit.photos?.length ?? 0}</span>;
+}
+
 export function UsedUnitsPanel({
   branch, canEdit, canManagePrice = false, canManageProducts = false, canSeeCost, canInspect = false, initialPriced = "",
   initialProduct = "",
@@ -619,6 +650,8 @@ export function UsedUnitsPanel({
   );
 
   const totalPages = page ? Math.max(1, Math.ceil(page.count / page.page_size)) : 1;
+  const actionLabel = canEdit || canManagePrice ? "Editar" : "Ver";
+  const open = (unit: StockUnit) => { setEditing(unit); setNotice(null); };
   const productName = product ? page?.results.find((u) => String(u.product_id) === product)?.product_name : undefined;
 
   return (
@@ -691,17 +724,57 @@ export function UsedUnitsPanel({
 
       {page && page.results.length > 0 ? (
         <>
+          {/* STOCK-UX-WALK — phones: one card per device (the `SupplierWeeklyPanel` pattern), its button in reach. */}
+          <ul className="space-y-3 md:hidden" aria-label="Equipos seminuevos" data-testid="used-units-cards">
+            {page.results.map((unit) => (
+              <li key={unit.id} className="rounded-lg border border-bd-border bg-background p-3 text-sm">
+                <p className="break-words font-semibold text-foreground">{unit.product_name}</p>
+                <p className="mt-0.5 break-all font-mono text-xs text-muted">
+                  {unit.imei || unitIdentifier(unit)}{unit.imei2 ? ` · ${unit.imei2}` : ""}
+                  {unit.serial_number && unit.imei ? ` · Serie ${unit.serial_number}` : ""}
+                </p>
+                <div className="mt-2 flex flex-wrap gap-1.5"><UnitPills unit={unit} /></div>
+                <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                  <dt className="text-muted">Precio de venta</dt><dd className="text-right"><PriceCell unit={unit} /></dd>
+                  <dt className="text-muted">Batería</dt><dd className="text-right">{batteryCell(unit.battery_health)}</dd>
+                  <dt className="text-muted">Estado estético</dt><dd className="text-right">{gradeLabel(unit)}</dd>
+                  <dt className="text-muted">En línea</dt><dd className="text-right"><WebCell unit={unit} /></dd>
+                  <dt className="text-muted">Fotos</dt><dd className="text-right"><PhotoCount unit={unit} /></dd>
+                </dl>
+                <button
+                  type="button"
+                  className={`mt-3 w-full min-h-11 ${internalButtonClass}`}
+                  onClick={() => open(unit)}
+                  aria-label={`${actionLabel} ${unitIdentifier(unit)}`}
+                >
+                  {actionLabel}
+                </button>
+              </li>
+            ))}
+          </ul>
+          {/* From `md`: the table, opening with its only action so it is in view without scrolling sideways. */}
+          <div className="hidden md:block" data-testid="used-units-table">
           <TableWrap>
             <thead>
               <tr className="border-b border-bd-border">
-                <Th>Producto</Th><Th>Serie</Th><Th>IMEI</Th><Th>Batería</Th><Th>Estado estético</Th>
-                <Th right>Precio de venta</Th><Th>Estado</Th><Th>Inspección</Th><Th>En línea</Th><Th right>Fotos</Th><Th right>Acciones</Th>
+                <Th>Acciones</Th><Th>Producto</Th><Th>Serie</Th><Th>IMEI</Th><Th>Batería</Th><Th>Estado estético</Th>
+                <Th right>Precio de venta</Th><Th>Estado</Th><Th>Inspección</Th><Th>En línea</Th><Th right>Fotos</Th>
               </tr>
             </thead>
             <tbody>
               {page.results.map((unit) => (
                 <tr key={unit.id} className="border-b border-bd-border/60">
-                  <Td>{unit.product_name}</Td>
+                  <Td>
+                    <button
+                      type="button"
+                      className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25"
+                      onClick={() => open(unit)}
+                      aria-label={`${actionLabel} ${unitIdentifier(unit)}`}
+                    >
+                      {actionLabel}
+                    </button>
+                  </Td>
+                  <Td><span className="block min-w-[12rem]">{unit.product_name}</span></Td>
                   <Td><span className="font-mono">{unitIdentifier(unit)}</span></Td>
                   <Td muted={!unit.imei}>
                     {unit.imei ? <span className="font-mono">{unit.imei}</span> : "—"}
@@ -709,46 +782,16 @@ export function UsedUnitsPanel({
                   </Td>
                   <Td muted={unit.battery_health === null || unit.battery_health === undefined}>{batteryCell(unit.battery_health)}</Td>
                   <Td muted>{gradeLabel(unit)}</Td>
-                  <Td right>
-                    {hasUsablePrice(unit.sale_price)
-                      ? formatSoles(unit.sale_price!)
-                      : <span className="text-warning">Sin precio (pendiente)</span>}
-                  </Td>
-                  <Td>
-                    <span className={`rounded-full border px-2.5 py-1 text-[11px] ${STATUS_TONE[unit.status]}`}>{unit.status_label}</span>
-                  </Td>
-                  <Td>
-                    <span className={`rounded-full border px-2.5 py-1 text-[11px] ${INSPECTION_TONE[inspectionOf(unit)]}`}>
-                      {INSPECTION_TEXT[inspectionOf(unit)]}
-                    </span>
-                  </Td>
-                  <Td muted={!unit.web?.offered}>
-                    {unit.web
-                      ? (unit.web.offered
-                        ? <span className="text-success">Se ofrece</span>
-                        : <span title={webStatusText(unit) ?? undefined}>No · {unitWebReasonText(String(unit.web.reasons[0] ?? ""))}</span>)
-                      : "—"}
-                  </Td>
-                  <Td right>
-                    {/* UNIT-PHOTO-02: confirmed (shown in the shop) of all. */}
-                    <span title="Confirmadas como de este equipo / todas">
-                      {publicPhotoCount(unit.photos)}/{unit.photos?.length ?? 0}
-                    </span>
-                  </Td>
-                  <Td right>
-                    <button
-                      type="button"
-                      className="rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25"
-                      onClick={() => { setEditing(unit); setNotice(null); }}
-                      aria-label={`${canEdit || canManagePrice ? "Editar" : "Ver"} ${unitIdentifier(unit)}`}
-                    >
-                      {canEdit || canManagePrice ? "Editar" : "Ver"}
-                    </button>
-                  </Td>
+                  <Td right><PriceCell unit={unit} /></Td>
+                  <Td><UnitPills unit={unit} only="status" /></Td>
+                  <Td><UnitPills unit={unit} only="inspection" /></Td>
+                  <Td muted={!unit.web?.offered}><WebCell unit={unit} /></Td>
+                  <Td right><PhotoCount unit={unit} /></Td>
                 </tr>
               ))}
             </tbody>
           </TableWrap>
+          </div>
           <div className="mt-4 flex items-center justify-between">
             <p className="text-xs text-muted">{page.count === 1 ? "1 equipo" : `${page.count} equipos`} · página {page.page} de {totalPages}</p>
             <div className="flex gap-2">

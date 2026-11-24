@@ -55,14 +55,14 @@ beforeEach(() => {
 
 async function openDialog(props: Partial<React.ComponentProps<typeof UsedUnitsPanel>> = {}) {
   render(<UsedUnitsPanel branch="all" canEdit canSeeCost={false} {...props} />);
-  fireEvent.click(await screen.findByRole('button', { name: 'Editar SER123' }));
+  fireEvent.click(await within(await screen.findByTestId('used-units-table')).findByRole('button', { name: 'Editar SER123' }));
   return screen.getByRole('dialog', { name: 'Equipo X seminuevo' });
 }
 
 describe('la lista', () => {
   it('muestra la inspección de cada equipo y filtra por ella', async () => {
     render(<UsedUnitsPanel branch="all" canEdit canSeeCost={false} />);
-    const row = (await screen.findByText('Equipo X seminuevo')).closest('tr') as HTMLElement;
+    const row = (await within(await screen.findByTestId('used-units-table')).findByText('Equipo X seminuevo')).closest('tr') as HTMLElement;
     expect(within(row).getByText('Pendiente de inspección')).toBeInTheDocument();
     expect(within(row).getByText('No · su inspección está pendiente')).toBeInTheDocument();
     await act(async () => {

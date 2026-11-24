@@ -168,7 +168,7 @@ describe('muestra de color de una opción', () => {
 describe('Inventario › Seminuevos', () => {
   it('lista sólo la línea de seminuevos, con la batería sin lectura como «no informado»', async () => {
     render(<UsedUnitsPanel branch="all" canEdit canSeeCost={false} />);
-    const row = (await screen.findByText('Equipo X seminuevo')).closest('tr') as HTMLElement;
+    const row = (await within(await screen.findByTestId('used-units-table')).findByText('Equipo X seminuevo')).closest('tr') as HTMLElement;
     expect(within(row).getByText('no informado')).toBeInTheDocument();
     expect(within(row).getByText('356789012345678')).toBeInTheDocument();
     const listCall = send.mock.calls.map(([u]) => String(u)).find((u) => u.includes('/inventory/units/'))!;
@@ -177,7 +177,7 @@ describe('Inventario › Seminuevos', () => {
 
   it('editar batería y precio manda sólo lo que cambió, y el precio pide confirmación', async () => {
     render(<UsedUnitsPanel branch="all" canEdit canManagePrice canSeeCost={false} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Editar SER123' }));
+    fireEvent.click(await within(await screen.findByTestId('used-units-table')).findByRole('button', { name: 'Editar SER123' }));
     const dialog = screen.getByRole('dialog', { name: 'Equipo X seminuevo' });
     fireEvent.change(within(dialog).getByLabelText('Batería (%)'), { target: { value: '88' } });
     fireEvent.change(within(dialog).getByLabelText(/Precio de venta \(S\/\)/), { target: { value: '2599' } });
@@ -196,7 +196,7 @@ describe('Inventario › Seminuevos', () => {
 
   it('una batería imposible no se envía', async () => {
     render(<UsedUnitsPanel branch="all" canEdit canSeeCost={false} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Editar SER123' }));
+    fireEvent.click(await within(await screen.findByTestId('used-units-table')).findByRole('button', { name: 'Editar SER123' }));
     const dialog = screen.getByRole('dialog');
     fireEvent.change(within(dialog).getByLabelText('Batería (%)'), { target: { value: '140' } });
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Guardar' })); });
@@ -206,7 +206,7 @@ describe('Inventario › Seminuevos', () => {
 
   it('las fotos se suben como archivo y se eliminan una por una', async () => {
     render(<UsedUnitsPanel branch="all" canEdit canSeeCost={false} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Editar SER123' }));
+    fireEvent.click(await within(await screen.findByTestId('used-units-table')).findByRole('button', { name: 'Editar SER123' }));
     const dialog = screen.getByRole('dialog');
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: /^Eliminar foto 1/ })); });
     expect(writes[0]).toMatchObject({ method: 'DELETE', path: '/admin/inventory/units/7/photos/1/' });
@@ -219,7 +219,7 @@ describe('Inventario › Seminuevos', () => {
 
   it('sin `inventory.adjust` la ficha se ve pero no se cambia', async () => {
     render(<UsedUnitsPanel branch="all" canEdit={false} canSeeCost={false} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Ver SER123' }));
+    fireEvent.click(await within(await screen.findByTestId('used-units-table')).findByRole('button', { name: 'Ver SER123' }));
     const dialog = screen.getByRole('dialog');
     expect(within(dialog).getByLabelText('Batería (%)')).toBeDisabled();
     expect(within(dialog).queryByRole('button', { name: 'Guardar' })).toBeNull();
