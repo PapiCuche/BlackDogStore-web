@@ -972,11 +972,13 @@ def _valid_combination(company, fields, spec, *, cache=None):
             'labels': [option['label'] for option in configuration['options']]}
 
 
-def _resolve_product(company, index, fields, *, supplier, refs, cache=None, notes=None, proposal=None):
+def _resolve_product(company, index, fields, *, supplier, refs, cache=None, notes=None, proposal=None,
+                     matched=None):
     """
     `(product, problem, matched_by, map_code, mappable_code)` — see WHICH VARIANT.
     `refs` is this supplier's {supplier code: product id}. `proposal` (a dict) receives what «Crear variante»
-    needs when the row is a valid combination without a variant (SUPPLY-WEEKLY-01).
+    needs when the row is a valid combination without a variant (SUPPLY-WEEKLY-01). `matched` (a set) receives
+    every variant a key of the row named, even when they disagree (the row mentions them all).
     """
     code = fields.get('code') or ''
     identifier = fields.get('identifier') or ''
@@ -1006,6 +1008,8 @@ def _resolve_product(company, index, fields, *, supplier, refs, cache=None, note
         hits.append(('supplier_code', refs[ref_code]))
 
     if hits:
+        if matched is not None:
+            matched.update(product_id for _by, product_id in hits)
         if len({product_id for _by, product_id in hits}) > 1:
             names = dict(Product.objects.filter(company=company, pk__in={p for _b, p in hits})
                          .values_list('pk', 'name'))
@@ -1169,12 +1173,13 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
             # SUPPLY-GUARDS-01: `valid_offer_q` never sells it. Recorded, said.
             warnings.append(f'El proveedor «{supplier.name[:60]}» está inactivo: la oferta se registra, pero no se '
                             'vende hasta reactivarlo en Productos › Proveedores.')
-        notes, proposal = [], {}
+        notes, proposal, named = [], {}, set()
         product, problem, matched_by, map_code, mappable = _resolve_product(
             company, index, fields, supplier=supplier, refs=refs[supplier.pk] if supplier else {},
-            cache=catalog_cache, notes=notes, proposal=proposal)
-        if supplier is not None and product is not None:
-            mentioned.add((supplier.pk, product.pk))
+            cache=catalog_cache, notes=notes, proposal=proposal, matched=named)
+        if supplier is not None:
+            # Review of #405: a row whose keys named a variant mentions it, even if the row is an error.
+            mentioned.update((supplier.pk, product_id) for product_id in named | ({product.pk} if product else set()))
         # A2 (P8): what the company's vocabulary read is said in the row.
         warnings.extend(notes)
         if product is not None and product.is_pending_draft:
@@ -1682,9 +1687,12 @@ def job_payload(job, *, include_cost: bool) -> dict:
 
 
 def _unmentioned_payload(job) -> dict:
-    """SUPPLY-WEEKLY-01: a partial list's unmentioned running offers (information); `[]` for a complete list."""
+    """
+    SUPPLY-WEEKLY-01: a partial list's unmentioned running offers (information), as of its PREVIEW: `[]` once
+    the job is applied (they would be stale) and for a complete list.
+    """
     summary = job.summary or {}
-    if summary.get('snapshot'):
+    if summary.get('snapshot') or job.status == BulkImportJob.APPLIED:
         return {'unmentioned': [], 'unmentioned_count': 0}
     found = summary.get('unmentioned') or {}
     return {'unmentioned': list(found.get('offers') or []), 'unmentioned_count': int(found.get('count') or 0)}
@@ -1988,6 +1996,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                   'message_date': job.message_date.isoformat(), 'note': note})
     created = updated = unchanged = sold_out = prices_changed = prices_kept = mappings = 0
     repeated = older = confirmed_count = reactivated = 0
+    quantity_kept_rows = []     # SUPPLY-WEEKLY-01: the rows whose cleared quantity the person kept (as applied)
     for row in writing:
         data = row.normalized_data or {}
         declaration = data.get('declaration', DECLARATION_NEW)
@@ -2039,6 +2048,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                 elif data.get('quantity_cleared') and decisions.get(str(offer.pk)) == 'keep':
                     # B0 (f): the person kept the confirmed quantity of a row that came without one.
                     fields.pop('confirmed_quantity', None)
+                    quantity_kept_rows.append(row.row_number)
                     AdminAuditLog.log(actor=actor, action='supplier_offer_quantity_kept', target_type='supplier_offer',
                                       target_id=offer.pk, request=request, company=job.company, metadata={
                                           'job_id': job.pk, 'row_number': row.row_number,
@@ -2137,7 +2147,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
     job.applied_at = timezone.now()
-    job.summary = {**(job.summary or {}), 'applied': result}
+    job.summary = {**(job.summary or {}), 'applied': result, 'quantity_kept_rows': quantity_kept_rows}
     job.save(update_fields=['status', 'applied_by', 'applied_at', 'summary'])
     AdminAuditLog.log(actor=actor, action='supplier_offers_import_applied', target_type='bulk_import_job',
                       target_id=job.pk, metadata={'job_id': job.pk, **result, 'file_sha256': job.file_sha256,

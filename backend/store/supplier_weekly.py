@@ -24,25 +24,33 @@ WHAT A ROW SAYS
       precio_cambio   the listed commercial price differs from the previous list (`changes` may add quantity);
       cantidad_cambio the declared quantity differs;
       sin_cambio      listed again as before (or listed with no earlier list of an older offer);
-      no_mencionado   running, and no list of the week mentions it (listed before, or older than the week).
+      no_mencionado   running, and no list of the week mentions it (listed before, or older than the week);
+      inactivo        switched off or ended before the previous week and not in its list: a state, not a change.
+
+    `retirado` is a change of THIS week: the pair was in the previous week's list, or its switch-off was audited
+    since the previous week began, or its validity ended since then.
 
     Deltas are read from the APPLIED lists (`BulkImportJob` + `BulkImportRow`, by message day): an edit by hand
     in the panel is not a list and changes no delta. A past week shows its lists, against the offers as they are
     today.
+
+Values are the APPLIED ones: a price or a quantity the person kept out of a list is not a change.
 
 COST OF A CALL: a fixed number of queries whatever the rows (asserted by the tests).
 """
 from __future__ import annotations
 
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
 
 from django.db.models import Q, Sum
 from django.utils import timezone
 
 from . import supply_services
-from .models import BranchStock, BulkImportJob, BulkImportRow, ProductVariantOption, SupplierOffer, VariantAttribute
+from .models import (
+    AdminAuditLog, BranchStock, BulkImportJob, BulkImportRow, ProductVariantOption, SupplierOffer, VariantAttribute,
+)
 
 DELTA_NEW = 'nuevo'
 DELTA_PRICE = 'precio_cambio'
@@ -50,7 +58,12 @@ DELTA_QUANTITY = 'cantidad_cambio'
 DELTA_RETIRED = 'retirado'
 DELTA_UNMENTIONED = 'no_mencionado'
 DELTA_SAME = 'sin_cambio'
-DELTAS = (DELTA_NEW, DELTA_PRICE, DELTA_QUANTITY, DELTA_RETIRED, DELTA_UNMENTIONED, DELTA_SAME)
+#: Not a change: an offer switched off or ended BEFORE the previous week, and not in the previous list.
+DELTA_INACTIVE = 'inactivo'
+DELTAS = (DELTA_NEW, DELTA_PRICE, DELTA_QUANTITY, DELTA_RETIRED, DELTA_UNMENTIONED, DELTA_SAME, DELTA_INACTIVE)
+
+#: The audit rows that switch an offer off (`supply_services.deactivate_offer` and an «Activa: No» update).
+_OFF_ACTIONS = ('supplier_offer_deactivated', 'supplier_offer_expired', 'supplier_offer_absent_in_snapshot')
 
 #: How far back «the previous list» of a supplier and variant is looked for.
 PREVIOUS_LOOKBACK_DAYS = 28
@@ -61,6 +74,10 @@ _WRITING = (BulkImportRow.CREATE, BulkImportRow.UPDATE, BulkImportRow.NO_CHANGE)
 _ISO_WEEK = re.compile(r'^(\d{4})-W(\d{2})$')
 _ROLES = (VariantAttribute.ROLE_CAPACITY, VariantAttribute.ROLE_COLOR, VariantAttribute.ROLE_SIM,
           VariantAttribute.ROLE_REGION)
+
+
+#: The years a week may be asked in: outside them a date overflows (review of #405), and nobody keeps lists there.
+MIN_YEAR, MAX_YEAR = 2000, 2100
 
 
 class WeekError(ValueError):
@@ -76,10 +93,13 @@ def week_start(value, *, on: date) -> date:
         match = _ISO_WEEK.match(text)
         try:
             if match:
-                return date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1)
-            day = date.fromisoformat(text)
+                day = date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1)
+            else:
+                day = date.fromisoformat(text)
         except ValueError:
             raise WeekError('Indica la semana como AAAA-Wnn (por ejemplo 2026-W48) o un día AAAA-MM-DD.') from None
+        if not MIN_YEAR <= day.year <= MAX_YEAR:
+            raise WeekError(f'Indica una semana entre los años {MIN_YEAR} y {MAX_YEAR}.')
     return day - timedelta(days=day.weekday())
 
 
@@ -99,7 +119,11 @@ def _local_day(moment) -> date | None:
 def _declarations(company, *, since: date, until: date, supplier_id=None) -> dict:
     """
     {(supplier id, product id): [declaration, …]} of the APPLIED lists whose message day falls in
-    [since, until], newest first. Only the keys a row needs: never the cost. One query.
+    [since, until], newest first. Only the keys a row needs: never the cost. Two queries.
+
+    AS APPLIED (review of #405): a new price the person KEPT out (`keep_prices`) declares the price that stayed;
+    a cleared quantity the person KEPT declares the quantity that stayed (the previous declaration's), never
+    the value the list proposed. `offer_id` / the window name the offer the row wrote to.
     """
     rows = (BulkImportRow.objects
             .filter(job__company=company, job__import_type=BulkImportJob.SUPPLIER_OFFERS,
@@ -109,19 +133,36 @@ def _declarations(company, *, since: date, until: date, supplier_id=None) -> dic
             .order_by('-job__message_date', '-job__applied_at', '-job_id', '-row_number'))
     if supplier_id is not None:
         rows = rows.filter(normalized_data__supplier_id=supplier_id)
+    rows = list(rows)
+    jobs = dict(BulkImportJob.objects.filter(pk__in={row[0] for row in rows}).values_list('pk', 'summary'))
     found = {}
     for job_id, message_date, _applied_at, row_number, data in rows:
         data = data or {}
         pair = (supply_services._pk(data.get('supplier_id')), supply_services._pk(data.get('product_id')))
         if None in pair:
             continue
+        summary = jobs.get(job_id) or {}
+        price = data.get('commercial_price')
+        price_kept = bool(data.get('price_change')) and (summary.get('applied') or {}).get('price_decision') == 'kept'
+        if price_kept:
+            price = (data.get('price_change') or {}).get('before', price)
         declared = data.get('declared_quantity', data.get('confirmed_quantity'))
         found.setdefault(pair, []).append({
             'job_id': job_id, 'row_number': row_number, 'message_date': message_date,
-            'commercial_price': _money(data.get('commercial_price')),
+            'commercial_price': _money(price), 'price_kept': price_kept,
             'declared_quantity': None if declared is None else int(declared),
+            'quantity_kept': row_number in (summary.get('quantity_kept_rows') or ()),
             'lead_time_days': data.get('lead_time_days'),
+            'offer_id': supply_services._pk(data.get('offer_id')),
+            'valid_from': data.get('valid_from'), 'valid_until': data.get('valid_until'),
         })
+    for chain in found.values():
+        # Oldest first: a kept quantity is the one that stayed — the previous declaration's (None: unknown).
+        carried = None
+        for declaration in reversed(chain):
+            if declaration['quantity_kept']:
+                declaration['declared_quantity'] = carried
+            carried = declaration['declared_quantity']
     return found
 
 
@@ -156,18 +197,47 @@ def _own_stock(product_ids, branches) -> dict:
     return {row['product_id']: int(row['units'] or 0) for row in rows}
 
 
-def _pick_offer(offers, *, start: date, end: date):
-    """The pair's offer for the week: the one running in it that starts last; else the one that ended last."""
+def _pick_offer(offers, *, start: date, end: date, declaration=None):
+    """
+    The pair's offer for the week: the one the week's list WROTE TO (its offer, or the offer with its window for
+    a new one — review of #405); else the one running in the week that starts last; else the one that ended last.
+    """
+    if declaration is not None:
+        for offer in offers:
+            if declaration['offer_id'] == offer.pk:
+                return offer
+        for offer in offers:
+            if (offer.valid_from.isoformat(), offer.valid_until.isoformat()) == (
+                    declaration['valid_from'], declaration['valid_until']):
+                return offer
     running = [o for o in offers if o.valid_from <= end and o.valid_until >= start]
     if running:
         return max(running, key=lambda o: (o.is_active, o.valid_from, o.pk))
     return max(offers, key=lambda o: (o.valid_until, o.pk))
 
 
-def _delta(offer, current, previous, *, start: date, end: date, on: date) -> tuple[str, list[str]]:
+def _switched_off_recently(company, offers, *, since: date, end: date) -> set[int]:
+    """The ids of `offers` (switched off) whose switch-off was audited in [since, end]. One query (none if empty)."""
+    ids = [str(offer.pk) for offer in offers]
+    if not ids:
+        return set()
+    zone = timezone.get_current_timezone()
+    first = timezone.make_aware(datetime.combine(since, time.min), zone)
+    last = timezone.make_aware(datetime.combine(end + timedelta(days=1), time.min), zone)
+    off = Q(action__in=_OFF_ACTIONS) | Q(action='supplier_offer_updated', metadata__is_active=False)
+    found = (AdminAuditLog.objects.filter(off, company=company, target_type='supplier_offer', target_id__in=ids,
+                                          created_at__gte=first, created_at__lt=last)
+             .values_list('target_id', flat=True).distinct())
+    return {int(target_id) for target_id in found}
+
+
+def _delta(offer, current, previous, *, start: date, end: date, on: date, recent_change: bool) -> tuple[str, list[str]]:
+    """`recent_change`: the pair was in the previous week's list, or its switch-off was audited since then."""
     reference = min(on, end)
     if not offer.is_active or offer.valid_until < reference:
-        return DELTA_RETIRED, []
+        # Review of #405: an offer switched off weeks ago is not «retirado» again every week its window lasts.
+        ended_lately = offer.is_active and offer.valid_until >= start - timedelta(days=7)
+        return (DELTA_RETIRED if recent_change or ended_lately else DELTA_INACTIVE), []
     created = _local_day(offer.created_at)
     if current is None:
         # Listed before and not this week: it stopped appearing. Never listed and created this week: new.
@@ -183,6 +253,8 @@ def _delta(offer, current, previous, *, start: date, end: date, on: date) -> tup
         changes.append('price')
     if current['declared_quantity'] != previous['declared_quantity']:
         changes.append('quantity')
+    if current.get('quantity_kept') and 'quantity' in changes:
+        changes.remove('quantity')
     if 'price' in changes:
         return DELTA_PRICE, changes
     if changes:
@@ -230,7 +302,10 @@ def weekly(company, *, start: date, branches, with_cost: bool, supplier_id=None,
         if touches or pair in named:
             by_pair.setdefault(pair, []).append(offer)
 
-    chosen = {pair: _pick_offer(found, start=start, end=end) for pair, found in by_pair.items()}
+    chosen = {pair: _pick_offer(found, start=start, end=end, declaration=current.get(pair))
+              for pair, found in by_pair.items()}
+    switched_off = _switched_off_recently(company, [o for o in chosen.values() if not o.is_active],
+                                          since=previous_start, end=end)
     product_ids = {offer.product_id for offer in chosen.values()}
     options = _options(product_ids)
     stock = _own_stock(product_ids, branches)
@@ -238,7 +313,8 @@ def weekly(company, *, start: date, branches, with_cost: bool, supplier_id=None,
     rows = []
     for pair, offer in chosen.items():
         now, before = current.get(pair), previous.get(pair)
-        delta, changes = _delta(offer, now, before, start=start, end=end, on=on)
+        delta, changes = _delta(offer, now, before, start=start, end=end, on=on,
+                                recent_change=pair in declared_before or offer.pk in switched_off)
         product = offer.product
         roles = options.get(product.pk, {})
         row = {
@@ -257,6 +333,7 @@ def weekly(company, *, start: date, branches, with_cost: bool, supplier_id=None,
             'state': offer_state(offer, on=on), 'own_stock': stock.get(product.pk, 0),
             'message_date': now['message_date'].isoformat() if now else None,
             'listed_price': now['commercial_price'] if now else None,
+            'price_kept': bool(now and now['price_kept']),
             'declared_quantity': now['declared_quantity'] if now else None,
             'previous': _declaration_payload(before),
             'delta': delta, 'changes': changes,

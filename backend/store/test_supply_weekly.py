@@ -22,12 +22,13 @@ from decimal import Decimal
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 from rest_framework.test import APIClient
 
 from store import device_catalog, model_palette, supplier_offer_import, supply_services as supply
 from store.configuration_resolver import STATUS_VALID
 from store.models import BranchStock, Product, StockMovement, StockUnit, SupplierOffer
-from store.test_supplier_offers import today
+from store.test_supplier_offers import OFFER_HEADERS, today
 from store.test_supplier_weekly_import import WeeklyFile
 from store.tests import _p2d_member, _p3_company, _prod
 
@@ -302,3 +303,73 @@ class ValidCombinationWithoutVariantTest(WeeklyFile, TestCase):
         self.assertIsNone(product)
         self.assertIn('combinación válida', problem)
         self.assertEqual(proposal['status'], STATUS_VALID)
+
+
+class ReviewFindingsTest(WeeklyShop, TestCase):
+    """Review of #405: old deactivations, declined values, extreme weeks, the declared offer, stale lists."""
+
+    def setUp(self):
+        self.build_weekly('supweek-revision')
+
+    def test_an_old_deactivation_is_inactive_not_retired_every_week(self):
+        from store.models import AdminAuditLog
+        old = SupplierOffer.objects.get(product=self.items['silent'])
+        supply.deactivate_offer(old, actor=self.staff, reason='Hace tiempo')
+        AdminAuditLog.objects.filter(target_type='supplier_offer', target_id=str(old.pk)).update(
+            created_at=timezone.now() - timedelta(days=40))
+        recent = SupplierOffer.objects.get(product=self.items['retired'])
+        supply.deactivate_offer(recent, actor=self.staff, reason='Esta semana')
+        body = self.weekly().json()
+        rows = self.by_product(body)
+        self.assertEqual(rows[self.items['silent'].pk]['delta'], 'inactivo')
+        self.assertEqual(rows[self.items['retired'].pk]['delta'], 'retirado')
+        self.assertEqual((body['counts']['retirado'], body['counts']['inactivo']), (1, 1), body['counts'])
+
+    def test_a_kept_price_and_a_kept_quantity_are_compared_as_applied(self):
+        self.load([self.list_row('price'), self.list_row('quantity')], today() - timedelta(days=7))
+        body = self.preview([self.list_row('price', **{'Precio comercial': '105'}),
+                             self.list_row('quantity', **{'Cantidad confirmada': None})], message_date=today()).json()
+        quantity_offer = SupplierOffer.objects.get(product=self.items['quantity'])
+        res = self.apply(body['id'], keep_prices=True, quantity_decisions={str(quantity_offer.pk): 'keep'})
+        self.assertEqual(res.status_code, 200, res.content)
+        rows = self.by_product(self.weekly().json())
+        price = rows[self.items['price'].pk]
+        self.assertEqual((price['delta'], price['listed_price'], price['price_kept']), ('sin_cambio', '100.00', True),
+                         price)
+        quantity = rows[self.items['quantity'].pk]
+        self.assertEqual((quantity['delta'], quantity['declared_quantity']), ('sin_cambio', 5), quantity)
+
+    def test_an_extreme_week_is_a_400(self):
+        for bad in ('0001-W01', '9999-W52', '0001-01-01', '9999-12-31', '1999-12-31'):
+            self.assertEqual(self.weekly(week=bad).status_code, 400, bad)
+
+    def test_the_row_shows_the_offer_the_week_list_wrote_to(self):
+        start = self.offer.valid_until + timedelta(days=1)
+        body = self.preview([self.row(**{'Vigente desde': start.isoformat(),
+                                         'Vigente hasta': (start + timedelta(days=6)).isoformat()})],
+                            message_date=today()).json()
+        self.assertEqual(body['rows'][0]['action'], 'create', body['rows'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        created = SupplierOffer.objects.get(product=self.case, valid_from=start)
+        row = self.by_product(self.weekly().json())[self.case.pk]
+        self.assertEqual((row['offer_id'], row['valid_from']), (created.pk, start.isoformat()), row)
+
+    def test_a_row_whose_keys_disagree_still_mentions_its_variants(self):
+        from store.import_formats import product_identifier
+        headers = OFFER_HEADERS + ['Identificador']
+        row = self.list_row('same') + [product_identifier(self.company.pk, self.items['silent'].pk)]
+        body = self.preview([row], headers=headers, message_date=today()).json()
+        self.assertEqual(body['rows'][0]['action'], 'error', body['rows'])
+        unmentioned = {item['product_id'] for item in body['unmentioned']}
+        self.assertNotIn(self.items['same'].pk, unmentioned)
+        self.assertNotIn(self.items['silent'].pk, unmentioned)
+        self.assertIn(self.items['price'].pk, unmentioned)
+
+    def test_an_applied_job_no_longer_lists_unmentioned_offers(self):
+        from store.models import BulkImportJob
+        body = self.preview([self.list_row('price')], message_date=today()).json()
+        self.assertTrue(body['unmentioned'])
+        self.assertEqual(self.apply(body['id']).status_code, 200)
+        job = BulkImportJob.objects.get(pk=body['id'])
+        payload = supplier_offer_import.job_payload(job, include_cost=True)
+        self.assertEqual((payload['unmentioned'], payload['unmentioned_count']), ([], 0))
