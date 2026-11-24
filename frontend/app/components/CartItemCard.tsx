@@ -3,7 +3,9 @@ import { ProductImage } from "./ProductImage";
 import { REFERENCE_IMAGE_LABEL } from "../lib/model-configurator";
 import Link from "next/link";
 import { formatMoney } from "../lib/format";
-import { SOLD_OUT_LABEL, batteryText, imeiHintText, onOrderLabel, optionsText } from "../lib/catalog-models";
+import {
+  NO_UNIT_PHOTOS_TEXT, SOLD_OUT_LABEL, batteryText, imeiHintText, onOrderLabel, optionsText, type UnitPublicPhoto,
+} from "../lib/catalog-models";
 
 /**
  * DC3 — where a cart line comes from. A line is all shelf or all «bajo
@@ -58,6 +60,8 @@ export type CartUnit = {
   cosmetic_grade: string;
   imei_hint: string;
   held_until: string;
+  /** UNIT-PHOTO-02 — a used device: ITS primary photo confirmed as this device, or null. Absent on a new device. */
+  photo?: UnitPublicPhoto | null;
 };
 
 /** The earliest hold of a line, as «HH:MM» in the buyer's clock. */
@@ -102,6 +106,11 @@ type CartItemCardProps = {
     image_pending?: boolean;
     /** That picture is a demo resource: shown and labelled «Imagen referencial», as on the model page. */
     image_is_demo?: boolean;
+    /**
+     * UNIT-PHOTO-02 — `unit`: a used device's line. `image_url` is THAT device's primary photo, or empty — said
+     * «Sin fotos de este equipo», never replaced by a generic picture.
+     */
+    image_scope?: "unit";
   };
   /** DC2: sold device by device — the quantity is the number of devices, each with its own price. */
   sells_by_unit?: boolean;
@@ -123,7 +132,7 @@ const REMOVE =
  * summary (40 px) instead of the cart (64 px).
  */
 export function CartThumb({ product, small = false }: {
-  product: Pick<CartItemCardProps["product"], "name" | "image_url" | "image_pending" | "image_is_demo">;
+  product: Pick<CartItemCardProps["product"], "name" | "image_url" | "image_pending" | "image_is_demo" | "image_scope">;
   small?: boolean;
 }) {
   // Review of #377: a demo resource is shown as on the model page — and said, never passed off as the product.
@@ -136,6 +145,10 @@ export function CartThumb({ product, small = false }: {
       >
         {product.image_url ? (
           <ProductImage src={product.image_url} alt={demo ? REFERENCE_IMAGE_LABEL : ""} sizes={small ? "40px" : "64px"} className="object-contain p-1" />
+        ) : product.image_scope === "unit" ? (
+          <span data-testid="cart-thumb-no-unit-photo" className="px-1 text-center text-[9px] font-semibold leading-tight text-muted">
+            {NO_UNIT_PHOTOS_TEXT}
+          </span>
         ) : product.image_pending ? (
           <ImagePending compact className="text-muted" />
         ) : (
@@ -199,13 +212,25 @@ function UnitLine({ product, units, lineTotal, onRemove, onReleaseUnit }: {
           const describe = imei ?? `equipo ${index + 1}`;
           return (
             <li key={unit.id} className="flex flex-col gap-2 py-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0 text-sm">
+              <div className="flex min-w-0 items-center gap-3 text-sm">
+                {unit.photo !== undefined ? (
+                  // UNIT-PHOTO-02: each used device with ITS photo — or saying it has none.
+                  <span data-testid="cart-unit-photo" className="relative flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg border border-bd-border bg-background">
+                    {unit.photo ? (
+                      <ProductImage src={unit.photo.url} alt={unit.photo.alt_text || `Foto de este equipo${unit.photo.view_label ? `: ${unit.photo.view_label}` : ""}`} sizes="40px" className="object-contain p-0.5" />
+                    ) : (
+                      <span className="px-0.5 text-center text-[8px] leading-tight text-muted">{NO_UNIT_PHOTOS_TEXT}</span>
+                    )}
+                  </span>
+                ) : null}
+                <div className="min-w-0">
                 {options ? <p className="font-semibold text-foreground">{options}</p> : null}
                 <p className="text-muted">
                   {[tellsBattery ? batteryText(unit.battery_health) : "", unit.cosmetic_grade ? `Estado: ${unit.cosmetic_grade}` : "", imei ?? ""]
                     .filter(Boolean)
                     .join(" · ")}
                 </p>
+                </div>
               </div>
               <div className="flex items-center justify-between gap-4 sm:justify-end">
                 <p className="font-semibold tabular-nums text-foreground">S/ {formatMoney(unit.price)}</p>

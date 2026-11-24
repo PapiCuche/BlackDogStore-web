@@ -13,7 +13,7 @@
 
 import { ProductImage } from "../ProductImage";
 import { formatMoney } from "../../lib/format";
-import { optionsText, unitWarrantyText, type UsedUnit } from "../../lib/catalog-models";
+import { NO_UNIT_PHOTOS_TEXT, optionsText, unitWarrantyText, type UsedUnit } from "../../lib/catalog-models";
 
 type Props = {
   unit: UsedUnit;
@@ -25,7 +25,8 @@ type Props = {
 };
 
 export function UsedUnitCardV4({ unit, modelName, attributeOrder = [], selected, onSelect }: Props) {
-  const photo = unit.photos?.[0] ?? null;
+  // UNIT-PHOTO-02: the server sends the primary first; only photos confirmed as THIS device.
+  const photo = unit.photos?.find((p) => p.is_primary) ?? unit.photos?.[0] ?? null;
   const options = optionsText(unit.options ?? {}, attributeOrder);
   const details = [
     unit.cosmetic_grade ? `Estado: ${unit.cosmetic_grade.label}` : null,
@@ -41,7 +42,7 @@ export function UsedUnitCardV4({ unit, modelName, attributeOrder = [], selected,
         {photo ? (
           <ProductImage src={photo.url} alt="" sizes="80px" className="object-contain p-1.5" />
         ) : (
-          <span className="v4-small flex h-full items-center justify-center text-center text-xs">Sin fotos</span>
+          <span className="v4-small flex h-full items-center justify-center text-center text-xs">{NO_UNIT_PHOTOS_TEXT}</span>
         )}
       </span>
       <span className="flex min-w-0 flex-1 flex-col justify-center">

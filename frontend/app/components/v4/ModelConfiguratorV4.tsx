@@ -45,6 +45,7 @@ import { SupportStripV4 } from "./SupportStripV4";
 import { AccessoriesV4 } from "./AccessoriesV4";
 import { formatMoney } from "../../lib/format";
 import {
+  NO_UNIT_PHOTOS_TEXT,
   SOLD_OUT_LABEL,
   availabilityLabel,
   chipPicture,
@@ -225,7 +226,8 @@ function AttributeChips({
 // Gallery
 // ---------------------------------------------------------------------------
 
-type Picture = { url: string; alt_text: string; is_demo?: boolean };
+/** UNIT-PHOTO-02: a device's photo also says which side it shows (`view_label`), said next to its caption. */
+type Picture = { url: string; alt_text: string; is_demo?: boolean; view_label?: string };
 
 /**
  * P2 · F2 — how wide the stage really is (the LCP image): the whole screen
@@ -251,7 +253,8 @@ function Gallery({
   finishKey?: string | null;
 }) {
   const shown = pictures[index] ?? pictures[0] ?? null;
-  const caption = shown ? photoLabel(shown.url, source, shown.is_demo) : null;
+  const label = shown ? photoLabel(shown.url, source, shown.is_demo) : null;
+  const caption = label && source === "device" && shown?.view_label ? `${label} · ${shown.view_label}` : label;
   return (
     <section data-testid="v4-gallery" aria-label="Fotos">
       <div className="v4-stage">
@@ -286,7 +289,7 @@ function Gallery({
             <button
               key={picture.url}
               type="button"
-              aria-label={`Ver imagen ${at + 1} de ${pictures.length}`}
+              aria-label={`Ver imagen ${at + 1} de ${pictures.length}${picture.view_label ? `: ${picture.view_label}` : ""}`}
               aria-pressed={at === index}
               onClick={() => onIndex(at)}
               className="v4-thumb"
@@ -533,7 +536,7 @@ function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => 
           onIndex={(index) => setPhoto({ unit: chosen?.id ?? null, index })}
           source="device"
           alt={`${model.name}${options ? `, ${options}` : ""}`}
-          emptyText={chosen ? "Este equipo no tiene fotos publicadas." : undefined}
+          emptyText={chosen ? NO_UNIT_PHOTOS_TEXT : undefined}
           initial={initialOf(model)}
         />
       }

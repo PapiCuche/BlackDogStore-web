@@ -128,7 +128,11 @@ describe('la publicación', () => {
     expect(publicationBlockers({ ...ready, sale_price: null })).toEqual(['precio de venta']);
     expect(publicationBlockers({ ...ready, inspection_status: 'rejected' })).toEqual(['una inspección aprobada (fue rechazada)']);
     expect(publicationBlockers({ ...ready, status: 'sold' })).toEqual(['ya no está en la tienda']);
-    expect(publicationBlockers(ready, 0)).toEqual(['al menos una foto real del equipo']);
+    // UNIT-PHOTO-02: photos nobody confirmed as THIS device are not enough, and the panel says why.
+    expect(publicationBlockers(ready, 0)).toEqual(['al menos una foto confirmada como de este equipo exacto']);
+    expect(publicationBlockers({ ...ready, photos: [{ id: 1, url: 'x', alt_text: '', public: false }] }))
+      .toEqual(['al menos una foto confirmada como de este equipo exacto']);
+    expect(publicationBlockers({ ...ready, photos: [] })).toEqual(['al menos una foto real del equipo']);
   });
 });
 
