@@ -24,11 +24,10 @@ export const TOOL_GROUPS: ToolGroup[] = [
     id: "load",
     title: "Cargar o sacar datos con Excel",
     hint: "Para muchos artículos, equipos o cantidades a la vez. Cada carga se revisa antes de aplicarse.",
+    // NAV-SALES-01: «Carga de stock» y «Carga de equipos» pasaron a Inventario › Stock y equipos (una entrada cada una).
     tools: [
       { id: "inventory.bulk", gloss: "El punto de partida: importar, exportar, subir imágenes en lote y ver el historial de cargas, según tu permiso." },
       { id: "products.import", gloss: "Crea y edita artículos y accesorios desde Excel. No mueve stock." },
-      { id: "inventory.import", gloss: "Ajusta cantidades desde Excel. Deja un movimiento en el Kardex por cada ajuste." },
-      { id: "inventory.units.import", gloss: "Registra equipos con serie e IMEI desde Excel: una fila, un equipo." },
     ],
   },
   {

@@ -186,6 +186,7 @@ from .finance_views import (
 from .supplier_views import (
     AdminOfferDeactivateView, AdminOfferDetailView, AdminOfferExportView, AdminOfferHistoryView,
     AdminOfferImportApplyView, AdminOfferImportPreviewView, AdminOfferListView, AdminOfferTemplateView,
+    AdminOfferWeeklyView,
     AdminOrderSupplyActionView, AdminProductSaleModeView, AdminSupplierDetailView, AdminSupplierListView,
     AdminSupplierProductRefView, AdminSupplierSettlementView,
 )
@@ -349,6 +350,8 @@ urlpatterns = [
     path('admin/supplier-offers/import/<int:pk>/apply/', AdminOfferImportApplyView.as_view(),
          name='admin-supplier-offers-apply'),
     path('admin/supplier-offers/export/', AdminOfferExportView.as_view(), name='admin-supplier-offers-export'),
+    # SUPPLY-WEEKLY-01 — the week of the supplier lists, side by side with the shop's own stock (read only).
+    path('admin/supplier-offers/weekly/', AdminOfferWeeklyView.as_view(), name='admin-supplier-offers-weekly'),
     path('admin/supplier-offers/<int:pk>/', AdminOfferDetailView.as_view(), name='admin-supplier-offer'),
     path('admin/supplier-offers/<int:pk>/deactivate/', AdminOfferDeactivateView.as_view(),
          name='admin-supplier-offer-deactivate'),

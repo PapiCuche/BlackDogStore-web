@@ -1,7 +1,9 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { AccessGuard } from "../components/AccessGuard";
+import { AddressQuery } from "../components/AddressQuery";
+import { addressQueryKey, filtersFromSearch } from "../lib/orders-address-filters";
 import { AdminShell } from "../components/AdminShell";
 import { OrdersTable } from "../components/OrdersTable";
 import {
@@ -16,7 +18,6 @@ import {
   fetchAdminOrders,
   PAYMENT_STATUS_LABELS,
   FULFILLMENT_STATUS_LABELS,
-  SUPPLY_ALERT_KINDS,
   type SupplyAlertKind,
 } from "../../lib/admin";
 import type { AuthUser } from "../../lib/auth";
@@ -38,20 +39,6 @@ type Filters = {
   date_from: string;
   date_to: string;
 };
-
-const SUPPLY_FILTERS = ["to_confirm", "pending", "received", "failed"];
-
-/** The dashboard's alerts link here with `?alert=` (or `?supply=`): the list opens filtered. */
-function filtersFromSearch(search: string): Pick<Filters, "alert" | "supply" | "receipt"> {
-  const params = new URLSearchParams(search);
-  const alert = params.get("alert") ?? "";
-  const supply = params.get("supply") ?? "";
-  return {
-    alert: (SUPPLY_ALERT_KINDS as readonly string[]).includes(alert) ? alert : "",
-    supply: SUPPLY_FILTERS.includes(supply) ? supply : "",
-    receipt: params.get("receipt") === "pending" ? "pending" : "",
-  };
-}
 
 const ALERT_LABELS: Record<SupplyAlertKind, string> = {
   to_confirm: "Abastecimiento por confirmar",
@@ -81,6 +68,16 @@ function OrdersContent({ user }: { user: AuthUser }) {
   }));
   const [searchInput, setSearchInput] = useState("");
   const [page, setPage] = useState(1);
+  // NAV-SALES-01: the menu opens this list with `?supply=`, `?status=` or `?receipt=`, also while it is already open
+  // (same route, the page stays mounted). A new address sets those filters again; the others are left as they were.
+  const appliedQuery = useRef(typeof window === "undefined" ? "" : addressQueryKey(window.location.search));
+  const onAddressQuery = useCallback((query: string) => {
+    const key = addressQueryKey(query);
+    if (key === appliedQuery.current) return;
+    appliedQuery.current = key;
+    setFilters((prev) => ({ ...prev, ...filtersFromSearch(key) }));
+    setPage(1);
+  }, []);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -132,6 +129,7 @@ function OrdersContent({ user }: { user: AuthUser }) {
 
   return (
     <AdminShell user={user}>
+      <AddressQuery onChange={onAddressQuery} />
       <div className="space-y-6">
         <PageHeader
           eyebrow="Comercial"
