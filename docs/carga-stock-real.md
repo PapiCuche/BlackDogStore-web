@@ -176,7 +176,7 @@ variante:
 
 - precio actual («Sin precio» si la variante aún no lo tiene) y precio(s) del archivo;
 - diferencia;
-- equipos de esa variante que entran con el archivo y los que ya hay disponibles en tus sucursales;
+- equipos de esa variante que entran con el archivo y los que ya hay disponibles en las sucursales del archivo (el precio cambia también en las demás);
 - si la variante se vende en la tienda, si no está publicada o si es un **borrador sin habilitar**;
 - la propuesta: «Actualizar el precio de la variante a S/ X».
 
