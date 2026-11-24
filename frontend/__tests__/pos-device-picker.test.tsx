@@ -425,6 +425,55 @@ describe('POS-ORDER-ARRIVAL-01 — el equipo que espera un pedido pagado', () =>
     expect(screen.getByText(/Hay un pedido pagado que espera este equipo/)).toBeInTheDocument();
   });
 
+  it.each(['already_received', 'wrong_state', 'not_paid', 'return_open'])(
+    'an order line the server says is no longer waiting (%s) leaves the choice, and stock then needs no reason',
+    async (code) => {
+      receive.mockRejectedValueOnce(new api.PosDeviceReceiveError('Esa línea ya no espera un equipo.', code, '', 409, null));
+      receive.mockResolvedValueOnce({ ...received, created_variant: false });
+      const handlers = renderPicker();
+      await arrive(waiting());
+      await userEvent.click(screen.getByRole('button', { name: /Es del pedido #501/ }));
+      typeTimed(/^IMEI 1/, GOOD_IMEI, 200);
+      await userEvent.click(screen.getByRole('button', { name: 'Registrar y entregar al pedido #501' }));
+      expect(await screen.findByText('Esa línea ya no espera un equipo.')).toBeInTheDocument();
+      // Nothing waits any more: the form is plain stock, without the fulfilled line and without a reason.
+      expect(screen.queryByRole('button', { name: /Es del pedido/ })).toBeNull();
+      expect(screen.queryByLabelText(/Motivo/)).toBeNull();
+      await userEvent.click(screen.getByRole('button', { name: 'Registrar y agregar a la venta' }));
+      await waitFor(() => expect(handlers.onReceived).toHaveBeenCalled());
+      const body = receive.mock.calls[1][2];
+      expect(body).toEqual(expect.objectContaining({ model: 9, option_ids: [G128, BLACK, ESIM, JA], imei: GOOD_IMEI }));
+      expect(body).not.toHaveProperty('order_item');
+      expect(body).not.toHaveProperty('confirm_stock');
+    },
+  );
+
+  it('with another order still waiting, a fulfilled one is dropped and the choice stays', async () => {
+    receive.mockRejectedValueOnce(new api.PosDeviceReceiveError('Esta línea ya se recibió del proveedor.', 'already_received', '', 409, null));
+    renderPicker();
+    await arrive(waiting([LINE, { ...LINE, order_item: 56, order_id: 502, order_number: 502, customer: 'Luis P.' }]));
+    await userEvent.click(screen.getByRole('button', { name: /Es del pedido #501/ }));
+    typeTimed(/^IMEI 1/, GOOD_IMEI, 200);
+    await userEvent.click(screen.getByRole('button', { name: 'Registrar y entregar al pedido #501' }));
+    expect(await screen.findByRole('button', { name: /Es del pedido #502/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Es del pedido #501/ })).toBeNull();
+  });
+
+  it('a price typed for stock does not stop a delivery to the order, where there is no price', async () => {
+    receive.mockResolvedValue(toOrder);
+    renderPicker();
+    await arrive(waiting());
+    await userEvent.click(screen.getByRole('button', { name: 'Ingresar como stock' }));
+    await userEvent.clear(screen.getByLabelText(/Precio de venta/));
+    await userEvent.type(screen.getByLabelText(/Precio de venta/), 'abc');
+    await userEvent.click(screen.getByRole('button', { name: 'Cambiar' }));
+    await userEvent.click(screen.getByRole('button', { name: /Es del pedido #501/ }));
+    typeTimed(/^IMEI 1/, GOOD_IMEI, 200);
+    await userEvent.click(screen.getByRole('button', { name: 'Registrar y entregar al pedido #501' }));
+    await waitFor(() => expect(receive).toHaveBeenCalled());
+    expect(receive.mock.calls[0][2]).toEqual({ order_item: 55, imei: GOOD_IMEI, method: 'manual' });
+  });
+
   it('a device read by the scanner is registered and sold as read by the scanner', async () => {
     receive.mockResolvedValue({ ...received, method: 'scanner' });
     const handlers = renderPicker();

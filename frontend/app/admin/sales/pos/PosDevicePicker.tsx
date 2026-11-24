@@ -76,6 +76,12 @@ const SERVER_FIELD: Record<string, FormField> = {
   reason: "reason",
 };
 
+/**
+ * What the server answers when the order line chosen no longer waits for a device (received meanwhile, no longer
+ * pending, the order no longer paid, a return on it, or out of reach): that line leaves the choice.
+ */
+const ORDER_LINE_GONE = new Set(["already_received", "wrong_state", "not_paid", "return_open", "not_on_order", "not_found"]);
+
 /** Whose device it is: free stock, or the device a paid order waits for. */
 type Target = { kind: "stock" } | { kind: "order"; line: PosPendingOrderLine };
 
@@ -514,7 +520,10 @@ function ReceiveDeviceForm({
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (busy || !target) return;
-    const problems: Partial<Record<FormField, string>> = receiveProblems(form, { needsPrice: !toOrder && !variant });
+    // Delivered to its order the device has no price here (the field is hidden): what was typed for stock is ignored.
+    const problems: Partial<Record<FormField, string>> = receiveProblems(
+      toOrder ? { ...form, price: "" } : form, { needsPrice: !toOrder && !variant },
+    );
     const why = reason.split(/\s+/).filter(Boolean).join(" ");
     if (needsReason && why.length < REASON_MIN) {
       problems.reason = `Escribe por qué entra como stock (al menos ${REASON_MIN} caracteres).`;
@@ -559,6 +568,13 @@ function ReceiveDeviceForm({
         // the next try, and the seller checks the shelf first instead of registering the same device twice.
         keyRef.current = newSaleKey();
         setFailure("Este equipo pudo quedar registrado en un intento anterior: escanéalo en «Escanear código» antes de registrarlo otra vez.");
+      } else if (toOrder && err instanceof PosDeviceReceiveError && ORDER_LINE_GONE.has(err.code)) {
+        // Review of #400: that line no longer waits — it leaves the choice; with none left, the device is plain stock
+        // (no reason asked). Nothing was written, so the same key serves the next try.
+        const left = waiting.filter((line) => line.order_item !== toOrder.order_item);
+        setWaiting(left);
+        setTarget(left.length ? null : { kind: "stock" });
+        setFailure(err.message);
       } else if (err instanceof PosDeviceReceiveError && err.code === "pending_order_line") {
         // A paid order waits for this device (it may have been sold after the picker was read): ask again whose it
         // is. Nothing was written, so the same key serves the next try.
