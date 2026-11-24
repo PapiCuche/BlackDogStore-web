@@ -429,6 +429,11 @@ _OFFER_KEYS = ('agreed_cost', 'commercial_price', 'confirmed_quantity', 'valid_f
                'lead_time_days')
 
 
+BELOW_COST_HERE = ('El precio comercial de la oferta queda por debajo del costo pactado: aquí no se registra una '
+                   'oferta a pérdida. Registra el artículo sin esa oferta y créala en Productos › Proveedores › '
+                   'Ofertas, donde se confirma con un motivo que queda en la auditoría.')
+
+
 def _offer(company, supplier, product, wanted, *, may_view_costs, actor, request):
     from .supplier_offer_import import guard_offer_overlap
 
@@ -443,6 +448,11 @@ def _offer(company, supplier, product, wanted, *, may_view_costs, actor, request
         )
         supply_services.set_sale_mode(product, Product.SALE_MODE_STOCK_OR_ORDER, actor=actor, request=request)
     except supply_services.SupplyError as exc:
+        if exc.code in (supply_services.BELOW_COST, supply_services.COST_UNSEEN):
+            # SUPPLY-GUARDS-01 (review of #402): this wizard has no confirmation step, so it never makes an exception.
+            # Without `costs.view` no cost can be stated here, so only `costs.view` meets this — and may read it.
+            raise RegistrationError(BELOW_COST_HERE, step='supplier', field='offer.commercial_price',
+                                    code='below_cost_use_offers_panel') from None
         raise RegistrationError(exc.detail, step='supplier', field=f'offer.{exc.field}' if exc.field else 'offer',
                                 code=exc.code) from None
     return offer
