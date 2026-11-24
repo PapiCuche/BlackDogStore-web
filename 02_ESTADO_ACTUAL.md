@@ -1,5 +1,13 @@
 # Estado actual
 
+## 2026-11-24 — GD-001 · PARCIAL / PR #424 en revisión (sin fusionar ni desplegar)
+
+- Propiedad permanente APROBADA: BlackDogStore maestro único de inventario, Good Doggy exclusivamente lector; sin fallback ni efectos comerciales indirectos. P0 `PublicModelDetailView.get` → `release_expired` confirmado; procesos autónomos del maestro liberan reservas.
+- Review OBS-GD-001-01–07: contrato documental OpenAPI 0.2.0, scopes independientes y composición de ofertas, allowlists, identidad variante/oferta/sucursal, disponibilidad, snapshot/cursor/tombstones y webhooks informativos. Pedidos/reparaciones y catálogo de servicios deshabilitados hasta sus acuerdos separados.
+- Validación del blob `969bf78b378191c1597c29e4c695c40df84fc095`: Ajv 8.17.1 y metaesquema oficial OAS 3.1 con ancla dinámica resuelta, 0 errores; 22 componentes, 93 esquemas de respuesta y 66 de parámetros compilados, 9 ejemplos positivos y 16 negativos correctos. Ver `docs/integrations/gooddoggy/INTEGRATION_AUDIT.md` para método y límites. No tests de runtime ni migraciones.
+- Estado: PROPUESTA contractual, implementación PENDIENTE, no GD-002 ni merge sin aprobación. CI exacto por comprobar en handoff.
+
+
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
