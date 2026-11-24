@@ -1,11 +1,13 @@
-# GD-001 — Preguntas abiertas
-Resuelto definitivamente: inventario maestro BlackDogStore; CRM lector. No reabrir como fase de escritura.
-Bloqueantes de implementación: 1) mecanismo S2S y emisión/validación de vínculo cliente; 2) alcance de empresas/sucursales y mapeo IDs/SKU, códigos sin duplicados; 3) fuente real de catálogo de servicios y disponibilidad de repuestos; 4) política comercial de seminuevos y ofertas por unidad, URLs y datos visibles; 5) definición de promoción aplicable, moneda, impuestos, vigencias; 6) contrato de cursor, retención, snapshot consistente y versionado; 7) cuotas, SLA, DLQ, destino HTTPS y firma con equipo CRM; 8) verificar raíz de rutas, permisos, efectos de GET y baseline CI/PostgreSQL. No enviar secretos por documentación.
-Criterio de cierre: acuerdo de ambos equipos, OpenAPI validado, matriz de pruebas aprobada y PR revisado. No merge sin GO.
-
-## Revisión #424
-Cerrado: maestro inventario permanente; no fallback; scopes independientes, semántica de disponibilidad y snapshot propuestas definidas. Pendiente aprobación de diseño técnico, no reabrir propiedad.
-Bloqueos separados: GD catálogo depende de credencial, mapeo SKU/IDs, scopes y prueba de lectura pura; NO depende de grant cliente. Pedidos/repairs permanecen apagados y fuera de eventos/feed hasta mecanismo de grant verificable, revocación y consentimiento aprobados. Servicios apagados hasta fuente publicable verificada. No aceptar teléfono/email/número de pedido como autoridad.
-Acordar con CRM: política de oferta seminueva por ID público, moneda/impuestos y promoción aplicable; TTL/retención propuestos (15 min/30 días), cuotas/SLA y mecanismo de commit watermark; firma, destino y reintentos. Validación formal OpenAPI y CI exacto son gates, no equivalen a ejecución de pruebas de backend. No merge ni GD-002 sin aprobación.
-
-La composición estricta de scopes de ofertas, política de garantía de nuevos sin plazo inventado y deshabilitación sin header grant están en OpenAPI 0.2.0. Aceptar explícitamente estas propuestas antes de implementación. Validar URLs canónicas de modelo/oferta en código frontend antes de publicar.
+# GD-001 — Preguntas abiertas después de review #424
+**Resuelto permanentemente:** BlackDogStore maestro, Good Doggy lector; no fallback ni escrituras indirectas. No reabrir.
+| Pendiente | Afecta |
+|---|---|
+| Aceptar identidad S2S, scopes y composición de ofertas, allowlists y códigos HTTP de OpenAPI 0.2.0 | catálogo |
+| Confirmar mapeo de tenant/sucursal, IDs estables, SKU primario, URLs canónicas por modelo/oferta e imágenes autorizadas | catálogo |
+| Acordar oferta usada, moneda/impuestos, condición de promoción, vigencia y disponibilidad bajo pedido | catálogo |
+| Aceptar TTL snapshot 15 min, retención journal 30 días, mecanismo commit watermark sin huecos, cuotas y SLA | sync |
+| Acordar destino, firma, reintentos, retención DLQ y política de replay | webhooks |
+| Fuente real publicable de servicios y repuestos | solo services (deshabilitado) |
+| Mecanismo de autorización de cliente emitido/validado por Web, expiración, revocación, consentimiento y proyección mínima | solo orders/repairs (deshabilitados también en feed y eventos); NO bloquea catálogo |
+| Pruebas de ejecución PostgreSQL, aislamiento, pureza SQL, concurrencia y autorización | antes de habilitar implementación |
+La validación documental OpenAPI 3.1 con metaesquema oficial resuelto y Ajv 8.17.1 pasó para el blob consignado en INTEGRATION_AUDIT.md; no equivale a tests de API. Revisión de ambos equipos y GO explícito siguen pendientes. No iniciar GD-002 ni hacer merge de #424.
