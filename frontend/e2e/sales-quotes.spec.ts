@@ -12,6 +12,8 @@ import { shell, signIn, RUN } from "./inventory-first-support";
  * B · editar lo ya enviado crea la revisión 2 y la 1 queda «Reemplazada»;
  * C · convertir en venta con el precio cambiado: muestra los dos totales y cobra el de hoy al confirmarlo;
  * D · la lista en un móvil de 390 px, sin desborde.
+ * E · TRADE-IN-QUOTE-00: un equipo ofrecido en parte de pago se valoriza y se imprime aparte; al convertir se avisa
+ *     que la parte de pago no se aplica y la venta se cobra COMPLETA (sin crédito, sin descuento, sin stock de más).
  */
 
 const NAME = `Accesorio cotizable ${RUN}`;
@@ -109,5 +111,34 @@ test.describe("cotizaciones comerciales", () => {
     const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
     expect(over).toBeLessThanOrEqual(1);
     await context.close();
+  });
+
+  test("E · la parte de pago se valoriza aparte y la venta se cobra completa", async ({ page }) => {
+    await signIn(page);
+    const before = estado(seed.product);
+    await componer(page);
+    await page.getByRole("button", { name: "Editar" }).click();
+    await page.getByRole("button", { name: "Agregar equipo en parte de pago" }).click();
+    await page.getByLabel("Equipo (modelo)").fill("Equipo usado de prueba");
+    await page.getByLabel("Estado declarado").selectOption("good");
+    await page.getByLabel("IMEI: últimos 4 dígitos").fill("356789012344321");
+    await expect(page.getByLabel("IMEI: últimos 4 dígitos")).toHaveValue("4321");
+    await page.getByLabel("Valorización estimada").fill("100");
+    await page.getByRole("button", { name: "Guardar borrador" }).click();
+    const block = page.getByRole("region", { name: "Equipo ofrecido en parte de pago (referencial)" });
+    await expect(block.getByText("****4321")).toBeVisible({ timeout: 20_000 });
+    await expect(block.getByText("Saldo estimado a pagar")).toBeVisible();
+    await page.getByRole("button", { name: "Aprobar" }).click();
+    await page.getByRole("button", { name: "Convertir en venta" }).click();
+    await expect(page.getByRole("note")).toContainText("La parte de pago aún no se puede aplicar: la venta se cobra completa");
+    await page.getByLabel("Efectivo recibido").fill("500");
+    await page.getByRole("checkbox").check();
+    // The full total of two units at today's price (test C left it at 60.00): no credit for the offered device.
+    await page.getByRole("button", { name: /^Cobrar S\/ 120/ }).click();
+    await expect(page.getByText(/Convertida en la venta/)).toBeVisible({ timeout: 20_000 });
+    await expect(block.getByText("****4321")).toBeVisible();
+    const after = estado(seed.product);
+    expect(after.stock).toBe(before.stock - 2);
+    expect(after.orders).toBe(before.orders + 1);
   });
 });

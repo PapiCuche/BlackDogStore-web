@@ -448,6 +448,56 @@ def _page_marks(watermark):
     return stamp
 
 
+def _section(section: dict, styles, usable: float):
+    """
+    TRADE-IN-QUOTE-00 — one framed block under the totals: a heading, label/value rows, figures (bold, right
+    aligned) and a legend. It never joins the totals table: what it shows is not part of the document's amount.
+    """
+    from reportlab.lib import colors
+    from reportlab.lib.units import cm
+    from reportlab.platypus import Paragraph, Table, TableStyle
+
+    label_width = 4.2 * cm
+    value_width = usable - label_width - 0.4 * cm
+    rows = [[Paragraph(style.markup(section['heading']), styles['label']), '']]
+    rows += [[Paragraph(style.markup(label), styles['label']), Paragraph(style.markup(value), styles['value'])]
+             for label, value in section.get('rows') or [] if value]
+    first_figure = len(rows)
+    rows += [[style.printable(label), style.printable(value)] for label, value in section.get('figures') or []]
+    last_figure = len(rows) - 1
+    rules = [
+        ('SPAN', (0, 0), (-1, 0)),
+        ('BOX', (0, 0), (-1, -1), 0.8, colors.HexColor(style.RULE)),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('TOPPADDING', (0, 0), (-1, 0), 7),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 5),
+    ]
+    if last_figure >= first_figure:
+        rules += [
+            ('LINEABOVE', (0, first_figure), (-1, first_figure), 0.6, colors.HexColor(style.HAIRLINE)),
+            ('FONTNAME', (0, first_figure), (-1, last_figure), style.FONT_BOLD),
+            ('FONTSIZE', (0, first_figure), (-1, last_figure), 9),
+            ('TEXTCOLOR', (0, first_figure), (-1, last_figure), colors.HexColor(style.INK)),
+            ('ALIGN', (1, first_figure), (1, last_figure), 'RIGHT'),
+            ('TOPPADDING', (0, first_figure), (-1, first_figure), 5),
+        ]
+    if section.get('legend'):
+        rows.append([Paragraph(style.markup(section['legend']), styles['legal']), ''])
+        rules += [
+            ('SPAN', (0, -1), (-1, -1)),
+            ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor(style.SHADE)),
+            ('TOPPADDING', (0, -1), (-1, -1), 6),
+            ('BOTTOMPADDING', (0, -1), (-1, -1), 6),
+        ]
+    block = Table(rows, colWidths=[label_width, value_width])
+    block.setStyle(TableStyle(rules))
+    return block
+
+
 #: The blocks after the totals as every paper drew them (`document_design.CLOSING_BLOCKS`).
 _CLOSING_ORDER = ('notes', 'warranty', 'thank_you', 'post_sale', 'commercial')
 
@@ -480,6 +530,9 @@ def _classic_story(document: dict, usable: float) -> list:
         closing += [Spacer(1, 10), Paragraph(style.markup(document['control_line']), styles['control_line'])]
     # The figures and the statement about what this paper is travel together.
     story.append(KeepTogether(closing))
+    # TRADE-IN-QUOTE-00: framed blocks of their own, under the totals and never inside them. Absent: nothing.
+    for section in document.get('sections') or []:
+        story.append(KeepTogether([Spacer(1, 12 * k), _section(section, styles, usable)]))
 
     # The blocks after the totals, each with the space above it, in `closing_order` (DOC-DESIGN-04;
     # absent: the order every paper had).
@@ -536,6 +589,9 @@ def render_a4(document: dict, *, watermark=None) -> bytes:
     its shaded band) and `closing_order` (the order of the blocks after the
     totals: notes, warranty, thank_you, post_sale, commercial). Texts of
     several lines keep them.
+
+    TRADE-IN-QUOTE-00, optional: `sections` [{heading, rows[(label, value)], figures[(label, value)],
+    legend}], each a framed block after the totals (classic page only). Absent: nothing changes.
 
     DOC-NV-PREMIUM, optional: `composition='premium'` draws the same keys with
     the sales note's own arrangement (`note_layout`), which also reads

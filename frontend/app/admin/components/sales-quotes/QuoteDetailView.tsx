@@ -25,6 +25,7 @@ import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } f
 import { QuoteConvertDialog } from "./QuoteConvertDialog";
 import { QuoteEditor } from "./QuoteEditor";
 import { QuoteStatusBadge } from "./QuoteStatusBadge";
+import { TradeInSummary } from "./QuoteTradeIn";
 
 export function QuoteDetailView({
   quote, context, onChange,
@@ -218,6 +219,8 @@ export function QuoteDetailView({
           <dt className="text-base font-bold">Total</dt><dd className="text-right text-base font-bold">{formatMoney(quote.total, quote.currency)}</dd>
         </dl>
       </section>
+
+      {quote.trade_in ? <TradeInSummary block={quote.trade_in} total={quote.total} currency={quote.currency} /> : null}
 
       {quote.conditions ? (
         <section className="rounded-xl border border-bd-border bg-surface p-4 text-sm">

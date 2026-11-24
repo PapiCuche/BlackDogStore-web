@@ -73,6 +73,58 @@ export type QuoteItem = {
   unit: { id: number; imei: string; serial_number: string } | null;
 };
 
+/**
+ * TRADE-IN-QUOTE-00 — el equipo que el cliente ofrece en parte de pago, valorizado de forma REFERENCIAL.
+ * No descuenta el precio, no es pago ni compra y no entra al stock: al convertir, la venta se cobra completa.
+ * Del IMEI sólo se guardan los últimos 4 dígitos.
+ */
+export type TradeInCondition = "like_new" | "good" | "fair" | "damaged" | "not_working";
+
+export const TRADE_IN_CONDITIONS: { value: TradeInCondition; label: string }[] = [
+  { value: "like_new", label: "Como nuevo" },
+  { value: "good", label: "Buen estado" },
+  { value: "fair", label: "Con detalles de uso" },
+  { value: "damaged", label: "Con daños" },
+  { value: "not_working", label: "No funciona" },
+];
+
+export const TRADE_IN_HEADING = "Equipo ofrecido en parte de pago (referencial)";
+export const TRADE_IN_LEGEND =
+  "Valorización referencial sujeta a inspección; no es crédito, pago ni compra. No es comprobante de pago.";
+export const TRADE_IN_NOT_APPLIED = "La parte de pago aún no se puede aplicar: la venta se cobra completa";
+
+export type QuoteTradeIn = {
+  device_description: string;
+  capacity: string;
+  color: string;
+  condition: TradeInCondition;
+  condition_label: string;
+  battery_health: number | null;
+  accessories: string;
+  imei_last4: string;
+  customer_asking_price: string | null;
+  estimated_valuation: string;
+  estimated_balance: string;
+  valuation_notes: string;
+  valued_by: string;
+  valued_at: string | null;
+  applicable: false;
+};
+
+/** The block as the editor holds it: every field as typed. */
+export type QuoteTradeInDraft = {
+  device_description: string;
+  capacity: string;
+  color: string;
+  condition: "" | TradeInCondition;
+  battery_health: string;
+  accessories: string;
+  imei_last4: string;
+  customer_asking_price: string;
+  estimated_valuation: string;
+  valuation_notes: string;
+};
+
 export type QuoteActions = {
   edit: boolean; revise: boolean; duplicate: boolean; approve: boolean; send: boolean; decide: boolean;
   convert: boolean; print: boolean;
@@ -108,6 +160,8 @@ export type QuoteDetail = QuoteRow & {
   decision_note: string;
   converted_at: string | null;
   history: { id: number; revision: number; label: string; status: QuoteStatus; total: string; created_at: string }[];
+  /** TRADE-IN-QUOTE-00: null when the customer offers no device. Never applied to the sale. */
+  trade_in: QuoteTradeIn | null;
   actions: QuoteActions;
 };
 
@@ -177,6 +231,7 @@ export type QuoteDraft = {
   valid_until: string;
   conditions: string;
   notes: string;
+  trade_in: QuoteTradeInDraft | null;
 };
 
 export class QuoteApiError extends Error {
@@ -275,7 +330,101 @@ export function draftBody(draft: QuoteDraft): Record<string, unknown> {
     valid_until: draft.valid_until || null,
     conditions: draft.conditions,
     notes: draft.notes,
+    trade_in: draft.trade_in ? tradeInBody(draft.trade_in) : null,
   };
+}
+
+/** The block as the server reads it. Empty optional fields go as null; the valuation is never a discount. */
+export function tradeInBody(block: QuoteTradeInDraft): Record<string, unknown> {
+  return {
+    device_description: block.device_description.trim(),
+    capacity: block.capacity.trim(),
+    color: block.color.trim(),
+    condition: block.condition,
+    battery_health: block.battery_health.trim() === "" ? null : Number(block.battery_health),
+    accessories: block.accessories.trim(),
+    imei_last4: block.imei_last4.trim(),
+    customer_asking_price: block.customer_asking_price.trim() === "" ? null : block.customer_asking_price.trim(),
+    estimated_valuation: block.estimated_valuation.trim(),
+    valuation_notes: block.valuation_notes.trim(),
+  };
+}
+
+export function emptyTradeIn(): QuoteTradeInDraft {
+  return {
+    device_description: "", capacity: "", color: "", condition: "", battery_health: "", accessories: "",
+    imei_last4: "", customer_asking_price: "", estimated_valuation: "", valuation_notes: "",
+  };
+}
+
+export function tradeInDraftOf(block: QuoteTradeIn | null): QuoteTradeInDraft | null {
+  if (!block) return null;
+  return {
+    device_description: block.device_description,
+    capacity: block.capacity,
+    color: block.color,
+    condition: block.condition,
+    battery_health: block.battery_health === null ? "" : String(block.battery_health),
+    accessories: block.accessories,
+    imei_last4: block.imei_last4,
+    customer_asking_price: block.customer_asking_price ?? "",
+    estimated_valuation: block.estimated_valuation,
+    valuation_notes: block.valuation_notes,
+  };
+}
+
+const IDENTIFIER_LIKE = /\d{8,}/;
+/** A date as people write it (2024-03-15, 15/03/2024, 15-03-24): allowed, and set aside before counting. */
+const DATE_LIKE = new RegExp(
+  "(?<!\\d)(?:(?:19|20)\\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])"
+  + "|(?:0?[1-9]|[12]\\d|3[01])[-/.](?:0?[1-9]|1[0-2])[-/.](?:(?:19|20)\\d{2}|\\d{2}))(?!\\d)", "g");
+/**
+ * An amount, set aside like a date (the server's same rule). With a currency marker (S/, S/., PEN, USD, US$, $): up to
+ * 7 digits, or grouped in threes, decimals optional. Without one, only a number WITH decimals: «12,345,678» may be a DNI.
+ */
+const AMOUNT_NUMBER = "(?:\\d{1,3}(?:[,.\\u00a0\\u202f ]\\d{3}){1,2}|\\d{1,7})";
+const MONEY_LIKE = new RegExp(
+  "(?:(?:S/\\.?|PEN|USD|US\\$|\\$)\\s*" + AMOUNT_NUMBER + "(?:[.,]\\d{1,2})?"
+  + "|(?<![\\d.,])" + AMOUNT_NUMBER + "[.,]\\d{1,2})(?!\\d|[.,]\\d)", "gi");
+/** Up to three characters that are neither letters nor digits between two digits: «3567 / 8901», «12,345,678». */
+const DIGIT_SEPARATORS = /(?<=\d)[^\p{L}\p{N}]{1,3}(?=\d)/gu;
+
+/** Eight digits or more once dates and amounts are set aside and separators collapsed (the server's same rule). */
+export function looksLikeIdentifier(text: string): boolean {
+  const plain = text.replace(DATE_LIKE, " fecha ").replace(MONEY_LIKE, " importe ");
+  return IDENTIFIER_LIKE.test(plain.replace(DIGIT_SEPARATORS, ""));
+}
+
+/** Why the block cannot be saved yet ('' when it can). The server checks it all again. */
+export function tradeInProblem(block: QuoteTradeInDraft): string {
+  if (!block.device_description.trim()) return "Describe el equipo ofrecido en parte de pago.";
+  if (!block.condition) return "Indica el estado declarado del equipo ofrecido.";
+  const texts = [block.device_description, block.capacity, block.color, block.accessories, block.valuation_notes];
+  if (texts.some(looksLikeIdentifier)) {
+    return "No escribas el IMEI completo ni números de documento: del IMEI sólo los últimos 4 dígitos.";
+  }
+  if (block.imei_last4.trim() && !/^\d{4}$/.test(block.imei_last4.trim())) {
+    return "Del IMEI sólo se anotan los últimos 4 dígitos.";
+  }
+  if (block.battery_health.trim()) {
+    const battery = Number(block.battery_health);
+    if (!Number.isInteger(battery) || battery < 0 || battery > 100) return "La batería se indica en % (de 0 a 100).";
+  }
+  const valuation = Number(block.estimated_valuation);
+  if (block.estimated_valuation.trim() === "" || !Number.isFinite(valuation) || valuation < 0) {
+    return "Indica la valorización estimada del equipo ofrecido.";
+  }
+  if (block.customer_asking_price.trim()) {
+    const asked = Number(block.customer_asking_price);
+    if (!Number.isFinite(asked) || asked < 0) return "El precio que pide el cliente no es válido.";
+  }
+  return "";
+}
+
+/** total − valuation, as shown (the server computes the real one; nothing charges it). */
+export function estimatedBalance(total: string | number, valuation: string | number): number {
+  const balance = Number(total) - Number(valuation);
+  return Number.isFinite(balance) ? Math.round(balance * 100) / 100 : 0;
 }
 
 export function createQuote(draft: QuoteDraft): Promise<QuoteDetail> {
@@ -391,6 +540,7 @@ export function draftProblem(draft: QuoteDraft, canDiscount: boolean): string {
     if (draft.discount_type === "percent" && value > 100) return "El porcentaje debe estar entre 0 y 100.";
     if (!draft.discount_reason.trim()) return "Indica el motivo del descuento.";
   }
+  if (draft.trade_in) return tradeInProblem(draft.trade_in);
   return "";
 }
 
@@ -424,6 +574,7 @@ export function draftFromQuote(quote: QuoteDetail): QuoteDraft {
     valid_until: quote.valid_until ?? "",
     conditions: quote.conditions,
     notes: quote.notes,
+    trade_in: tradeInDraftOf(quote.trade_in ?? null),
   };
 }
 
@@ -433,7 +584,7 @@ export function emptyDraft(context: Pick<QuoteContext, "default_branch" | "defau
     branch: context.default_branch, customer: null, customerLabel: "", customer_name: "",
     customer_document_type: "", customer_document_number: "", customer_phone: "", customer_email: "",
     seller: null, lines: [], discount_type: "", discount_value: "", discount_reason: "",
-    valid_until: addDays(today, context.default_validity_days), conditions: "", notes: "",
+    valid_until: addDays(today, context.default_validity_days), conditions: "", notes: "", trade_in: null,
   };
 }
 

@@ -8,6 +8,9 @@
  * LOS PRECIOS LOS DECIDE EL SERVIDOR. El editor muestra el precio de la caja para orientar; al guardar, el
  * servidor vuelve a calcular todo con las reglas de la caja (promociones, IGV) y lo que devuelve es lo que vale.
  * Guardar una cotización ya enviada crea una revisión nueva: la anterior se conserva.
+ *
+ * TRADE-IN-QUOTE-00: el bloque opcional «Equipo ofrecido en parte de pago (referencial)» es parte del borrador;
+ * su valorización nunca es un descuento ni cambia el total (ver `QuoteTradeIn`).
  */
 import { useEffect, useId, useState } from "react";
 import { fetchCustomers, type CustomerRow } from "../../lib/internal-api";
@@ -27,6 +30,7 @@ import {
   type QuoteUnitHit,
 } from "../../lib/sales-quotes-api";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../internal-ui";
+import { TradeInEditor } from "./QuoteTradeIn";
 
 const LABEL = "mb-1 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 let lineSeq = 0;
@@ -439,6 +443,8 @@ export function QuoteEditor({
           </>
         )}
       </section>
+
+      <TradeInEditor value={draft.trade_in} shownTotal={shownTotal} onChange={(trade_in) => patch({ trade_in })} />
 
       <section className="grid gap-3 rounded-xl border border-bd-border bg-surface p-4 sm:grid-cols-2">
         <label className="block">
