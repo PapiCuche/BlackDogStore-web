@@ -12,7 +12,8 @@ Rama `feat/supply-weekly-01` sobre #402 (ya en `master`), PR abierto, **sin fusi
 - **Lista parcial:** la vista previa trae `unmentioned` (ofertas vigentes de los proveedores del archivo que no menciona). Sólo informativo: no desactiva nada (ADR §8.4).
 - **Excel:** una fila cuyo modelo y opciones son una combinación completa de la paleta sin variante ya no da el error genérico: `error_code = combinacion_valida_sin_variante` con `variant_proposal`; la vista previa ofrece «Crear variante» (borrador pendiente, confirmado) y vuelve a previsualizar.
 - **BLOCKED (migración):** el precio sugerido (costo + margen configurable por empresa) necesita una columna nueva en la configuración de la empresa: no hay un campo JSON reutilizable. Se dejó fuera hasta tener turno de migración (0187/0188 en curso).
-- **Pruebas:** `test_supply_weekly` (16) y suites de ofertas/guardas/catálogo relacionadas; Jest `supply-weekly` (8).
+- **Revisión de #405:** «retirado» sólo si el par estaba en la lista anterior o se desactivó/venció desde la semana anterior; lo apagado antes es «inactivo» (estado, no cambio). Los cambios usan los valores APLICADOS (precio o cantidad mantenidos no cuentan). La fila muestra la oferta que escribió la lista de la semana. Semana fuera de 2000–2100 → 400. Una fila con claves en desacuerdo menciona sus variantes; un trabajo aplicado ya no devuelve `unmentioned`. Las dos pestañas quedan montadas (la vista previa no se pierde); Inicio/Fin en las pestañas.
+- **Pruebas:** `test_supply_weekly` (22) y suites de ofertas/guardas/catálogo relacionadas; Jest `supply-weekly` (11).
 
 ## 2026-11-23 — POS-ORDER-ARRIVAL-01 · el equipo que espera un pedido pagado no entra como stock libre (rama, sin desplegar)
 
