@@ -864,6 +864,25 @@ ven ni se pueden confirmar (siguen en la tabla); las comisiones anuladas siguen 
 Antes de volver, apunta los reembolsos pendientes (Órdenes › Reembolso: pendiente) para
 seguirlos a mano. Deshacer `0137` (`migrate store 0136`) borraría los reembolsos registrados.
 
+**SALES-QUOTE-01 (`0187_sales_quote`, se renumera al fusionar): cotizaciones comerciales.** Aditiva: dos
+tablas nuevas vacías (`store_salesquote`, `store_salesquoteitem`), `Order.source_quote` y `PrintJob.sales_quote`
+(nulas, `db_default` NULL), una opción más en dos listas de valores y la regla de destino de los trabajos de
+impresión reescrita como `print_job_target_matches_kind_v2` (toda fila que escribe la versión anterior la cumple).
+Da las capacidades `sales.quotes.*` a los roles existentes. Después de `migrate`, añade al `crontab` la línea
+`expire_sales_quotes` de `deploy/crontab.example` (cada hora).
+
+*Volver atrás desde SALES-QUOTE-01* — en este orden, **antes** de cambiar los contenedores:
+
+1. La cola de impresión de la versión anterior se detiene ante un ticket de cotización (no tiene pedido). Cuéntalos y
+   cancélalos:
+   ```sh
+   $C exec -T backend python manage.py cancel_sales_quote_print_jobs           # cuenta
+   $C exec -T backend python manage.py cancel_sales_quote_print_jobs --apply   # cancela
+   ```
+2. **Quita del `crontab` la línea `expire_sales_quotes`**.
+3. `git checkout <commit anterior>`, `$C build`, `$C up -d`. La migración **se deja aplicada**: la versión anterior
+   no lee sus tablas ni sus columnas. Las ventas ya convertidas siguen siendo ventas normales.
+
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya
 duplicados, y la migración no fusiona ni borra. La web anterior sigue en línea. Lista
