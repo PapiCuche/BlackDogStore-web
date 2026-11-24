@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-24 — INV-LOAD-02: cargar el stock real con dos plantillas, comprobarlo y anular una carga (rama, sin desplegar)
+
+**Added**
+- Plantillas «Stock de equipos nuevos» y «Stock de seminuevos», generadas desde el registro de columnas del importador; la hoja fija la línea y la fila de ejemplo no se carga.
+- «Anular esta carga»: anula todos los equipos de una carga aplicada con líneas de corrección del Kardex, todo o nada, con motivo, auditada e idempotente.
+- Informe «Antes y después» de una carga, en CSV y Excel.
+- `manage.py check_unit_stock` y «Conciliación de equipos» en el panel (sólo lectura).
+- Procedimiento `docs/carga-stock-real.md` (Fase K).
+
+**Changed**
+- La plantilla de nuevos rechaza columnas de seminuevos; una fila de la otra línea es error de la fila.
+- «Inventario-adjust» y la carga de stock por cantidad responden 409 `busy` ante un bloqueo mutuo.
+- El asistente de importación reconoce las dos plantillas.
+- Anular un ingreso de inventario inicial ya no cierra el inventario inicial de ese estante.
+
 ## 2026-11-24 — VARIANT-SAFE-01: eliminar o archivar variantes sin perder datos (rama, sin desplegar)
 
 **Added**

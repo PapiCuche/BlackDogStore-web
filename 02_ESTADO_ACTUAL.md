@@ -3,6 +3,28 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — INV-LOAD-02 · plantillas del stock real, comprobación y anulación por lote (rama, sin desplegar)
+
+Rama `feat/inv-load-02`, PR abierto, **sin fusionar ni desplegar**, **sin migraciones**. Procedimiento: `docs/carga-stock-real.md`.
+
+- **Dos plantillas** desde el registro de columnas del importador (`unit_import_services.STOCK_TEMPLATES`): «Stock de equipos nuevos» y «Stock de seminuevos» (`GET …/units/import/template/?line=new|used`; sin `line`, la combinada de siempre). La hoja fija la línea; una fila de la otra línea es error; la de nuevos rechaza el archivo con una columna de seminuevos. Fila de ejemplo omitida (`EJEMPLO…`), notas por encabezado, listas de sucursal (sólo las del usuario), estado funcional y estético, hoja «Instrucciones» protegida que explica inspección, fotos y publicación (no son columnas). Una prueba ata encabezados ↔ registro ↔ campos del importador (`NOT_IN_STOCK_TEMPLATES` dice por qué falta cada uno).
+- **Nuevos sin «Precio de venta»:** el importador lo ignora en un equipo nuevo (se vende al precio de la variante); no se ofrece. Decisión a confirmar por el propietario.
+- **Registro:** guarda `summary.applied.unit_ids` y el estante justo después (`applied.shelves`).
+- **Anulación por lote:** `POST …/units/import/<id>/void/ {reason}` — `void_unit` sobre cada equipo de la carga; todo o nada (409 `batch_not_voidable` con los equipos por código de etiqueta), motivo obligatorio, auditado con empresa, idempotente. Una carga anterior sin `unit_ids` → 409 `batch_unknown_units`.
+- **Inventario inicial tras anular:** la anulación de un ingreso de inventario inicial (`CORRECTION_NEGATIVE` de `stock_unit_void` que apunta a un `INITIAL_STOCK` del estante) ya no cierra el inventario inicial (`receipt_services._closes_the_opening`); cualquier otra línea sí. Decisión a confirmar por el propietario.
+- **Antes/después:** `GET …/units/import/<id>/report/?as=csv|xlsx`.
+- **Comprobación:** `manage.py check_unit_stock [--company]` (sólo lectura; 0 cuadra, 2 diferencias) y `GET /api/admin/inventory/units/reconciliation/` («Conciliación», `inventory.view`, sucursales del usuario).
+- **busy:** `inventory-adjust` y la aplicación de la carga de stock por cantidad responden 409 `busy` ante un bloqueo mutuo.
+- **Asistente:** reconoce las dos plantillas por su hoja.
+- **Revisión de #409:**
+  - La pantalla pide siempre la línea del archivo («Nuevos», «Seminuevos» o «Ambos» para la combinada) y la envía.
+  - En el servidor, una fila hallada por modelo sin línea dicha (ni plantilla, ni pantalla, ni «Línea») que trae datos de seminuevo es error: nunca entra como nueva por defecto.
+  - Un equipo en una transferencia en borrador no se anula (ni por lote ni solo).
+  - `GET …/void/` previsualiza la anulación: equipos, bloqueos, inspeccionados, publicados, con fotos y largo máximo del motivo. Con trabajo hecho, el POST exige `confirm_used` (409 `confirm_used_ready`).
+  - El historial admite `?status=applied`.
+- **Panel:** botones de las dos plantillas, «Antes y después», «Anular esta carga» (también en «Cargas registradas»), «Conciliación de equipos». Las respuestas no llevan `unit_ids`.
+- **Pruebas:** `test_stock_load` (54, incluido el ensayo completo con datos sintéticos, una venta de un nuevo y de dos seminuevos); Jest `stock-unit-import`, `unit-stock-reconciliation`, `recent-unit-loads`.
+
 ## 2026-11-24 — VARIANT-SAFE-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0188`
 
 Eliminar, archivar y desactivar variantes sin perder datos. Rama `feat/variant-safe-01`; `0188` depende de `0187_used_unit_readiness` (#403, ya en master).

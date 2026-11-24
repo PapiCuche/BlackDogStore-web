@@ -276,11 +276,12 @@ def opening_problem(branch, product) -> str:
     it already had IN SEVERAL BATCHES (several files, or a receipt and then a file) without a fictitious purchase.
 
     A shelf whose Kardex holds ONLY opening lines (INITIAL_STOCK) still takes one more. Any other line — a sale, a
-    purchase, a transfer, a correction, a write-off, a hold — closes the opening for good. A shelf holding stock that no
+    purchase, a transfer, a correction, a write-off, a hold — closes the opening for good, except the annulment of an
+    opening entry (INV-LOAD-02, `_closes_the_opening`). A shelf holding stock that no
     Kardex line explains (no line at all, or a quantity the last opening line does not account for) is not an opening.
     """
     lines = StockMovement.objects.filter(branch=branch, product=product)
-    if lines.exclude(movement_type=StockMovement.INITIAL_STOCK).exists():
+    if _closes_the_opening(lines):
         return (f'«{product.name}» ya tiene movimientos en {branch.name}: no es inventario inicial. Regístralo como '
                 'compra.')
     shelf = BranchStock.objects.filter(branch=branch, product=product).values_list('quantity', flat=True).first() or 0
@@ -289,6 +290,25 @@ def opening_problem(branch, product) -> str:
         return (f'«{product.name}» ya tiene stock en {branch.name} sin un movimiento que lo explique: no se puede '
                 'declarar como inventario inicial. Regístralo como compra o corrige su stock.')
     return ''
+
+
+def _closes_the_opening(lines) -> bool:
+    """
+    Whether the shelf's Kardex holds a line other than an opening one. INV-LOAD-02: the annulment of an OPENING entry
+    («Anular ingreso», one device or a whole load) does not close it — the device never entered, and the corrected
+    file is loaded as the opening it is. Any other line (a sale, a purchase, a transfer, another correction) does.
+    """
+    others = lines.exclude(movement_type=StockMovement.INITIAL_STOCK)
+    if not others.exists():
+        return False
+    openings = set(lines.filter(movement_type=StockMovement.INITIAL_STOCK).values_list('pk', flat=True))
+    for movement_type, reference_type, metadata in others.values_list(
+            'movement_type', 'reference_type', 'metadata').iterator():
+        voided = (metadata or {}).get('voids_movement_id') if isinstance(metadata, dict) else None
+        if not (movement_type == StockMovement.CORRECTION_NEGATIVE and reference_type == 'stock_unit_void'
+                and voided in openings):
+            return True
+    return False
 
 
 def lock_shelves(shelves) -> None:

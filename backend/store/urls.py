@@ -120,7 +120,9 @@ from .import_views import (
     AdminStockImportApplyView,
     AdminUnitImportApplyView,
     AdminUnitImportPreviewView,
+    AdminUnitImportReportView,
     AdminUnitImportTemplateView,
+    AdminUnitImportVoidView,
     AdminStockImportPreviewView,
 )
 from .inventory_export_views import AdminInventoryExportsView
@@ -217,7 +219,7 @@ from .stock_unit_views import (
     StockUnitPhotoDetailView, StockUnitPhotoListView,
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
     StockUnitDetailView, StockUnitInspectionView, StockUnitListView, StockUnitMoveVariantView,
-    StockUnitPublicationView,
+    StockUnitPublicationView, StockUnitReconciliationView,
 )
 from .integration_views import (
     IntegrationActionView, IntegrationDetailView, IntegrationDraftView, IntegrationListView,
@@ -699,6 +701,12 @@ urlpatterns = [
     path('admin/inventory/units/import/template/', AdminUnitImportTemplateView.as_view(), name='admin-unit-import-template'),
     path('admin/inventory/units/import/preview/', AdminUnitImportPreviewView.as_view(), name='admin-unit-import-preview'),
     path('admin/inventory/units/import/<int:pk>/apply/', AdminUnitImportApplyView.as_view(), name='admin-unit-import-apply'),
+    # INV-LOAD-02 — annul an applied load whole, and its before/after.
+    path('admin/inventory/units/import/<int:pk>/void/', AdminUnitImportVoidView.as_view(), name='admin-unit-import-void'),
+    path('admin/inventory/units/import/<int:pk>/report/', AdminUnitImportReportView.as_view(),
+         name='admin-unit-import-report'),
+    path('admin/inventory/units/reconciliation/', StockUnitReconciliationView.as_view(),
+         name='admin-inventory-unit-reconciliation'),
     path('admin/inventory/units/<int:pk>/', StockUnitDetailView.as_view(), name='admin-inventory-unit-detail'),
     path('admin/inventory/units/<int:pk>/write-off/', StockUnitActionView.as_view(action='write-off'), name='admin-inventory-unit-write-off'),
     path('admin/inventory/units/<int:pk>/reserve/', StockUnitActionView.as_view(action='reserve'), name='admin-inventory-unit-reserve'),
