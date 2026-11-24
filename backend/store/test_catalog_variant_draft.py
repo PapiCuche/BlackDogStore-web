@@ -626,7 +626,9 @@ class PayloadsAndExportsTest(DraftShop, TestCase):
         rows = {v['product_id']: v for v in body['variants']}
         self.assertEqual(sorted(rows[pending.pk]), sorted([
             'product_id', 'name', 'condition_line', 'option_ids', 'status', 'draft_origin', 'draft_pending',
-            'sale_enabled_at', 'has_image', 'price_set', 'is_published_online', 'is_active', 'is_serialized']))
+            'sale_enabled_at', 'has_image', 'price_set', 'is_published_online', 'is_active', 'is_serialized',
+            # VARIANT-SAFE-01
+            'archived']))
         self.assertEqual((rows[pending.pk]['draft_pending'], rows[pending.pk]['price_set'], rows[pending.pk]['has_image'],
                           rows[pending.pk]['sale_enabled_at'], rows[pending.pk]['is_published_online']),
                          (True, False, False, None, False))

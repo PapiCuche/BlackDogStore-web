@@ -5,6 +5,9 @@ from .finish_media_views import (
     AdminModelFinishImageDetailView, AdminModelFinishImageListView, AdminModelFinishImageOrderView,
 )
 from .inventory_ai_views import AdminInventoryAISettingsView
+from .variant_lifecycle_views import (
+    AdminProductArchiveView, AdminProductDeletionCheckView, AdminProductUnarchiveView,
+)
 from .text_preview_views import (
     AdminCatalogProposalApplyView, AdminCatalogProposalView, AdminTextPreviewMatchView,
     AdminTextPreviewOfferDraftFileView, AdminTextPreviewOfferDraftView,
@@ -303,6 +306,11 @@ urlpatterns = [
     path('admin/products/<int:pk>/images/', AdminProductImageListView.as_view(), name='admin-product-images'),
     # DEVICE-COMMERCE-01 · DC2 — models, options, variants, grades.
     path('admin/products/<int:pk>/variant/', AdminProductVariantView.as_view(), name='admin-product-variant'),
+    # VARIANT-SAFE-01: what a deletion would meet, and archiving (DELETE lives on admin-product-detail).
+    path('admin/products/<int:pk>/deletion-check/', AdminProductDeletionCheckView.as_view(),
+         name='admin-product-deletion-check'),
+    path('admin/products/<int:pk>/archive/', AdminProductArchiveView.as_view(), name='admin-product-archive'),
+    path('admin/products/<int:pk>/unarchive/', AdminProductUnarchiveView.as_view(), name='admin-product-unarchive'),
     # DC3 — suppliers, offers and the supply of on-order lines.
     # FINANCE-OBLIGATIONS-01 · FIN-B1 (`store/finance_views.py`)
     path('admin/finance/categories/', FinanceCategoryListView.as_view(), name='admin-finance-categories'),

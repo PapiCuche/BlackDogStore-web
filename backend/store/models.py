@@ -245,8 +245,10 @@ class Product(models.Model):
     CONDITION_NEW = 'new'
     CONDITION_USED = 'used'
     CONDITION_LINE_CHOICES = [(CONDITION_NEW, 'Nuevo'), (CONDITION_USED, 'Seminuevo')]
+    # VARIANT-SAFE-01: PROTECT (was SET_NULL). A model with variants is never deleted: its variants would become
+    # loose products and lose their line, options and palette silently.
     product_model = models.ForeignKey(
-        'store.ProductModel', null=True, blank=True, on_delete=models.SET_NULL, related_name='variants',
+        'store.ProductModel', null=True, blank=True, on_delete=models.PROTECT, related_name='variants',
     )
     # `db_default`: the previous release keeps inserting products while this migrates.
     condition_line = models.CharField(
@@ -299,6 +301,18 @@ class Product(models.Model):
     sale_enabled_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
     )
+    # VARIANT-SAFE-01 — ARCHIVED: a variant with history that the company no longer uses. It keeps its row (sales,
+    # Kardex, devices and documents point at it) and its place in `unique_variant_per_model_line`, so nothing can
+    # create the same combination again behind its back. It is out of the shop, the till, every importer and
+    # resolver, and the palette's «existing» set. Written ONLY by `variant_lifecycle.archive_variant` /
+    # `unarchive_variant`. The database refuses an archived row that is active (`archived_product_is_inactive`):
+    # no importer, form or bulk update can bring it back without the explicit, audited unarchive.
+    # NULL / '' (no db_default needed): the previous release never writes them.
+    archived_at = models.DateTimeField(null=True, blank=True)
+    archived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    archive_reason = models.CharField(max_length=500, blank=True, default='', db_default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -306,6 +320,10 @@ class Product(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=['company', 'slug'], name='unique_product_slug_per_company',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(archived_at__isnull=True) | models.Q(is_active=False),
+                name='archived_product_is_inactive',
             ),
             models.UniqueConstraint(
                 fields=['product_model', 'condition_line', 'variant_key'],
@@ -349,7 +367,13 @@ class Product(models.Model):
         platform admin can write `is_published_online` without any service, and
         this belt (with the queryset's) is what keeps such a row off the shop.
         """
-        return bool(self.is_active and self.is_published_online and not self.is_pending_draft)
+        return bool(self.is_active and self.is_published_online and not self.is_pending_draft
+                    and self.archived_at is None)
+
+    @property
+    def is_archived(self) -> bool:
+        """VARIANT-SAFE-01: archived by `variant_lifecycle.archive_variant` (always inactive too)."""
+        return self.archived_at is not None
 
     @property
     def sells_by_unit(self) -> bool:
@@ -420,8 +444,10 @@ class ProductImage(models.Model):
     company = models.ForeignKey(
         'store.Company', on_delete=models.CASCADE, related_name='product_images',
     )
+    # VARIANT-SAFE-01: PROTECT, never CASCADE. A gallery is work somebody uploaded: deleting a product never takes
+    # it along silently (`variant_lifecycle` lists it as a blocker; the gallery removes pictures one by one).
     product = models.ForeignKey(
-        Product, on_delete=models.CASCADE, related_name='images',
+        Product, on_delete=models.PROTECT, related_name='images',
     )
     image_url = models.CharField(max_length=255, validators=[validate_asset_url])
     #: For people who do not see the picture. Empty means "the product name".
@@ -1232,7 +1258,8 @@ class PaymentTransaction(models.Model):
 
 class CartItem(models.Model):
     session_key = models.CharField(max_length=100, db_index=True)
-    product = models.ForeignKey(Product, on_delete=models.CASCADE)
+    # VARIANT-SAFE-01: PROTECT — a customer's cart is not the catalogue's to empty (`variant_lifecycle` blocker).
+    product = models.ForeignKey(Product, on_delete=models.PROTECT)
     quantity = models.PositiveIntegerField(default=1)
     added_at = models.DateTimeField(auto_now_add=True)
     # DC3 — the buyer took this line «bajo pedido» on purpose (the add said so).
@@ -1275,7 +1302,8 @@ class CartItem(models.Model):
 
 
 class Review(models.Model):
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='reviews')
+    # VARIANT-SAFE-01: PROTECT — what a customer wrote is history (`variant_lifecycle` blocker).
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='reviews')
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True
     )
@@ -4827,8 +4855,11 @@ class ProductBarcode(models.Model):
     company = models.ForeignKey(
         Company, on_delete=models.PROTECT, related_name='product_barcodes',
     )
+    # VARIANT-SAFE-01: PROTECT. Codes describe only their product, so `variant_lifecycle.delete_variant` removes
+    # them EXPLICITLY (and records them in the audit) together with a variant without history; nothing else may
+    # take them along. A printed label is a `LabelBatchItem`, which blocks the deletion.
     product = models.ForeignKey(
-        Product, on_delete=models.CASCADE, related_name='barcodes',
+        Product, on_delete=models.PROTECT, related_name='barcodes',
     )
     code = models.CharField(max_length=64, validators=[validate_barcode])
     # Informational only. A keyboard-wedge scanner sends the digits and nothing
@@ -11275,6 +11306,9 @@ class ProductModel(models.Model):
     #: CATALOG-REFERENCE-01 · PR E: the company shows this model first in the public list (then `sort_order`).
     #: False for every model before PR E (db_default), so a company that never marks one sees the same order.
     is_featured = models.BooleanField(default=False, db_default=False)
+    #: VARIANT-SAFE-01: False = the company no longer offers this model: it leaves the public shop (its list and its
+    #: page). Its variants keep their own state. True for every model before (db_default), so nothing changes.
+    is_active = models.BooleanField(default=True, db_default=True)
     #: CATALOG-REFERENCE-01 · PR B: the `ReferenceModel.key` this model was imported from (or linked to), so a
     #: re-import finds it even after the company renamed it. '' = not linked (every model before PR B). Written
     #: only by `catalog_reference_import`; never shown to the public.
@@ -11420,6 +11454,9 @@ class ProductVariantOption(models.Model):
     """
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    # VARIANT-SAFE-01: CASCADE ON PURPOSE. These rows ARE the variant (its options), with no meaning of their own;
+    # `variant_lifecycle.delete_variant` deletes them explicitly, inside its transaction and under the product's
+    # lock, before the product. Deleting a `Product` any other way is closed (Django admin, the API, the guard test).
     product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='variant_options')
     attribute = models.ForeignKey(VariantAttribute, on_delete=models.PROTECT, related_name='+')
     option = models.ForeignKey(VariantOption, on_delete=models.PROTECT, related_name='product_links')
@@ -11602,7 +11639,8 @@ class AccessoryCompatibility(models.Model):
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
     model = models.ForeignKey(ProductModel, on_delete=models.CASCADE, related_name='accessory_links')
-    accessory = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='compatible_model_links')
+    # VARIANT-SAFE-01: PROTECT — a configured compatibility is commercial data (`variant_lifecycle` blocker).
+    accessory = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='compatible_model_links')
     sort_order = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
@@ -12028,7 +12066,8 @@ class SupplierProductRef(models.Model):
     company = models.ForeignKey('store.Company', on_delete=models.PROTECT, related_name='supplier_product_refs')
     supplier = models.ForeignKey(Supplier, on_delete=models.PROTECT, related_name='product_refs')
     supplier_code = models.CharField(max_length=120)
-    product = models.ForeignKey(Product, on_delete=models.CASCADE, related_name='supplier_refs')
+    # VARIANT-SAFE-01: PROTECT — a supplier's code mapped by a person is commercial data (`variant_lifecycle` blocker).
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='supplier_refs')
     created_by = models.ForeignKey(settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL,
                                    related_name='+')
     created_at = models.DateTimeField(auto_now_add=True)

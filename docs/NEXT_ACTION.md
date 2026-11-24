@@ -30,6 +30,12 @@ Regla nueva en `AGENTS.md` §10. Todo cambio productivo se hace con el GO exacto
 - Ensayado: un segundo titular, un deploy simulado y la liberación al terminar.
 - Todos los scripts de GO del kit se relanzan solos bajo el candado.
 
+## VARIANT-SAFE-01 — rama `feat/variant-safe-01` (migración `0188`, sobre `0187` ya en master); PR abierto, sin fusionar ni desplegar
+
+- Fusionar con CI verde sobre el HEAD exacto; nada desplegado.
+- Decisiones por confirmar con el propietario: las imágenes de la galería bloquean la eliminación (no se borran con la variante); los códigos de barras sí se borran con ella (quedan en la auditoría); un carrito con la variante bloquea; desarchivar la deja inactiva; eliminar/archivar sólo para variantes (producto con modelo).
+- Despliegue: la migración no cambia SQL de las FK (Django aplica `on_delete`); añade 3 columnas, 1 CHECK y la capacidad `products.delete`. Con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`.
+
 ## PLAN MAESTRO COMERCIAL 2026 — Ola 1 cerrada en `master` (sin desplegar)
 
 El plan, la auditoría y el orden de los PR están en `docs/plan-maestro-comercial-2026.md`. **Nada de esto está en producción**: desplegarlo requiere ensayo y un GO propio.
