@@ -57,7 +57,7 @@ async function tour(page: Page, env: Env) {
   expect(sections["Catálogo"]).toBe(1);
   expect(sections["Inventario"]).toBe(7);
   observations.push({ env: env.name, metric: "destinos Catálogo+Inventario", value: sections["Catálogo"] + sections["Inventario"] });
-  for (const hidden of ["Equipos seminuevos", "Carga de equipos", "Costos y precios", "Transferencias"]) {
+  for (const hidden of ["Equipos seminuevos", "Carga de equipos", "Costos y precios", "Kardex"]) {
     await expect(nav.getByRole("link", { name: hidden })).toHaveCount(0);
   }
   // El panel de /admin ya desborda 24–45 px en 390 por una tabla `sr-only` de sus gráficos (una tabla no se encoge con
@@ -102,32 +102,34 @@ async function tour(page: Page, env: Env) {
   nav = await menu(page, env);
   expect(await current(nav)).toEqual(["Recuentos"]);
 
-  // 5 · Una importación avanzada: las opciones de Más herramientas y la carga de equipos.
+  // 5 · La carga de equipos (NAV-SALES-01: en Stock y equipos, ya no en Más herramientas).
   await expect(nav.getByRole("link", { name: "Más herramientas" })).toHaveAttribute("href", "/admin/inventory/tools");
-  await nav.getByRole("button", { name: "Opciones de Más herramientas" }).click();
+  await nav.getByRole("button", { name: "Opciones de Stock y equipos" }).click();
   await nav.getByRole("link", { name: "Carga de equipos" }).click();
   await expect(page).toHaveURL(/\/admin\/inventory\/units\/import$/);
   nav = await menu(page, env);
-  await expect(nav.getByRole("button", { name: "Opciones de Más herramientas" })).toHaveAttribute("aria-expanded", "true");
+  await expect(nav.getByRole("button", { name: "Opciones de Stock y equipos" })).toHaveAttribute("aria-expanded", "true");
   expect(await current(nav)).toEqual(["Carga de equipos"]);
 
-  // 6 · Productos y variantes: entrar, buscar un artículo, ir a un modelo; Atrás y Adelante.
-  await nav.getByRole("link", { name: "Productos y variantes" }).click();
+  // 6 · Productos (abre Modelos) → Variantes: buscar un artículo; Atrás y Adelante.
+  await nav.getByRole("link", { name: "Productos", exact: true }).click();
+  await expect(page).toHaveURL(/\/admin\/products\/models$/);
+  nav = await menu(page, env);
+  expect(await current(nav)).toEqual(["Productos"]);
+  await nav.getByRole("link", { name: "Variantes" }).click();
   await expect(page).toHaveURL(/\/admin\/products$/);
   await page.getByPlaceholder("Buscar por nombre o slug…").fill("iPhone 13");
   await expect(page.getByText(new RegExp(`iPhone 13 ${TAG}`)).first()).toBeVisible({ timeout: 60_000 });
   nav = await menu(page, env);
-  expect(await current(nav)).toEqual(["Productos y variantes"]);
-  await nav.getByRole("link", { name: "Modelos y variantes" }).click();
-  await expect(page).toHaveURL(/\/admin\/products\/models$/);
+  expect(await current(nav)).toEqual(["Variantes"]);
   await page.goBack();
+  await expect(page).toHaveURL(/\/admin\/products\/models$/);
+  nav = await menu(page, env);
+  expect(await current(nav)).toEqual(["Productos"]);
+  await page.goForward();
   await expect(page).toHaveURL(/\/admin\/products$/);
   nav = await menu(page, env);
-  expect(await current(nav)).toEqual(["Productos y variantes"]);
-  await page.goForward();
-  await expect(page).toHaveURL(/\/admin\/products\/models$/);
-  nav = await menu(page, env);
-  expect(await current(nav)).toEqual(["Modelos y variantes"]);
+  expect(await current(nav)).toEqual(["Variantes"]);
   await page.screenshot({ path: `${SHOTS}/${env.name}-models.png`, fullPage: false });
   await expectNoOverflow(page, `${env.name} modelos y variantes`);
 
@@ -188,7 +190,7 @@ test("2 · clics hasta cada tarea, medidos", async ({ browser }) => {
       { name: "iniciar una recepción", steps: (nav) => [nav.getByRole("link", { name: "Recibir mercadería" })], url: /\/inventory\/receive$/ },
       { name: "consultar un equipo seminuevo", steps: (nav) => [nav.getByRole("button", { name: "Opciones de Stock y equipos" }), nav.getByRole("link", { name: "Equipos seminuevos" })], url: /\/inventory\/used$/ },
       { name: "encontrar las etiquetas", steps: (nav) => [nav.getByRole("link", { name: "Etiquetas", exact: true })], url: /\/inventory\/labels$/ },
-      { name: "abrir una importación avanzada", steps: (nav) => [nav.getByRole("button", { name: "Opciones de Más herramientas" }), nav.getByRole("link", { name: "Carga de equipos" })], url: /\/units\/import$/ },
+      { name: "abrir la carga de equipos", steps: (nav) => [nav.getByRole("button", { name: "Opciones de Stock y equipos" }), nav.getByRole("link", { name: "Carga de equipos" })], url: /\/units\/import$/ },
     ];
     for (const task of tasks) {
       await page.goto("/admin", { waitUntil: "domcontentloaded" });
@@ -212,10 +214,10 @@ test("3 · quien sólo ve el inventario no encuentra recibir ni costos, y la pá
   try {
     await page.goto("/admin", { waitUntil: "domcontentloaded" });
     const nav = await menu(page, env);
-    for (const name of ["Stock y equipos", "Recuentos", "Movimientos", "Centro de operaciones"]) {
+    for (const name of ["Stock y equipos", "Recuentos", "Transferencias", "Centro de operaciones"]) {
       await expect(nav.getByRole("link", { name })).toBeVisible();
     }
-    for (const name of ["Recibir mercadería", "Productos y variantes", "Proveedores"]) {
+    for (const name of ["Recibir mercadería", "Productos", "Proveedores"]) {
       await expect(nav.getByRole("link", { name, exact: true })).toHaveCount(0);
     }
     // Sin permiso de imprimir, «Etiquetas» lleva a lo único que `company.view` abre: su configuración (como antes).
@@ -243,11 +245,12 @@ test("4 · el empleado de inventario recibe y etiqueta, pero no gestiona product
     const nav = await menu(page, env);
     await expect(nav.getByRole("link", { name: "Recibir mercadería" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Etiquetas", exact: true })).toBeVisible();
-    await nav.getByRole("button", { name: "Opciones de Productos y variantes" }).click();
-    await expect(nav.getByRole("link", { name: "Modelos y variantes" })).toBeVisible();
+    await nav.getByRole("button", { name: "Opciones de Productos" }).click();
+    await expect(nav.getByRole("link", { name: "Variantes" })).toBeVisible();
     await expect(nav.getByRole("link", { name: "Registrar artículo" })).toHaveCount(0);
-    await nav.getByRole("button", { name: "Opciones de Más herramientas" }).click();
+    await nav.getByRole("button", { name: "Opciones de Stock y equipos" }).click();
     await expect(nav.getByRole("link", { name: "Carga de equipos" })).toBeVisible();
+    await nav.getByRole("button", { name: "Opciones de Más herramientas" }).click();
     for (const name of ["Costos y precios", "Carga de productos", "Reportes"]) await expect(nav.getByRole("link", { name })).toHaveCount(0);
     // Y sin permiso de configurar etiquetas no hay «Configuración» (lleva company.view, que sí tiene): se ve la vista previa.
     await nav.getByRole("link", { name: "Recibir mercadería" }).click();
@@ -265,7 +268,7 @@ test("5 · otra empresa ve su propio menú y su propio catálogo", async ({ brow
     await page.goto("/admin/products", { waitUntil: "domcontentloaded" });
     const nav = await menu(page, env);
     await expect(page.locator("aside").getByText(/QAE otra/)).toBeVisible({ timeout: 60_000 });
-    await expect(nav.getByRole("link", { name: "Productos y variantes" })).toBeVisible();
+    await expect(nav.getByRole("link", { name: "Productos", exact: true })).toBeVisible();
     await expect(page.getByText("Producto de otra empresa").first()).toBeVisible({ timeout: 60_000 });
     await expect(page.getByText(new RegExp(`iPhone 13 ${TAG}`))).toHaveCount(0);
   } finally {
