@@ -1,14 +1,16 @@
 # GD-001 — Webhooks salientes (PROPUESTA)
-Eventos v1: product.created, product.updated, product.deleted, inventory.updated, price.updated, promotion.updated, order.updated, repair.updated. No webhook entrante de mutación.
-Envelope: event_id UUID único, event_type, event_version=1, occurred_at UTC, tenant_id, entity {type,id}, data_version, correlation_id; branch_id cuando aplique. Tombstone de producto sin datos privados; inventory.updated identifica disponibilidad afectada, no delta aplicable como comando. Order/repair solo si suscripción y vínculo autorizados; referencias mínimas sin PII.
-Transactional outbox insertado en la misma transacción del maestro; worker independiente tras commit, nunca red en request. At-least-once, consumidor deduplica event_id y descarta versión antigua; no prometer orden global de entrega. Reconciliar por sync/changes.
-HTTPS, destino autorizado, sin redirects, defensa SSRF/DNS, límite cuerpo, timeouts. Firma propuesta HMAC-SHA256 sobre timestamp ASCII + punto + bytes originales; headers X-GD-Event-Id, X-GD-Timestamp, X-GD-Key-Id, X-GD-Signature. Comparación constante, ventana propuesta 300 s, deduplicación duradera y nueva firma por intento. Verificar event_id del header contra cuerpo. Claves separadas de autenticación API; rotación y revocación.
-2xx acuse, 429/5xx/timeouts retry exponencial con jitter y tope, 4xx permanente a DLQ salvo política explícita. DLQ y replay operador autorizado, mismo event_id, registro redactado. Retención, número de intentos y SLA pendientes.
-Tests: rollback sin evento, commit con evento, crash/retry, duplicado, replay, firma errónea, cambio de cuerpo, rotación, SSRF, caída receptor, DLQ, ausencia de PII y no mutación de inventario por entrega/acuse.
-
-## Revisión de scopes y reconciliación
-Webhooks son avisos de invalidación, no comandos ni estado autoritativo. Scope por evento: product.* catalog.read; inventory.updated inventory.read; price.updated prices.read; promotion.updated promotions.read; order.updated orders.read y repair.updated repairs.read ambos DESHABILITADOS hasta grant aprobado, no eventos ni feed. Cada suscripción se liga a tenant y sucursales autorizadas; revalidar permisos al entregar/reintentar/replay, suspender y purgar pendientes revocados. No revelar eventos cruzados, PII o metadatos de proveedor. event_id deduplicado, data_version monotónica por recurso, entidad opaca, branch_id únicamente cuando aplica y autorizado. Tombstone solo para recurso previamente visible; revocación requiere purga del consumidor, no enviar IDs ajenos. Eventos de cambios efectivos de vigencia mediante worker maestro. Tras aviso o desconexión consultar sync/changes con cursor guardado; si 410, resnapshot y reemplazo atómico de caché. No usar timestamp del webhook ni orden de entrega como watermark. Retención propuesta 30 días del feed, snapshot 15 min; negociar DLQ/entrega. No fallback público/admin. Acuse solo cambia estado de entrega técnico, nunca stock.
-
-### Composición de scopes de oferta
-Si una identidad de oferta usada o precio bajo pedido implica disponibilidad, exigir inventory.read y prices.read conjuntamente también en entrega, reintento y feed. Si no están ambos, emitir únicamente invalidación agregada del dominio autorizado que no revele identidad de oferta ni valores. No emitir eventos de pedidos/reparaciones/servicios mientras estén deshabilitados.
-
+Notifican cambios del maestro, no comandos ni autoridad de stock. Sin webhook entrante de mutación.
+| Evento | Scope |
+|---|---|
+| product.created, product.updated, product.deleted | catalog.read |
+| inventory.updated | inventory.read |
+| price.updated | prices.read |
+| promotion.updated | promotions.read |
+| order.updated | orders.read (DESHABILITADO) |
+| repair.updated | repairs.read (DESHABILITADO) |
+Composición adicional: oferta usada/precio bajo pedido que revele disponibilidad exige inventory.read + prices.read; si falta uno, solo invalidación agregada del dominio autorizado sin identidad de oferta ni valores. Tenant y sucursales de suscripción vinculados al principal, revalidar permisos en entrega, reintento y replay; purgar/suspender pendientes revocados. No PII, IMEI ni referencias privadas. Tombstone solo para entidad antes visible.
+Envelope v1: event_id UUID único, event_type, event_version=1, occurred_at UTC, tenant_id opaco, entity {type,id}, data_version, correlation_id y branch_id cuando aplica y autorizado. No delta como instrucción. order/repair no emitidos hasta grant de cliente aprobado.
+Transactional outbox en la misma transacción del maestro; worker independiente tras commit; no red en request. At-least-once, deduplicar event_id duradero, descartar versiones antiguas; no prometer orden global de entrega. Reconciliación por sync/changes, cursor guardado; 410 resnapshot y reemplazo atómico; no timestamp webhook como watermark. Cambios temporales por worker maestro, nunca por GET. Acuse afecta solo entrega técnica.
+HTTPS, destino autorizado, sin redirects, protección SSRF/DNS, límites de cuerpo y timeout. Firma propuesta HMAC-SHA256 sobre timestamp ASCII + punto + bytes originales; headers X-GD-Event-Id, X-GD-Timestamp, X-GD-Key-Id, X-GD-Signature; comparación constante, ventana propuesta 300 s, verificar ID header/cuerpo, nueva firma por intento, dedupe mismo event_id. Claves separadas de autenticación, rotación/revocación.
+2xx acuse; 429/5xx/timeouts retry exponencial con jitter y tope; 4xx permanente a DLQ salvo política explícita. Replay por operador autorizado con mismo event_id, revalidar alcance. Retención/SLA/intentos por acordar. Feed 30 días y snapshot 15 min propuestos; no confundir retención de DLQ. Sin fallback público/admin ni cambios de inventario.
+Tests futuros: rollback sin evento, commit con evento, crash/retry, duplicado, replay, firma errónea/cuerpo alterado, rotación, SSRF, caída, DLQ, scope revocado, tenant/branch ajeno, eventos deshabilitados, ausencia PII, acuse sin mutación.
