@@ -1,12 +1,13 @@
-# NEXT ACTION — 2026-11-23
+# NEXT ACTION — 2026-11-24
 
-## PRODUCCIÓN (prod-02) — `16189e4`, esquema `0186_label_printing`, imágenes `release-16189e4`; sana
+## PRODUCCIÓN (prod-02) — `f47bd477` (R13), esquema `0192_unit_photo_provenance`, imágenes `release-f47bd47`; sana
 
-Comprobado en sólo lectura a las 22:38 (Lima):
+Desplegada el 2026-11-24 entre las 14:05 y las 14:07 (Lima) con el GO exacto del propietario («GO despliegue f47bd47 prod-02»). Detalle en la sección «RELEASE R13» más abajo.
+
+Comprobado justo después:
 - backend y frontend «healthy»;
-- md5 del enrutamiento sin cambios (`108dfbf3`, `dc0b749a`, `00949a94`);
-- 9 contenedores del CRM;
-- ningún despliegue ni migración en marcha, y el candado de producción libre.
+- huella del enrutamiento y de Caddy sin cambios; 9 contenedores del CRM;
+- el candado de producción libre.
 
 ### LABEL-04 (`16189e4`): cambio productivo con **autorización no acreditada**
 
@@ -36,9 +37,38 @@ Regla nueva en `AGENTS.md` §10. Todo cambio productivo se hace con el GO exacto
 - Decisiones por confirmar con el propietario: las imágenes de la galería bloquean la eliminación (no se borran con la variante); los códigos de barras sí se borran con ella (quedan en la auditoría); un carrito con la variante bloquea; desarchivar la deja inactiva; eliminar/archivar sólo para variantes (producto con modelo).
 - Despliegue: la migración no cambia SQL de las FK (Django aplica `on_delete`); añade 3 columnas, 1 CHECK y la capacidad `products.delete`. Con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`.
 
-## RELEASE R13 — candidata `f47bd477` PREPARADA Y ENSAYADA · **espera «GO despliegue f47bd47 prod-02»**
+## RELEASE R13 — `f47bd477` **DESPLEGADA en prod-02** el 2026-11-24 (14:05–14:07, Lima)
 
-Producción sigue en `16189e4`, con esquema `0186_label_printing`; nadie la ha tocado.
+**Ejecución** (`backups/release-r13/d_deploy_r13.sh`, bajo `prod_lock.sh`; log `backups/d-r13-go.log`):
+- Backup previo verificado: `backups/db-20261124-140538.sql.gz` (esquema `0186`). Es el punto de restauración.
+- `migrate --plan` fue exactamente `0187`–`0192`; migró en 31 s, antes de cambiar el código, sin esperas de candado.
+- Sólo se recrearon backend y frontend. Caddy, el CRM y el crontab no se tocaron.
+- Huellas antes y después **idénticas**: productos, stock (11 filas, 202 unidades), Kardex (46), equipos, pedidos, notas de venta, modelos, opciones y textos legales. 0 comprobantes fiscales.
+- Seminuevo existente (1): sigue disponible, con su IMEI y su precio; queda «pendiente de inspección» y deja de ofrecerse en la web (1 → 0). En la web el modelo aparece como agotado, sin unidades.
+- `unit_photo_report`: 1 foto esperando confirmación; 0 publicados saliendo de la web.
+- `report_image_health`: 40 enlaces externos, 38 públicas sin licencia verificada, 2 variantes ocultas por la regla de fotos.
+- `check_unit_stock`: 0 diferencias. Rutas de la tienda, del panel y de la API en 200. `healthcheck.sh` en verde. Reimpresión histórica sin errores. 0 tickets de cotización. 0 errores desde el cambio.
+- Desde fuera (Cloudflare): la portada devolvió un 522 en la primera petición tras el arranque en frío; las siguientes, 200 en menos de 1 s.
+
+**Vuelta atrás:** `rollback_r13_code.sh` (sólo código; antes, `cancel_sales_quote_print_jobs --apply`). La reversión del esquema sólo con el `DELETE` manual de `docs/despliegue-produccion.md` §7 y aceptando la pérdida de datos listada abajo.
+
+**Riesgos residuales:**
+- El seminuevo existente no se vende por la web ni por caja hasta que alguien lo inspeccione, confirme su foto y lo publique. Avisar al equipo.
+- Cotizaciones vencidas: sin el cron `expire_sales_quotes` el panel ya las muestra vencidas y no deja convertirlas, pero los reportes no se ordenan.
+- Vuelta atrás del esquema: sólo tras el `DELETE` manual de los tickets de cotización, y pierde cotizaciones, parte de pago, archivo de variantes, margen, inspección y confirmación de fotos.
+- Fotos: 40 enlaces externos y 38 fotos públicas sin licencia verificada siguen en el catálogo; 2 variantes quedan como «Imagen pendiente». La experiencia visual tipo Apple Store no está terminada.
+- El 522 de la primera petición tras reiniciar el frontend puede repetirse en cada despliegue (arranque en frío). No afectó a las siguientes peticiones.
+- Un seminuevo rechazado entre el pago web y su confirmación necesita reembolso manual (deuda conocida).
+
+**Pendiente, cada paso con su GO propio:**
+- instalar en el cron la línea `expire_sales_quotes` (hoy no está);
+- inspeccionar, confirmar la foto y publicar el seminuevo;
+- «GO carga stock real prod-02», con los archivos reales;
+- volver a preparar los kits de normalización, muestras y producto 12 sobre la base nueva.
+
+### Preparación y ensayo (histórico)
+
+Antes del despliegue, producción estaba en `16189e4`, con esquema `0186_label_printing`.
 
 **Candidata:** `master` `f47bd4772b1ec994295c3562d85a87c84777286d`. Contiene las olas 1, 2 y 3 del plan comercial y las guardas de reversión (#417).
 - Migraciones: `0187_used_unit_readiness`, `0188_variant_safe`, `0189_sales_quote`, `0190_supplier_margin`, `0191_trade_in_quote` y `0192_unit_photo_provenance`. Son lineales y aditivas.
@@ -74,7 +104,7 @@ Producción sigue en `16189e4`, con esquema `0186_label_printing`; nadie la ha t
 - `rollback_r13_code.sh`;
 - `RUNBOOK-f47bd47-prod02.md`: pasos, conteos esperados, comprobaciones posteriores, vuelta atrás y tareas del propietario.
 
-**GO solicitado (exacto):** «GO despliegue f47bd47 prod-02».
+**GO recibido:** «GO despliegue f47bd47 prod-02» (2026-11-24).
 
 Después del despliegue, cada uno con su GO propio:
 - instalar en el cron la línea `expire_sales_quotes`;
@@ -82,9 +112,9 @@ Después del despliegue, cada uno con su GO propio:
 - «GO carga stock real prod-02», con los archivos reales y las plantillas de `docs/carga-stock-real.md`;
 - volver a preparar y ensayar sobre la nueva base los kits pendientes: normalización, muestras y producto 12.
 
-## PLAN MAESTRO COMERCIAL 2026 — Olas 2 y 3 cerradas en `master` (sin desplegar)
+## PLAN MAESTRO COMERCIAL 2026 — Olas 2 y 3 cerradas en `master` (desplegadas con R13 el 2026-11-24)
 
-**Ninguna de estas olas está en producción**: prod-02 sigue en `16189e4`, con esquema `0186`. Desplegarlas requiere el ensayo de la release candidata y el GO exacto del propietario.
+Estas olas están en producción desde el despliegue de R13 (`f47bd477`, 2026-11-24).
 
 **Ola 2, fusionada** (cada PR con revisión independiente, sus correcciones y CI verde sobre el SHA exacto):
 
@@ -113,6 +143,10 @@ También: #406 y #412 (pruebas E2E ajustadas a la ola 1, `3435a068`).
 - inventario inicial por tandas sin compras ficticias;
 - vista previa con la simulación del stock antes y después;
 - conciliación del stock con las unidades y anulación de una carga completa.
+
+**STOCK-REAL-READY** (rama `feat/stock-real-ready`, PR abierto): auditoría de las plantillas y simulación completa
+(`store.test_stock_real_simulation`, 13 escenarios). Sin migraciones. Necesita una decisión del propietario: ¿lleva
+precio la plantilla de equipos nuevos?
 
 La venta rápida en caja (#400) ofrece primero el pedido pendiente. Cargar el stock real en producción necesita los archivos reales y el «GO carga stock real prod-02» (`docs/carga-stock-real.md` §11). Antes hay que desplegar la release.
 
