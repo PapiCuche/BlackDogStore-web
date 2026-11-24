@@ -852,6 +852,8 @@ VOID_REASONS = {
     'wrong_branch': 'Sucursal equivocada',
     'duplicate': 'Ingreso duplicado',
     'not_arrived': 'El equipo no llegó',
+    # INV-LOAD-02 — every device of a load annulled whole (`unit_import_batch.void_job`).
+    'bad_import': 'Carga por archivo anulada',
 }
 NOT_CORRECTABLE = 'unit_not_correctable'
 _ENTRY_TYPES = (StockMovement.PURCHASE_ENTRY, StockMovement.INITIAL_STOCK, StockMovement.MANUAL_ENTRY)
@@ -874,6 +876,13 @@ def entry_movement_if_clean(unit):
     if OrderUnit.objects.filter(unit_id=unit.pk).exists():
         return None
     return lines[0]
+
+
+def in_draft_transfer(unit) -> bool:
+    """SERIAL-TRANSFER-01 — the device is on a transfer still being prepared: its line there names it."""
+    from .models import StockTransfer, StockTransferUnit
+
+    return StockTransferUnit.objects.filter(unit_id=unit.pk, transfer__status=StockTransfer.STATUS_DRAFT).exists()
 
 
 def _not_correctable(why: str) -> StockUnitError:
@@ -905,6 +914,9 @@ def void_unit(unit, *, reason, reason_code, actor=None, request=None) -> StockUn
     if entry is None:
         raise _not_correctable('tiene movimientos después de su ingreso (o no se encuentra su ingreso). '
                                'Un equipo con historial no se anula.')
+    if in_draft_transfer(current):
+        # INV-LOAD-02 review: annulled, it would still sit on the draft and break its dispatch.
+        raise _not_correctable('está en una transferencia en borrador. Quítalo de la transferencia primero.')
     movement = _move(
         current, expected=StockUnit.Status.AVAILABLE, to_status=StockUnit.Status.VOIDED,
         movement_type=StockMovement.CORRECTION_NEGATIVE,
@@ -923,8 +935,12 @@ def variant_targets(unit):
     product = unit.product
     if not product.product_model_id:
         return Product.objects.none()
+    # VARIANT-SAFE-01: never INTO an archived variant (it would hold stock that nothing sells, loads or archives).
+    # A merely deactivated one stays a target: correcting which variant a device IS is a fact about the device, and
+    # deactivation is a reversible sales decision that must not block it.
     return (Product.objects.filter(company_id=unit.company_id, product_model_id=product.product_model_id,
-                                   condition_line=product.condition_line, is_serialized=True)
+                                   condition_line=product.condition_line, is_serialized=True,
+                                   archived_at__isnull=True)
             .exclude(pk=product.pk).order_by('name', 'pk'))
 
 
@@ -966,9 +982,7 @@ def move_unit_to_variant(unit, *, product, reason, actor=None, request=None) -> 
     if entry is None:
         raise _not_correctable('tiene movimientos después de su ingreso (o no se encuentra su ingreso). '
                                'Un equipo con historial no se corrige aquí.')
-    from .models import StockTransfer, StockTransferUnit
-
-    if StockTransferUnit.objects.filter(unit_id=current.pk, transfer__status=StockTransfer.STATUS_DRAFT).exists():
+    if in_draft_transfer(current):
         # SERIAL-TRANSFER-01: its line in that draft names THIS variant; moving it would break the dispatch.
         raise _not_correctable('está en una transferencia en borrador. Quítalo de la transferencia primero.')
     if product.requires_imei and not current.imei:

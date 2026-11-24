@@ -44,6 +44,8 @@ REASONS = {
     'warehouse_columns': 'Tiene columnas de cantidad por almacén: es la carga de stock.',
     'quantity_column': 'Tiene una columna de cantidad: es la carga de stock.',
     'serial_column': 'Tiene columna de número de serie: es la carga de equipos.',
+    # INV-LOAD-02 — recognised by its sheet, which also fixes the line it loads.
+    'stock_template': 'Es una plantilla de stock de equipos (nuevos o seminuevos): es la carga de equipos.',
     'image_columns': 'Tiene código e imágenes, sin nombre ni precio: es la carga de imágenes.',
     'serial_and_quantity': (
         'Tiene columna de número de serie y columna de cantidad. Un archivo de equipos lleva una fila '
@@ -123,6 +125,9 @@ def classify(sheets) -> dict:
     for name, rows in sheets:
         if import_exports.is_help_sheet(name):
             # «Instrucciones», «Ejemplo», «Categorías»: they explain, they are not a load.
+            continue
+        if unit_import_services.template_line_of(name):
+            found.append((str(name), UNITS, 'stock_template'))
             continue
         for headers in rows:
             verdict = _of_headers(str(name), headers)

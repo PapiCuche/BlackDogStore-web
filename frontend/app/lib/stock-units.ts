@@ -386,7 +386,11 @@ export type UnitImportJob = {
     applied?: { units: number; movements: number; imei_on_unmarked_products?: number };
     /** INV-LOAD-01 — absent in a job previewed before it. */
     simulation?: UnitImportSimulation;
+    /** INV-LOAD-02 — the load was annulled whole: how many devices, when, by whom and why. */
+    voided?: UnitImportVoided;
   };
+  /** INV-LOAD-02 — `line`: the line the file loads («new», «used»), or "" for the combined template. */
+  options?: { line?: UnitImportLine | ""; entry_kind?: "purchase" | "opening" };
   is_applicable: boolean;
   rows?: UnitImportRow[];
   rows_truncated?: boolean;
@@ -397,8 +401,109 @@ export type UnitImportJob = {
  * that company's branches. A plain link does not pass through `fetchWithAuth`,
  * so the company is put on the address here.
  */
-export function unitImportTemplateUrl(): string {
-  return withSelectedCompany(`${BASE}/import/template/`);
+export function unitImportTemplateUrl(line?: UnitImportLine): string {
+  // INV-LOAD-02 — «Stock de equipos nuevos» / «Stock de seminuevos»; without a line, the combined template.
+  return withSelectedCompany(`${BASE}/import/template/${line ? `?line=${line}` : ""}`);
+}
+
+/** INV-LOAD-02 — the two stock templates: each fixes the line it loads. */
+export type UnitImportLine = "new" | "used";
+
+export type UnitImportVoided = { units: number; at: string; by: string; reason: string };
+
+/** INV-LOAD-02 — a device that stops the annulment of a load: found by its label code, never by its IMEI. */
+export type UnitImportBlocking = {
+  unit_id: number;
+  label_code: string;
+  product_id: number;
+  branch_id: number;
+  status: string;
+  reason: string;
+};
+
+export class UnitImportVoidError extends StockUnitApiError {
+  readonly blocking: UnitImportBlocking[];
+
+  constructor(message: string, status: number, code: string | null, blocking: UnitImportBlocking[]) {
+    super(message, status, null, null, code);
+    this.name = "UnitImportVoidError";
+    this.blocking = blocking;
+  }
+}
+
+/**
+ * INV-LOAD-02 — annul every device of an applied load. All or none: a 409 names each device that moved since it
+ * entered (`blocking`). A second call answers `changed: false`.
+ */
+export async function voidUnitImport(
+  jobId: number, reason: string, confirmUsed = false,
+): Promise<UnitImportJob & { changed: boolean; voided: UnitImportVoided | null }> {
+  const res = await fetchWithAuth(`${BASE}/import/${jobId}/void/`, {
+    method: "POST", body: JSON.stringify({ reason, ...(confirmUsed ? { confirm_used: true } : {}) }),
+  });
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = body && typeof body === "object" && "detail" in body ? String(body.detail) : "";
+    const code = body && typeof body === "object" && typeof body.code === "string" ? body.code : null;
+    const blocking = body && typeof body === "object" && Array.isArray(body.blocking) ? body.blocking : [];
+    throw new UnitImportVoidError(
+      detail || (res.status === 403 ? "No tienes permisos sobre el inventario." : "No se pudo anular la carga."),
+      res.status, code, blocking,
+    );
+  }
+  return body;
+}
+
+/** INV-LOAD-02 — the device loads already registered (newest first), for their before/after and annulment. */
+export async function fetchRecentUnitLoads(): Promise<(UnitImportJob & { applied_at?: string | null })[]> {
+  // `status=applied` on the server: an older registered load stays listed however many previews came after it.
+  const res = await fetchWithAuth(`${API_BASE}/admin/imports/?type=units&status=applied`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = body && typeof body === "object" && "detail" in body ? String(body.detail) : "";
+    throw new StockUnitApiError(detail || "No se pudo cargar el historial.", res.status);
+  }
+  const results: (UnitImportJob & { applied_at?: string | null })[] = body?.results ?? [];
+  return results.filter((job) => job.status === "applied");
+}
+
+/**
+ * INV-LOAD-02 review — what annulling a load would do NOW (writes nothing): devices it would annul, the ones that stop
+ * it, how many were already inspected, published or photographed (that work is lost: it is confirmed), and how long
+ * the reason may be.
+ */
+export type UnitImportVoidPreview = {
+  units: number;
+  blocking: UnitImportBlocking[];
+  inspected: number;
+  published: number;
+  with_photos: number;
+  reason_max: number;
+  voided: UnitImportVoided | null;
+};
+
+export function fetchUnitImportVoidPreview(jobId: number): Promise<UnitImportVoidPreview> {
+  return call<UnitImportVoidPreview>(`/import/${jobId}/void/`);
+}
+
+/** INV-LOAD-02 — the before/after of an applied load, per branch × product, as a file. */
+export function unitImportReportUrl(jobId: number, kind: "csv" | "xlsx"): string {
+  return withSelectedCompany(`${BASE}/import/${jobId}/report/?as=${kind}`);
+}
+
+export type UnitStockMismatch = {
+  branch_id: number;
+  branch: string;
+  product_id: number;
+  product: string;
+  quantity: number;
+  available: number;
+  difference: number;
+};
+
+/** INV-LOAD-02 — «Conciliación»: the shelves whose stock is not their available devices (read-only). */
+export function fetchUnitReconciliation(): Promise<{ checked: number; mismatches: UnitStockMismatch[] }> {
+  return call("/reconciliation/");
 }
 
 /** The rows that failed, as a file to read next to the original. */
@@ -410,7 +515,7 @@ export function unitImportErrorsUrl(jobId: number): string {
 /** Stage the file. Registers nothing: the answer is what WOULD happen to each row. */
 export function previewUnitImport(
   file: File,
-  defaults: { branch?: number | null; reason?: string; entryKind?: "purchase" | "opening" } = {},
+  defaults: { branch?: number | null; reason?: string; entryKind?: "purchase" | "opening"; line?: UnitImportLine } = {},
 ): Promise<UnitImportJob> {
   const form = new FormData();
   form.append("file", file);
@@ -418,6 +523,8 @@ export function previewUnitImport(
   if (defaults.reason?.trim()) form.append("reason", defaults.reason.trim());
   // INV-OPENING-01 — a purchase (default) or the devices the shop already had: INITIAL_STOCK in the Kardex.
   form.append("entry_kind", defaults.entryKind ?? "purchase");
+  // INV-LOAD-02 — the line the person chose; a stock template says its own and the server holds the two together.
+  if (defaults.line) form.append("line", defaults.line);
   // No Content-Type: the browser writes the multipart boundary itself.
   return call<UnitImportJob>("/import/preview/", { method: "POST", body: form });
 }

@@ -89,6 +89,7 @@ async function previewFile() {
   render(<StockUnitImport branches={BRANCHES} />);
   const file = new File(['x'], 'equipos.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   fireEvent.change(screen.getByLabelText('Archivo de equipos (.xlsx)'), { target: { files: [file] } });
+  fireEvent.click(screen.getByRole('radio', { name: 'Nuevos' }));      // INV-LOAD-02: the line is always said
   fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
 }
 

@@ -55,7 +55,14 @@ class ProductAdmin(admin.ModelAdmin):
         # A1b-2: provenance is immutable and the commercial transition is written by ONE service
         # (`device_catalog.enable_variant_for_sale`), audited with the company — never from here.
         draft = ('draft_origin', 'sale_enabled_at', 'sale_enabled_by')
-        return (*base, 'company', *draft) if obj else (*base, *draft)
+        # VARIANT-SAFE-01: archiving is `variant_lifecycle`'s, audited with a reason — never typed here.
+        archive = ('archived_at', 'archived_by', 'archive_reason')
+        return (*base, 'company', *draft, *archive) if obj else (*base, *draft, *archive)
+
+    def has_delete_permission(self, request, obj=None):
+        # VARIANT-SAFE-01: a product is deleted ONLY by `variant_lifecycle.delete_variant` (no history, reason,
+        # typed name, audit). The admin's delete would bypass every one of those checks.
+        return False
 
     def formfield_for_foreignkey(self, db_field, request, **kwargs):
         """Offer only categories of the product's own company."""

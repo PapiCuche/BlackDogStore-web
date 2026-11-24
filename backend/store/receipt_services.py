@@ -276,11 +276,12 @@ def opening_problem(branch, product) -> str:
     it already had IN SEVERAL BATCHES (several files, or a receipt and then a file) without a fictitious purchase.
 
     A shelf whose Kardex holds ONLY opening lines (INITIAL_STOCK) still takes one more. Any other line — a sale, a
-    purchase, a transfer, a correction, a write-off, a hold — closes the opening for good. A shelf holding stock that no
+    purchase, a transfer, a correction, a write-off, a hold — closes the opening for good, except the annulment of an
+    opening entry (INV-LOAD-02, `_closes_the_opening`). A shelf holding stock that no
     Kardex line explains (no line at all, or a quantity the last opening line does not account for) is not an opening.
     """
     lines = StockMovement.objects.filter(branch=branch, product=product)
-    if lines.exclude(movement_type=StockMovement.INITIAL_STOCK).exists():
+    if _closes_the_opening(lines):
         return (f'«{product.name}» ya tiene movimientos en {branch.name}: no es inventario inicial. Regístralo como '
                 'compra.')
     shelf = BranchStock.objects.filter(branch=branch, product=product).values_list('quantity', flat=True).first() or 0
@@ -289,6 +290,25 @@ def opening_problem(branch, product) -> str:
         return (f'«{product.name}» ya tiene stock en {branch.name} sin un movimiento que lo explique: no se puede '
                 'declarar como inventario inicial. Regístralo como compra o corrige su stock.')
     return ''
+
+
+def _closes_the_opening(lines) -> bool:
+    """
+    Whether the shelf's Kardex holds a line other than an opening one. INV-LOAD-02: the annulment of an OPENING entry
+    («Anular ingreso», one device or a whole load) does not close it — the device never entered, and the corrected
+    file is loaded as the opening it is. Any other line (a sale, a purchase, a transfer, another correction) does.
+    """
+    others = lines.exclude(movement_type=StockMovement.INITIAL_STOCK)
+    if not others.exists():
+        return False
+    openings = set(lines.filter(movement_type=StockMovement.INITIAL_STOCK).values_list('pk', flat=True))
+    for movement_type, reference_type, metadata in others.values_list(
+            'movement_type', 'reference_type', 'metadata').iterator():
+        voided = (metadata or {}).get('voids_movement_id') if isinstance(metadata, dict) else None
+        if not (movement_type == StockMovement.CORRECTION_NEGATIVE and reference_type == 'stock_unit_void'
+                and voided in openings):
+            return True
+    return False
 
 
 def lock_shelves(shelves) -> None:
@@ -544,7 +564,12 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
         }
         if copies[product.pk] > 1:
             entry['warnings'].append(f'«{product.name}» aparece en más de una línea: cada línea es un ingreso aparte.')
-        if not product.is_active:
+        if product.archived_at is not None:
+            # VARIANT-SAFE-01: nothing is received into an archived variant.
+            from .variant_lifecycle import archived_refusal
+
+            entry['errors'].append(archived_refusal(product))
+        elif not product.is_active:
             entry['errors'].append(f'«{product.name}» está desactivado: actívalo antes de recibirlo.')
         if normalised.get('entry_kind') == ENTRY_OPENING:
             # INV-OPENING-01 — `confirm` runs this again inside its transaction, so a shelf that got a history after
@@ -713,12 +738,13 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
 
     Returns `(record, trail)` — the record is ids and counts, never an identifier or an amount.
     """
+    # VARIANT-SAFE-01 review — every product of the receipt, first (Product → shelf, the order of every other door), and
+    # its state read again under that lock: an archive or a deactivation committed since the preview refuses here.
+    units_service.lock_products(resolved.products.values())
+    for product in resolved.products.values():
+        product.refresh_from_db(fields=['is_active', 'archived_at'])
     if normalised.get('entry_kind') == ENTRY_OPENING:
-        # INV-LOAD-01 review — the shelves first, so the opening check below is decided under their locks. Before
-        # them, the products this receipt switches to devices (Product → shelf, the order of every other door).
-        units_service.lock_products(product for product in resolved.products.values() if not product.is_serialized
-                       and any(line['kind'] == KIND_UNITS and line['product'] == product.pk
-                               for line in normalised['lines']))
+        # INV-LOAD-01 review — the shelves first, so the opening check below is decided under their locks.
         lock_shelves((resolved.branch, product) for product in resolved.products.values())
     verdicts = check(company, resolved, normalised)
     if not all(v['status'] == 'ok' for v in verdicts):

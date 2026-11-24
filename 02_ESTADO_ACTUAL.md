@@ -3,6 +3,43 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — INV-LOAD-02 · plantillas del stock real, comprobación y anulación por lote (rama, sin desplegar)
+
+Rama `feat/inv-load-02`, PR abierto, **sin fusionar ni desplegar**, **sin migraciones**. Procedimiento: `docs/carga-stock-real.md`.
+
+- **Dos plantillas** desde el registro de columnas del importador (`unit_import_services.STOCK_TEMPLATES`): «Stock de equipos nuevos» y «Stock de seminuevos» (`GET …/units/import/template/?line=new|used`; sin `line`, la combinada de siempre). La hoja fija la línea; una fila de la otra línea es error; la de nuevos rechaza el archivo con una columna de seminuevos. Fila de ejemplo omitida (`EJEMPLO…`), notas por encabezado, listas de sucursal (sólo las del usuario), estado funcional y estético, hoja «Instrucciones» protegida que explica inspección, fotos y publicación (no son columnas). Una prueba ata encabezados ↔ registro ↔ campos del importador (`NOT_IN_STOCK_TEMPLATES` dice por qué falta cada uno).
+- **Nuevos sin «Precio de venta»:** el importador lo ignora en un equipo nuevo (se vende al precio de la variante); no se ofrece. Decisión a confirmar por el propietario.
+- **Registro:** guarda `summary.applied.unit_ids` y el estante justo después (`applied.shelves`).
+- **Anulación por lote:** `POST …/units/import/<id>/void/ {reason}` — `void_unit` sobre cada equipo de la carga; todo o nada (409 `batch_not_voidable` con los equipos por código de etiqueta), motivo obligatorio, auditado con empresa, idempotente. Una carga anterior sin `unit_ids` → 409 `batch_unknown_units`.
+- **Inventario inicial tras anular:** la anulación de un ingreso de inventario inicial (`CORRECTION_NEGATIVE` de `stock_unit_void` que apunta a un `INITIAL_STOCK` del estante) ya no cierra el inventario inicial (`receipt_services._closes_the_opening`); cualquier otra línea sí. Decisión a confirmar por el propietario.
+- **Antes/después:** `GET …/units/import/<id>/report/?as=csv|xlsx`.
+- **Comprobación:** `manage.py check_unit_stock [--company]` (sólo lectura; 0 cuadra, 2 diferencias) y `GET /api/admin/inventory/units/reconciliation/` («Conciliación», `inventory.view`, sucursales del usuario).
+- **busy:** `inventory-adjust` y la aplicación de la carga de stock por cantidad responden 409 `busy` ante un bloqueo mutuo.
+- **Asistente:** reconoce las dos plantillas por su hoja.
+- **Revisión de #409:**
+  - La pantalla pide siempre la línea del archivo («Nuevos», «Seminuevos» o «Ambos» para la combinada) y la envía.
+  - En el servidor, una fila hallada por modelo sin línea dicha (ni plantilla, ni pantalla, ni «Línea») que trae datos de seminuevo es error: nunca entra como nueva por defecto.
+  - Un equipo en una transferencia en borrador no se anula (ni por lote ni solo).
+  - `GET …/void/` previsualiza la anulación: equipos, bloqueos, inspeccionados, publicados, con fotos y largo máximo del motivo. Con trabajo hecho, el POST exige `confirm_used` (409 `confirm_used_ready`).
+  - El historial admite `?status=applied`.
+- **Panel:** botones de las dos plantillas, «Antes y después», «Anular esta carga» (también en «Cargas registradas»), «Conciliación de equipos». Las respuestas no llevan `unit_ids`.
+- **Pruebas:** `test_stock_load` (54, incluido el ensayo completo con datos sintéticos, una venta de un nuevo y de dos seminuevos); Jest `stock-unit-import`, `unit-stock-reconciliation`, `recent-unit-loads`.
+
+## 2026-11-24 — VARIANT-SAFE-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0188`
+
+Eliminar, archivar y desactivar variantes sin perder datos. Rama `feat/variant-safe-01`; `0188` depende de `0187_used_unit_readiness` (#403, ya en master).
+
+- **Eliminar:** `DELETE /api/admin/products/<pk>/` con `{reason, confirm_name}`; exige `products.manage` + `products.delete` (nueva, a quien tiene `company.manage`). Sólo si nada depende de la variante; sus opciones y códigos se borran explícitamente y la auditoría guarda la foto (nombre, clave, opciones, precio, códigos). La auditoría previa queda intacta (no tiene FK).
+- **Vista previa:** `GET …/deletion-check/` → `{deletable, archivable, blockers[{code,count,label}], stock, can_delete, can_archive}`; otra empresa = 404.
+- **Archivar / desarchivar:** `POST …/archive/` y `…/unarchive/` con motivo, auditados. Archivada = inactiva (CHECK `archived_product_is_inactive`), fuera de tienda, caja, cargas, registro guiado, resolutores y del conjunto «existente» de la paleta («Archivada» en la matriz; estado `variante_archivada` en el resolutor). Con stock → 409 `stock_available` con cifras. Desarchivar la deja inactiva.
+- **Sin cascadas:** `ProductImage`, `CartItem`, `Review`, `ProductBarcode`, `AccessoryCompatibility.accessory`, `SupplierProductRef` pasan a PROTECT; `Product.product_model` SET_NULL → PROTECT. `ProductVariantOption` sigue CASCADE a propósito (lo borra el servicio). Sin SQL: Django aplica `on_delete`.
+- **Guardia:** `test_variant_safe` falla si aparece una relación hacia `Product` sin clasificar en `variant_lifecycle.RELATIONS`. Admin de Django sin borrar productos.
+- **`ProductModel.is_active`** (db_default true): un modelo inactivo sale de la tienda pública.
+- **Revisión de #407:** archivar también se niega con stock por cantidad en traslado; un equipo no se mueve a una variante archivada (sí a una sólo desactivada); la carga de stock por Excel la rechaza al previsualizar y al aplicar (bajo el candado del producto); la recepción y «Llegó el equipo» deciden sobre la fila bloqueada; la propuesta de catálogo la muestra «archivada» y la cuenta.
+- **Revisión de #407 (2.ª):** «Llegó el equipo» bloquea la variante DESPUÉS de las líneas de pedido que la esperan (línea → producto, como la entrega `receive_line`); el registro guiado bloquea la variante existente antes de recibir y relee si está archivada.
+- **Compromiso conocido:** la recepción de mercadería (también la que no es de apertura) ahora bloquea primero sus productos y luego los estantes. Un escritor que toma primero el estante y después el producto (p. ej. una carga de stock o una venta sobre la misma sucursal y el mismo producto en el mismo instante) puede chocar con ella en un bloqueo mutuo: PostgreSQL aborta una de las dos, se deshace entera y responde 409 «busy»; nada queda a medias. Se acepta a cambio de que una variante archivada nunca reciba stock.
+- **Panel:** en el editor del modelo, Desactivar/Activar, Archivar/Desarchivar y Eliminar (con `products.delete`), con diálogo que lee `deletion-check`.
+
 ## 2026-11-24 — SUPPLY-WEEKLY-01 · semana de listas de proveedor, ofertas no mencionadas y combinación válida sin variante (rama, sin desplegar)
 
 Rama `feat/supply-weekly-01` sobre #402 (ya en `master`), PR abierto, **sin fusionar ni desplegar**, **sin migraciones**.

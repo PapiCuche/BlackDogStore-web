@@ -1572,7 +1572,12 @@ def _preview_products(*, company, actor, upload, filename, sheet_name, header_ro
                 model_class = 'model_new_variant'
                 holder = device_catalog.find_variant(company, spec)
                 key = (spec['model_id'], spec['condition_line'], spec['variant_key'])
-                if holder is not None and holder.pk != product_id:
+                if holder is not None and holder.archived_at is not None:
+                    # VARIANT-SAFE-01: an archived variant is never loaded into, nor reactivated, nor re-created.
+                    from .variant_lifecycle import archived_refusal
+
+                    errors.append(archived_refusal(holder))
+                elif holder is not None and holder.pk != product_id:
                     errors.append(f'«{holder.name}» ya es esa variante de «{spec["model_name"]}».')
                     flags.add('ambiguous')
                 elif key in seen_variants:

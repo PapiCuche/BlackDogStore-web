@@ -76,9 +76,11 @@ class MigrationTest(TestCase):
         # preset lives with the last one (`tests.py`, preset chain).
         later = importlib.import_module('store.migrations.0161_document_copy_capability')
         self.assertEqual(self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES), later.ADMIN_PREVIOUS)
-        # USED-READY-01 (0187) is the node after it, and the last one.
-        last = importlib.import_module('store.migrations.0187_used_unit_readiness')
-        self.assertEqual(later.ADMIN_PREVIOUS | set(later.NEW_CAPABILITIES), last.ADMIN_PREVIOUS)
+        # USED-READY-01 (0187) is the node after it; VARIANT-SAFE-01 (0188) follows and is the last one.
+        used = importlib.import_module('store.migrations.0187_used_unit_readiness')
+        self.assertEqual(later.ADMIN_PREVIOUS | set(later.NEW_CAPABILITIES), used.ADMIN_PREVIOUS)
+        last = importlib.import_module('store.migrations.0188_variant_safe')
+        self.assertEqual(used.ADMIN_PREVIOUS | set(used.NEW_CAPABILITIES), last.ADMIN_PREVIOUS)
         self.assertEqual(last.ADMIN_PREVIOUS | set(last.NEW_CAPABILITIES), DEFAULT_ADMIN_CAPABILITY_CODES)
         self.assertNotIn('from store.capabilities import', inspect.getsource(self.module))
 
@@ -98,10 +100,13 @@ class LegacyAdminKeepsEverythingItHadTest(TestCase):
         for role in (UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN):
             held = LEGACY_ROLE_CAPABILITIES[role]
             self.assertEqual(sorted(before - held), [], role)
-            # …plus what later nodes added for every administrator (0161, SALES-EMAIL-03; 0187, USED-READY-01).
+            # …plus what later nodes added for every administrator (0161, SALES-EMAIL-03; 0187, USED-READY-01;
+            # 0188, VARIANT-SAFE-01).
             later = importlib.import_module('store.migrations.0161_document_copy_capability')
-            last = importlib.import_module('store.migrations.0187_used_unit_readiness')
-            self.assertEqual(held - before, DEFAULTS | set(later.NEW_CAPABILITIES) | set(last.NEW_CAPABILITIES), role)
+            used = importlib.import_module('store.migrations.0187_used_unit_readiness')
+            last = importlib.import_module('store.migrations.0188_variant_safe')
+            self.assertEqual(held - before, DEFAULTS | set(later.NEW_CAPABILITIES) | set(used.NEW_CAPABILITIES)
+                             | set(last.NEW_CAPABILITIES), role)
 
     def test_only_new_finance_codes_are_withheld(self):
         withheld = EXPLICIT_GRANT_CODES - {'inventory.counts.approve_own'}  # DEC-INV-06, not finance

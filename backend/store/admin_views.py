@@ -72,6 +72,7 @@ _MAX_PAGE_SIZE = 100
 CAP_PRODUCTS_VIEW = 'products.view'
 CAP_PRODUCTS_MANAGE = 'products.manage'
 from . import label_batches
+from .db_busy import answers_busy
 from . import order_fulfillment_services as fulfillment
 from . import order_shortfall
 from . import receipt_coverage
@@ -860,6 +861,11 @@ def write_product_fields(company, product, data):
     if ser.validated_data.get('is_published_online') and not product.is_published_online and product.is_pending_draft:
         raise serializers.ValidationError({'is_published_online': [ErrorDetail(
             product_publication.PROBLEM_LABELS['draft_pending'], code='draft_pending')]})
+    # VARIANT-SAFE-01: an archived variant comes back only through the audited unarchive (the database refuses an
+    # archived row that is active, `archived_product_is_inactive`); said here as a field error, not a 500.
+    if ser.validated_data.get('is_active') and product.archived_at is not None:
+        raise serializers.ValidationError({'is_active': [ErrorDetail(
+            'Esta variante está archivada: desarchívala antes de activarla.', code='archived')]})
     # company is never in the payload, so a product cannot be moved between
     # tenants by editing an id.
     product = ser.save(company=company)
@@ -869,16 +875,23 @@ def write_product_fields(company, product, data):
 
 class AdminProductDetailView(APIView):
     """
-    GET   /api/admin/products/{pk}/ — detail. CanViewAdminProducts.
-    PATCH /api/admin/products/{pk}/ — edit. CanManageProducts.
+    GET    /api/admin/products/{pk}/ — detail. CanViewAdminProducts.
+    PATCH  /api/admin/products/{pk}/ — edit. CanManageProducts.
+    DELETE /api/admin/products/{pk}/ — VARIANT-SAFE-01: a variant without history, for good
+           (`products.manage` + `products.delete`, reason and typed name). `variant_lifecycle_views`.
     """
 
     permission_classes = [permissions.IsAuthenticated]
 
     def get_throttles(self):
-        if self.request.method == 'PATCH':
+        if self.request.method in ('PATCH', 'DELETE'):
             return [AdminProductWriteThrottle()]
         return [AdminProductsThrottle()]
+
+    def delete(self, request, pk):
+        from .variant_lifecycle_views import delete_product
+
+        return delete_product(request, pk)
 
     def get(self, request, pk):
         company, error = _company_context(request, CAP_PRODUCTS_VIEW, _LEGACY_VIEW_CATALOG_ROLES)
@@ -1121,6 +1134,7 @@ class AdminProductInventoryAdjustView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminInventoryAdjustThrottle]
 
+    @answers_busy       # INV-LOAD-02: a deadlock with another entry on the same shelf is 409 `busy`, never a 500
     def post(self, request, pk):
         company, error = _company_context(
             request, CAP_INVENTORY_ADJUST, _LEGACY_ADJUST_INVENTORY_ROLES,
