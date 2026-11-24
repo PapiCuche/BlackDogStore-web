@@ -9,10 +9,10 @@ Hallazgo de la auditoría sobre `e5e1e70`, verificado en el código. Desde la ca
 
 - **Lectura:** `configurations` dice, por combinación, qué líneas esperan un equipo (`pending_order_lines`, cliente enmascarado) y `can.receive_on_order`.
 - **Caja:** con líneas esperando pregunta «Es del pedido #N (cliente)» (manda `order_item`; el equipo no entra a la venta) o «Ingresar como stock».
-- **Servidor:** stock con líneas esperando en esa sucursal → 409 `pending_order_line`, salvo `confirm_stock` + motivo, auditado.
+- **Servidor:** stock con líneas esperando en esa sucursal → 409 `pending_order_line`, salvo `confirm_stock` + motivo, auditado. La guarda bloquea esas líneas (`FOR UPDATE`) para serializarse con una entrega simultánea (revisión de #400).
 - **Correcciones:** la respuesta nombra la sucursal donde entró el equipo y `method` dice si se leyó con lector o a mano.
 - **Decisión:** ADR `docs/adr-catalog-reference.md` D-F-9 (revisada) y D-F-11.
-- **Pruebas:** `test_pos_order_arrival` (18) y `test_pos_quick_device`; Jest `pos-device-picker` (22). Se añadió un caso a `e2e/pos-quick-device.spec.ts`, **sin ejecutar** (Playwright no se corrió en esta sesión).
+- **Pruebas:** `test_pos_order_arrival` (20, con una carrera en `TransactionTestCase`) y `test_pos_quick_device`; Jest `pos-device-picker` (28). Se añadió un caso a `e2e/pos-quick-device.spec.ts`, **sin ejecutar** (Playwright no se corrió en esta sesión).
 
 ## 2026-11-23 — P0 coordinación de producción · LABEL-04 con autorización no acreditada; un solo ejecutor; release del #396 ensayada · producción SIN CAMBIOS por mi parte
 
