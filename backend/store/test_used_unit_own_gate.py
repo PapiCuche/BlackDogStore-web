@@ -236,6 +236,33 @@ class PriceRemovedWhileHeldTest(SaleShop, TestCase):
         with self.assertRaises(checkout_services.CheckoutError) as caught:
             checkout_services.start_payment_attempt(order, credentials=None)
         self.assertEqual((caught.exception.code, caught.exception.status_code), ('unit_withdrawn', 409))
+        # The order cannot be paid any more: it fails (as a payment that could not open), and the withdrawn device
+        # goes back to the shelf at once, with its Kardex line — it is not left reserved until the hold runs out.
+        order.refresh_from_db()
+        self.assertEqual(order.status, Order.Status.FAILED)
+        self.used_a.refresh_from_db()
+        self.assertEqual((self.used_a.status, self.used_a.hold_key, self.used_a.hold_order_id), ('available', '', None))
+        self.assertTrue(AdminAuditLog.objects.filter(action='stock_unit_web_hold_released',
+                                                     target_id=str(self.used_a.pk), company=self.company).exists())
+        assert_shelf_matches_units(self, self.used128, self.branch)
+
+    def test_a_withdrawn_device_fails_its_order_but_the_sibling_in_the_same_cart_is_bought_again(self):
+        holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
+                   unit_public_id=str(self.used_b.public_id))
+        order = self.checkout()
+        self.assertEqual(order.items.count(), 2)
+        self.remove_price(self.used_a)
+        with self.assertRaises(checkout_services.CheckoutError):
+            checkout_services.start_payment_attempt(order, credentials=None)
+        self.used_b.refresh_from_db()
+        # The sibling stays this cart's, as after any payment that could not open.
+        self.assertEqual((self.used_b.status, self.used_b.hold_key), ('reserved', holds.key_of('carrito-a')))
+        again = self.checkout()
+        self.assertEqual([item.stock_unit_id for item in again.items.all()], [self.used_b.pk])
+        self.pay(again)
+        self.used_b.refresh_from_db()
+        self.assertEqual((self.used_b.status, self.used_b.order_id), ('sold', again.pk))
+        assert_shelf_matches_units(self, self.used128, self.branch)
 
     def test_if_the_money_arrives_anyway_the_device_is_not_sold_and_the_line_is_flagged(self):
         order = self.checkout()
@@ -368,6 +395,50 @@ class SetAsideAndTillCountTest(UsedBase):
             inventory_services.create_stock_movement(
                 branch=self.branch_a, product_id=self.used.pk, movement_type=StockMovement.SALE_EXIT, quantity=1,
                 reason='Venta web', actor=self.staff, order=self.order(), assign_units_for_sale=True)
+        self.oldest.refresh_from_db()
+        self.assertEqual(self.oldest.status, 'available')
+        assert_shelf_matches_units(self, self.used, self.branch_a)
+
+    def paid_with_one_set_aside(self):
+        order = self.order()
+        Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid=True)
+        order.refresh_from_db()
+        inventory_services.create_stock_movement(
+            branch=self.branch_a, product_id=self.used.pk, movement_type=StockMovement.SALE_EXIT, quantity=1,
+            reason='Venta web', actor=self.staff, order=order, assign_units_for_sale=True)
+        return order
+
+    def test_the_hand_over_does_not_swap_in_an_unpriced_shelf_device(self):
+        from store import unit_identification
+
+        order = self.paid_with_one_set_aside()
+        self.priced.refresh_from_db()
+        self.assertEqual((self.priced.status, self.priced.order_id), ('sold', order.pk))
+        # Approved but without a price: the till would refuse it, the payment never sets it aside — nor does the
+        # hand-over take it in place of the priced one.
+        for attempt in (unit_identification.candidate_for_order, unit_identification.identify_for_order):
+            with self.subTest(attempt.__name__), self.assertRaises(unit_identification.UnitIdentificationError) as caught:
+                kwargs = {'actor': self.staff} if attempt is unit_identification.identify_for_order else {}
+                attempt(order=order, code=IMEI_A, method='scanner', **kwargs)
+            self.assertEqual((caught.exception.code, caught.exception.http_status), ('no_price', 409))
+            self.assertIn('precio', caught.exception.detail)
+        self.oldest.refresh_from_db()
+        self.priced.refresh_from_db()
+        self.assertEqual((self.oldest.status, self.priced.status, self.priced.order_id), ('available', 'sold', order.pk))
+        # The one set aside is still named as always.
+        unit_identification.identify_for_order(order=order, code=IMEI_B, method='scanner', actor=self.staff)
+        assert_shelf_matches_units(self, self.used, self.branch_a)
+
+    def test_the_hand_over_after_a_return_does_not_take_an_unpriced_shelf_device(self):
+        from store import unit_identification
+
+        order = self.paid_with_one_set_aside()
+        # The device set aside came back before the hand-over (its order still waits for one): the second exit
+        # takes one from the shelf — never the unpriced one.
+        units.return_unit(StockUnit.objects.get(pk=self.priced.pk), reason='Volvió antes de entregarse')
+        with self.assertRaises(unit_identification.UnitIdentificationError) as caught:
+            unit_identification.identify_for_order(order=order, code=IMEI_A, method='scanner', actor=self.staff)
+        self.assertEqual(caught.exception.code, 'no_price')
         self.oldest.refresh_from_db()
         self.assertEqual(self.oldest.status, 'available')
         assert_shelf_matches_units(self, self.used, self.branch_a)

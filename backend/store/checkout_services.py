@@ -841,20 +841,33 @@ def _refuse_withdrawn_units(order: Order) -> None:
     longer approved: `used_unit_services.payment_refusal`) is not charged for: the payment is not opened, so no money
     is captured for a device the payment would then refuse to sell. Only the order's own devices are read; a sibling
     of the same variant blocks nothing.
+
+    Unlike «not now» (a gateway that changed, payments paused), this order can never be paid as it is: it FAILS, as
+    a payment that could not open does (`mark_payment_failure`), and the withdrawn devices go back to the shelf at
+    once (`unit_hold_services.release_withdrawn_from_order`). The order's other devices stay the cart's, as after any
+    failed payment, so the buyer checks out again without the withdrawn one.
     """
+    from . import unit_hold_services
     from .models import StockUnit
     from .used_unit_services import payment_refusal
 
+    withdrawn = []
     for unit in StockUnit.objects.filter(
         pk__in=order.items.exclude(stock_unit=None).values('stock_unit_id'),
     ).select_related('product').order_by('pk'):
         refusal = payment_refusal(unit)
         if refusal:
-            raise CheckoutError(
-                f'Un equipo de este pedido ({unit.product.name}) {refusal}: ya no se vende. '
-                'Revisa tu carrito y vuelve a comprar.',
-                status_code=409, code='unit_withdrawn',
-            )
+            withdrawn.append((unit, refusal))
+    if not withdrawn:
+        return
+    unit, refusal = withdrawn[0]
+    detail = (f'Un equipo de este pedido ({unit.product.name}) {refusal}: ya no se vende. '
+              'Revisa tu carrito y vuelve a comprar.')
+    with transaction.atomic():
+        mark_payment_failure(order, detail)
+        for unit, _refusal in withdrawn:
+            unit_hold_services.release_withdrawn_from_order(unit, order)
+    raise CheckoutError(detail, status_code=409, code='unit_withdrawn')
 
 
 def _open_attempt(order: Order, credentials, *, provider: str, transaction_id: str,

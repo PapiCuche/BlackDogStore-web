@@ -120,19 +120,34 @@ def till_sellable_units(branch, product):
                                     status=StockUnit.Status.AVAILABLE).filter(till_sellable_q())
 
 
-def payment_refusal(unit) -> str:
+#: USED-UNIT-OWN-GATE-01 — the 409 of a used device without its own price on a path that would sell or hand it over.
+NO_PRICE = 'no_price'
+
+
+def sale_refusal(unit) -> str:
     """
-    '' when a web payment may still sell this used device; otherwise why not, without amounts. Price and inspection
-    are what make the sale itself wrong (it is not for sale at all); publication and photos are the shop window's,
-    and a device already bound to a checked-out order is left to its payment (`release_withdrawn`).
+    THE ONE PREDICATE of «may this used device leave in a sale?» — '' when it may, else the code: `NOT_INSPECTED`
+    (inspection not approved) or `NO_PRICE` (no price of its own > 0). The same as `till_sellable_q`, for one device in
+    hand: the till, the payment and the hand-over of an order ask it, so the three agree. Publication and photos are
+    the shop window's, not the sale's. A new device: always ''.
     """
     if not is_used(unit):
         return ''
-    if not has_usable_price(unit.sale_price):
-        return 'ya no tiene precio de venta'
     if unit.inspection_status != StockUnit.Inspection.APPROVED:
-        return 'ya no tiene la inspección aprobada'
+        return NOT_INSPECTED
+    if not has_usable_price(unit.sale_price):
+        return NO_PRICE
     return ''
+
+
+def payment_refusal(unit) -> str:
+    """
+    '' when a web payment may still sell this used device (`sale_refusal`); otherwise why not, as the end of a
+    sentence and without amounts. A device already bound to a checked-out order is left to its payment
+    (`release_withdrawn`), which asks this.
+    """
+    return {NOT_INSPECTED: 'ya no tiene la inspección aprobada',
+            NO_PRICE: 'ya no tiene precio de venta'}.get(sale_refusal(unit), '')
 
 
 def offerable_q() -> Q:
