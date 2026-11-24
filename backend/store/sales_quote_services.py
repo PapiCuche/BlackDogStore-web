@@ -366,12 +366,17 @@ def _compose(*, actor, company, data, branch=None, previous=None) -> dict:
     `previous` (the quote being edited or revised): its seller and its manual discount were decided by
     somebody allowed to when it was composed. Kept as they are, they need no authority again; changed,
     they need the caller's own (`sales.pos.assign_seller`, `sales.discounts.apply`).
+
+    A MANUAL DISCOUNT COVERS THE BASKET IT WAS DECIDED ON. It is inherited (and stays credited to whoever
+    decided it) only when the discount, the lines AND the priced subtotal are all unchanged. Any other
+    change under it needs `sales.discounts.apply` from the editor, who then becomes its authority.
     """
     if branch is None:
         try:
             branch = pos_services.resolve_pos_branch(actor, company, data.get('branch'))
         except pos_services.PosValidationError as exc:
             raise QuoteError(str(exc)) from None
+    _check_customer_active(company, data.get('customer'))
     try:
         customer = pos_services.resolve_pos_customer(company, data.get('customer'))
     except pos_services.PosValidationError as exc:
@@ -379,20 +384,32 @@ def _compose(*, actor, company, data, branch=None, previous=None) -> dict:
     lines = _raw_lines(data.get('items'))
     discount_type, discount_value, discount_reason = _discount_spec(data)
     seller_id = data.get('seller')
+    may_discount = has_capability(actor, company, CAP_DISCOUNTS)
+    same_basket = (_same_discount_request(previous, discount_type, discount_value, discount_reason)
+                   and _same_lines(previous, lines))
     priced = price_lines(
         actor=actor, company=company, branch=branch, lines=lines,
         customer_id=customer.pk if customer else None, seller_id=seller_id,
         discount_type=discount_type, discount_value=discount_value, discount_reason=discount_reason,
         may_assign_seller=(has_capability(actor, company, CAP_ASSIGN_SELLER)
                            or _same_seller(previous, seller_id)),
-        may_apply_manual_discount=(has_capability(actor, company, CAP_DISCOUNTS)
-                                   or _same_discount_request(previous, discount_type, discount_value,
-                                                             discount_reason)),
+        may_apply_manual_discount=may_discount or same_basket,
         may_order_over_stock=has_capability(actor, company, CAP_ORDERS_MANAGE),
     )
+    manual = priced['discount']['source'] == DiscountSource.MANUAL
+    inherited = manual and same_basket and priced['subtotal'] == previous.subtotal
+    if manual and not may_discount and not inherited:
+        raise QuotePermissionError(
+            'El descuento manual se autorizó para otras líneas o para otros precios: cambiarlo o cambiar lo que '
+            'cubre necesita permiso de descuentos. Quita el descuento o pide a quien lo tiene que revise la '
+            'cotización.')
+    money = _money_fields(priced, discount_type=discount_type, discount_value=discount_value,
+                          discount_reason=discount_reason, actor=actor)
+    if inherited:
+        money['discount_authorized_by'] = previous.discount_authorized_by
     seller = priced['seller'] if getattr(priced['seller'], 'is_authenticated', False) else None
     return {
-        'branch': branch, 'lines': lines, 'priced': priced,
+        'branch': branch, 'lines': lines, 'priced': priced, 'inherited_discount': inherited,
         'fields': {
             'branch': branch,
             **_customer_fields(company, data, customer),
@@ -401,10 +418,51 @@ def _compose(*, actor, company, data, branch=None, previous=None) -> dict:
             'valid_until': _validity(data.get('valid_until')),
             'conditions': _text(data.get('conditions'), MAX_TEXT, 'Las condiciones'),
             'notes': _text(data.get('notes'), MAX_TEXT, 'Las notas internas'),
-            **_money_fields(priced, discount_type=discount_type, discount_value=discount_value,
-                            discount_reason=discount_reason, actor=actor),
+            **money,
         },
     }
+
+
+def _basket(lines) -> list[tuple] | None:
+    """A basket as comparable data: products merged like the till, one entry per named device."""
+    merged: dict = {}
+    try:
+        for line in lines:
+            if line.get('unit'):
+                merged[('unit', int(line['unit']))] = (int(line['product']), 1, False)
+                continue
+            key = ('product', int(line['product']))
+            _product, quantity, _on_order = merged.get(key, (key[1], 0, bool(line.get('on_order'))))
+            merged[key] = (key[1], quantity + int(line['quantity']), bool(line.get('on_order')))
+    except (TypeError, ValueError, KeyError):
+        return None
+    return sorted(merged.items())
+
+
+def _same_lines(previous, lines) -> bool:
+    """Whether `lines` are the basket `previous` was quoted (and its discount decided) on."""
+    if previous is None:
+        return False
+    asked = _basket(lines)
+    return asked is not None and asked == _basket(_lines_of(previous))
+
+
+CUSTOMER_INACTIVE = ('El cliente de esta cotización está archivado en la ficha de clientes: revisa la '
+                     'cotización para elegir otro cliente o quitarlo, o reactívalo en Clientes.')
+
+
+def _check_customer_active(company, customer_id) -> None:
+    """A CRM customer archived since the quote was made is said plainly (409 `customer_inactive`)."""
+    from .models import Customer
+
+    if customer_id in (None, ''):
+        return
+    try:
+        pk = int(customer_id)
+    except (TypeError, ValueError):
+        return
+    if Customer.objects.filter(company=company, pk=pk, is_active=False).exists():
+        raise QuoteConflict(CUSTOMER_INACTIVE, code='customer_inactive')
 
 
 def _same_seller(previous, seller_id) -> bool:
@@ -515,10 +573,6 @@ def update_quote(*, actor, company, quote, data, request=None) -> SalesQuote:
         composed = _compose(actor=actor, company=company, data=body, branch=branch, previous=locked)
         for name, value in composed['fields'].items():
             setattr(locked, name, value)
-        if composed['fields']['discount_source'] != DiscountSource.MANUAL:
-            locked.discount_authorized_by = None
-        elif _same_manual_discount(quote, composed['fields']):
-            locked.discount_authorized_by = quote.discount_authorized_by
         locked.updated_by = actor
         locked.save()
         locked.items.all().delete()
@@ -526,13 +580,6 @@ def update_quote(*, actor, company, quote, data, request=None) -> SalesQuote:
         _audit(actor=actor, company=company, action='sales_quote_updated', quote=locked, request=request,
                total=str(locked.total))
     return locked
-
-
-def _same_manual_discount(quote, fields) -> bool:
-    return (quote.discount_source == DiscountSource.MANUAL
-            and quote.discount_type == fields['discount_type']
-            and quote.discount_value == fields['discount_value']
-            and quote.discount_reason == fields['discount_reason'])
 
 
 def revise_quote(*, actor, company, quote, data=None, request=None) -> SalesQuote:
@@ -556,8 +603,6 @@ def revise_quote(*, actor, company, quote, data=None, request=None) -> SalesQuot
         locked.superseded_at = now
         locked.save(update_fields=['status', 'superseded_at', 'updated_at'])
         fields = composed['fields']
-        if fields['discount_source'] == DiscountSource.MANUAL and _same_manual_discount(locked, fields):
-            fields = {**fields, 'discount_authorized_by': locked.discount_authorized_by}
         new = SalesQuote(company=company, number=locked.number, sequence_value=locked.sequence_value,
                          revision=locked.revision + 1, origin=SalesQuote.ORIGIN_REVISION, source_quote=locked,
                          created_by=actor, updated_by=actor, **fields)
@@ -576,11 +621,13 @@ def duplicate_quote(*, actor, company, quote, request=None) -> SalesQuote:
     body = _body_of(quote)
     body['valid_until'] = None
     body['seller'] = None          # whoever copies it offers it
-    copy = create_quote(actor=actor, company=company, data=body, request=None)
-    SalesQuote.objects.filter(pk=copy.pk).update(origin=SalesQuote.ORIGIN_DUPLICATE, source_quote=quote)
-    copy.refresh_from_db()
-    _audit(actor=actor, company=company, action='sales_quote_duplicated', quote=copy, request=request,
-           source_id=quote.pk, source_number=quote.label)
+    # ONE transaction: the copy, its number, its origin and its audit happen together or not at all.
+    with transaction.atomic():
+        copy = create_quote(actor=actor, company=company, data=body, request=None)
+        SalesQuote.objects.filter(pk=copy.pk).update(origin=SalesQuote.ORIGIN_DUPLICATE, source_quote=quote)
+        copy.refresh_from_db()
+        _audit(actor=actor, company=company, action='sales_quote_duplicated', quote=copy, request=request,
+               source_id=quote.pk, source_number=quote.label)
     return copy
 
 
@@ -727,7 +774,14 @@ def _sale_items(quote, units: dict[int, list[dict]]) -> list[dict]:
             if item.supply_reason:
                 entry['supply_reason'] = item.supply_reason
         named = units.get(item.pk)
-        if named:
+        if named and item.stock_unit_id:
+            # The used device the customer was quoted IS the one sold: another one is another offer.
+            if [u.get('id') if isinstance(u, dict) else None for u in named] != [item.stock_unit_id]:
+                raise QuoteConflict(
+                    f'«{item.description}»: se cotizó un equipo concreto y es ése el que se vende. Para vender '
+                    'otro, revisa la cotización.', code='quoted_device')
+            entry['units'] = named
+        elif named:
             entry['units'] = named
         elif item.stock_unit_id:
             # The device the customer was offered, chosen by hand from the quote.
@@ -778,6 +832,7 @@ def convert_quote(*, actor, company, quote, data, idempotency_key, request=None)
         except pos_services.PosValidationError:
             raise QuotePermissionError('No tienes acceso a la sucursal de esta cotización.') from None
         _check_quoted_units(locked)
+        _check_customer_active(company, locked.customer_id)
         items = _sale_items(locked, _conversion_units(locked, data.get('units')))
 
         # The quote's manual discount was decided (and authorised) when it was composed.
@@ -824,6 +879,11 @@ def convert_quote(*, actor, company, quote, data, idempotency_key, request=None)
                 expected=Decimal(str(locked.total)), current=exc.current, priced=exc.priced,
                 can_keep_quoted=_may_keep_quoted(actor, company, locked, exc.priced),
             ) from None
+        except pos_services.PosPromotionConflict:
+            raise QuoteConflict(
+                'Hoy aplica una promoción automática a estas líneas y no se combina con el descuento manual de la '
+                'cotización: revisa la cotización sin el descuento (la promoción se aplica sola) y vuelve a '
+                'convertirla.', code='promotion_conflict') from None
         except pos_services.PosKeyReserved as exc:
             raise QuoteConflict(str(exc), code='key_reserved') from None
         except pos_services.PosIdempotencyConflict as exc:

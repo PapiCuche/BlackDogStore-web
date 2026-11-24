@@ -657,3 +657,149 @@ class QuoteDocumentTest(QuoteBase):
             self.assertIn(SALES_QUOTE_TITLE, text)
             self.assertIn(document_preview.SAMPLE_NUMBER, text)
             self.assertNotIn('000000000000001', text)       # the sample device is masked too
+
+
+# ---------------------------------------------------------------------------
+# Review of 5e2105d2 — discount authority, rollback of the print queue, conversion edges
+# ---------------------------------------------------------------------------
+
+class QuoteDiscountAuthorityTest(QuoteBase):
+    """A manager's discount covers the basket it was decided on — not whatever lines somebody puts under it."""
+
+    def discounted(self, **over):
+        return self.create(client=self.jefe, discount_type='amount', discount_value='10', discount_reason='Cliente',
+                           **over)
+
+    def test_a_seller_cannot_change_the_lines_under_a_managers_discount(self):
+        quote = self.discounted()
+        res = self.client.patch(f"{URL}{quote['id']}/", {'items': [{'product': self.cable.pk, 'quantity': 9}]},
+                                format='json')
+        self.assertEqual(res.status_code, 403, res.content)
+        stored = SalesQuote.objects.get(pk=quote['id'])
+        self.assertEqual((stored.total, stored.items.get().quantity), (Decimal('90.00'), 2))
+
+    def test_nor_in_a_revision(self):
+        quote = self.discounted()
+        self.act(quote['id'], 'approve')
+        self.act(quote['id'], 'send')
+        res = self.client.patch(f"{URL}{quote['id']}/", {'items': [{'product': self.case.pk, 'quantity': 5}]},
+                                format='json')
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertEqual(SalesQuote.objects.filter(number=quote['number']).count(), 1)
+        self.assertEqual(SalesQuote.objects.get(pk=quote['id']).status, 'sent')
+
+    def test_nor_when_the_prices_under_it_moved(self):
+        quote = self.discounted()
+        Product.objects.filter(pk=self.cable.pk).update(price=Decimal('80.00'))
+        res = self.client.patch(f"{URL}{quote['id']}/", {}, format='json')
+        self.assertEqual(res.status_code, 403, res.content)
+
+    def test_the_same_basket_keeps_the_managers_authority(self):
+        quote = self.discounted()
+        res = self.client.patch(f"{URL}{quote['id']}/", {'conditions': 'Entrega mañana'}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(res.json()['discount_authorized_by'], 'sq_jefe')
+
+    def test_whoever_may_discount_and_changes_the_basket_becomes_its_authority(self):
+        quote = self.discounted()
+        editor = self.only_caps('company.view', 'sales.quotes.view', 'sales.quotes.manage', 'sales.discounts.apply',
+                                slug='sq-editor-dscto')
+        res = editor.patch(f"{URL}{quote['id']}/", {'items': [{'product': self.cable.pk, 'quantity': 3}]},
+                           format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual((res.json()['total'], res.json()['discount_authorized_by']), ('140.00', 'ip1_caja'))
+
+
+class QuotePrintRollbackTest(QuoteBase):
+    """
+    A release before SALES-QUOTE-01 reads `job.order` of every ticket it claims: a quote ticket (no order) would
+    stop its branch's queue. Before rolling the code back, `cancel_sales_quote_print_jobs --apply`.
+    """
+
+    def queue(self, key):
+        printer = Printer.objects.filter(company=self.company, branch=self.branch_a).first() or Printer.objects.create(
+            company=self.company, branch=self.branch_a, name='Caja', host='192.168.1.50', port=9100)
+        quote = self.approved()
+        res = self.client.post(f"{URL}{quote['id']}/print/", {'printer': printer.pk}, format='json',
+                               HTTP_IDEMPOTENCY_KEY=key)
+        self.assertEqual(res.status_code, 201, res.content)
+        return PrintJob.objects.get(pk=res.json()['id'])
+
+    def test_the_command_lists_then_cancels_only_live_quote_tickets(self):
+        pending = self.queue('sq-rollback-0001')
+        printed = self.queue('sq-rollback-0002')
+        PrintJob.objects.filter(pk=printed.pk).update(status=PrintJob.Status.PRINTED)
+        out = StringIO()
+        call_command('cancel_sales_quote_print_jobs', stdout=out)
+        self.assertIn('1', out.getvalue())
+        self.assertEqual(PrintJob.objects.get(pk=pending.pk).status, PrintJob.Status.PENDING)   # a dry run
+        call_command('cancel_sales_quote_print_jobs', '--apply', stdout=StringIO())
+        self.assertEqual(PrintJob.objects.get(pk=pending.pk).status, PrintJob.Status.CANCELLED)
+        self.assertEqual(PrintJob.objects.get(pk=printed.pk).status, PrintJob.Status.PRINTED)
+        self.assertTrue(AdminAuditLog.objects.filter(action='sales_quote_print_jobs_cancelled_before_rollback',
+                                                     company=self.company).exists())
+
+    def test_the_migration_says_how_to_roll_back(self):
+        import inspect
+
+        self.assertIn('cancel_sales_quote_print_jobs --apply', inspect.getsource(sales_quote_migration()))
+
+
+class QuoteConvertEdgesTest(QuoteBase):
+    def test_a_quoted_used_device_is_the_one_sold(self):
+        from store import stock_unit_services as units
+        from store.test_stock_units import IMEI_A, IMEI_B
+        from store.used_unit_test_support import approve_all
+
+        used = Product.objects.create(
+            company=self.company, name='Equipo seminuevo', slug='equipo-seminuevo-b', price='0.00', inventory=0,
+            is_serialized=True, requires_imei=True, condition_line=Product.CONDITION_USED)
+        quoted, other = approve_all(units.receive_units(
+            branch=self.branch_a, product=used, actor=self.staff, reason='Compra',
+            units=[{'serial_number': 'USADOSQ101', 'imei': IMEI_A, 'condition': 'used', 'sale_price': '1500.00'},
+                   {'serial_number': 'USADOSQ102', 'imei': IMEI_B, 'condition': 'used', 'sale_price': '1200.00'}]),
+            self.boss)
+        quote = self.create(items=[{'product': used.pk, 'quantity': 1, 'unit': quoted.pk}])
+        self.act(quote['id'], 'approve')
+        item = quote['items'][0]['id']
+        res = self.convert(quote['id'], amount_received='2000.00', units={item: [{'id': other.pk, 'method': 'scanner'}]})
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'quoted_device'))
+        self.assertFalse(Order.objects.exists())
+
+    def test_an_inactive_crm_customer_is_said_plainly(self):
+        from store.models import Customer
+
+        customer = Customer.objects.create(company=self.company, first_name='Ana', last_name='Ruiz')
+        quote = self.approved(customer=customer.pk)
+        Customer.objects.filter(pk=customer.pk).update(is_active=False)
+        res = self.convert(quote['id'])
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'customer_inactive'))
+        self.assertIn('cliente', res.json()['detail'])
+
+    def test_a_manual_discount_meeting_a_new_promotion_asks_to_revise(self):
+        from store.tests import _c13_combo
+
+        quote = self.create(client=self.jefe, discount_type='amount', discount_value='10', discount_reason='Cliente')
+        self.act(quote['id'], 'approve')
+        _c13_combo(self.company, [(self.cable, 2)], percent=10)
+        res = self.convert(quote['id'])
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'promotion_conflict'))
+        self.assertIn('revis', res.json()['detail'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_a_failed_duplicate_leaves_nothing_behind(self):
+        quote = self.approved()
+        before = (SalesQuote.objects.count(), InternalSequence.objects.get(
+            company=self.company, document_type='sales_quote').next_value)
+        real = quotes._audit
+
+        def failing(**kwargs):
+            if kwargs['action'] == 'sales_quote_duplicated':
+                raise RuntimeError('audit down')
+            return real(**kwargs)
+
+        with patch('store.sales_quote_services._audit', side_effect=failing):
+            with self.assertRaises(RuntimeError):
+                quotes.duplicate_quote(actor=self.staff, company=self.company, quote=SalesQuote.objects.get(pk=quote['id']))
+        self.assertEqual((SalesQuote.objects.count(), InternalSequence.objects.get(
+            company=self.company, document_type='sales_quote').next_value), before)

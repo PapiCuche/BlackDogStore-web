@@ -515,6 +515,13 @@ def claim_next(agent, connections=LEGACY_CONNECTIONS, printer_ids=None, kinds=()
                 continue
             elif job.kind == PrintJob.Kind.SALES_QUOTE_TICKET:
                 pass    # SALES-QUOTE-01: sin pedido; la cotización dice en el papel su estado
+            elif job.order is None:
+                # Un ticket sin pedido de un tipo que esta versión no conoce (p. ej. escrito por una
+                # versión posterior): se cancela en vez de romper la cola de todo el local.
+                job.status = PrintJob.Status.CANCELLED
+                job.last_error = 'Este ticket no tiene un pedido que imprimir en esta versión.'
+                job.save(update_fields=['status', 'last_error', 'updated_at'])
+                continue
             elif not _is_authoritative(job.order):
                 job.status = PrintJob.Status.CANCELLED
                 job.last_error = (

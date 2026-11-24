@@ -4,7 +4,13 @@ SALES-QUOTE-01 — commercial quotes (`SalesQuote`, `SalesQuoteItem`), in ONE se
 Schema, all additive: the two quote tables; `Order.source_quote` and `PrintJob.sales_quote` (nullable, `db_default`
 NULL, so the previous release keeps inserting orders and print jobs while this migrates); the `sales_quote` kind of
 `InternalSequence` and of `PrintJob` (choices only); and the print-job target constraint rewritten to admit a quote
-ticket (renamed `_v2`; every row the previous release writes satisfies it, so a code-only rollback stays valid).
+ticket (renamed `_v2`; every row the previous release writes satisfies it).
+
+CODE-ONLY ROLLBACK — ONE STEP FIRST. The previous release's print queue (`printing.services.claim_next`) reads
+`job.order` of every ticket it claims; a quote ticket has none, so one still waiting would stop its branch's
+queue. Before switching the containers back, run `manage.py cancel_sales_quote_print_jobs --apply` (without
+`--apply` it only counts them) and remove the `expire_sales_quotes` line from the crontab. This node stays
+applied: the previous release ignores the quote tables and columns, and their `db_default`s cover its inserts.
 
 Data: the three `sales.quotes.*` capabilities, by the rule of 0157/0161 — every role holding `company.manage` (an
 administrator, edited or not) gets all three; every other role holding `sales.pos.use` (the counter, `Ventas`) gets
