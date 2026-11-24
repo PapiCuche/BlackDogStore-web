@@ -50,8 +50,8 @@ El plan, la auditoría y el orden de los PR están en `docs/plan-maestro-comerci
 - las reservas web en curso.
 
 **En curso (ola 2 y adelantos de la ola 3):**
-- #404 NAV-SALES-01: menú por tareas (Productos, Proveedores, Inventario, Ventas).
-- #405 SUPPLY-WEEKLY-01: panel semanal de proveedores, con diferencias y ofertas no mencionadas.
+- #404 NAV-SALES-01 — FUSIONADO `aaffd0ea`: menú por tareas (Productos, Proveedores, Inventario, Ventas).
+- #405 SUPPLY-WEEKLY-01 — FUSIONADO `337d771e`: panel semanal de proveedores, con diferencias y ofertas no mencionadas.
 - VARIANT-SAFE-01 (`0188`): archivar y eliminar variantes de forma segura; las FK pasan a PROTECT.
 - SALES-QUOTE-01: cotizaciones (su migración se numera al fusionar).
 - Pasada completa de Playwright sobre `master`.
