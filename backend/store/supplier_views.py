@@ -5,7 +5,8 @@ supply of orders sold «bajo pedido».
     /api/admin/suppliers/                         products.view / products.manage
     /api/admin/suppliers/<pk>/
     /api/admin/suppliers/settlement/              + costs.view (read only, PAYABLES-01 hook)
-    /api/admin/supplier-offers/                   ?supplier= &product= &state=active|expired|inactive
+    /api/admin/supplier-offers/                   ?supplier= &product=
+                                                  &state=active|expired|inactive|supplier_inactive
     /api/admin/supplier-offers/<pk>/              (+ /deactivate/, /history/)
     /api/admin/suppliers/<pk>/product-refs/       GET products.view · POST products.manage
                                                   (the supplier's own codes, SUPPLIER-DEVICE-FLOW-02)
@@ -47,8 +48,9 @@ def _manage(request):
 
 
 def _error(exc: supply_services.SupplyError) -> Response:
-    code = {'not_found': status.HTTP_404_NOT_FOUND, 'ref_conflict': status.HTTP_409_CONFLICT}.get(
-        exc.code, status.HTTP_400_BAD_REQUEST)
+    code = {'not_found': status.HTTP_404_NOT_FOUND, 'ref_conflict': status.HTTP_409_CONFLICT,
+            supply_services.BELOW_COST: status.HTTP_409_CONFLICT,
+            supply_services.COST_UNSEEN: status.HTTP_409_CONFLICT}.get(exc.code, status.HTTP_400_BAD_REQUEST)
     # DEC-INV-05 — a cost from who cannot state one (an offer, a reception) is a 403, `costs_forbidden` kept.
     code = cost_services.refusal_status(exc.code, code)
     return Response(exc.body(), status=code)
@@ -71,6 +73,9 @@ def offer_state(offer, on=None) -> str:
     on = on or supply_services.today()
     if not offer.is_active:
         return 'inactive'
+    if not offer.supplier.is_active:
+        # SUPPLY-GUARDS-01: `valid_offer_q` never sells an offer of an inactive supplier; never «Vigente».
+        return 'supplier_inactive'
     if offer.valid_until < on:
         return 'expired'
     if offer.valid_from > on:
@@ -201,11 +206,15 @@ class AdminOfferListView(APIView):
         today = supply_services.today()
         state = (params.get('state') or '').strip()
         if state == 'active':
-            qs = qs.filter(is_active=True, valid_until__gte=today)
+            qs = qs.filter(is_active=True, supplier__is_active=True, valid_until__gte=today)
         elif state == 'expired':
-            qs = qs.filter(valid_until__lt=today)
+            # `offer_state`'s order: switched on with its supplier off is «supplier_inactive» first (review #402).
+            qs = qs.filter(valid_until__lt=today).exclude(is_active=True, supplier__is_active=False)
         elif state == 'inactive':
             qs = qs.filter(is_active=False)
+        elif state == 'supplier_inactive':
+            # The state `offer_state` names: switched on, its supplier off (one switched off by hand is «inactive»).
+            qs = qs.filter(is_active=True, supplier__is_active=False)
         page, meta = _paginate(qs.order_by('-valid_until', 'pk'), request)
         with_cost = user_may_view_costs(request.user, company)
         return Response({**meta, 'results': [offer_payload(row, with_cost=with_cost) for row in page]})
@@ -222,8 +231,11 @@ class AdminOfferListView(APIView):
             with transaction.atomic():
                 # SUPPLIER-DEVICE-FLOW-02: never two active offers of one supplier and variant over one day.
                 supplier_offer_import.guard_offer_overlap(company, fields)
-                offer = supply_services.create_offer(company=company, actor=request.user, request=request,
-                                                     may_view_costs=with_cost, **fields)
+                # SUPPLY-GUARDS-01: a price below the cost (or over a cost the caller cannot see) is confirmed.
+                offer = supply_services.create_offer(
+                    company=company, actor=request.user, request=request, may_view_costs=with_cost,
+                    confirm_below_cost=_flag(request.data.get('confirm_below_cost')),
+                    below_cost_reason=str(request.data.get('below_cost_reason') or ''), **fields)
         except supply_services.SupplyError as exc:
             return _error(exc)
         return Response(offer_payload(offer, with_cost=with_cost), status=status.HTTP_201_CREATED)
@@ -260,8 +272,10 @@ class AdminOfferDetailView(APIView):
         try:
             with transaction.atomic():
                 supplier_offer_import.guard_offer_overlap(company, fields, current=offer)
-                offer = supply_services.update_offer(offer, actor=request.user, request=request,
-                                                     may_view_costs=with_cost, **fields)
+                offer = supply_services.update_offer(
+                    offer, actor=request.user, request=request, may_view_costs=with_cost,
+                    confirm_below_cost=_flag(request.data.get('confirm_below_cost')),
+                    below_cost_reason=str(request.data.get('below_cost_reason') or ''), **fields)
                 if fields.get('availability_confirmed') is True and offer.availability_confirmed:
                     # B0: a person's explicit «el proveedor confirmó la disponibilidad» — the one confirmation
                     # that is not a message. Audited; no job.
@@ -297,12 +311,15 @@ class AdminOfferHistoryView(APIView):
         offer = _offer(company, pk)
         if offer is None:
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
-        rows = (AdminAuditLog.objects.filter(company=company, target_type='supplier_offer', target_id=str(offer.pk))
-                .select_related('actor').order_by('-created_at', '-pk')[:200])
+        rows = AdminAuditLog.objects.filter(company=company, target_type='supplier_offer', target_id=str(offer.pk))
+        # SUPPLY-GUARDS-01: every row, for every reader (no gap to count); a margin exception's details only to
+        # `costs.view` — it names the cost and whether the price is below it.
+        sees_costs = user_may_view_costs(request.user, company)
+        rows = rows.select_related('actor').order_by('-created_at', '-pk')[:200]
         return Response({'results': [{
             'action': row.action, 'at': row.created_at.isoformat(),
             'actor': row.actor.get_username() if row.actor_id else None,
-            'metadata': row.metadata,
+            'metadata': row.metadata if sees_costs else supply_services.audit_metadata_without_cost(row.metadata),
         } for row in rows]})
 
 
@@ -542,9 +559,13 @@ class AdminOfferImportApplyView(APIView):
                 quantity_decisions=request.data.get('quantity_decisions') or None,
                 # B0 review: the same rows under a later message date — products.manage is enough (weekly flow).
                 confirm_new_declaration=request.data.get('confirm_new_declaration') is True,
-                new_declaration_note=str(request.data.get('new_declaration_note') or ''))
+                new_declaration_note=str(request.data.get('new_declaration_note') or ''),
+                # SUPPLY-GUARDS-01: rows below their cost (or over a cost the caller cannot see).
+                confirm_below_cost=_flag(request.data.get('confirm_below_cost')),
+                below_cost_reason=str(request.data.get('below_cost_reason') or ''))
         except supplier_offer_import.OfferImportError as exc:
             code = (status.HTTP_409_CONFLICT if exc.code in ('price_confirmation_required', 'already_applied',
+                                                              supply_services.BELOW_COST, supply_services.COST_UNSEEN,
                                                               'already_applied_content', 'same_rows_new_date',
                                                               'reactivation_confirmation_required',
                                                               'quantity_decision_required',

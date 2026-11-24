@@ -372,7 +372,8 @@ class AccessoryTest(RegistrationFixture):
 class OnOrderTest(RegistrationFixture):
     def test_supplier_offer_and_bajo_pedido_without_any_own_stock(self):
         body = self.on_order()
-        body['offer']['agreed_cost'] = '6000.00'
+        # SUPPLY-GUARDS-01: below the offer's price (4199); a below-cost offer is refused here (test_supply_guards).
+        body['offer']['agreed_cost'] = '4000.00'
         data = self.post(self.admin, body, expect=201).json()
         product = Product.objects.get(pk=data['product']['id'])
         self.assertEqual(product.sale_mode, Product.SALE_MODE_STOCK_OR_ORDER)
@@ -381,7 +382,7 @@ class OnOrderTest(RegistrationFixture):
         self.assertFalse(BranchStock.objects.filter(product=product, quantity__gt=0).exists())
         offer = SupplierOffer.objects.get(product=product)
         self.assertEqual(offer.supplier.name, 'Mayorista Lima')
-        self.assertEqual(offer.agreed_cost, D('6000.00'))
+        self.assertEqual(offer.agreed_cost, D('4000.00'))
         self.assertEqual(offer.confirmed_quantity, 10)
         self.assertTrue(data['supplier']['created'])
         self.assertEqual(data['offer']['id'], offer.pk)

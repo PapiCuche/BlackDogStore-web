@@ -17,6 +17,12 @@
  * what the offer was and what it becomes; a new commercial price is applied
  * only after an explicit decision (accept, or keep the current ones); a row
  * nobody could match may be mapped to a variant by the supplier's code.
+ *
+ * SUPPLY-GUARDS-01: a price below the agreed cost (or, without `costs.view`, a
+ * price change over a cost the person cannot see) is saved or applied only
+ * after the person confirms what the server said AND gives a reason (owner,
+ * 2026-11-23; audited). The screen never computes the
+ * comparison itself: it shows only what the server sent to this person.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -24,6 +30,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { fetchAdminProducts, type AdminProduct } from "@/app/lib/admin";
 import {
   CatalogApiError,
+  MARGIN_CONFIRMATION_CODES,
+  MARGIN_REASON_MAX,
   SUPPLIER_OFFER_ACTION_LABELS,
   SUPPLIER_OFFER_STATE_LABELS,
   createSupplierOffer,
@@ -33,10 +41,12 @@ import {
   fetchSuppliers,
   supplierOfferExportUrl,
   supplierOfferTemplateUrl,
+  marginReasonReady,
   updateSupplierOffer,
   type SupplierOffer,
   type SupplierOfferHistoryEntry,
   type SupplierOfferState,
+  type SupplierOfferStateFilter,
   type SupplierOfferWrite,
   type SupplierRow,
 } from "../lib/internal-api";
@@ -53,6 +63,7 @@ import {
   summaryOf,
   type AlreadyApplied,
   type AppliedContent,
+  type MarginReviewRow,
   type QuantityDecision,
   type SameRowsApplied,
   type PriceChangeRow,
@@ -88,6 +99,7 @@ const STATE_TONE: Record<SupplierOfferState, string> = {
   exhausted: "border-warning-border bg-warning-surface text-warning",
   expired: "border-bd-border text-muted",
   inactive: "border-bd-border text-muted",
+  supplier_inactive: "border-warning-border bg-warning-surface text-warning",
 };
 
 export function OfferStateBadge({ state }: { state: SupplierOfferState }) {
@@ -220,9 +232,17 @@ function OfferForm({
   const [fields, setFields] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // SUPPLY-GUARDS-01: what the server asked to confirm, for THIS draft (any edit of the form withdraws it).
+  const [marginAsk, setMarginAsk] = useState<{ message: string; draft: OfferDraft } | null>(null);
+  const [marginReason, setMarginReason] = useState("");
+  const pendingMargin = marginAsk && marginAsk.draft === draft ? marginAsk.message : null;
 
-  async function submit(event: React.FormEvent) {
+  function submit(event: React.FormEvent) {
     event.preventDefault();
+    void save(false);
+  }
+
+  async function save(confirmBelowCost: boolean) {
     const missing: Record<string, string> = {};
     if (!draft.supplier_id) missing.supplier_id = "Elige el proveedor.";
     if (!offer && !draft.product) missing.product_id = "Elige el producto.";
@@ -242,15 +262,22 @@ function OfferForm({
       lead_time_days: Number(draft.lead_time_days),
       ...(showCost ? { agreed_cost: draft.agreed_cost.trim() === "" ? null : draft.agreed_cost.trim() } : {}),
       ...(offer ? { is_active: draft.is_active } : { product_id: draft.product!.id }),
+      ...(confirmBelowCost ? { confirm_below_cost: true, below_cost_reason: marginReason.trim() } : {}),
     };
     setSaving(true);
     setFields({});
     setError(null);
+    setMarginAsk(null);
     try {
       if (offer) await updateSupplierOffer(offer.id, body, companyId);
       else await createSupplierOffer(body, companyId);
       onSaved();
     } catch (err) {
+      if (err instanceof CatalogApiError && err.code && MARGIN_CONFIRMATION_CODES.includes(err.code)) {
+        // Nothing was saved: the server's words (with amounts only for who may see costs), then a decision.
+        setMarginAsk({ message: err.message, draft });
+        return;
+      }
       setError(message(err, "No se pudo guardar la oferta."));
       if (err instanceof CatalogApiError) {
         if (Object.keys(err.fields).length) setFields(err.fields);
@@ -341,6 +368,20 @@ function OfferForm({
         </label>
       ) : null}
       {error ? <p role="alert" className="text-xs text-danger md:col-span-2">{error}</p> : null}
+      {pendingMargin ? (
+        <div data-testid="offer-margin-confirm" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm md:col-span-2">
+          <p role="alert" className="text-foreground">{pendingMargin}</p>
+          <label className="mt-2 block text-xs text-muted">
+            Motivo (obligatorio, queda en la auditoría)
+            <input value={marginReason} maxLength={MARGIN_REASON_MAX} onChange={(e) => setMarginReason(e.target.value)}
+              aria-label="Motivo del precio" className={`mt-1 ${internalInputClass}`} />
+          </label>
+          <div className="mt-2 flex flex-wrap justify-end gap-2">
+            <button type="button" className={internalButtonClass} onClick={() => setMarginAsk(null)} disabled={saving}>Revisar el precio</button>
+            <button type="button" className={internalPrimaryButtonClass} onClick={() => void save(true)} disabled={saving || !marginReasonReady(marginReason)}>Guardar de todas formas</button>
+          </div>
+        </div>
+      ) : null}
       <div className="flex justify-end gap-2 md:col-span-2">
         <button type="button" className={internalButtonClass} onClick={onCancel} disabled={saving}>Cancelar</button>
         <button type="submit" className={internalPrimaryButtonClass} disabled={saving}>
@@ -390,12 +431,29 @@ function DeactivateForm({
   );
 }
 
+/**
+ * SUPPLY-GUARDS-01 — a confirmed margin exception travels inside the «Creada»/«Modificada» row, and only to
+ * `costs.view` (the server drops it for everybody else).
+ */
+const MARGIN_VERDICT_LABELS: Record<string, string> = {
+  below_cost: "Precio bajo el costo confirmado",
+  cost_unseen: "Precio confirmado sin ver el costo",
+};
+
+function marginDetail(meta: Record<string, unknown>): string {
+  const exception = meta.margin_exception;
+  if (!exception || typeof exception !== "object") return "";
+  const { verdict, reason } = exception as { verdict?: unknown; reason?: unknown };
+  const label = MARGIN_VERDICT_LABELS[String(verdict)] ?? "Excepción de margen confirmada";
+  return typeof reason === "string" && reason ? `${label} · Motivo: ${reason}` : label;
+}
+
 function historyDetail(entry: SupplierOfferHistoryEntry): string {
   const meta = entry.metadata ?? {};
   if (typeof meta.reason === "string" && meta.reason) return `Motivo: ${meta.reason}`;
   const changed = Array.isArray(meta.changed) ? meta.changed : Array.isArray(meta.fields) ? meta.fields : null;
-  if (changed && changed.length) return `Cambió: ${changed.map(String).join(", ")}`;
-  return "";
+  const parts = [changed && changed.length ? `Cambió: ${changed.map(String).join(", ")}` : "", marginDetail(meta)];
+  return parts.filter(Boolean).join(" · ");
 }
 
 function HistoryPanel({ offer, companyId, onClose }: { offer: SupplierOffer; companyId: number | null; onClose: () => void }) {
@@ -453,7 +511,7 @@ function OffersSection({
   const [error, setError] = useState<string | null>(null);
   const [supplier, setSupplier] = useState<string>("");
   const [product, setProduct] = useState<PickedProduct | null>(null);
-  const [state, setState] = useState<"" | "active" | "expired" | "inactive">("");
+  const [state, setState] = useState<SupplierOfferStateFilter>("");
   const [mode, setMode] = useState<Mode>({ kind: "none" });
   const [seededFromUrl, setSeededFromUrl] = useState(false);
 
@@ -531,6 +589,7 @@ function OffersSection({
             <option value="active">Vigentes</option>
             <option value="expired">Vencidas</option>
             <option value="inactive">Desactivadas</option>
+            <option value="supplier_inactive">Proveedor inactivo</option>
           </select>
         </label>
       </div>
@@ -698,6 +757,10 @@ function ImportSection({
   const [quantityDecisions, setQuantityDecisions] = useState<Record<number, QuantityDecision>>({});
   // B0 review: the same rows under a later message date need the person's statement that the supplier re-sent them.
   const [sameRows, setSameRows] = useState<SameRowsApplied | null>(null);
+  // SUPPLY-GUARDS-01: rows below their cost (or over a cost this person cannot see), and the person's confirmation.
+  const [marginRefused, setMarginRefused] = useState<MarginRefusal | null>(null);
+  const [confirmMargin, setConfirmMargin] = useState(false);
+  const [marginReason, setMarginReason] = useState("");
   const [confirmNewDeclaration, setConfirmNewDeclaration] = useState(false);
   const [newDeclarationNote, setNewDeclarationNote] = useState("");
   const dateProblem = messageDateProblem(messageDate);
@@ -733,6 +796,9 @@ function ImportSection({
     setConfirmReactivate(false);
     setQuantityDecisions({});
     setSameRows(null);
+    setMarginRefused(null);
+    setConfirmMargin(false);
+    setMarginReason("");
     setConfirmNewDeclaration(false);
     setNewDeclarationNote("");
     setMapping(null);
@@ -776,6 +842,8 @@ function ImportSection({
         confirmNewDeclaration: Boolean(sameRows) && confirmNewDeclaration,
         newDeclarationNote: sameRows ? newDeclarationNote : undefined,
         snapshot: preview.snapshot ? { allMessagesIncluded: allIncluded, deactivations: preview.snapshot.deactivate_count } : undefined,
+        confirmBelowCost: marginFor(decision).rows.length > 0 && confirmMargin,
+        belowCostReason: marginFor(decision).rows.length > 0 && confirmMargin ? marginReason : undefined,
       }));
       setPreview(null);
       setFile(null);
@@ -803,6 +871,11 @@ function ImportSection({
         // Found applied only now (another person applied the same file meanwhile): ask, then retry.
         setReapplied(err.alreadyApplied);
         setConfirmReapply(false);
+        setError(err.message);
+      } else if (err instanceof WeeklyImportError && err.code && MARGIN_CONFIRMATION_CODES.includes(err.code)) {
+        // SUPPLY-GUARDS-01: found at apply (on what is written, under the lock): show the rows and ask.
+        setMarginRefused({ rows: err.marginRows, withCost: err.code === "below_cost_confirmation_required", decision });
+        setConfirmMargin(false);
         setError(err.message);
       } else if (err instanceof WeeklyImportError && err.code === "price_confirmation_required") {
         setRefused(err.priceChanges);
@@ -839,6 +912,14 @@ function ImportSection({
   const priceRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.price_change) : [];
   const reactivationRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.reactivation_requires_review) : [];
   const clearedRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.quantity_cleared) : [];
+  const margin = marginReview(preview, marginRefused, "accept");
+  // Review of #402: kept prices are not written, so their rows need no confirmation (the server agrees).
+  const marginFor = (decision: PriceDecision | null) => (decision === "keep"
+    ? marginReview(preview, marginRefused, "keep") : margin);
+  const marginPending = (decision: PriceDecision | null) => {
+    const rows = marginFor(decision).rows;
+    return rows.length > 0 && !(confirmMargin && marginReasonReady(marginReason));
+  };
   // B0: every review the server would ask for, answered before «Aplicar» is offered.
   const reviewsPending = (Boolean(reapplied) && !appliedContent && !confirmReapply)
     || (Boolean(appliedContent) && !(confirmReapply && reapplyReason.trim()))
@@ -1171,6 +1252,40 @@ function ImportSection({
               </ul>
             </fieldset>
           ) : null}
+          {margin.rows.length ? (
+            <fieldset data-testid="margin-review" className="rounded-lg border border-danger/40 bg-warning-surface p-3 text-sm"
+              aria-label={margin.withCost ? "Ofertas que se venderían a pérdida" : "Precios sobre un costo que no puedes ver"}>
+              <legend className="px-1 text-xs font-semibold text-danger">
+                {margin.withCost ? "Ofertas que se venderían a pérdida" : "Precios sobre un costo que no puedes ver"}
+              </legend>
+              <ul className="mb-2 space-y-0.5 text-foreground">
+                {margin.rows.map((row) => (
+                  <li key={row.row_number}>
+                    Fila {row.row_number}: {row.product_name || "—"}
+                    {margin.withCost && row.commercial_price && row.agreed_cost
+                      ? ` · precio ${formatSoles(row.commercial_price)} bajo el costo ${formatSoles(row.agreed_cost)}` : ""}
+                  </li>
+                ))}
+              </ul>
+              {margin.withCost ? null : (
+                <p className="mb-2 text-xs text-muted">
+                  No ves el costo pactado de estas ofertas, así que no se comprueba si el precio lo cubre. Si dudas,
+                  pide a alguien con permiso para ver costos que las revise.
+                </p>
+              )}
+              <label className="flex items-center gap-2 text-foreground">
+                <input type="checkbox" checked={confirmMargin} onChange={(e) => setConfirmMargin(e.target.checked)} />
+                {margin.withCost ? "Confirmo aplicar estos precios por debajo del costo" : "Confirmo aplicar estos precios sin ver el costo"}
+              </label>
+              {confirmMargin ? (
+                <label className="mt-2 block text-xs text-muted">
+                  Motivo (obligatorio, queda en la auditoría)
+                  <input value={marginReason} maxLength={MARGIN_REASON_MAX} onChange={(e) => setMarginReason(e.target.value)}
+                    aria-label="Motivo de los precios bajo el costo" className={`mt-1 ${internalInputClass}`} />
+                </label>
+              ) : null}
+            </fieldset>
+          ) : null}
           {preview.snapshot ? (
             <fieldset data-testid="snapshot-absent" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm"
               aria-label="Lista completa: ofertas ausentes">
@@ -1211,7 +1326,7 @@ function ImportSection({
             ) : null}
             <button type="button" className={internalButtonClass} onClick={() => setPreview(null)} disabled={busy}>Descartar</button>
             {priceRows.length ? (
-              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || Boolean(outdated) || preview.rows_error > 0 || reviewsPending || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}>
+              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || Boolean(outdated) || preview.rows_error > 0 || reviewsPending || marginPending("keep") || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}>
                 Aplicar sin cambiar precios
               </button>
             ) : null}
@@ -1220,6 +1335,7 @@ function ImportSection({
               className={internalPrimaryButtonClass}
               onClick={() => void apply(priceRows.length ? "accept" : null)}
               disabled={busy || Boolean(outdated) || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices) || reviewsPending
+                || marginPending(priceRows.length ? "accept" : null)
                 || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}
             >
               {busy ? "Aplicando…" : "Aplicar cambios"}
@@ -1229,6 +1345,31 @@ function ImportSection({
       ) : null}
     </Panel>
   );
+}
+
+type MarginRefusal = { rows: MarginReviewRow[]; withCost: boolean; decision: PriceDecision | null };
+
+/**
+ * SUPPLY-GUARDS-01 — the rows whose price needs `confirmBelowCost` for `decision`: those the server refused at
+ * apply for that same decision, else those the preview marked. With `keep`, a row whose only margin change is
+ * the new price is left out: the price is not written (`supplier_offer_import._margin_rows` agrees). `withCost`:
+ * the server sent the amounts (`costs.view`); the screen never compares them itself.
+ */
+function marginReview(
+  preview: WeeklyImportPreview | null, refused: MarginRefusal | null, decision: PriceDecision | null,
+): { rows: MarginReviewRow[]; withCost: boolean } {
+  const keeping = decision === "keep";
+  if (refused && refused.rows.length && (refused.decision === "keep") === keeping) return refused;
+  const rows = (preview?.rows ?? []).filter((row) => (row.action === "create" || row.action === "update")
+    && (row.data.below_cost || row.data.cost_unverified)
+    && !(keeping && row.action === "update" && row.data.price_change && !(row.data.changes ?? []).includes("agreed_cost")));
+  return {
+    withCost: rows.some((row) => Boolean(row.data.below_cost)),
+    rows: rows.map((row) => ({
+      row_number: row.row_number, offer_id: row.data.offer_id ?? null, product_name: row.data.product_name ?? null,
+      ...(row.data.below_cost ?? {}),
+    })),
+  };
 }
 
 /** INV-TEXT-04: the official offer importer, for the WhatsApp draft to hand its workbook over. */

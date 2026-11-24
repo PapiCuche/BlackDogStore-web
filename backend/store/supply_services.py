@@ -54,11 +54,13 @@ class SupplyError(Exception):
     """A supply rule refused something. `field` names the input, when there is one."""
 
     def __init__(self, detail: str, *, field: str = '', code: str = 'invalid',
-                 line: int | None = None, unit_field: str = ''):
+                 line: int | None = None, unit_field: str = '', extra: dict | None = None):
         super().__init__(detail)
         self.detail = detail
         self.field = field
         self.code = code
+        # SUPPLY-GUARDS-01: what the screen needs to ask (the amounts of a price below the cost, to `costs.view`).
+        self.extra = extra or {}
         # SUPPLIER-DEVICE-FLOW-02: a refused device of a reception says WHICH
         # row (1-based) and which of its inputs, so the form marks that input.
         self.line = line
@@ -72,6 +74,7 @@ class SupplyError(Exception):
             payload['line'] = self.line
         if self.unit_field:
             payload['unit_field'] = self.unit_field
+        payload.update(self.extra)
         return payload
 
 
@@ -350,6 +353,117 @@ def _pk(value):
         return None
 
 
+# ---------------------------------------------------------------------------
+# SUPPLY-GUARDS-01 — a commercial price below the agreed cost
+# ---------------------------------------------------------------------------
+
+#: `costs.view`: the price written is below the cost — a sale at a loss. Asked with both amounts.
+BELOW_COST = 'below_cost_confirmation_required'
+#: Without `costs.view`: the price of an offer with a cost they cannot see changes. Asked WHATEVER the price.
+COST_UNSEEN = 'cost_unseen_confirmation_required'
+COST_UNSEEN_TEXT = ('Esta oferta tiene un costo pactado que no puedes ver, así que no se comprueba si el nuevo precio '
+                    'lo cubre. Confirma el cambio de precio o pide a alguien con permiso para ver costos que lo '
+                    'revise.')
+COST_UNSEEN_ROW_TEXT = ('La oferta tiene un costo pactado que no puedes ver: no se comprueba si este precio lo cubre. '
+                        'Al aplicar tendrás que confirmarlo.')
+#: A confirmed exception travels INSIDE the offer's own audit row (`supplier_offer_created` / `_updated`), under
+#: this key: the verdict, the reason, the price and the cost written (the row's actor is who confirmed). Never a
+#: row of its own — a row hidden from some readers would leave a gap in the audit ids (second review of #402).
+#: Readers without `costs.view` get the row without this key (`audit_metadata_without_cost`), in the offer's
+#: history and in the audit log alike, whatever the verdict.
+MARGIN_AUDIT_KEY = 'margin_exception'
+#: Owner, 2026-11-23: an exception is confirmed AND explained. The codebase's reason lengths (5 to 500).
+MARGIN_REASON_MIN, MARGIN_REASON_MAX = 5, 500
+MARGIN_REASON_REQUIRED = 'margin_reason_required'
+MARGIN_REASON_TEXT = (f'Escribe el motivo de este precio ({MARGIN_REASON_MIN} a {MARGIN_REASON_MAX} caracteres): '
+                      'quedará en la auditoría.')
+
+
+def audit_metadata_without_cost(metadata):
+    """An audit row's metadata for a reader without `costs.view`: the margin exception (with its cost), dropped."""
+    if not isinstance(metadata, dict) or MARGIN_AUDIT_KEY not in metadata:
+        return metadata
+    return {key: value for key, value in metadata.items() if key != MARGIN_AUDIT_KEY}
+
+
+def clean_margin_reason(value) -> str:
+    """The reason of a confirmed exception, whitespace folded; '' when it is not a usable one."""
+    text = ' '.join(str(value or '').split())
+    if not MARGIN_REASON_MIN <= len(text) <= MARGIN_REASON_MAX or any(ord(c) < 32 for c in text):
+        return ''
+    return text
+
+
+def below_cost_text(price, cost) -> str:
+    return (f'El precio comercial (S/ {price}) queda por debajo del costo pactado (S/ {cost}): la oferta se vendería '
+            'a pérdida. Confírmalo para guardarla así.')
+
+
+def margin_check(values: dict, *, current=None, may_view_costs: bool) -> str | None:
+    """
+    What a write of `values` (cleaned: `commercial_price`, `agreed_cost`) over `current` (None: a new offer) needs
+    to be confirmed: `BELOW_COST`, `COST_UNSEEN` or nothing.
+
+    Only a write that CHANGES the price or the cost is judged: the editor resends what the offer holds, and an
+    offer already below its cost is not asked about again for its quantity.
+
+    Who cannot see costs never learns the cost, not even one bit of it: an answer that depended on «price < cost»
+    would let them try prices until it flips. So for them the answer is the same whatever the price — any change
+    of the price of an offer that carries a cost is `COST_UNSEEN`.
+    """
+    price = values['commercial_price'] if 'commercial_price' in values else getattr(current, 'commercial_price', None)
+    cost = values['agreed_cost'] if 'agreed_cost' in values else getattr(current, 'agreed_cost', None)
+    if price is None or cost is None:
+        return None
+    price_changes = 'commercial_price' in values and (
+        current is None or values['commercial_price'] != current.commercial_price)
+    cost_changes = 'agreed_cost' in values and (current is None or values['agreed_cost'] != current.agreed_cost)
+    if not (price_changes or cost_changes):
+        return None
+    if not may_view_costs:
+        return COST_UNSEEN
+    return BELOW_COST if price < cost else None
+
+
+def _guard_margin(values, *, current, may_view_costs, confirm_below_cost, reason='',
+                  margin_judged=None) -> tuple[str | None, str]:
+    """
+    Refuses an unconfirmed exception (409) and a confirmed one without a reason (400 `margin_reason_required`);
+    returns the verdict and the reason, to audit once written. SECURE BY DEFAULT (review of #402): every write
+    is judged unless `margin_judged` — only the weekly file's apply passes it, having judged and confirmed the whole
+    job under its locks (`supplier_offer_import._margin_rows`): `{}` for a row without an exception, else
+    `{'verdict', 'reason', **what to audit}`.
+    """
+    if margin_judged is not None:
+        return margin_judged.get('verdict'), margin_judged.get('reason', '')
+    verdict = margin_check(values, current=current, may_view_costs=may_view_costs)
+    if verdict is None:
+        return None, ''
+    if confirm_below_cost:
+        reason = clean_margin_reason(reason)
+        if not reason:
+            raise SupplyError(MARGIN_REASON_TEXT, field='below_cost_reason', code=MARGIN_REASON_REQUIRED)
+        return verdict, reason
+    if verdict == COST_UNSEEN:
+        raise SupplyError(COST_UNSEEN_TEXT, field='commercial_price', code=COST_UNSEEN)
+    price = values.get('commercial_price', getattr(current, 'commercial_price', None))
+    cost = values.get('agreed_cost', getattr(current, 'agreed_cost', None))
+    raise SupplyError(below_cost_text(price, cost), field='commercial_price', code=BELOW_COST,
+                      extra={'commercial_price': str(price), 'agreed_cost': str(cost)})
+
+
+def _margin_metadata(verdict, offer, reason, extra=None) -> dict:
+    """`{MARGIN_AUDIT_KEY: …}` for the offer's audit row when an exception was confirmed; else nothing."""
+    if verdict is None:
+        return {}
+    return {MARGIN_AUDIT_KEY: {
+        'verdict': 'below_cost' if verdict == BELOW_COST else 'cost_unseen', 'reason': reason,
+        'commercial_price': str(offer.commercial_price),
+        'agreed_cost': str(offer.agreed_cost) if offer.agreed_cost is not None else None,
+        **(extra or {'source': 'panel'}),
+    }}
+
+
 def _offer_snapshot(offer) -> dict:
     return {
         'supplier_id': offer.supplier_id, 'product_id': offer.product_id,
@@ -370,10 +484,15 @@ def _is_duplicate(exc) -> bool:
     return 'unique_supplier_offer_window' in str(exc)
 
 
-def create_offer(*, company, actor=None, request=None, may_view_costs: bool = False, **fields) -> SupplierOffer:
+def create_offer(*, company, actor=None, request=None, may_view_costs: bool = False,
+                 confirm_below_cost: bool = False, below_cost_reason: str = '', margin_judged: dict | None = None,
+                 **fields) -> SupplierOffer:
     fields.setdefault('supplier_id', None)
     fields.setdefault('product_id', None)
     values = _offer_values(company, fields, may_view_costs=may_view_costs)
+    verdict, reason = _guard_margin(values, current=None, may_view_costs=may_view_costs,
+                                    confirm_below_cost=confirm_below_cost, reason=below_cost_reason,
+                                    margin_judged=margin_judged)
     try:
         with transaction.atomic():
             offer = SupplierOffer.objects.create(company=company, created_by=actor, **values)
@@ -382,17 +501,25 @@ def create_offer(*, company, actor=None, request=None, may_view_costs: bool = Fa
             raise
         raise SupplyError(_DUPLICATE, field='valid_from', code='duplicate') from None
     _audit('supplier_offer_created', company=company, actor=actor, target_type='supplier_offer',
-           target_id=offer.pk, request=request, **_offer_snapshot(offer))
+           target_id=offer.pk, request=request, **_offer_snapshot(offer),
+           **_margin_metadata(verdict, offer, reason, (margin_judged or {}).get('audit')))
     return offer
 
 
-def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = False, **fields) -> SupplierOffer:
+def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = False,
+                 confirm_below_cost: bool = False, below_cost_reason: str = '', margin_judged: dict | None = None,
+                 **fields) -> SupplierOffer:
+    """The margin is judged here unless `margin_judged` (see `_guard_margin`)."""
     fields = {k: v for k, v in fields.items() if k not in ('supplier_id', 'product_id')}
     with transaction.atomic():
         locked = SupplierOffer.objects.select_for_update().get(pk=offer.pk)
         values = _offer_values(locked.company, fields, current=locked, may_view_costs=may_view_costs)
         if not values:
             return locked
+        # Under the lock: the price and the cost compared are the ones this write replaces.
+        verdict, reason = _guard_margin(values, current=locked, may_view_costs=may_view_costs,
+                                        confirm_below_cost=confirm_below_cost, reason=below_cost_reason,
+                                        margin_judged=margin_judged)
         before = _offer_snapshot(locked)
         try:
             with transaction.atomic():
@@ -406,7 +533,8 @@ def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = Fals
         if 'agreed_cost' in values:
             changed.append('agreed_cost')
         _audit('supplier_offer_updated', company=locked.company, actor=actor, target_type='supplier_offer',
-               target_id=locked.pk, request=request, changed=sorted(set(changed)), **_offer_snapshot(locked))
+               target_id=locked.pk, request=request, changed=sorted(set(changed)), **_offer_snapshot(locked),
+               **_margin_metadata(verdict, locked, reason, (margin_judged or {}).get('audit')))
     offer.refresh_from_db()
     return offer
 

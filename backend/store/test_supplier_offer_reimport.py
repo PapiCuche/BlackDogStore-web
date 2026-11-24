@@ -136,7 +136,9 @@ class ContentFingerprintTest(_Reimport):
 
     def rows(self, reverse=False):
         rows = [self.same(**{'Cantidad confirmada': 4}),
-                self.row(**{'Código/SKU del producto': self.cable.slug, 'Precio comercial': '39'})]
+                # SUPPLY-GUARDS-01: the cable's cost below its price (a price below the cost asks to confirm).
+                self.row(**{'Código/SKU del producto': self.cable.slug, 'Precio comercial': '39',
+                            'Costo pactado': '30'})]
         return list(reversed(rows)) if reverse else rows
 
     def test_the_same_content_in_another_file_is_recognised_and_refused(self):
@@ -165,7 +167,8 @@ class ContentFingerprintTest(_Reimport):
         other = WeeklyFile()
         other.build_week('b0-otra-empresa')
         body = other.preview([other.same(**{'Cantidad confirmada': 4}),
-                              other.row(**{'Código/SKU del producto': other.cable.slug, 'Precio comercial': '39'})]
+                              other.row(**{'Código/SKU del producto': other.cable.slug, 'Precio comercial': '39',
+                                           'Costo pactado': '30'})]
                              ).json()
         self.assertIsNone(body['already_applied_content'])
         self.assertIsNone(body['same_rows_applied'])
@@ -188,7 +191,7 @@ class ContentFingerprintTest(_Reimport):
         # The same rows with another agreed cost are other content (only who sees costs can state one).
         cost = self.ok(self.preview([self.same(**{'Cantidad confirmada': 4, 'Costo pactado': '71'}),
                                      self.row(**{'Código/SKU del producto': self.cable.slug,
-                                                 'Precio comercial': '39'})]))
+                                                 'Precio comercial': '39', 'Costo pactado': '30'})]))
         self.assertIsNone(cost['already_applied_content'])
         buyer = self.member('b0-sin-costos', ['company.view', 'products.view', 'products.manage'])
         blank = [self.same(**{'Cantidad confirmada': 4, 'Costo pactado': ''})]

@@ -70,7 +70,25 @@ export type WeeklyImportRow = Omit<SupplierImportRow, "data"> & {
     reactivation_requires_review?: boolean;
     /** B0: no quantity over an offer with a confirmed one — apply asks to clear it or keep it. */
     quantity_cleared?: boolean;
+    /** SUPPLY-GUARDS-01, `costs.view` only: the price written is below the agreed cost. */
+    below_cost?: { commercial_price: string; agreed_cost: string };
+    /** SUPPLY-GUARDS-01, without `costs.view`: the price changes over a cost this person cannot see. */
+    cost_unverified?: boolean;
+    /** SUPPLY-GUARDS-01: the row's supplier is inactive — recorded, it sells nothing. */
+    supplier_inactive?: boolean;
   };
+};
+
+/**
+ * SUPPLY-GUARDS-01 — a row whose price needs `confirmBelowCost`. The amounts come only to `costs.view`
+ * (`below_cost_confirmation_required`); without it (`cost_unseen_confirmation_required`) there are none.
+ */
+export type MarginReviewRow = {
+  row_number: number;
+  offer_id?: number | null;
+  product_name?: string | null;
+  commercial_price?: string;
+  agreed_cost?: string;
 };
 
 export type WeeklyImportSummary = {
@@ -221,6 +239,7 @@ export class WeeklyImportError extends CatalogApiError {
     readonly reactivations: ReviewRow[] = [],
     readonly quantityCleared: ReviewRow[] = [],
     readonly sameRowsApplied: SameRowsApplied | null = null,
+    readonly marginRows: MarginReviewRow[] = [],
   ) {
     super(message, status, code, field);
     this.name = "WeeklyImportError";
@@ -250,6 +269,8 @@ async function call<T>(path: string, init: RequestInit, fallback: string): Promi
     body && Array.isArray(body.quantity_cleared) ? (body.quantity_cleared as ReviewRow[]) : [],
     body && body.same_rows_applied && typeof body.same_rows_applied === "object"
       ? (body.same_rows_applied as SameRowsApplied) : null,
+    body && Array.isArray(body.below_cost) ? (body.below_cost as MarginReviewRow[])
+      : body && Array.isArray(body.cost_checks) ? (body.cost_checks as MarginReviewRow[]) : [],
   );
 }
 
@@ -282,7 +303,10 @@ export function previewWeeklyImport(
  * `already_applied_content` unless `confirmReapply` with a `reapplyReason`; expired offers switched back on, 409
  * `reactivation_confirmation_required` unless `confirmReactivations` is their exact number; quantities cleared,
  * 409 `quantity_decision_required` unless `quantityDecisions` names each offer; the same rows under a later message
- * date, 409 `same_rows_new_date` unless `confirmNewDeclaration` with a `newDeclarationNote`.
+ * date, 409 `same_rows_new_date` unless `confirmNewDeclaration` with a `newDeclarationNote`. SUPPLY-GUARDS-01: a
+ * price below the cost, 409 `below_cost_confirmation_required` (without `costs.view`, a price change over a cost
+ * the person cannot see: 409 `cost_unseen_confirmation_required`) unless `confirmBelowCost` with a
+ * `belowCostReason` (400 `margin_reason_required` without one).
  */
 export function applyWeeklyImport(
   id: number, decision: PriceDecision | null, companyId?: number | null,
@@ -292,6 +316,9 @@ export function applyWeeklyImport(
     quantityDecisions?: Record<number, QuantityDecision>;
     confirmNewDeclaration?: boolean; newDeclarationNote?: string;
     snapshot?: { allMessagesIncluded: boolean; deactivations: number };
+    confirmBelowCost?: boolean;
+    /** Owner, 2026-11-23: required with `confirmBelowCost` (5 to 500 characters); audited. */
+    belowCostReason?: string;
   } = {},
 ): Promise<WeeklyImportResult> {
   const body: Record<string, boolean | number | string | Record<string, string>> = decision === "accept" ? { accept_price_changes: true } : decision === "keep" ? { keep_prices: true } : {};
@@ -304,6 +331,10 @@ export function applyWeeklyImport(
   if (options.confirmNewDeclaration) {
     body.confirm_new_declaration = true;
     body.new_declaration_note = (options.newDeclarationNote ?? "").trim();
+  }
+  if (options.confirmBelowCost) {
+    body.confirm_below_cost = true;
+    body.below_cost_reason = (options.belowCostReason ?? "").trim();
   }
   if (options.snapshot) {
     // INV-SNAPSHOT-01: both marks, and the exact count the person confirmed.
