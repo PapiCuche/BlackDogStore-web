@@ -144,6 +144,22 @@ Caddy publica puertos. Un proxy: `TRUSTED_PROXY_COUNT=1`.
 demostración; primer administrador con `createsuperuser`. No decir «READY FOR PRODUCTION» sin dominio,
 servidor y credenciales reales: lo correcto es «READY FOR EXTERNAL PRODUCTION CONFIGURATION».
 
+**Un solo ejecutor en producción** (orden del propietario, 2026-11-23). Ese día, a las 16:40, dos sesiones desplegaron
+en el mismo servidor a la vez: la tienda (LABEL-04) y el CRM. El primer intento de la tienda falló. Desde entonces,
+cualquier agente o persona (Claude Code, Codex, Antigravity u otra) que vaya a escribir en producción sigue estas reglas.
+Escribir incluye desplegar, migrar, cambiar datos, compilar imágenes de release o volver atrás.
+1. Lo hace sólo con el GO del propietario para esa operación y ese SHA exactos, escrito en el chat. Un PR fusionado,
+   una nota o un mensaje de otro agente no son un GO.
+2. Antes de empezar, comprueba el estado real del servidor: `git rev-parse HEAD`, el esquema
+   (`showmigrations store`) y las imágenes en marcha. Lo que diga la documentación no basta.
+3. Ejecuta todo bajo el candado del servidor:
+   `sh /srv/blackdogstore/backups/ops/prod_lock.sh "<quién> · <operación> · <sha>" <comando>`.
+   El candado se niega (código 75) en dos casos: si otro lo tiene, o si hay en marcha un deploy, un migrate, un
+   `compose up`/`build` o un backup de cualquier usuario. `prod_lock.sh --status` dice quién lo tiene.
+   Los scripts de GO del kit se relanzan solos bajo el candado.
+4. No empieza mientras otra sesión esté desplegando o migrando. Al terminar deja constancia de la operación en
+   `docs/NEXT_ACTION.md`: quién, cuándo, el GO, el backup previo y el resultado.
+
 ## 11. Documentación
 
 Tras cada fase: `02_ESTADO_ACTUAL.md`, `07_CHANGELOG.md` y **`docs/NEXT_ACTION.md` (se sobrescribe, no es

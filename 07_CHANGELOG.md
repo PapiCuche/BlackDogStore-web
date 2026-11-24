@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-23 — Coordinación de producción: un solo ejecutor
+
+**Added**
+- Regla «Un solo ejecutor en producción» en `AGENTS.md` §10: GO exacto por operación y SHA, comprobar el estado real del servidor, trabajar bajo el candado de producción y no empezar mientras otra sesión despliegue o migre.
+
+**Changed**
+- El despliegue de LABEL-04 (`16189e4`) queda documentado como cambio productivo con autorización no acreditada.
+- La release del #396 (`edbeeb0`) y la retirada del enlace roto del producto 12 quedan ensayadas y pendientes de su GO. Producción sin cambios.
+
 ## 2026-11-23 — Fases 1.1 y 1.2: base de producción `16189e4`
 
 El despliegue de LABEL-04 (`16189e4`) llevó a producción el código de la Fase 1.2 (`0185`). La normalización y las muestras están ensayadas de nuevo sobre esa base y siguen pendientes de su GO; de las muestras sólo se aplicarían las 167 aplicables. La caja sólo mostrará fotos con licencia verificada (#396).
