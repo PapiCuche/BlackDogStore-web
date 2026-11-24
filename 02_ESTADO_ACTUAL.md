@@ -13,7 +13,9 @@ Rama `feat/inv-load-01`. Sin migraciones. Producción sin cambios.
 - **Notas:** más de 300 caracteres es un error en `notes`, sin recorte. Cambia la API: registro, edición (PATCH) y recepción (que admitía 2000) responden 400 donde antes recortaban.
 - **Revisión del #401:**
   - El inventario inicial se comprueba con todos sus estantes bloqueados (`receipt_services.lock_shelves`, que crea las filas que faltan), en la recepción, la carga y el registro. Lo prueba una carrera real (`OpeningRaceTest`).
-  - `receive_units` toma el estante antes que los identificadores, y un bloqueo mutuo en el registro responde 409.
+  - `receive_units` toma el estante antes que los identificadores.
+  - La recepción de inventario inicial bloquea antes el producto que pasa a control por equipo, después el estante (DEC-CATALOG-PALETTE-LOCK-01).
+  - Un bloqueo mutuo responde 409 `busy` (`db_busy.answers_busy`) en el registro, la aplicación de la carga de equipos, el alta de artículos, la recepción rápida de la caja y la recepción de una línea de proveedor.
   - Indicar un proveedor exige `products.view` o `costs.view` (D-F-3).
   - Los alias genéricos «Fecha», «Notas» y «Observaciones» no se leen.
   - El máximo del selector de fecha es «hoy» en Lima.
