@@ -376,6 +376,8 @@ def unit_lookup_payload(unit, branch, method) -> dict:
         'sale_price': str(unit.sale_price) if by_unit and unit.sale_price is not None else None,
         'battery_health': unit.battery_health,
         'cosmetic_grade': unit.cosmetic_grade.label if unit.cosmetic_grade_id else None,
+        # USED-READY-01 — a used device is sold only once approved: the till sees why not before it tries.
+        'inspection_status': unit.inspection_status if by_unit else None,
     })
     return {
         'unit': info,

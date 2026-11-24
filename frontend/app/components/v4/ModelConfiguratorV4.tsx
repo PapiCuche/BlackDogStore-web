@@ -52,6 +52,7 @@ import {
   hasPicker,
   imeiHintText,
   optionsText,
+  unitWarrantyText,
   type CatalogModel,
   type ConditionLine,
   type ModelAttribute,
@@ -590,8 +591,22 @@ function UsedLineV4({ model, onReload }: { model: CatalogModel; onReload: () => 
             {chosen.battery_health !== null && chosen.battery_health !== undefined ? (
               <Fact term="Batería">{`${chosen.battery_health}%`}</Fact>
             ) : null}
+            {chosen.functional_state ? (
+              <Fact term="Funcionamiento">{chosen.functional_state_label || (chosen.functional_state === "full" ? "Sin fallas declaradas" : "Con fallas declaradas")}</Fact>
+            ) : null}
+            {unitWarrantyText(chosen.warranty_days) ? <Fact term="Garantía">{unitWarrantyText(chosen.warranty_days)}</Fact> : null}
             <Fact term="Disponibilidad">{USED_UNIT_AVAILABILITY}</Fact>
           </dl>
+          {chosen.defects ? (
+            <p data-testid="v4-unit-defects" className="v4-small mt-4 leading-6">
+              <span className="font-medium">Defectos: </span>{chosen.defects}
+            </p>
+          ) : null}
+          {chosen.accessories ? (
+            <p data-testid="v4-unit-accessories" className="v4-small mt-2 leading-6">
+              <span className="font-medium">Incluye: </span>{chosen.accessories}
+            </p>
+          ) : null}
           {chosen.cosmetic_grade?.description ? (
             <p className="v4-small mt-4 leading-6">{chosen.cosmetic_grade.description}</p>
           ) : null}

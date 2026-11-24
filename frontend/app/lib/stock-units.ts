@@ -50,10 +50,39 @@ export type StockUnit = {
   hold_until?: string | null;
   /** INV-RECEIVE-PRICE-03: whether the online shop offers it right now, and why not (codes). Only in the list. */
   web?: UnitWebStatus;
+  // USED-READY-01 — a used device is offered online only once inspected (approved), published, priced and photographed.
+  inspection_status?: UnitInspection;
+  inspection_label?: string;
+  /** Staff only: why it was rejected, or what the inspection noted. */
+  inspection_note?: string;
+  inspected_at?: string | null;
+  published_online?: boolean;
+  published_at?: string | null;
+  /** Days of THIS device's warranty; null = the company's policy; 0 = no warranty. */
+  warranty_days?: number | null;
+  /** "" = not stated. */
+  functional_state?: FunctionalState | "";
+  defects?: string;
+  accessories?: string;
+};
+
+export type UnitInspection = "pending" | "approved" | "rejected";
+export type FunctionalState = "full" | "with_faults";
+
+export const INSPECTION_TEXT: Record<UnitInspection, string> = {
+  pending: "Pendiente de inspección",
+  approved: "Inspección aprobada",
+  rejected: "Inspección rechazada",
+};
+
+export const FUNCTIONAL_STATE_TEXT: Record<FunctionalState, string> = {
+  full: "Sin fallas declaradas",
+  with_faults: "Con fallas declaradas",
 };
 
 export type UnitWebReason =
-  | "not_available" | "no_price" | "no_dispatch_branch" | "not_in_dispatch_branch" | "product_hidden" | "model_hidden";
+  | "not_available" | "no_price" | "no_dispatch_branch" | "not_in_dispatch_branch" | "product_hidden" | "model_hidden"
+  | "not_inspected" | "inspection_rejected" | "unit_not_published" | "no_photo";
 
 export type UnitWebStatus = { offered: boolean; reasons: UnitWebReason[] | string[] };
 
@@ -65,6 +94,10 @@ export const UNIT_WEB_REASON_TEXT: Record<UnitWebReason, string> = {
   not_in_dispatch_branch: "no está en la sucursal de despacho de la tienda en línea",
   product_hidden: "su variante no está publicada en la tienda",
   model_hidden: "su modelo está oculto en la tienda",
+  not_inspected: "su inspección está pendiente",
+  inspection_rejected: "su inspección fue rechazada",
+  unit_not_published: "el equipo no está publicado",
+  no_photo: "no tiene fotos reales del equipo",
 };
 
 export const unitWebReasonText = (code: string) =>
@@ -78,6 +111,11 @@ export type UnitListingWrite = Partial<{
   cosmetic_grade: number | null;
   public_notes: string;
   sale_price: string | null;
+  // USED-READY-01 — a used device only. The warranty needs `products.manage`, like the price.
+  warranty_days: number | null;
+  functional_state: FunctionalState | "";
+  defects: string;
+  accessories: string;
 }>;
 
 export type Option = { value: string; label: string };
@@ -89,6 +127,8 @@ export type StockUnitPage = {
   page_size: number;
   statuses: Option[];
   conditions: Option[];
+  /** USED-READY-01: whether this caller may approve or reject an inspection (`inventory.units.inspect`). */
+  can_inspect?: boolean;
 };
 
 export type SerializedProduct = { id: number; name: string; requires_imei: boolean; price: string };
@@ -175,11 +215,13 @@ export function fetchStockUnits(params: {
   options?: number[];
   /** INV-RECEIVE-PRICE-03: `no` = the devices without a sale price (a zero is none); `yes` = priced. */
   priced?: "yes" | "no" | "";
+  /** USED-READY-01: only the devices in this inspection state. */
+  inspection?: UnitInspection | "";
   page?: number;
 }): Promise<StockUnitPage> {
   const qs = new URLSearchParams();
   if (params.branch !== undefined) qs.set("branch", String(params.branch));
-  for (const key of ["product", "status", "condition", "search", "line", "model", "priced"] as const) {
+  for (const key of ["product", "status", "condition", "search", "line", "model", "priced", "inspection"] as const) {
     const value = params[key];
     if (value) qs.set(key, value);
   }
@@ -217,6 +259,20 @@ export const updateStockUnitListing = (id: number, body: UnitListingWrite) =>
  */
 export const correctStockUnitCost = (id: number, cost: string, reason: string) =>
   call<StockUnit>(`/${id}/`, { method: "PATCH", body: JSON.stringify({ cost, cost_reason: reason }) });
+
+/**
+ * USED-READY-01 — approve or reject the inspection of ONE used device (`inventory.units.inspect`). A rejection needs
+ * its note and takes the device off the web. Audited.
+ */
+export const inspectStockUnit = (id: number, decision: "approved" | "rejected", note = "") =>
+  post<StockUnit>(`/${id}/inspection/`, { decision, note });
+
+/**
+ * USED-READY-01 — put ONE used device on the web or take it off (`products.manage` + `inventory.adjust`). Refused with
+ * 409 and every reason (no price, inspection not approved, no photo); the message says them in words.
+ */
+export const setStockUnitPublication = (id: number, published: boolean) =>
+  post<StockUnit>(`/${id}/publication/`, { published });
 
 /** DC2: add a photo of THIS device. No Content-Type: the browser writes the multipart boundary. */
 export function uploadUnitPhoto(id: number, file: File, altText = ""): Promise<UnitPhoto> {

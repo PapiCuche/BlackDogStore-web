@@ -44,7 +44,7 @@ from django.db.models import Count, DateTimeField, ExpressionWrapper, F, Value
 from django.db.models.functions import Coalesce, Least
 from django.utils import timezone
 
-from . import inventory_services
+from . import inventory_services, used_unit_services
 from .models import CartItem, Order, Product, ProductModel, StockMovement, StockUnit
 from .stock_unit_services import StockUnitError, _move
 
@@ -286,7 +286,8 @@ def _web_available_by_unit(branch) -> int:
         # A1b-2: a pending draft's devices are not something the web could hold (`is_sold_online`).
         product__sale_enabled_at__isnull=True, product__draft_origin__gt='',
     ).filter(
-        Q(product__condition_line=Product.CONDITION_NEW) | Q(sale_price__gt=0),
+        # USED-READY-01: a used device counts only when the web could sell it (`used_unit_services.web_ready_q`).
+        used_unit_services.offerable_q(),
     ).count()
 
 
@@ -373,6 +374,10 @@ def hold(*, product, branch, session_key, unit_public_id=None, origin='') -> Sto
     price = price_for(unit, product)
     if price is None:
         raise HoldError('not_found', 'Ese equipo no existe o ya no está a la venta.')
+    if used_unit_services.web_problems(unit):
+        # USED-READY-01 — not inspected, not published or without a real photo: the web does not sell it. Told like
+        # a device that does not exist: its state is the shop's business.
+        raise HoldError('not_found', 'Ese equipo no existe o ya no está a la venta.')
 
     # THE SHARE, under the shelf lock: two buyers of this product count the same
     # shelf. After the device is chosen, so «that one is taken» and «sold out»
@@ -382,7 +387,7 @@ def hold(*, product, branch, session_key, unit_public_id=None, origin='') -> Sto
     # zero) is not for sale, so it does not widen a small shelf into the share rule — as in the company pool.
     for_sale = base.filter(status=StockUnit.Status.AVAILABLE)
     if product.condition_line == Product.CONDITION_USED:
-        for_sale = for_sale.filter(sale_price__gt=0)
+        for_sale = for_sale.filter(used_unit_services.web_ready_q())
     pool = for_sale.count() + web_held
     cap = web_hold_cap(pool)
     company_held = _live_web_holds(product.company, now).count()

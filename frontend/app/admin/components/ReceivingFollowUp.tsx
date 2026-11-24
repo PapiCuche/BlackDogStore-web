@@ -34,6 +34,11 @@ export const BLOCKED_TEXT: Record<string, string> = {
   model_hidden: "su modelo está oculto en la tienda",
   unpriced: "ningún equipo tiene precio de venta",
   not_available: "sus equipos ya no están disponibles",
+  // USED-READY-01 — what a used device needs of its own before the web offers it.
+  pending_inspection: "sus equipos esperan la inspección",
+  inspection_rejected: "la inspección de sus equipos fue rechazada",
+  units_unpublished: "sus equipos no están publicados uno por uno",
+  no_unit_photos: "sus equipos no tienen fotos reales",
 };
 
 export function publicationText(info: ReceiptFollowUp): string {

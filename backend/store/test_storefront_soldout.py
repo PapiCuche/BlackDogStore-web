@@ -27,6 +27,7 @@ from store import supply_services as supply
 from store.models import CartItem, Product, ProductImage, StockUnit
 from store.test_device_commerce import DeviceShop, _client, assert_no_amount
 from store.tests import _prod
+from store.used_unit_test_support import approve, approve_all, ready_used  # noqa: F401
 
 #: The keys a model card of the public list carries. Nothing else leaves.
 LIST_CARD_KEYS = {'slug', 'name', 'image_url', 'category', 'from_price', 'has_new', 'has_used', 'sold_out'}
@@ -183,7 +184,7 @@ class UsedOnlyModelTest(SoldOutShop, TestCase):
 
     def test_with_a_priced_device_it_is_offered_again(self):
         [unit] = self.receive(self.old_used, 1, cost='900.00')
-        units.update_unit(unit, sale_price='1500.00')
+        ready_used(unit, sale_price='1500.00')
         card = self.card(model=self.old)
         self.assertEqual((card['has_used'], card['sold_out'], card['from_price']), (True, False, '1500.00'))
 

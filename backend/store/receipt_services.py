@@ -791,7 +791,7 @@ def follow_up(company, record: dict) -> dict:
         units_offered_online                                     devices of this line the web offers now (None: by quantity)
         online / blocked_reasons                                 offered or blocked, and why
     """
-    from . import device_catalog
+    from . import device_catalog, used_unit_services
     from .models import Branch, StockUnit
     from .stock_unit_services import has_usable_price
 
@@ -847,6 +847,12 @@ def follow_up(company, record: dict) -> dict:
             visible = info['published'] and (model is None or model.is_published_online)
             offered = (device_catalog.offered_units([product], dispatch).filter(pk__in=[u.pk for u in mine]).count()
                        if visible and dispatch is not None else 0)
+            if used and not offered:
+                # USED-READY-01 — what the devices of this line still lack, one by one: an inspection, their own
+                # publication, a real photo. In this order, each code once.
+                lacking = {code for u in mine if u.status == StockUnit.Status.AVAILABLE
+                           for code in used_unit_services.web_problems(u)}
+                reasons += [_USED_REASON[code] for code in _USED_REASON if code in lacking]
             if not offered and not reasons:
                 reasons.append('not_available')        # sold or set aside since it was received
         out[line['index']] = {
@@ -870,6 +876,15 @@ def follow_up(company, record: dict) -> dict:
             'blocked_reasons': reasons,
         }
     return out
+
+
+#: USED-READY-01 — a used device's own reason (`used_unit_services.web_problems`) -> the code of a receipt line.
+_USED_REASON = {
+    'not_inspected': 'pending_inspection',
+    'inspection_rejected': 'inspection_rejected',
+    'unit_not_published': 'units_unpublished',
+    'no_photo': 'no_unit_photos',
+}
 
 
 def present(company, record: dict, trail, *, replayed: bool = False) -> dict:

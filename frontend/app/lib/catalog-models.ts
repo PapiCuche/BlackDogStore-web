@@ -152,7 +152,25 @@ export type UsedUnit = {
   photos: { url: string; alt_text: string; width: number; height: number }[];
   notes: string;
   imei_hint: string;
+  /**
+   * USED-READY-01 — what the shop states about THIS device. Absent on older servers. `warranty_days` null: the
+   * company's warranty policy applies; 0: sold without warranty.
+   */
+  warranty_days?: number | null;
+  /** Where `warranty_days` comes from: the device itself, the company's default, or only its policy text. */
+  warranty_source?: "unit" | "company" | "policy";
+  functional_state?: "full" | "with_faults" | null;
+  functional_state_label?: string;
+  defects?: string;
+  accessories?: string;
 };
+
+/** «90 días de garantía», «Sin garantía», or null when the shop's policy applies (the page shows it). */
+export function unitWarrantyText(days: number | null | undefined): string | null {
+  if (days === null || days === undefined) return null;
+  if (days === 0) return "Sin garantía";
+  return days === 1 ? "1 día de garantía" : `${days} días de garantía`;
+}
 
 export type CatalogModel = {
   slug: string;

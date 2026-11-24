@@ -187,7 +187,17 @@ def sellable_unit(*, company, branch, code, method):
         )
     if not unit.product.is_active:
         raise UnitIdentificationError('not_available', 'El producto de ese equipo está desactivado.')
+    _refuse_uninspected(unit)
     return unit
+
+
+def _refuse_uninspected(unit) -> None:
+    """USED-READY-01 — a used device whose inspection is not approved is neither sold nor handed over (409)."""
+    from . import used_unit_services
+
+    refusal = used_unit_services.till_refusal(unit)
+    if refusal:
+        raise UnitIdentificationError(used_unit_services.NOT_INSPECTED, refusal[0].upper() + refusal[1:])
 
 
 def record(*, order, unit, method, actor, request=None, left=False, **how) -> OrderUnit:
@@ -386,6 +396,7 @@ def candidate_for_order(*, order, code, method):
     if unit.product_id not in pending_units(order):
         raise UnitIdentificationError('complete', f'Los equipos de «{unit.product.name}» de este pedido ya están identificados.')
     _standing(order, unit)
+    _refuse_uninspected(unit)
     return unit
 
 

@@ -358,6 +358,8 @@ export type CompanySettingsPayload = {
   currency: string;
   warranty_policy_text: string;
   warranty_policy_url: string;
+  /** USED-READY-01: default warranty days of a used device; null = only the policy text. */
+  used_warranty_days?: number | null;
   terms_url: string;
   privacy_url: string;
   order_notification_email: string;

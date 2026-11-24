@@ -711,6 +711,13 @@ def _units_sheet(company, filters: ExportFilters, mode: str) -> Sheet:
             # for the used line: a new device sells at its variant's price,
             # and the device load would only warn that it ignores one.
             'Precio de venta': unit.sale_price if used or report else None,
+            # USED-READY-01 — what the buyer is told about THIS used device, as the load reads it back. Never its
+            # inspection or publication: a load does not inspect or publish.
+            'Garantía (días)': unit.warranty_days if used else None,
+            'Estado funcional': (StockUnit.FunctionalState(unit.functional_state).label
+                                 if used and unit.functional_state else None),
+            'Defectos': (unit.defects or None) if used else None,
+            'Accesorios': (unit.accessories or None) if used else None,
         }
         if report:
             values.update({
@@ -723,7 +730,8 @@ def _units_sheet(company, filters: ExportFilters, mode: str) -> Sheet:
 
     widths = {'Código': 20, 'Producto': 43, 'Sucursal': 25, 'Número de serie': 27, 'IMEI': 22, 'IMEI 2': 22,
               'Condición': 23, 'Costo': 18, UNIT_REASON_HEADER: 48, 'Modelo': 30, 'Estado estético': 20,
-              'Precio de venta': 18, 'Fecha de ingreso': 20, 'Notas': 48}
+              'Precio de venta': 18, 'Fecha de ingreso': 20, 'Notas': 48, 'Estado funcional': 20, 'Defectos': 40,
+              'Accesorios': 32}
     return Sheet(
         import_exports.REPORT_SHEETS['units'] if report else unit_import_services.SHEET, headers, rows,
         tuple(_columns_of(headers, UNIT_TEXT_HEADERS)), tuple(widths.get(header, 16) for header in headers),

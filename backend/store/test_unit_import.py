@@ -35,7 +35,9 @@ HEADERS = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 
            'Motivo / referencia']
 #: DC2 added these, optional, at the end of the template.
 DC2_HEADERS = ['Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea', 'Estado estético', 'Batería %',
-               'Precio de venta']
+               'Precio de venta',
+               # USED-READY-01 — optional, for used devices, last.
+               'Garantía (días)', 'Estado funcional', 'Defectos', 'Accesorios']
 
 
 def apply_url(job_id):

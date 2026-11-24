@@ -36,6 +36,7 @@ from store.test_registration import _client
 from store.test_stock_units import imei
 from store.test_pos_reconcile import _web_login
 from store.tests import Ip1PosBase, _p2d_member
+from store.used_unit_test_support import approve, approve_all, ready_used  # noqa: F401
 
 UNITS = '/api/admin/inventory/units/'
 IMEIS = [imei(f'35693803577{n:03d}') for n in range(60)]
@@ -195,6 +196,9 @@ class UsedListTest(PriceFixture):
         [self.away] = units.receive_units(
             branch=self.norte, product=self.used, actor=self.full, reason='Compra',
             units=[{'serial_number': 'PRECIO0012', 'imei': IMEIS[25], 'condition': 'used', 'sale_price': '1500.00'}])
+        # USED-READY-01 — these tests are about the price and the place: every device but its price is ready.
+        for unit in (self.device, self.priced_unit, self.zero_unit, self.away):
+            ready_used(unit)
 
     def listed(self, user=None, **params):
         res = _client(user or self.full).get(UNITS, {'line': 'used', 'branch': 'all', **params})
@@ -211,7 +215,8 @@ class UsedListTest(PriceFixture):
         Product.objects.filter(pk=self.used.pk).update(is_published_online=True)
         rows = self.listed()
         self.assertEqual(rows['PRECIO0010']['web'], {'offered': True, 'reasons': []})
-        self.assertEqual(rows['PRECIO0011']['web'], {'offered': False, 'reasons': ['no_price']})
+        # USED-READY-01: without a price it could not be published either.
+        self.assertEqual(rows['PRECIO0011']['web'], {'offered': False, 'reasons': ['no_price', 'unit_not_published']})
         self.assertEqual(rows['PRECIO0012']['web'], {'offered': False, 'reasons': ['not_in_dispatch_branch']})
         ProductModel.objects.filter(pk=self.model.pk).update(is_published_online=False)
         Product.objects.filter(pk=self.used.pk).update(is_published_online=False)
@@ -294,8 +299,10 @@ class ReceptionFollowUpTest(PriceFixture):
         # Somebody publishes the variant and prices the second device; the replay tells what is true NOW. The
         # fixture's own device (another reception) is priced too: it is offered, but it is not THIS line's.
         Product.objects.filter(pk=self.used.pk).update(is_published_online=True)
-        units.update_unit(StockUnit.objects.get(serial_number='RECEP00010'), sale_price='1500.00')
-        units.update_unit(self.device, sale_price='1000.00')
+        ready_used(StockUnit.objects.get(serial_number='RECEP00010'), sale_price='1500.00')
+        ready_used(self.device, sale_price='1000.00')
+        # USED-READY-01 — the device priced at the reception still waited for its inspection, photo and publication.
+        ready_used(StockUnit.objects.get(serial_number='RECEP00009'))
         again = self.confirm(self.pricer, body, key='seguimiento-1', expect=200)
         self.assertTrue(again.json()['replayed'])
         [info] = self.follow(again)
@@ -320,7 +327,9 @@ class ReceptionFollowUpTest(PriceFixture):
                                                   branch=self.norte.pk), expect=201)
         [info] = self.follow(res)
         self.assertEqual((info['in_dispatch_branch'], info['online'], info['units_offered_online']), (False, 'blocked', 0))
-        self.assertEqual(info['blocked_reasons'], ['not_in_dispatch_branch'])
+        # USED-READY-01 — and, device by device, what it still needs before the web: inspection, publication, photo.
+        self.assertEqual(info['blocked_reasons'],
+                         ['not_in_dispatch_branch', 'pending_inspection', 'units_unpublished', 'no_unit_photos'])
         self.assertEqual(info['storage_branch']['id'], self.norte.pk)
 
     def test_a_company_without_a_dispatch_branch_says_so(self):
@@ -366,7 +375,7 @@ class OnePriceEverywhereTest(DeviceShop, TestCase):
         Product.objects.filter(pk=self.used128.pk).update(is_published_online=True)
         self.used128.refresh_from_db()
         self.priced, self.unpriced, self.zero = self.receive(self.used128, 3, condition='used')
-        units.update_unit(self.priced, sale_price='1999.00')
+        ready_used(self.priced, sale_price='1999.00')
         StockUnit.objects.filter(pk=self.zero.pk).update(sale_price=Decimal('0.00'))   # legacy row
         self.zero.refresh_from_db()
         self.public = shop_client(host=self.host)
@@ -434,6 +443,7 @@ class PriceChangedDuringASaleTest(Ip1PosBase):
         [self.a] = units.receive_units(
             branch=self.branch_a, product=self.used, actor=self.staff, reason='Compra',
             units=[{'serial_number': 'USADO30001', 'imei': IMEIS[0], 'condition': 'used', 'sale_price': '2100.00'}])
+        self.a = approve(self.a)                # USED-READY-01: the till sells an approved device
         cache.clear()
         self.pricer, _ = _p2d_member(self.company, 'pos_pricer', [
             'inventory.view', 'inventory.adjust', 'products.view', 'products.manage'])
@@ -577,7 +587,7 @@ class HoldShareCountsOnlyPricedDevicesTest(DeviceShop, TestCase):
         Product.objects.filter(pk=self.used128.pk).update(is_published_online=True)
         self.priced = self.receive(self.used128, 3, condition='used')
         for unit, price in zip(self.priced, ('1999.00', '1500.00', '1200.00')):
-            units.update_unit(unit, sale_price=price)
+            ready_used(unit, sale_price=price)
         [self.unpriced] = self.receive(self.used128, 1, condition='used')
         [self.zero] = self.receive(self.used128, 1, condition='used')
         StockUnit.objects.filter(pk=self.zero.pk).update(sale_price=Decimal('0.00'))

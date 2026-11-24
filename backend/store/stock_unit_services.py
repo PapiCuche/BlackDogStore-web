@@ -251,6 +251,107 @@ def clean_public_notes(value) -> str:
     return text
 
 
+# ---------------------------------------------------------------------------
+# USED-READY-01 — what the shop says about ONE used device beyond battery and grade
+# ---------------------------------------------------------------------------
+#
+# Only a device of the USED line carries them (a new device is sold with its variant's terms). All four are public:
+# the buyer reads them on the device's card. Optional on every door; an absent key changes nothing.
+
+USED_ONLY_FIELDS = ('warranty_days', 'functional_state', 'defects', 'accessories')
+MAX_WARRANTY_DAYS = 3650
+MAX_DEFECTS = 500
+MAX_ACCESSORIES = 300
+NOT_USED_LINE = 'not_used_line'
+FAULTS_UNDESCRIBED = 'Un equipo «con fallas» dice cuáles: completa «Defectos».'
+_WARRANTY_DAYS = re.compile(r'[0-9]{1,4}', re.ASCII)
+_FUNCTIONAL_WORDS = {
+    'full': StockUnit.FunctionalState.FULL, 'funciona': StockUnit.FunctionalState.FULL,
+    'funciona al 100': StockUnit.FunctionalState.FULL, 'funciona al 100 %': StockUnit.FunctionalState.FULL,
+    'sin fallas': StockUnit.FunctionalState.FULL, 'sin fallas declaradas': StockUnit.FunctionalState.FULL,
+    'with_faults': StockUnit.FunctionalState.WITH_FAULTS, 'con fallas': StockUnit.FunctionalState.WITH_FAULTS,
+    'con fallas declaradas': StockUnit.FunctionalState.WITH_FAULTS,
+}
+
+
+def clean_warranty_days(value) -> int | None:
+    """Days of THIS device's warranty. Empty = the company's policy; 0 = sold without warranty."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    message = f'La garantía se indica en días: un número entero de 0 a {MAX_WARRANTY_DAYS}, o vacío.'
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise StockUnitError(message, field='warranty_days')
+    text = str(value).strip()
+    if not _WARRANTY_DAYS.fullmatch(text) or int(text) > MAX_WARRANTY_DAYS:
+        raise StockUnitError(message, field='warranty_days')
+    return int(text)
+
+
+def clean_functional_state(value) -> str:
+    """'' (not stated), «full» or «with_faults» — by code or by the words of the screen and the template."""
+    import unicodedata
+
+    if value is None:
+        return ''
+    if not isinstance(value, str):
+        raise StockUnitError('Estado funcional desconocido.', field='functional_state')
+    folded = ''.join(ch for ch in unicodedata.normalize('NFKD', value) if not unicodedata.combining(ch))
+    folded = ' '.join(folded.lower().split())
+    if not folded:
+        return ''
+    found = _FUNCTIONAL_WORDS.get(folded) or _FUNCTIONAL_WORDS.get(folded.replace('%', '').strip())
+    if found is None:
+        raise StockUnitError('Estado funcional desconocido: «Sin fallas» o «Con fallas».',
+                             field='functional_state')
+    return str(found)
+
+
+def _clean_text(value, *, limit: int, field: str, label: str) -> str:
+    if value is not None and not isinstance(value, (str, int)):
+        raise StockUnitError(f'{label}: escribe un texto.', field=field)
+    text = ' '.join(str(value or '').split())
+    if len(text) > limit:
+        raise StockUnitError(f'{label} admite hasta {limit} caracteres.', field=field)
+    return text
+
+
+def clean_defects(value) -> str:
+    return _clean_text(value, limit=MAX_DEFECTS, field='defects', label='«Defectos»')
+
+
+def clean_accessories(value) -> str:
+    return _clean_text(value, limit=MAX_ACCESSORIES, field='accessories', label='«Accesorios»')
+
+
+_USED_CLEANERS = {
+    'warranty_days': clean_warranty_days, 'functional_state': clean_functional_state,
+    'defects': clean_defects, 'accessories': clean_accessories,
+}
+
+
+def clean_used_details(product, values: dict) -> dict:
+    """
+    The used-only fields present in `values`, cleaned. A field stated for a device that is not of the USED line is
+    refused (`not_used_line`): a new device is sold with its variant's terms. `None` / blank is «not stated».
+    """
+    cleaned = {}
+    for name in USED_ONLY_FIELDS:
+        if name not in values:
+            continue
+        cleaned[name] = _USED_CLEANERS[name](values[name])
+        stated = cleaned[name] not in (None, '')
+        if stated and product.condition_line != Product.CONDITION_USED:
+            raise StockUnitError(
+                f'«{product.name}» no es seminuevo: la garantía propia, el estado funcional, los defectos y los '
+                'accesorios son de los equipos seminuevos.', field=name, code=NOT_USED_LINE)
+    return cleaned
+
+
+def refuse_undescribed_faults(functional_state: str, defects: str) -> None:
+    if functional_state == StockUnit.FunctionalState.WITH_FAULTS and not defects:
+        raise StockUnitError(FAULTS_UNDESCRIBED, field='defects')
+
+
 def _reason(value, *, required: bool = True) -> str:
     reason = ' '.join(str(value or '').split())
     if required and not reason:
@@ -320,6 +421,11 @@ def _clean_row(product, row: dict) -> dict:
     price = clean_sale_price(row.get('sale_price'))
     if price is not None:
         cleaned['sale_price'] = price
+    # USED-READY-01 — optional, only when the row brought them. NEVER the inspection or the publication: every device
+    # enters pending and unpublished, whoever receives it and through whichever door.
+    used = {name: value for name, value in clean_used_details(product, row).items() if value not in (None, '')}
+    refuse_undescribed_faults(used.get('functional_state', ''), used.get('defects', ''))
+    cleaned.update(used)
     problem = condition_line_problem(product, condition=cleaned['condition'],
                                      graded=cleaned.get('cosmetic_grade') is not None)
     if problem:
@@ -907,6 +1013,11 @@ def return_unit(unit, *, reason, actor=None, request=None) -> StockUnit:
         extra_fields={'sold_at': None, 'order': None},
     )
     unit_identification.released_by_return(returned, current.order_id, actor=actor, request=request)
+    # USED-READY-01 — a used device that comes back is checked again before it is sold again.
+    from . import used_unit_services
+
+    if used_unit_services.require_reinspection(returned.pk, why='returned', actor=actor, request=request):
+        returned = StockUnit.objects.get(pk=returned.pk)
     return returned
 
 
@@ -991,6 +1102,14 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
                 )
             locked.sale_price = price
             changed.append('sale_price')
+    # USED-READY-01 — warranty, functional state, defects, accessories: a used device only.
+    used = clean_used_details(locked.product, {k: fields[k] for k in USED_ONLY_FIELDS if k in fields})
+    for name, value in used.items():
+        if getattr(locked, name) != value:
+            setattr(locked, name, value)
+            changed.append(name)
+    if used:
+        refuse_undescribed_faults(locked.functional_state, locked.defects)
     if changed:
         locked.save(update_fields=[*changed, 'updated_at'])
         AdminAuditLog.log(

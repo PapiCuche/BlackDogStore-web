@@ -53,7 +53,9 @@ HEADERS = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 
            # DC2 — optional, after everything else so older files keep their columns. A1b added «SIM» and
            # «Región» after «Color», optional too: columns are read by header, never by position.
            'Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea', 'Estado estético', 'Batería %',
-           'Precio de venta']
+           'Precio de venta',
+           # USED-READY-01 — optional, for used devices; after everything else, as always.
+           'Garantía (días)', 'Estado funcional', 'Defectos', 'Accesorios']
 
 #: field -> the headers it answers to, already folded by `normalize_header`.
 _ALIASES = {
@@ -80,7 +82,15 @@ _ALIASES = {
     'grade': ('estado estetico', 'estado cosmetico', 'grado estetico'),
     'battery': ('bateria', 'bateria porcentaje', 'salud de bateria', 'salud de la bateria'),
     'sale_price': ('precio de venta', 'precio venta'),
+    # USED-READY-01. NO column inspects or publishes: every device enters pending and unpublished.
+    'warranty_days': ('garantia dias', 'garantia', 'garantia en dias', 'dias de garantia'),
+    'functional_state': ('estado funcional', 'funcionamiento'),
+    'defects': ('defectos', 'fallas'),
+    'accessories': ('accesorios', 'incluye'),
 }
+#: USED-READY-01 — the used-only columns: field -> the header named in a warning.
+_USED_COLUMNS = {'warranty_days': 'Garantía (días)', 'functional_state': 'Estado funcional',
+                 'defects': 'Defectos', 'accessories': 'Accesorios'}
 #: A header that says HOW MANY refuses the file: «Cantidad», «Cantidad inicial»,
 #: «Stock inicial - Almacén 1», «Nº de unidades». What counts stock is decided in
 #: one place (`import_formats.counts_stock`); «Stock mínimo», «Unidades de
@@ -156,6 +166,13 @@ def _header_notes() -> dict:
             'Sólo para seminuevos: el precio de ESTE equipo en la tienda. Un seminuevo sin precio no se '
             'ofrece en línea. Un equipo nuevo se vende al precio de su variante.'
         ),
+        'Garantía (días)': (
+            'Opcional, para seminuevos: los días de garantía de ESTE equipo. Vacío = la política de garantía de '
+            'la empresa; 0 = sin garantía.'
+        ),
+        'Estado funcional': 'Opcional, para seminuevos: «Sin fallas» o «Con fallas» (con «Defectos»).',
+        'Defectos': 'Opcional, para seminuevos: lo que no funciona o está dañado. Lo lee el comprador.',
+        'Accesorios': 'Opcional, para seminuevos: lo que trae (caja, cargador, cable…). Lo lee el comprador.',
     }
 
 
@@ -181,7 +198,7 @@ def template_bytes(branches=()) -> bytes:
     _header_row(sheet, HEADERS)
     header_notes(sheet, _header_notes())
     sheet.freeze_panes = 'A2'
-    _autosize(sheet, [20, 43, 25, 27, 22, 22, 23, 18, 48, 30, 16, 16, 14, 12, 16, 20, 14, 18])
+    _autosize(sheet, [20, 43, 25, 27, 22, 22, 23, 18, 48, 30, 16, 16, 14, 12, 16, 20, 14, 18, 16, 20, 40, 32])
     text_columns(sheet, ('A', 'D', 'E', 'F'))
 
     from openpyxl.utils import get_column_letter
@@ -190,8 +207,9 @@ def template_bytes(branches=()) -> bytes:
         return get_column_letter(HEADERS.index(header) + 1)
 
     # By header, never by letter: A1b moved «Línea» and what follows it two columns to the right.
-    number_columns(sheet, (column('Costo'), column('Batería %'), column('Precio de venta')))
+    number_columns(sheet, (column('Costo'), column('Batería %'), column('Precio de venta'), column('Garantía (días)')))
     add_cell_list(sheet, column('Línea'), cell_list(['Nuevo', 'Seminuevo']))
+    add_cell_list(sheet, column('Estado funcional'), cell_list(['Sin fallas', 'Con fallas']))
     add_cell_list(sheet, 'C', cell_list(branches))
     add_cell_list(sheet, 'G', cell_list(label for _value, label in StockUnit.Condition.choices))
 
@@ -519,10 +537,18 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             cost_cell = ''
         cost_cell = _sheet_cost(cost_cell, numeric=columns.get('cost') in _numeric)
 
+        # USED-READY-01 — warranty, functional state, defects and accessories are a used device's: in a new one they
+        # are ignored and said, like its price.
+        used_details = {name: fields[name] for name in _USED_COLUMNS if fields[name]}
+        if used_details and product is not None and product.condition_line != 'used':
+            warnings.append(f'{", ".join(_USED_COLUMNS[n] for n in used_details)}: ignorado en un equipo nuevo.')
+            used_details = {}
+
         cleaned = None
         if product is not None:
             try:
                 cleaned = stock_unit_services.clean_unit(product, {
+                    **used_details,
                     'serial_number': fields['serial_number'], 'imei': fields['imei'], 'imei2': fields['imei2'],
                     # INV-INTAKE-GUARD-01: an empty «Condición» takes the variant's line («Usado» in a used one), and a
                     # condition that contradicts it is refused by the cleaning itself (a row error).
@@ -593,6 +619,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                 data['cosmetic_grade_label'] = cleaned['cosmetic_grade'].label
             if cleaned.get('sale_price') is not None:
                 data['sale_price'] = str(cleaned['sale_price'])
+            for name in _USED_COLUMNS:
+                if name in cleaned:
+                    data[name] = cleaned[name]
         else:
             data.update(serial_number=fields['serial_number'][:64])
 
@@ -730,6 +759,8 @@ def apply_units(*, job, actor, request=None):
                         'battery_health': data(row).get('battery_health'),
                         'cosmetic_grade': data(row).get('cosmetic_grade'),
                         'sale_price': data(row).get('sale_price'),
+                        # USED-READY-01 — never an inspection or a publication: they enter pending, unpublished.
+                        **{name: data(row)[name] for name in _USED_COLUMNS if name in data(row)},
                     } for row in chunk],
                     actor=actor, reason=reason, movement_type=movement_type, request=request,
                 )
