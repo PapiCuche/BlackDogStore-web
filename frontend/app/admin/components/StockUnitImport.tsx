@@ -13,11 +13,13 @@
  */
 
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import {
-  applyUnitImport, previewUnitImport, unitImportErrorsUrl, unitImportTemplateUrl,
-  type UnitImportJob, type UnitImportRow, type UnitImportSimulation,
+  applyUnitImport, fetchUnitImportVoidPreview, previewUnitImport, unitImportErrorsUrl, unitImportReportUrl,
+  unitImportTemplateUrl, voidUnitImport, UnitImportVoidError,
+  type UnitImportBlocking, type UnitImportJob, type UnitImportLine, type UnitImportRow, type UnitImportSimulation,
+  type UnitImportVoidPreview,
 } from "@/app/lib/stock-units";
 
 import { CostColumnNotice } from "./CostColumnNotice";
@@ -88,6 +90,130 @@ function Simulation({ simulation }: { simulation: UnitImportSimulation }) {
   );
 }
 
+const LINE_LABELS: Record<string, string> = { new: "equipos nuevos", used: "seminuevos" };
+
+/**
+ * INV-LOAD-02 — annul an applied load WHOLE. The server voids every device the load created, or none: while one of
+ * them has done anything since it entered, the answer names it and nothing changes. The reason is mandatory.
+ */
+export function AnnulLoad({ job, onAnnulled }: { job: UnitImportJob; onAnnulled: (job: UnitImportJob) => void }) {
+  const headingId = useId();
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [blocking, setBlocking] = useState<UnitImportBlocking[]>([]);
+  // INV-LOAD-02 review — what the annulment would do, asked to the server before confirming.
+  const [preview, setPreview] = useState<UnitImportVoidPreview | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const voided = job.summary.voided;
+
+  if (voided) {
+    return (
+      <p role="status" className="text-sm text-foreground">
+        Esta carga se anuló: {plural(voided.units, "equipo salió", "equipos salieron")} del stock con una línea de
+        corrección en el Kardex. Motivo: {voided.reason}
+      </p>
+    );
+  }
+
+  async function start() {
+    setOpen(true);
+    setWorking(true);
+    setError(null);
+    try {
+      const next = await fetchUnitImportVoidPreview(job.id);
+      setPreview(next);
+      setBlocking(next.blocking);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "No se pudo preparar la anulación.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  async function annul() {
+    setWorking(true);
+    setError(null);
+    setBlocking([]);
+    try {
+      onAnnulled(await voidUnitImport(job.id, reason.trim(), confirmed));
+      setOpen(false);
+    } catch (e: unknown) {
+      if (e instanceof UnitImportVoidError) setBlocking(e.blocking);
+      setError(e instanceof Error ? e.message : "No se pudo anular la carga.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" className={internalButtonClass} onClick={start}>
+        Anular esta carga
+      </button>
+    );
+  }
+  const prepared = preview ? preview.inspected + preview.published + preview.with_photos > 0 : false;
+  const count = preview?.units ?? job.summary.applied?.units ?? 0;
+  return (
+    <section aria-labelledby={headingId} className="space-y-3 rounded-lg border border-bd-border px-4 py-3">
+      <h3 id={headingId} className="text-sm font-semibold text-foreground">Anular esta carga</h3>
+      <p className="text-sm text-muted">
+        Cada equipo que entró con este archivo sale del stock con una línea de corrección en el Kardex (nada se
+        borra). Si alguno ya se vendió, apartó, trasladó o cambió de variante, no se anula ninguno.
+      </p>
+      {prepared && preview ? (
+        <div role="note" aria-label="Trabajo hecho sobre estos equipos" className="space-y-2 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning">
+          <p>
+            Ya se trabajó sobre estos equipos: {preview.inspected} inspeccionados, {preview.published} publicados y{" "}
+            {preview.with_photos} con fotos. Al anular la carga salen del stock y de la web.
+          </p>
+          <label className="flex items-center gap-2 font-semibold">
+            <input type="checkbox" checked={confirmed} disabled={working}
+              onChange={(e) => setConfirmed(e.target.checked)} />
+            Entiendo que se anulan también los equipos inspeccionados, publicados o con fotos
+          </label>
+        </div>
+      ) : null}
+      <label className="block text-xs font-semibold text-muted">
+        Motivo de la anulación
+        <textarea
+          className={`mt-1 ${internalInputClass}`}
+          value={reason}
+          maxLength={preview?.reason_max ?? 240}
+          rows={2}
+          disabled={working}
+          onChange={(e) => setReason(e.target.value)}
+        />
+      </label>
+      {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
+      {blocking.length ? (
+        <ul aria-label="Equipos que impiden anular" className="list-disc space-y-0.5 pl-5 text-sm text-danger">
+          {blocking.map((unit) => (
+            <li key={unit.unit_id}>
+              Equipo {unit.label_code || `#${unit.unit_id}`}: {unit.reason}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="flex flex-wrap gap-3">
+        <button
+          type="button"
+          className={internalPrimaryButtonClass}
+          disabled={working || !preview || !reason.trim() || blocking.length > 0 || (prepared && !confirmed)}
+          onClick={annul}
+        >
+          Anular {plural(count, "equipo", "equipos")}
+        </button>
+        <button type="button" className={internalButtonClass} disabled={working} onClick={() => setOpen(false)}>
+          Cancelar
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export function StockUnitImport({ branches, canSeeCost = false }: {
   branches: { id: number; name: string }[];
   /** `costs.view`: without it the screen says, before anything is attached, that the «Costo» column stays empty. */
@@ -97,6 +223,9 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
   const [branch, setBranch] = useState("");
   const [reason, setReason] = useState("");
   const [entryKind, setEntryKind] = useState<"purchase" | "opening">("purchase");
+  // INV-LOAD-02 review — which devices the file loads, ALWAYS said: a renamed or pasted sheet no longer says it, and
+  // a used device must never enter as new by default. «mixed» = the combined template, row by row (its «Línea»).
+  const [line, setLine] = useState<UnitImportLine | "mixed" | "">("");
   const [job, setJob] = useState<UnitImportJob | null>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -146,9 +275,20 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
       <Panel
         title="Cargar equipos desde Excel"
         description="Para registrar de una vez los equipos de una compra o del inventario inicial."
-        action={<a className={internalButtonClass} href={unitImportTemplateUrl()}>Descargar plantilla</a>}
+        action={
+          <div className="flex flex-wrap gap-2">
+            {/* INV-LOAD-02 — one template per line; the combined one stays for the files people already have. */}
+            <a className={internalButtonClass} href={unitImportTemplateUrl("new")}>Stock de equipos nuevos</a>
+            <a className={internalButtonClass} href={unitImportTemplateUrl("used")}>Stock de seminuevos</a>
+            <a className={internalButtonClass} href={unitImportTemplateUrl()}>Descargar plantilla</a>
+          </div>
+        }
       >
         <div className="space-y-4">
+          <p className="text-sm text-muted">
+            Para cargar el stock real usa «Stock de equipos nuevos» o «Stock de seminuevos»: cada una carga sólo su
+            línea. «Descargar plantilla» es la plantilla combinada de siempre.
+          </p>
           <ImportKindNotice kind="units" />
           {canSeeCost ? null : <CostColumnNotice column="Costo" />}
 
@@ -176,6 +316,22 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
                 {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
               </select>
             </label>
+            <fieldset className="md:col-span-2">
+              <legend className="block text-xs font-semibold text-muted">Equipos del archivo (obligatorio)</legend>
+              <div className="mt-1 flex flex-wrap gap-4 text-sm text-foreground">
+                {([
+                  ["new", "Nuevos"],
+                  ["used", "Seminuevos"],
+                  ["mixed", "Ambos: la columna «Línea» de la plantilla combinada lo dice en cada fila"],
+                ] as const).map(([value, label]) => (
+                  <label key={value} className="flex items-center gap-2">
+                    <input type="radio" name="unit-import-line" value={value} disabled={working}
+                      checked={line === value} onChange={() => { setLine(value); setJob(null); }} />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
             <fieldset className="md:col-span-2">
               {/* INV-OPENING-01 — what these devices ARE in the Kardex. */}
               <legend className="block text-xs font-semibold text-muted">Tipo de ingreso</legend>
@@ -209,12 +365,16 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
             <button
               type="button"
               className={internalPrimaryButtonClass}
-              disabled={!file || working || applied}
-              onClick={() => file && run(() => previewUnitImport(file, { branch: branch ? Number(branch) : null, reason, entryKind }))}
+              disabled={!file || !line || working || applied}
+              onClick={() => file && line && run(() => previewUnitImport(file, {
+                branch: branch ? Number(branch) : null, reason, entryKind, line: line === "mixed" ? undefined : line,
+              }))}
             >
               Previsualizar
             </button>
-            <span className="text-xs text-muted">Previsualizar no registra nada.</span>
+            <span className="text-xs text-muted">
+              {line ? "Previsualizar no registra nada." : "Elige si el archivo trae equipos nuevos o seminuevos."}
+            </span>
           </div>
         </div>
       </Panel>
@@ -227,17 +387,31 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
 
       {outdated ? <OutdatedPreviewNotice outdated={outdated} onUploadAgain={uploadAgain} /> : null}
 
-      {applied ? (
-        <div role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success">
-          Se registraron {plural(registered, "equipo", "equipos")} y quedaron en el Kardex.{" "}
-          <Link className="font-semibold underline" href="/admin/inventory/units">Ver los equipos</Link>
+      {applied && job ? (
+        <div className="space-y-3">
+          <div role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success">
+            Se registraron {plural(registered, "equipo", "equipos")} y quedaron en el Kardex.{" "}
+            <Link className="font-semibold underline" href="/admin/inventory/units">Ver los equipos</Link>
+          </div>
+          {job.options?.line === "used" ? (
+            <p role="note" aria-label="Después de cargar seminuevos" className="text-sm text-muted">
+              Los seminuevos entran pendientes de inspección y sin publicar. Inspecciónalos, súbeles fotos y
+              publícalos desde su ficha en{" "}
+              <Link className="underline" href="/admin/inventory/used">Seminuevos</Link>.
+            </p>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-3">
+            <a className={internalButtonClass} href={unitImportReportUrl(job.id, "csv")}>Antes y después (CSV)</a>
+            <a className={internalButtonClass} href={unitImportReportUrl(job.id, "xlsx")}>Antes y después (Excel)</a>
+          </div>
+          <AnnulLoad job={job} onAnnulled={setJob} />
         </div>
       ) : null}
 
       {job && !applied ? (
         <Panel
           title="Lo que pasará con cada fila"
-          description={`${job.original_filename} · ${plural(job.counts.create, "equipo por registrar", "equipos por registrar")} · ${job.counts.error} con error · ${plural(job.counts.skip, "fila omitida", "filas omitidas")}`}
+          description={`${job.original_filename}${job.options?.line ? ` · plantilla de ${LINE_LABELS[job.options.line]}` : ""} · ${plural(job.counts.create, "equipo por registrar", "equipos por registrar")} · ${job.counts.error} con error · ${plural(job.counts.skip, "fila omitida", "filas omitidas")}`}
           action={
             job.counts.error ? (
               <a className={internalButtonClass} href={unitImportErrorsUrl(job.id)}>Descargar errores (CSV)</a>
