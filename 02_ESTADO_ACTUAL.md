@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — USED-READY-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0187`
+
+Un seminuevo es un equipo con su inspección, su publicación, sus fotos reales y su garantía. Sólo en la rama `feat/used-ready-01`.
+
+- **Web:** sólo disponible, con precio > 0, inspección aprobada, publicado y con ≥ 1 foto real (`used_unit_services.web_ready_q`; la foto se lee al consultar).
+- **Caja y rutas internas:** sin inspección aprobada no se vende ni se entrega (409 `unit_not_inspected`). La publicación no se pide en caja.
+- **Autoridad:** inspeccionar = `inventory.units.inspect` (nueva, a quien tiene `company.manage`); publicar = `products.manage`; todo auditado.
+- **Importación y recepción:** nunca inspeccionan ni publican. Un equipo devuelto vuelve a pendiente.
+- **Migración `0187`:** aditiva, sin aprobar ni publicar nada histórico (orden del propietario). Tras desplegar, TODOS los seminuevos existentes salen de la web y de la caja hasta inspeccionarlos; el ensayo de la release debe contarlos. Stock sin cambios.
+- **Pendiente:** UNIT-PHOTO-02 (procedencia de las fotos) endurece `real_photos`/`used_unit_publish_blockers`.
+
 ## 2026-11-23 — P0 coordinación de producción · LABEL-04 con autorización no acreditada; un solo ejecutor; release del #396 ensayada · producción SIN CAMBIOS por mi parte
 
 Orden del propietario «P0 COORDINACIÓN DE PRODUCCIÓN Y CIERRE FASE 1.2». Mi sesión no cambió la base, los contenedores, el código ni el enrutamiento de producción. En prod-02, bajo el candado, sólo hizo backups, compiló las imágenes candidatas `rc-edbeeb0` y ensayó sobre copias aisladas; además dejó scripts del kit en `backups/` y `/tmp`.
