@@ -155,6 +155,19 @@ AN OFFER SWITCHED OFF BY HAND STAYS OFF. A row reactivates an offer only when
 its optional «Activa (Sí/No)» column says «Sí» (and «No» switches one off);
 without it the preview warns and the rest of the row still applies.
 
+A PRICE BELOW THE COST IS NEVER APPLIED IN SILENCE (SUPPLY-GUARDS-01). A row
+that would write a commercial price below the agreed cost (the file's, or the
+offer's) warns in the preview, and apply refuses the job (409
+`below_cost_confirmation_required`, the rows with both amounts) unless
+`confirm_below_cost`. It is decided at apply, under the locks, on what is
+WRITTEN: kept prices (`keep_prices`) are not below the cost. Who cannot see
+costs never learns the comparison: for them every row that changes the price of
+an offer with a cost warns and asks the same way (409
+`cost_unseen_confirmation_required`, no amounts), whatever the price. The
+preview stores no sentence about the margin: `job_payload` writes it for each
+reader. Audited per offer, never with an amount. A row of an INACTIVE supplier
+warns: the offer is recorded and sells nothing until the supplier is back on.
+
 LOCK ORDER: the job row; then a transaction advisory lock per (company,
 supplier, variant) of the job, sorted — the panel's create and edit take the
 same one, so two writers of one supplier and variant take turns; then the
@@ -559,7 +572,13 @@ def export_bytes(*, company, include_cost: bool) -> bytes:
     workbook, sheet = _sheet(headers)
     today = supply_services.today()
     offers = (SupplierOffer.objects.filter(company=company, is_active=True, valid_until__gte=today)
-              .select_related('supplier', 'product').order_by('supplier__name', 'product__name', 'valid_from'))
+              .select_related('supplier', 'product', 'product__product_model')
+              .order_by('supplier__name', 'product__name', 'valid_from'))
+    # SUPPLY-GUARDS-01: «Modelo», the option columns and «Línea» from the variant's option roles — only when
+    # reading them back names exactly that variant (the rule of the inventory exports); else they stay empty.
+    from .inventory_exports import _VariantCells
+
+    variant_cells = _VariantCells(company)
     refs = {}
     for supplier_id, product_id, code in (SupplierProductRef.objects.filter(company=company)
                                           .order_by('supplier_code', 'pk')
@@ -572,6 +591,7 @@ def export_bytes(*, company, include_cost: bool) -> bytes:
             IDENTIFIER_HEADER: import_formats.product_identifier(company.pk, offer.product_id),
             'Proveedor': offer.supplier.name, 'Código/SKU del producto': _product_code(offer.product),
             'Modelo': '', 'Capacidad': '', 'Color': '', 'SIM': '', 'Región': '', 'Línea': '',
+            **{column: value or '' for column, value in variant_cells(offer.product).items()},
             'Costo pactado': float(offer.agreed_cost) if offer.agreed_cost is not None else None,
             'Precio comercial': float(offer.commercial_price), 'Cantidad confirmada': _available(offer),
             'Vigente desde': offer.valid_from.isoformat(), 'Vigente hasta': offer.valid_until.isoformat(),
@@ -1095,6 +1115,10 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
         elif complete_supplier is not None and supplier.pk != complete_supplier.pk:
             errors.append(f'En la lista completa de «{complete_supplier.name[:60]}» todas las filas son de ese '
                           'proveedor.')
+        if supplier is not None and not supplier.is_active:
+            # SUPPLY-GUARDS-01: `valid_offer_q` never sells it. Recorded, said.
+            warnings.append(f'El proveedor «{supplier.name[:60]}» está inactivo: la oferta se registra, pero no se '
+                            'vende hasta reactivarlo en Productos › Proveedores.')
         notes = []
         product, problem, matched_by, map_code, mappable = _resolve_product(
             company, index, fields, supplier=supplier, refs=refs[supplier.pk] if supplier else {},
@@ -1200,6 +1224,8 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
         }
         if map_code:
             payload['map_supplier_code'] = map_code
+        if not supplier.is_active:
+            payload['supplier_inactive'] = True
         if 'agreed_cost' in clean:
             payload['agreed_cost'] = str(clean['agreed_cost'])
         if active is not None:
@@ -1292,6 +1318,7 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
             if map_code:
                 extra['mappings'] += 1
             payload['available'] = available
+            _stage_margin(payload, clean, None)
             stage(row_number, BulkImportRow.CREATE, key=f'{supplier.pk}:{product.pk}', data=payload,
                   warnings=warnings)
             continue
@@ -1337,6 +1364,7 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
             ('sale_mode', wanted_mode is not None and product.sale_mode != wanted_mode),
         ) if differs]
         payload['changes'] = changes
+        _stage_margin(payload, clean, existing)
         if map_code:
             extra['mappings'] += 1
         if not changes:
@@ -1387,6 +1415,27 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
         update_fields.append('content_fingerprint')
     job.save(update_fields=update_fields)
     return job
+
+
+def _stage_margin(payload, clean, existing) -> None:
+    """
+    SUPPLY-GUARDS-01 — what the row does to the margin, kept INTERNAL (`job_payload` says it to each reader):
+    `below_cost` (the price written is below the cost) and `cost_check` (the uniform check of who cannot see
+    costs: the price or the cost of an offer with a cost changes — never a comparison).
+    """
+    values = {'commercial_price': clean['commercial_price']}
+    if clean.get('agreed_cost') is not None:
+        values['agreed_cost'] = clean['agreed_cost']
+    below = supply_services.margin_check(values, current=existing, may_view_costs=True) == supply_services.BELOW_COST
+    check = supply_services.margin_check(values, current=existing, may_view_costs=False) is not None
+    if below or check:
+        cost = values.get('agreed_cost', getattr(existing, 'agreed_cost', None))
+        payload['margin'] = {'below_cost': below, 'cost_check': check, 'agreed_cost': str(cost)}
+
+
+def below_cost_row_text(price, cost) -> str:
+    return (f'El precio comercial (S/ {price}) queda por debajo del costo pactado (S/ {cost}): la oferta se vendería '
+            'a pérdida. Al aplicar tendrás que confirmarlo.')
 
 
 def _classify(reference, existing, message_date, clean) -> str:
@@ -1516,8 +1565,18 @@ def job_payload(job, *, include_cost: bool) -> dict:
         # cost — it never leaves the server, whoever asks (B0 review: it used to reach who lacks `costs.view`).
         for internal in ('listed', 'offer_state'):
             data.pop(internal, None)
+        # SUPPLY-GUARDS-01: the margin, as THIS reader may read it. Without `costs.view`, never the comparison.
+        margin = data.pop('margin', None) or {}
+        warnings = list(row.warnings or [])
+        if include_cost and margin.get('below_cost'):
+            data['below_cost'] = {'commercial_price': data.get('commercial_price'),
+                                  'agreed_cost': margin.get('agreed_cost')}
+            warnings.append(below_cost_row_text(data.get('commercial_price'), margin.get('agreed_cost')))
+        elif not include_cost and margin.get('cost_check'):
+            data['cost_unverified'] = True
+            warnings.append(supply_services.COST_UNSEEN_ROW_TEXT)
         rows.append({'row_number': row.row_number, 'action': row.action, 'errors': row.errors,
-                     'warnings': row.warnings, 'data': data})
+                     'warnings': warnings, 'data': data})
     summary = (job.summary or {}).get('counts') or {
         'new': job.rows_create, 'updated': job.rows_update, 'unchanged': job.rows_no_change, 'sold_out': 0,
         'errors': job.rows_error, 'skipped': job.rows_skip, 'price_changes': 0, 'mappings': 0,
@@ -1608,7 +1667,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
           confirm_reapply: bool = False, all_messages_included: bool = False,
           confirm_deactivations=None, reapply_reason: str = '', may_override_reapply: bool = False,
           confirm_reactivations=None, quantity_decisions=None, confirm_new_declaration: bool = False,
-          new_declaration_note: str = '') -> dict:
+          new_declaration_note: str = '', confirm_below_cost: bool = False) -> dict:
     """
     Write every staged offer. ALL OF THE FILE OR NONE OF IT. A job applied
     before answers with what it did then, and does nothing.
@@ -1621,6 +1680,9 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
     `confirm_new_declaration` + `new_declaration_note` for the same rows as an
     applied load under a later message date (B0 review). Repetitions and older
     messages write nothing whatever is confirmed.
+
+    SUPPLY-GUARDS-01: `confirm_below_cost` for rows that write a price below
+    the cost (or, for who cannot see costs, change the price of an offer with one).
     """
     job = BulkImportJob.objects.select_for_update().get(pk=job.pk)
     if job.import_type != BulkImportJob.SUPPLIER_OFFERS:
@@ -1761,6 +1823,12 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
         if added:
             raise OfferImportError(STALE, code='stale')
 
+    # SUPPLY-GUARDS-01: under the locks, on what will be written.
+    margins = _margin_rows(writing, offers, with_cost=with_cost, sees_costs=applier_sees_costs,
+                           keep_prices=keep_prices)
+    if margins and not confirm_below_cost:
+        _refuse_margins(margins)
+
     earlier = previously_applied(job)
     if earlier is not None and earlier_content is None and not confirm_reapply:
         raise OfferImportError(
@@ -1853,6 +1921,10 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                 offer = supply_services.create_offer(company=job.company, actor=actor, request=request,
                                                      may_view_costs=with_cost, supplier_id=data.get('supplier_id'),
                                                      product_id=data.get('product_id'), **fields)
+                if row.row_number in margins:
+                    supply_services.audit_margin(margins[row.row_number]['verdict'], offer, actor=actor,
+                                                 request=request, source='import', job_id=job.pk,
+                                                 row_number=row.row_number)
                 created += 1
                 confirmed_count += _register_declaration(
                     offer, job=job, row=row, declared=declared, committed_at=0, sold_pair=sold_pair,
@@ -1892,6 +1964,10 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                           'previous_valid_until': offer.valid_until.isoformat(),
                                           'valid_until': data.get('valid_until')})
                 supply_services.update_offer(offer, actor=actor, request=request, may_view_costs=with_cost, **fields)
+                if row.row_number in margins:
+                    supply_services.audit_margin(margins[row.row_number]['verdict'], offer, actor=actor,
+                                                 request=request, source='import', job_id=job.pk,
+                                                 row_number=row.row_number)
                 quantity_after = {'confirmed': offer.confirmed_quantity, 'committed': offer.committed_quantity,
                                   'available': _available(offer)}
                 if quantity_after != quantity_before:
@@ -1974,6 +2050,59 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                                   'filename': job.original_filename},
                       request=request, company=job.company)
     return {'status': 'applied', **result}
+
+
+def _margin_rows(writing, offers, *, with_cost: bool, sees_costs: bool, keep_prices: bool) -> dict:
+    """
+    SUPPLY-GUARDS-01 — `{row number: {verdict, row_number, offer_id, product_name, commercial_price,
+    agreed_cost}}` of the rows whose write needs `confirm_below_cost`, judged on what apply WRITES (a kept price
+    is not written) against the offers read under the lock, for the APPLIER. The amounts are for `costs.view`
+    only (`_refuse_margins` drops them otherwise).
+    """
+    verdicts = {}
+    for row in writing:
+        data = row.normalized_data or {}
+        if data.get('declaration', DECLARATION_NEW) != DECLARATION_NEW:
+            continue        # a repetition or an older message writes no price
+        if row.action == BulkImportRow.CREATE:
+            current = None
+        elif row.action == BulkImportRow.UPDATE:
+            current = offers.get(_pk(data.get('offer_id')))
+            if current is None:
+                continue
+        else:
+            continue
+        values = {}
+        if not (keep_prices and data.get('price_change')):
+            values['commercial_price'] = Decimal(str(data['commercial_price']))
+        if with_cost and data.get('agreed_cost') is not None:
+            values['agreed_cost'] = Decimal(str(data['agreed_cost']))
+        verdict = supply_services.margin_check(values, current=current, may_view_costs=sees_costs)
+        if verdict is None:
+            continue
+        verdicts[row.row_number] = {
+            'verdict': verdict, 'row_number': row.row_number, 'offer_id': data.get('offer_id'),
+            'product_name': data.get('product_name'),
+            'commercial_price': str(values.get('commercial_price', getattr(current, 'commercial_price', ''))),
+            'agreed_cost': str(values.get('agreed_cost', getattr(current, 'agreed_cost', ''))),
+        }
+    return verdicts
+
+
+def _refuse_margins(margins: dict) -> None:
+    """409: the rows to confirm. To who cannot see costs, the same answer whatever the prices: no amounts."""
+    rows = [margins[number] for number in sorted(margins)]
+    names = ', '.join(f'fila {r["row_number"]} «{(r["product_name"] or "")[:40]}»' for r in rows[:5])
+    if any(r['verdict'] == supply_services.BELOW_COST for r in rows):
+        raise OfferImportError(
+            f'{len(rows)} fila(s) dejarían el precio comercial por debajo del costo pactado ({names}): se venderían '
+            'a pérdida. Revisa los precios o confirma que quieres aplicarlas así.', code=supply_services.BELOW_COST,
+            extra={'below_cost': [{k: v for k, v in r.items() if k != 'verdict'} for r in rows]})
+    raise OfferImportError(
+        f'{len(rows)} fila(s) cambian el precio de ofertas con un costo pactado que no puedes ver ({names}): no se '
+        'comprueba si el precio lo cubre. Confírmalo para aplicarlas o pide a alguien con permiso para ver costos '
+        'que las revise.', code=supply_services.COST_UNSEEN,
+        extra={'cost_checks': [{k: r[k] for k in ('row_number', 'offer_id', 'product_name')} for r in rows]})
 
 
 def _learn_code(job, data, *, actor, request) -> int:

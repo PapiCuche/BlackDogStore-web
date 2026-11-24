@@ -54,11 +54,13 @@ class SupplyError(Exception):
     """A supply rule refused something. `field` names the input, when there is one."""
 
     def __init__(self, detail: str, *, field: str = '', code: str = 'invalid',
-                 line: int | None = None, unit_field: str = ''):
+                 line: int | None = None, unit_field: str = '', extra: dict | None = None):
         super().__init__(detail)
         self.detail = detail
         self.field = field
         self.code = code
+        # SUPPLY-GUARDS-01: what the screen needs to ask (the amounts of a price below the cost, to `costs.view`).
+        self.extra = extra or {}
         # SUPPLIER-DEVICE-FLOW-02: a refused device of a reception says WHICH
         # row (1-based) and which of its inputs, so the form marks that input.
         self.line = line
@@ -72,6 +74,7 @@ class SupplyError(Exception):
             payload['line'] = self.line
         if self.unit_field:
             payload['unit_field'] = self.unit_field
+        payload.update(self.extra)
         return payload
 
 
@@ -350,6 +353,82 @@ def _pk(value):
         return None
 
 
+# ---------------------------------------------------------------------------
+# SUPPLY-GUARDS-01 — a commercial price below the agreed cost
+# ---------------------------------------------------------------------------
+
+#: `costs.view`: the price written is below the cost — a sale at a loss. Asked with both amounts.
+BELOW_COST = 'below_cost_confirmation_required'
+#: Without `costs.view`: the price of an offer with a cost they cannot see changes. Asked WHATEVER the price.
+COST_UNSEEN = 'cost_unseen_confirmation_required'
+COST_UNSEEN_TEXT = ('Esta oferta tiene un costo pactado que no puedes ver, así que no se comprueba si el nuevo precio '
+                    'lo cubre. Confirma el cambio de precio o pide a alguien con permiso para ver costos que lo '
+                    'revise.')
+COST_UNSEEN_ROW_TEXT = ('La oferta tiene un costo pactado que no puedes ver: no se comprueba si este precio lo cubre. '
+                        'Al aplicar tendrás que confirmarlo.')
+#: The audit lines of a confirmation. The first one names a comparison: the offer's history hides it from who
+#: cannot see costs (`supplier_views.AdminOfferHistoryView`).
+BELOW_COST_AUDIT = 'supplier_offer_below_cost_confirmed'
+COST_UNSEEN_AUDIT = 'supplier_offer_cost_unseen_confirmed'
+
+
+def below_cost_text(price, cost) -> str:
+    return (f'El precio comercial (S/ {price}) queda por debajo del costo pactado (S/ {cost}): la oferta se vendería '
+            'a pérdida. Confírmalo para guardarla así.')
+
+
+def margin_check(values: dict, *, current=None, may_view_costs: bool) -> str | None:
+    """
+    What a write of `values` (cleaned: `commercial_price`, `agreed_cost`) over `current` (None: a new offer) needs
+    to be confirmed: `BELOW_COST`, `COST_UNSEEN` or nothing.
+
+    Only a write that CHANGES the price or the cost is judged: the editor resends what the offer holds, and an
+    offer already below its cost is not asked about again for its quantity.
+
+    Who cannot see costs never learns the cost, not even one bit of it: an answer that depended on «price < cost»
+    would let them try prices until it flips. So for them the answer is the same whatever the price — any change
+    of the price of an offer that carries a cost is `COST_UNSEEN`.
+    """
+    price = values['commercial_price'] if 'commercial_price' in values else getattr(current, 'commercial_price', None)
+    cost = values['agreed_cost'] if 'agreed_cost' in values else getattr(current, 'agreed_cost', None)
+    if price is None or cost is None:
+        return None
+    price_changes = 'commercial_price' in values and (
+        current is None or values['commercial_price'] != current.commercial_price)
+    cost_changes = 'agreed_cost' in values and (current is None or values['agreed_cost'] != current.agreed_cost)
+    if not (price_changes or cost_changes):
+        return None
+    if not may_view_costs:
+        return COST_UNSEEN
+    return BELOW_COST if price < cost else None
+
+
+def _guard_margin(values, *, current, may_view_costs, confirm_below_cost) -> str | None:
+    """
+    `confirm_below_cost`: None = the caller judged it already (the weekly file, per job); False/True = the
+    panel's request. Refuses an unconfirmed one (409); returns the verdict to audit once written.
+    """
+    if confirm_below_cost is None:
+        return None
+    verdict = margin_check(values, current=current, may_view_costs=may_view_costs)
+    if verdict is None or confirm_below_cost:
+        return verdict
+    if verdict == COST_UNSEEN:
+        raise SupplyError(COST_UNSEEN_TEXT, field='commercial_price', code=COST_UNSEEN)
+    price = values.get('commercial_price', getattr(current, 'commercial_price', None))
+    cost = values.get('agreed_cost', getattr(current, 'agreed_cost', None))
+    raise SupplyError(below_cost_text(price, cost), field='commercial_price', code=BELOW_COST,
+                      extra={'commercial_price': str(price), 'agreed_cost': str(cost)})
+
+
+def audit_margin(verdict, offer, *, actor=None, request=None, **metadata) -> None:
+    """A confirmed price below the cost (or over a cost the person cannot see). Never an amount."""
+    if verdict is None:
+        return
+    _audit(BELOW_COST_AUDIT if verdict == BELOW_COST else COST_UNSEEN_AUDIT, company=offer.company, actor=actor,
+           target_type='supplier_offer', target_id=offer.pk, request=request, **metadata)
+
+
 def _offer_snapshot(offer) -> dict:
     return {
         'supplier_id': offer.supplier_id, 'product_id': offer.product_id,
@@ -370,10 +449,13 @@ def _is_duplicate(exc) -> bool:
     return 'unique_supplier_offer_window' in str(exc)
 
 
-def create_offer(*, company, actor=None, request=None, may_view_costs: bool = False, **fields) -> SupplierOffer:
+def create_offer(*, company, actor=None, request=None, may_view_costs: bool = False,
+                 confirm_below_cost: bool | None = None, **fields) -> SupplierOffer:
     fields.setdefault('supplier_id', None)
     fields.setdefault('product_id', None)
     values = _offer_values(company, fields, may_view_costs=may_view_costs)
+    verdict = _guard_margin(values, current=None, may_view_costs=may_view_costs,
+                            confirm_below_cost=confirm_below_cost)
     try:
         with transaction.atomic():
             offer = SupplierOffer.objects.create(company=company, created_by=actor, **values)
@@ -383,16 +465,22 @@ def create_offer(*, company, actor=None, request=None, may_view_costs: bool = Fa
         raise SupplyError(_DUPLICATE, field='valid_from', code='duplicate') from None
     _audit('supplier_offer_created', company=company, actor=actor, target_type='supplier_offer',
            target_id=offer.pk, request=request, **_offer_snapshot(offer))
+    audit_margin(verdict, offer, actor=actor, request=request, source='panel')
     return offer
 
 
-def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = False, **fields) -> SupplierOffer:
+def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = False,
+                 confirm_below_cost: bool | None = None, **fields) -> SupplierOffer:
+    """`confirm_below_cost`: see `_guard_margin` (None: not judged here)."""
     fields = {k: v for k, v in fields.items() if k not in ('supplier_id', 'product_id')}
     with transaction.atomic():
         locked = SupplierOffer.objects.select_for_update().get(pk=offer.pk)
         values = _offer_values(locked.company, fields, current=locked, may_view_costs=may_view_costs)
         if not values:
             return locked
+        # Under the lock: the price and the cost compared are the ones this write replaces.
+        verdict = _guard_margin(values, current=locked, may_view_costs=may_view_costs,
+                                confirm_below_cost=confirm_below_cost)
         before = _offer_snapshot(locked)
         try:
             with transaction.atomic():
@@ -407,6 +495,7 @@ def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = Fals
             changed.append('agreed_cost')
         _audit('supplier_offer_updated', company=locked.company, actor=actor, target_type='supplier_offer',
                target_id=locked.pk, request=request, changed=sorted(set(changed)), **_offer_snapshot(locked))
+        audit_margin(verdict, locked, actor=actor, request=request, source='panel')
     offer.refresh_from_db()
     return offer
 

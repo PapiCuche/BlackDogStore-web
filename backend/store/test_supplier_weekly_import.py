@@ -112,7 +112,8 @@ class PartialUpdateTest(WeeklyFile, TestCase):
 
     def test_the_identical_file_twice_duplicates_nothing(self):
         rows = [self.same(**{'Cantidad confirmada': 6}), self.row(**{'Código/SKU del producto': self.cable.slug,
-                                                                    'Precio comercial': '39'})]
+                                                                    'Precio comercial': '39',
+                                                                    'Costo pactado': '30'})]   # SUPPLY-GUARDS-01
         first = self.preview(rows).json()
         self.assertEqual((first['rows_update'], first['rows_create']), (1, 1), first['rows'])
         self.assertEqual(self.apply(first['id']).status_code, 200)
