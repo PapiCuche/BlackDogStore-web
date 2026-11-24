@@ -42,8 +42,11 @@ export type PlanOption = {
 };
 export type PlanVariant = {
   ref: string; model_ref: string; line: "new" | "used"; option_refs: string[]; row_keys: string[];
-  status: "existing" | "missing"; product_id: number | null; suggested_name: string; suggested_price: string | null;
+  /** VARIANT-SAFE-01: `archived` — a variant IS it but it is archived: never approvable, never created again. */
+  status: "existing" | "missing" | "archived"; product_id: number | null; suggested_name: string; suggested_price: string | null;
   requires_imei: boolean; creates: { model: boolean; options: string[] };
+  /** VARIANT-SAFE-01: the server's sentence about the archived variant. */
+  archived?: string;
   /** Review HIGH: its rows say different SIMs / regions the catalogue cannot separate — never approvable. */
   mixed?: string;
 };
@@ -51,6 +54,8 @@ export type PlanRow = { key: string; variant_ref: string | null; model_ref: stri
 export type ProposalCounts = {
   models_missing: number; models_existing: number; options_missing: number; options_existing: number;
   variants_missing: number; variants_existing: number; rows_resolved: number; rows_unresolved: number;
+  /** VARIANT-SAFE-01 (absent from an older server). */
+  variants_archived?: number;
 };
 export type Proposal = {
   plan: { models: PlanModel[]; options: PlanOption[]; variants: PlanVariant[] };

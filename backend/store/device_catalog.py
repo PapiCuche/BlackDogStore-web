@@ -466,6 +466,11 @@ def update_model(model, *, actor=None, request=None, **fields) -> ProductModel:
         if not isinstance(fields['is_featured'], bool):
             raise CatalogError('«Destacado» es verdadero o falso.', field='is_featured')
         model.is_featured = fields['is_featured']
+    if 'is_active' in fields:
+        # VARIANT-SAFE-01: only a JSON boolean, like «Destacado».
+        if not isinstance(fields['is_active'], bool):
+            raise CatalogError('«Activo» es verdadero o falso.', field='is_active')
+        model.is_active = fields['is_active']
     try:
         model.full_clean(exclude=['company', 'category'])
     except ValidationError as exc:
@@ -627,6 +632,10 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
     """
     product = Product.objects.select_for_update().get(pk=product.pk)
     company = product.company
+    if product.archived_at is not None:
+        # VARIANT-SAFE-01: an archived variant keeps its model, line and options; unarchive it first.
+        raise CatalogError(f'«{product.name}» está archivada: desarchívala antes de cambiarla.', field='product',
+                           code='variant_archived')
     history = variant_history(product, lock=True)
     rules = edit_rules(history)
     text = ''
@@ -728,6 +737,12 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
         Product.objects.filter(product_model=model, condition_line=condition_line, variant_key=key)
         .exclude(pk=product.pk).first()
     )
+    if clash is not None and clash.archived_at is not None:
+        # VARIANT-SAFE-01: the archived row keeps its combination; it is never created a second time.
+        raise CatalogError(
+            f'«{clash.name}» ya es esa variante de «{model.name}» y está archivada: desarchívala si vuelve a usarse.',
+            field='options', code='duplicate',
+        )
     if clash is not None:
         raise CatalogError(
             f'«{clash.name}» ya es esa variante de «{model.name}».', field='options', code='duplicate',
@@ -930,6 +945,9 @@ def enable_variant_for_sale(product, *, publish=False, actor, request) -> Produc
                            field='product', code='not_a_draft')
     if product.sale_enabled_at is not None:
         raise CatalogError('Esta variante ya está habilitada para la venta.', field='product', code='already_enabled')
+    if product.archived_at is not None:
+        raise CatalogError(f'«{product.name}» está archivada: desarchívala antes de habilitarla.', field='product',
+                           code='variant_archived')
     if product.product_model_id is None:
         raise NotReady(['no_model'])
     model = ProductModel.objects.select_for_update(of=('self',)).filter(company=company, pk=product.product_model_id).first()

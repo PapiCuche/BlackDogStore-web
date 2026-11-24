@@ -41,6 +41,7 @@ _ERROR_STATUS = {
     'variant_reserved': status.HTTP_409_CONFLICT,
     'line_change_with_units': status.HTTP_409_CONFLICT,
     'variant_in_use': status.HTTP_409_CONFLICT,
+    'variant_archived': status.HTTP_409_CONFLICT,
 }
 
 
@@ -55,7 +56,8 @@ def _error(exc: device_catalog.CatalogError) -> Response:
 def _public_models(company):
     if company is None:
         return ProductModel.objects.none()
-    return ProductModel.objects.filter(company=company, is_published_online=True)
+    # VARIANT-SAFE-01: a model the company deactivated leaves the public shop.
+    return ProductModel.objects.filter(company=company, is_published_online=True, is_active=True)
 
 
 class PublicModelListView(APIView):
@@ -205,6 +207,8 @@ def _model_payload(model, *, variants=False, has_palette=None):
         'is_published_online': model.is_published_online, 'sort_order': model.sort_order,
         # PR E: shown first in the public list.
         'is_featured': model.is_featured,
+        # VARIANT-SAFE-01: a deactivated model is out of the public shop.
+        'is_active': model.is_active,
         'variant_count': model.variants.count(),
         # The storefront's branch, like the availability the shop shows.
         'used_unit_count': StockUnit.objects.filter(
@@ -226,6 +230,11 @@ def _model_payload(model, *, variants=False, has_palette=None):
                 'condition_line': product.condition_line, 'price': str(product.price),
                 'is_serialized': product.is_serialized, 'stock': product.inventory,
                 'is_published_online': product.is_published_online,
+                # VARIANT-SAFE-01: deactivated and archived are two states the row shows.
+                'is_active': product.is_active,
+                'archived': product.is_archived,
+                'archived_at': product.archived_at.isoformat() if product.archived_at else None,
+                'archive_reason': product.archive_reason,
                 # CATALOG-VARIANT-IMAGES: what the variant shows (the primary's mirror) and how many it has.
                 'image_url': product.image_url, 'image_count': product.image_count,
                 # CATALOG-VARIANTS-UX: what it carries, and so how it may change.
@@ -292,7 +301,7 @@ class AdminModelDetailView(APIView):
         if model is None:
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         allowed = ('name', 'category_id', 'slug', 'description', 'image_url', 'is_published_online', 'sort_order',
-                   'is_featured')
+                   'is_featured', 'is_active')
         fields = {key: request.data[key] for key in allowed if key in request.data}
         try:
             model = device_catalog.update_model(model, actor=request.user, request=request, **fields)

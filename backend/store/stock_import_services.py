@@ -243,6 +243,11 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
     serialized_ids = set(
         Product.objects.filter(company=company, is_serialized=True).values_list('pk', flat=True)
     )
+    # VARIANT-SAFE-01 — archived variants: a file never writes stock onto one (refused per row).
+    archived = {
+        pk: Product(pk=pk, name=name, archived_at=at) for pk, name, at in
+        Product.objects.filter(company=company, archived_at__isnull=False).values_list('pk', 'name', 'archived_at')
+    }
     # INV-INTAKE-GUARD-01 — used variants still counted by quantity (data from before the guard).
     used_quantity_ids = set(
         Product.objects.filter(company=company, is_serialized=False, condition_line=Product.CONDITION_USED)
@@ -339,6 +344,10 @@ def preview_stock(*, company, actor, upload, filename, branch_map,
                     'No se encontró el producto. Impórtalo primero desde la '
                     'carga masiva de productos.'
                 )
+            elif product_id in archived:
+                from .variant_lifecycle import archived_refusal
+
+                errors.append(archived_refusal(archived[product_id]))
             elif product_id in serialized_ids:
                 # SERIALIZED-STOCK. A file states a NUMBER, and a device is not
                 # a number: its stock is the units on the shelf, each with its
@@ -686,6 +695,17 @@ def apply_stock(*, job, actor):
         locked[(branch.pk, product.pk)] = (
             BranchStock.objects.select_for_update().get(pk=stock.pk).quantity
         )
+
+    # VARIANT-SAFE-01 review — the products, AFTER the shelves (the order this writer already follows: every Kardex line
+    # below ends with an UPDATE of its product's total), and their archive state read under that lock. An archive
+    # (`variant_lifecycle.archive_variant` locks only the product, then counts the stock) either waits for this file and
+    # then sees its stock, or commits first and is seen here: a variant archived since the preview never takes stock.
+    from . import stock_unit_services
+    from .variant_lifecycle import archived_refusal
+
+    stock_unit_services.lock_products(products.values())
+    for product in Product.objects.filter(pk__in=list(products), archived_at__isnull=False):
+        raise StockImportError(f'{archived_refusal(product)} Vuelve a previsualizar sin esa fila.')
 
     if mode == BulkImportJob.MODE_INITIAL:
         _assert_initial_still_valid(ordered, locked, products)

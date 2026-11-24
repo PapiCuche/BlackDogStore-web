@@ -502,6 +502,11 @@ def _resolve(company, model, options, palette):
 
 
 def _usable(product):
+    if product.archived_at is not None:
+        # VARIANT-SAFE-01: the till never receives into (nor creates again) an archived variant.
+        from .variant_lifecycle import archived_refusal
+
+        raise QuickSaleError(archived_refusal(product), code='variant_archived', field='option_ids', status=409)
     if product.is_pending_draft:
         raise QuickSaleError(
             f'«{product.name}» es un borrador sin habilitar para la venta: habilítalo en Catálogo › Modelos antes de '
@@ -622,18 +627,34 @@ def receive(*, company, branch, body, actor, request=None, authority: Authority)
         _lock_combination(company.pk, model.pk, spec['variant_key'])
         product = device_catalog.find_variant(company, spec)      # another till may have created it meanwhile
     price_changed = False
+
+    def decide(variant):
+        """Usable, and whether the typed price changes it (a change needs `set_price`)."""
+        _usable(variant)
+        if body.get('price') in (None, ''):
+            return None, False
+        typed = _money(body.get('price'), 'price', 'el precio de venta')
+        if typed != variant.price and not authority.set_price:
+            raise QuickSaleError(PRICE_FORBIDDEN, code='price_forbidden', field='price', status=403)
+        return typed, typed != variant.price
+
     if product is not None:
-        _usable(product)
-        if body.get('price') not in (None, ''):
-            price = _money(body.get('price'), 'price', 'el precio de venta')
-            if price != product.price:
-                if not authority.set_price:
-                    raise QuickSaleError(PRICE_FORBIDDEN, code='price_forbidden', field='price', status=403)
-                price_changed = True
+        typed, price_changed = decide(product)          # early answer, on the row as read
+        if typed is not None:
+            price = typed
     duplicate = _duplicate(company, row, product)
     if duplicate is not None:
         raise duplicate
     waiting = [] if product is None else _refuse_over_waiting(company, actor, product, branch, confirmed)
+    if product is not None:
+        # VARIANT-SAFE-01 review — decided again on the LOCKED row, so an archive or a deactivation that commits
+        # meanwhile either waits for this reception or is seen by it. AFTER the waiting lines (line → product, the
+        # order of `supply_services.receive_line`: order → line → shelf → product): locking the product before them
+        # closed a cycle with a delivery holding its line and shelf and waiting for the product (re-review of #407).
+        product = Product.objects.select_for_update(of=('self',)).get(pk=product.pk)
+        typed, price_changed = decide(product)
+        if typed is not None:
+            price = typed
 
     if price_changed:
         # Lock order: the product first (DEC-CATALOG-PALETTE-LOCK-01), then the shelf the reception writes.

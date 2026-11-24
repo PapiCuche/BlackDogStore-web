@@ -755,6 +755,9 @@ def company_storefront_products(company):
     # for sale is not for sale, whatever `is_published_online` says — the platform admin can write
     # that flag without any service. `Product.is_sold_online` wears the same belt.
     qs = qs.exclude(Product.pending_draft_q())
+    # VARIANT-SAFE-01: an archived variant is never for sale. The database already keeps it inactive
+    # (`archived_product_is_inactive`); this is the belt `Product.is_sold_online` wears too.
+    qs = qs.filter(archived_at__isnull=True)
     branch = company_fulfillment_branch(company)
     if branch is None:
         return qs.annotate(available_stock=Value(0, output_field=IntegerField()))
