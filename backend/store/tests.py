@@ -3415,12 +3415,16 @@ class AdminProductDetailTest(TestCase):
         self.client.patch(f'/api/admin/products/{self.product.pk}/', {}, format='json')
         self.assertEqual(AdminAuditLog.objects.count(), initial_log_count)
 
-    def test_delete_returns_405(self):
+    def test_delete_without_the_delete_capability_is_refused(self):
+        # VARIANT-SAFE-01: DELETE exists now, but only for `products.delete`
+        # (store.test_variant_safe covers the allowed path). This legacy user
+        # holds no such capability, so nothing is deleted.
         self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SUPERADMIN])
         self.assertEqual(
             self.client.delete(f'/api/admin/products/{self.product.pk}/').status_code,
-            status.HTTP_405_METHOD_NOT_ALLOWED,
+            status.HTTP_403_FORBIDDEN,
         )
+        self.assertTrue(Product.objects.filter(pk=self.product.pk).exists())
 
     def test_nonexistent_product_returns_404(self):
         self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
