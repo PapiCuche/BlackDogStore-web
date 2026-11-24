@@ -7,8 +7,8 @@
  */
 
 import {
-  CatalogApiError, type AdminModelPalette, type AttributeRole, type CatalogLine, type PaletteStatus, type PaletteVariant,
-  type ResolverStatus,
+  CatalogApiError, type AdminModelPalette, type AttributeRole, type CatalogLine, type PaletteCombination, type PaletteStatus,
+  type PaletteVariant, type ResolverStatus,
 } from "./internal-api";
 
 /** What a role is called on screen. Its attribute keeps the company's own name. */
@@ -266,4 +266,55 @@ export function pendingCreations(
 /** «14:05» — the local time of a read, for «datos de hh:mm». */
 export function clockTime(date: Date): string {
   return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+/**
+ * CATALOG-ADMIN-UX-B — «Crear variante» is per LINE. The configurations table reads either every line together (as
+ * before: a configuration «Con variante» in any line) or ONE line, where a configuration that exists only in the other
+ * line is still missing here and offered.
+ */
+export type LineView = "all" | CatalogLine;
+
+/** The key of a creation waiting for a read: the configuration and the line it was created in. */
+export const lineKey = (key: string, line: CatalogLine) => `${key}|${line}`;
+
+/** Whether `combination` already has a product (archived too: it keeps its combination) in `line`. */
+export function heldInLine(combination: Pick<PaletteCombination, "products">, line: CatalogLine): boolean {
+  return combination.products.some((product) => product.condition_line === line);
+}
+
+/** In `line`, held only by archived rows: «Archivada», never offered again. */
+export function archivedInLine(combination: Pick<PaletteCombination, "products">, line: CatalogLine): boolean {
+  const rows = combination.products.filter((product) => product.condition_line === line);
+  return rows.length > 0 && rows.every((product) => product.archived);
+}
+
+/**
+ * The creations (`lineKey` → product id) a new palette read has not confirmed yet: kept while the configuration
+ * still shows nothing of that line and the product is unknown to the read. A configuration that left the matrix
+ * (a palette change, an exclusion) drops its entry.
+ */
+export function pendingLineCreations(
+  pending: ReadonlyMap<string, number | null>,
+  palette: Pick<AdminModelPalette, "combinations" | "variants">,
+): Map<string, number | null> {
+  const next = new Map<string, number | null>();
+  for (const [entry, productId] of pending) {
+    const cut = entry.lastIndexOf("|");
+    const key = entry.slice(0, cut);
+    const line = entry.slice(cut + 1) as CatalogLine;
+    const combination = palette.combinations.find((c) => c.key === key);
+    if (!combination || heldInLine(combination, line)) continue;
+    const known = productId !== null && (
+      palette.variants.some((v) => v.product_id === productId)
+      || combination.products.some((p) => p.product_id === productId));
+    if (!known) next.set(entry, productId);
+  }
+  return next;
+}
+
+/** Whether some creation of `key` (in any line) is still waiting for a read. */
+export function pendingForKey(pending: ReadonlyMap<string, number | null>, key: string): boolean {
+  for (const entry of pending.keys()) if (entry.slice(0, entry.lastIndexOf("|")) === key) return true;
+  return false;
 }

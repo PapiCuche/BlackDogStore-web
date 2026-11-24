@@ -458,7 +458,9 @@ class StatusMatrixTest(PaletteShop, TestCase):
         self.assertEqual(body['summary'], {'combinations': 4, 'existing': 3, 'valid_without_variant': 1,
                                            'outside': 1, 'incomplete': 1, 'archived': 0,
                                            # A1b-2: the cockpit's «Revisar» (outside + incomplete here) and the roles the palette lacks.
-                                           'pending_drafts': 0, 'needs_review': 2, 'roles_missing': ['sim', 'region']})
+                                           'pending_drafts': 0, 'needs_review': 2, 'roles_missing': ['sim', 'region'],
+                                           # CATALOG-ADMIN-UX-B: new 128 Negro + 256 Negro; used 128 Azul.
+                                           'valid_without_variant_by_line': {'new': 2, 'used': 3}})
         self.assertFalse(body['truncated'])
 
     def test_a_model_without_palette_has_no_combinations_and_no_statuses(self):

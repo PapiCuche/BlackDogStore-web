@@ -558,31 +558,64 @@ def variant_history(product, *, lock=False) -> dict:
 
     `lock`: take the rows of its devices first (review P2), so a hold or a
     sale that locks them queues behind the change instead of racing it.
+
+    CATALOG-ADMIN-UX-B: read through `variant_histories`, so one variant and
+    a whole model's variants are counted by the very same queries.
     """
-    from django.db.models import Sum
+    if lock:
+        # INV-UNIT-CORRECT-01: a voided device never was one of the variant's devices.
+        list(StockUnit.objects.filter(product_id=product.pk).exclude(status=StockUnit.Status.VOIDED)
+             .select_for_update().values_list('pk', flat=True))
+    return variant_histories([product.pk])[product.pk]
+
+
+def variant_histories(product_ids) -> dict[int, dict]:
+    """
+    CATALOG-ADMIN-UX-B — `variant_history` of MANY variants at once: product id → the same dict. Five
+    aggregate queries whatever the number of variants (the model editor used to read seven per variant).
+    An id without anything carries the empty history. Nothing is locked here (`variant_history(lock=True)`).
+    """
+    from django.db.models import Count, Sum
 
     from .models import BranchStock, Order, OrderItem, StockMovement
 
+    ids = sorted({int(pk) for pk in product_ids})
+    out = {pk: {'sold': 0, 'units': 0, 'reserved': 0, 'stock': 0, 'moved': False, 'open_orders': 0,
+                'conditions': []} for pk in ids}
+    if not ids:
+        return out
+    items = OrderItem.objects.filter(product_id__in=ids)
+    for pk, n in items.order_by().values('product_id').annotate(n=Count('pk')).values_list('product_id', 'n'):
+        out[pk]['sold'] = n
+    conditions: dict[int, set] = {}
     # INV-UNIT-CORRECT-01: a voided device never was one of the variant's devices.
-    units = StockUnit.objects.filter(product_id=product.pk).exclude(status=StockUnit.Status.VOIDED)
-    if lock:
-        list(units.select_for_update().values_list('pk', flat=True))
-    items = OrderItem.objects.filter(product_id=product.pk)
-    return {
-        'sold': items.count(),
-        'units': units.exclude(status=StockUnit.Status.WRITTEN_OFF).count(),
-        'reserved': units.filter(status=StockUnit.Status.RESERVED).count(),
-        'stock': int(BranchStock.objects.filter(product_id=product.pk).aggregate(n=Sum('quantity'))['n'] or 0),
-        'moved': StockMovement.objects.filter(product_id=product.pk).exists(),
-        # Paid and not handed over yet. An unpaid checkout is not counted: if it
-        # still holds a device, that device is RESERVED (review P2: abandoned
-        # checkouts never expire and must not freeze a variant).
-        'open_orders': items.filter(order__status=Order.Status.PAID).exclude(
-            order__fulfillment_status__in=[Order.FulfillmentStatus.DELIVERED, Order.FulfillmentStatus.CANCELLED],
-        ).values('order_id').distinct().count(),
-        # The physical condition of its devices: what a line must agree with.
-        'conditions': sorted(set(units.exclude(status=StockUnit.Status.WRITTEN_OFF).values_list('condition', flat=True))),
-    }
+    units = (StockUnit.objects.filter(product_id__in=ids).exclude(status=StockUnit.Status.VOIDED).order_by()
+             .values('product_id', 'status', 'condition').annotate(n=Count('pk'))
+             .values_list('product_id', 'status', 'condition', 'n'))
+    for pk, unit_status, condition, n in units:
+        if unit_status != StockUnit.Status.WRITTEN_OFF:
+            out[pk]['units'] += n
+            # The physical condition of its devices: what a line must agree with.
+            conditions.setdefault(pk, set()).add(condition)
+        if unit_status == StockUnit.Status.RESERVED:
+            out[pk]['reserved'] += n
+    for pk, found in conditions.items():
+        out[pk]['conditions'] = sorted(found)
+    for pk, n in (BranchStock.objects.filter(product_id__in=ids).order_by().values('product_id')
+                  .annotate(n=Sum('quantity')).values_list('product_id', 'n')):
+        out[pk]['stock'] = int(n or 0)
+    for pk in StockMovement.objects.filter(product_id__in=ids).order_by().values_list('product_id', flat=True).distinct():
+        out[pk]['moved'] = True
+    # Paid and not handed over yet. An unpaid checkout is not counted: if it
+    # still holds a device, that device is RESERVED (review P2: abandoned
+    # checkouts never expire and must not freeze a variant).
+    open_items = items.filter(order__status=Order.Status.PAID).exclude(
+        order__fulfillment_status__in=[Order.FulfillmentStatus.DELIVERED, Order.FulfillmentStatus.CANCELLED],
+    )
+    for pk, n in (open_items.order_by().values('product_id').annotate(n=Count('order_id', distinct=True))
+                  .values_list('product_id', 'n')):
+        out[pk]['open_orders'] = n
+    return out
 
 
 def edit_rules(history) -> dict:
@@ -619,7 +652,7 @@ def _may_override(user, company) -> bool:
 
 @transaction.atomic
 def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, option_ids=(),
-                actor=None, request=None, reason='') -> Product:
+                actor=None, request=None, reason='', require_palette=False) -> Product:
     """
     Make `product` the variant of a model with these options, or (model_id None)
     a product of its own again. Its stock, price and history do not move.
@@ -629,6 +662,10 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
     one with a device on hold does not change at all; its line (new / used)
     never changes while it holds devices. Leaving the identity as it is, is
     always allowed.
+
+    `require_palette` (CATALOG-ADMIN-UX-B, `create_variant_product`): a model without a palette is refused
+    (`no_palette`), decided under the model's lock. Classifying an existing product keeps the A1 rule: a
+    model without a palette admits any option of the company.
     """
     product = Product.objects.select_for_update().get(pk=product.pk)
     company = product.company
@@ -729,10 +766,17 @@ def set_variant(product, *, model_id, condition_line=Product.CONDITION_NEW, opti
     # A1 — the palette of the model decides what may be combined. Leaving a variant exactly as it is
     # (same model, same options; only its line, price or publication move) is always allowed: what
     # exists is never invalidated backwards, it is reported (`model_palette.variant_status`).
-    if not (product.product_model_id == model.pk and product.variant_key == key):
-        from .model_palette import check_variant
+    unchanged = product.product_model_id == model.pk and product.variant_key == key
+    if require_palette or not unchanged:
+        from .model_palette import check_variant, palette_of
 
-        check_variant(model, options)
+        palette = palette_of(model)
+        if require_palette and not palette:
+            raise CatalogError(
+                f'«{model.name}» todavía no dice qué opciones admite: define su paleta en «Opciones de este modelo» '
+                'antes de crear variantes.', field='options', code='no_palette')
+        if not unchanged:
+            check_variant(model, options, palette=palette)
     clash = (
         Product.objects.filter(product_model=model, condition_line=condition_line, variant_key=key)
         .exclude(pk=product.pk).first()
@@ -827,7 +871,9 @@ def create_variant_product(company, model, *, condition_line, option_ids, name=N
     The combination goes through `set_variant`, so the palette rules (`option_not_in_palette`,
     `variant_incomplete`), the tenancy (`not_found` for a foreign option) and the `duplicate` guard are
     the same as for every other variant, and the lock order is product → units → model
-    (DEC-CATALOG-PALETTE-LOCK-01). Nothing is written when any of them refuses.
+    (DEC-CATALOG-PALETTE-LOCK-01). Nothing is written when any of them refuses. CATALOG-ADMIN-UX-B: a
+    model WITHOUT a palette is refused too (`no_palette`, 409): the matrix this endpoint serves exists only
+    with one, and a model that admits anything would take any colour of the company.
 
     `name`: the operator's, or generated by `variant_name` (the audit says which).
     """
@@ -862,8 +908,9 @@ def create_variant_product(company, model, *, condition_line, option_ids, name=N
     product.full_clean(exclude=['slug'])
     product.save()
     try:
+        # CATALOG-ADMIN-UX-B: a variant is born FROM a palette; a model without one says first what it admits.
         product = set_variant(product, model_id=model.pk, condition_line=condition_line, option_ids=wanted,
-                              actor=actor, request=request)
+                              actor=actor, request=request, require_palette=True)
     except CatalogError as exc:
         # `set_variant` names its input «options»; this endpoint's is `option_ids`.
         if exc.field == 'options':
@@ -918,6 +965,23 @@ class NotReady(CatalogError):
         labels = {**PROBLEM_LABELS, **DRAFT_PROBLEM_LABELS}
         return {**super().body(), 'problems': self.problems,
                 'labels': {code: labels[code] for code in self.problems if code in labels}}
+
+
+class ExclusionHeld(CatalogError):
+    """
+    CATALOG-ADMIN-UX-B — `model_palette.add_exclusions(refuse_held=True)` refused: the pair to exclude is already a
+    variant of the model. `variants` names them (id, name, line, archived) in the body.
+    """
+
+    def __init__(self, model, variants):
+        names = ', '.join(f'«{v["name"]}»' for v in variants[:5]) + (' y otras' if len(variants) > 5 else '')
+        super().__init__(
+            f'Esa combinación ya existe en «{model.name}»: {names}. Excluirla diría que no existe: archiva o corrige '
+            'esas variantes antes.', field='pairs', code='exclusion_held_by_variants')
+        self.variants = list(variants)
+
+    def body(self) -> dict:
+        return {**super().body(), 'variants': self.variants}
 
 
 @transaction.atomic

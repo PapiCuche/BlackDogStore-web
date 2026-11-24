@@ -204,7 +204,7 @@ from .device_catalog_views import (
     AdminCatalogSettingsView,
     AdminGradeDetailView, AdminGradeListView, AdminGradeSeedView, AdminModelBulkVisibilityView, AdminModelDetailView, AdminModelListView,
     AdminAccessoryCandidatesView, AdminCatalogImageHealthView, AdminCatalogImageSourcesView, AdminModelAccessoriesView,
-    AdminModelPaletteView, AdminModelVariantCreateView, AdminOptionDetailView, AdminPaletteSuggestionsView,
+    AdminModelExclusionsView, AdminModelPaletteView, AdminModelVariantCreateView, AdminOptionDetailView, AdminPaletteSuggestionsView,
     AdminProductEnableSaleView,
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
 )
@@ -379,6 +379,9 @@ urlpatterns = [
          name='admin-catalog-models-bulk-visibility'),
     path('admin/catalog/models/<int:pk>/', AdminModelDetailView.as_view(), name='admin-catalog-model'),
     path('admin/catalog/models/<int:pk>/palette/', AdminModelPaletteView.as_view(), name='admin-catalog-model-palette'),
+    # CATALOG-ADMIN-UX-B — the configurations a model does not have (add / remove impossible pairs).
+    path('admin/catalog/models/<int:pk>/exclusions/', AdminModelExclusionsView.as_view(),
+         name='admin-catalog-model-exclusions'),
     # CATALOG-REFERENCE-01 · PR E — the model's own order of its options, and its «Configuración comercial».
     path('admin/catalog/models/<int:pk>/option-order/', AdminModelOptionOrderView.as_view(),
          name='admin-catalog-model-option-order'),
