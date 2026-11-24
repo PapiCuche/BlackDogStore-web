@@ -96,8 +96,11 @@ class CostsViewMigrationTest(TestCase):
         self.assertEqual(labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES), finance.ADMIN_PREVIOUS)
         copies = importlib.import_module('store.migrations.0161_document_copy_capability')
         self.assertEqual(finance.ADMIN_PREVIOUS | set(finance.NEW_CAPABILITIES), copies.ADMIN_PREVIOUS)
+        # USED-READY-01 (0187, `inventory.units.inspect`) starts where SALES-EMAIL-03 ended and is the last node.
+        inspect_used = importlib.import_module('store.migrations.0187_used_unit_readiness')
+        self.assertEqual(copies.ADMIN_PREVIOUS | set(copies.NEW_CAPABILITIES), inspect_used.ADMIN_PREVIOUS)
         self.assertEqual(
-            copies.ADMIN_PREVIOUS | set(copies.NEW_CAPABILITIES),
+            inspect_used.ADMIN_PREVIOUS | set(inspect_used.NEW_CAPABILITIES),
             frozenset(DEFAULT_ADMIN_CAPABILITY_CODES),
         )
         self.assertTrue(DEFAULT_ADMIN_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES)

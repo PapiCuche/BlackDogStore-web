@@ -853,6 +853,15 @@ def _sell_chosen_units(order: Order, branch, items, *, actor=None, strict: bool 
             .filter(pk=item.stock_unit_id, company_id=order.company_id, branch=branch, product_id=item.product_id)
             .first()
         )
+        if (unit is not None and product.condition_line == product.CONDITION_USED
+                and unit.inspection_status != StockUnit.Inspection.APPROVED):
+            # USED-READY-01 — its inspection was rejected (or reopened) after the buyer took it: the money is in, so
+            # the payment is not refused; the line is flagged for a person, as a device that is gone.
+            _flag_stock_shortfall(
+                order, item,
+                f'El equipo elegido de "{product.name}" ya no tiene la inspección aprobada: no se vende.',
+            )
+            continue
         held_for_us = (
             unit is not None and unit.status == StockUnit.Status.RESERVED and unit.hold_key
             and (unit.hold_order_id == order.pk or (buyer_key and unit.hold_key == buyer_key))

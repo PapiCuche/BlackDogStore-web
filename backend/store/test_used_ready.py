@@ -29,7 +29,8 @@ from store.models import (
     AdminAuditLog, BranchStock, Product, StockMovement, StockUnit, UnitPhoto,
 )
 from store.pos_services import PosValidationError
-from store.test_device_commerce import DeviceShop, _client
+from store import inventory_services
+from store.test_device_commerce import DeviceShop, SaleShop, _client
 from store.test_pos_unit_price import UsedBase
 from store.test_stock_units import IMEI_A, IMEI_B, IMEI_C
 from rest_framework.test import APIClient
@@ -523,6 +524,22 @@ class InternalPathsApiTest(Ip1PosBase):
         with self.assertRaises(unit_identification.UnitIdentificationError) as caught:
             unit_identification.candidate_for_order(order=order, code=IMEI_B, method='scanner')
         self.assertEqual((caught.exception.code, caught.exception.http_status), ('unit_not_inspected', 409))
+
+
+class PaidHoldOfARejectedDeviceTest(SaleShop, TestCase):
+    """A buyer held a ready device; its inspection was rejected before the money arrived: never sold, flagged."""
+
+    def test_the_payment_does_not_sell_it_and_says_why(self):
+        holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
+                   unit_public_id=str(self.used_a.public_id))
+        order = self.checkout()
+        used_units.set_inspection(self.used_a, decision='rejected', note='Pantalla con manchas')
+        self.pay(order)
+        order.refresh_from_db()
+        self.used_a.refresh_from_db()
+        self.assertNotEqual(self.used_a.status, 'sold')
+        self.assertTrue(StockUnit.objects.filter(pk=self.used_a.pk, order__isnull=True).exists())
+        self.assertEqual([r['product_id'] for r in inventory_services.order_stock_shortfall(order)], [self.used128.pk])
 
 
 # ---------------------------------------------------------------------------
