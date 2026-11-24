@@ -96,8 +96,13 @@ class CostsViewMigrationTest(TestCase):
         self.assertEqual(labels.ADMIN_PREVIOUS | set(labels.NEW_CAPABILITIES), finance.ADMIN_PREVIOUS)
         copies = importlib.import_module('store.migrations.0161_document_copy_capability')
         self.assertEqual(finance.ADMIN_PREVIOUS | set(finance.NEW_CAPABILITIES), copies.ADMIN_PREVIOUS)
+        # SALES-QUOTE-01 (`sales.quotes.*`) starts where SALES-EMAIL-03 ended and is the last node.
+        from store.test_sales_quotes import sales_quote_migration
+
+        quotes = sales_quote_migration()
+        self.assertEqual(copies.ADMIN_PREVIOUS | set(copies.NEW_CAPABILITIES), quotes.ADMIN_PREVIOUS)
         self.assertEqual(
-            copies.ADMIN_PREVIOUS | set(copies.NEW_CAPABILITIES),
+            quotes.ADMIN_PREVIOUS | set(quotes.NEW_CAPABILITIES),
             frozenset(DEFAULT_ADMIN_CAPABILITY_CODES),
         )
         self.assertTrue(DEFAULT_ADMIN_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES)

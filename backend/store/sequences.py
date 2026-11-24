@@ -68,6 +68,21 @@ DEFAULT_PADDING = 6
 DEFAULT_REPAIR_PREFIX = 'SRV-'
 DEFAULT_REPAIR_PADDING = 6
 
+# SALES-QUOTE-01 — the commercial quote series, a SEED like the two above: written
+# into the company's own row the first time it quotes. Never F or B (`InternalSequence.clean`).
+DEFAULT_QUOTE_PREFIX = 'COT-'
+DEFAULT_QUOTE_PADDING = 6
+
+
+def resolve_sequence_for_quote(company) -> InternalSequence:
+    """The series that numbers `company`'s commercial quotes: company scope (see `sequence_scope`)."""
+    if company is None:
+        raise SequenceError('La cotización no pertenece a ninguna empresa.')
+    return ensure_company_sequence(
+        company, InternalSequence.DOCUMENT_SALES_QUOTE,
+        prefix=DEFAULT_QUOTE_PREFIX, padding=DEFAULT_QUOTE_PADDING,
+    )
+
 
 class SequenceError(Exception):
     """A numbering rule was broken. Views map this to HTTP 400."""

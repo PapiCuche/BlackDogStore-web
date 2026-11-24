@@ -343,6 +343,8 @@ LEGACY_ROLE_CAPABILITIES: dict[str, frozenset[str]] = {
         # `sales.analytics.view` is NOT here, also matching the preset: ringing
         # up a cable does not require seeing the company's turnover.
         'sales.pos.use',
+        # SALES-QUOTE-01: quoting, like the `Ventas` preset; approving is not here.
+        'sales.quotes.view', 'sales.quotes.manage',
     ]),
     UserProfile.ROLE_INVENTORY: frozenset([
         'company.view', 'products.view', 'reports.view',

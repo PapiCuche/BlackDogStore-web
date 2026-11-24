@@ -62932,12 +62932,17 @@ class SvcCollectPresetTest(TestCase):
         # …SALES-EMAIL-03 (0161, `sales.documents.send_copy`) starts where FIN-B1 ended…
         copies = self.migration('0161_document_copy_capability')
         self.assertEqual(finance.ADMIN_PREVIOUS | set(finance.NEW_CAPABILITIES), copies.ADMIN_PREVIOUS)
+        # …SALES-QUOTE-01 (`sales.quotes.*`) starts where SALES-EMAIL-03 ended…
+        from store.test_sales_quotes import sales_quote_migration
+
+        quotes = sales_quote_migration()
+        self.assertEqual(copies.ADMIN_PREVIOUS | set(copies.NEW_CAPABILITIES), quotes.ADMIN_PREVIOUS)
         # …and THE TRIPWIRE: the last one ends at today's preset (the catalogue
         # minus the explicit grants). It fails when the catalogue grows, and the
         # node that grows it is the one that has to say what happens to this preset.
         from .capabilities import DEFAULT_ADMIN_CAPABILITY_CODES
         self.assertEqual(
-            copies.ADMIN_PREVIOUS | set(copies.NEW_CAPABILITIES),
+            quotes.ADMIN_PREVIOUS | set(quotes.NEW_CAPABILITIES),
             frozenset(DEFAULT_ADMIN_CAPABILITY_CODES),
         )
         self.assertTrue(DEFAULT_ADMIN_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES)

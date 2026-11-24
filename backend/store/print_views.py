@@ -501,6 +501,8 @@ def _job_payload(job: PrintJob) -> dict:
         # LABEL-04, aditivo: un lote de etiquetas no tiene pedido; tiene su lote y su rollo.
         'label_batch': job.label_batch_id,
         'label_size': job.label_size,
+        # SALES-QUOTE-01, aditivo: el ticket de una cotización no tiene pedido; tiene su cotización.
+        'sales_quote': job.sales_quote_id,
     }
 
 

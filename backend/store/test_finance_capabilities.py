@@ -76,7 +76,12 @@ class MigrationTest(TestCase):
         # preset lives with the last one (`tests.py`, preset chain).
         later = importlib.import_module('store.migrations.0161_document_copy_capability')
         self.assertEqual(self.module.ADMIN_PREVIOUS | set(self.module.NEW_CAPABILITIES), later.ADMIN_PREVIOUS)
-        self.assertEqual(later.ADMIN_PREVIOUS | set(later.NEW_CAPABILITIES), DEFAULT_ADMIN_CAPABILITY_CODES)
+        # SALES-QUOTE-01 continues it and is the last node.
+        from store.test_sales_quotes import sales_quote_migration
+
+        quotes = sales_quote_migration()
+        self.assertEqual(later.ADMIN_PREVIOUS | set(later.NEW_CAPABILITIES), quotes.ADMIN_PREVIOUS)
+        self.assertEqual(quotes.ADMIN_PREVIOUS | set(quotes.NEW_CAPABILITIES), DEFAULT_ADMIN_CAPABILITY_CODES)
         self.assertNotIn('from store.capabilities import', inspect.getsource(self.module))
 
 
@@ -95,9 +100,13 @@ class LegacyAdminKeepsEverythingItHadTest(TestCase):
         for role in (UserProfile.ROLE_ADMIN, UserProfile.ROLE_SUPERADMIN):
             held = LEGACY_ROLE_CAPABILITIES[role]
             self.assertEqual(sorted(before - held), [], role)
-            # …plus what later nodes added for every administrator (0161, SALES-EMAIL-03).
+            # …plus what later nodes added for every administrator (0161, SALES-EMAIL-03; SALES-QUOTE-01).
             later = importlib.import_module('store.migrations.0161_document_copy_capability')
-            self.assertEqual(held - before, DEFAULTS | set(later.NEW_CAPABILITIES), role)
+            from store.test_sales_quotes import sales_quote_migration
+
+            quotes = sales_quote_migration()
+            self.assertEqual(held - before, DEFAULTS | set(later.NEW_CAPABILITIES) | set(quotes.NEW_CAPABILITIES),
+                             role)
 
     def test_only_new_finance_codes_are_withheld(self):
         withheld = EXPLICIT_GRANT_CODES - {'inventory.counts.approve_own'}  # DEC-INV-06, not finance
