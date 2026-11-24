@@ -98,7 +98,9 @@ class PartialUpdateTest(WeeklyFile, TestCase):
         self.assertEqual(self.offer_now().valid_until, self.offer.valid_until)
 
     def test_offers_the_file_does_not_mention_are_untouched(self):
-        other = self.make_offer(product=self.cable, confirmed_quantity=3, commercial_price='35.00')
+        # SUPPLY-GUARDS-01: a cost below the price (the service refuses a below-cost offer by default).
+        other = self.make_offer(product=self.cable, confirmed_quantity=3, commercial_price='35.00',
+                                agreed_cost='30.00')
         before = SupplierOffer.objects.get(pk=other.pk)
         body = self.preview([self.same(**{'Cantidad confirmada': 7})]).json()
         self.assertEqual(self.apply(body['id']).status_code, 200)
@@ -112,7 +114,8 @@ class PartialUpdateTest(WeeklyFile, TestCase):
 
     def test_the_identical_file_twice_duplicates_nothing(self):
         rows = [self.same(**{'Cantidad confirmada': 6}), self.row(**{'Código/SKU del producto': self.cable.slug,
-                                                                    'Precio comercial': '39'})]
+                                                                    'Precio comercial': '39',
+                                                                    'Costo pactado': '30'})]   # SUPPLY-GUARDS-01
         first = self.preview(rows).json()
         self.assertEqual((first['rows_update'], first['rows_create']), (1, 1), first['rows'])
         self.assertEqual(self.apply(first['id']).status_code, 200)
