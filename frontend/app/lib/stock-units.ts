@@ -436,10 +436,10 @@ export class UnitImportVoidError extends StockUnitApiError {
  * entered (`blocking`). A second call answers `changed: false`.
  */
 export async function voidUnitImport(
-  jobId: number, reason: string,
+  jobId: number, reason: string, confirmUsed = false,
 ): Promise<UnitImportJob & { changed: boolean; voided: UnitImportVoided | null }> {
   const res = await fetchWithAuth(`${BASE}/import/${jobId}/void/`, {
-    method: "POST", body: JSON.stringify({ reason }),
+    method: "POST", body: JSON.stringify({ reason, ...(confirmUsed ? { confirm_used: true } : {}) }),
   });
   const body = await res.json().catch(() => null);
   if (!res.ok) {
@@ -456,7 +456,8 @@ export async function voidUnitImport(
 
 /** INV-LOAD-02 — the device loads already registered (newest first), for their before/after and annulment. */
 export async function fetchRecentUnitLoads(): Promise<(UnitImportJob & { applied_at?: string | null })[]> {
-  const res = await fetchWithAuth(`${API_BASE}/admin/imports/?type=units`);
+  // `status=applied` on the server: an older registered load stays listed however many previews came after it.
+  const res = await fetchWithAuth(`${API_BASE}/admin/imports/?type=units&status=applied`);
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const detail = body && typeof body === "object" && "detail" in body ? String(body.detail) : "";
@@ -464,6 +465,25 @@ export async function fetchRecentUnitLoads(): Promise<(UnitImportJob & { applied
   }
   const results: (UnitImportJob & { applied_at?: string | null })[] = body?.results ?? [];
   return results.filter((job) => job.status === "applied");
+}
+
+/**
+ * INV-LOAD-02 review — what annulling a load would do NOW (writes nothing): devices it would annul, the ones that stop
+ * it, how many were already inspected, published or photographed (that work is lost: it is confirmed), and how long
+ * the reason may be.
+ */
+export type UnitImportVoidPreview = {
+  units: number;
+  blocking: UnitImportBlocking[];
+  inspected: number;
+  published: number;
+  with_photos: number;
+  reason_max: number;
+  voided: UnitImportVoided | null;
+};
+
+export function fetchUnitImportVoidPreview(jobId: number): Promise<UnitImportVoidPreview> {
+  return call<UnitImportVoidPreview>(`/import/${jobId}/void/`);
 }
 
 /** INV-LOAD-02 — the before/after of an applied load, per branch × product, as a file. */

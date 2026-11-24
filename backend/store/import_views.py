@@ -745,7 +745,8 @@ def _batch_refusal(exc) -> Response:
 
 class AdminUnitImportVoidView(APIView):
     """
-    INV-LOAD-02 — POST …/units/import/<id>/void/  {reason}
+    INV-LOAD-02 — GET  …/units/import/<id>/void/  what an annulment would do now (writes nothing);
+                  POST …/units/import/<id>/void/  {reason, confirm_used}
 
     Annuls every device of an applied load (`unit_import_batch.void_job`): all of them or none, 409
     `batch_not_voidable` naming each device that moved. `inventory.adjust` within every branch of the load, as the
@@ -754,7 +755,18 @@ class AdminUnitImportVoidView(APIView):
 
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminImportThrottle]
-    http_method_names = ['post', 'options']
+    http_method_names = ['get', 'post', 'options']
+
+    def get(self, request, pk):
+        _company, job, error = _applied_units_job(request, pk)
+        if error:
+            return error
+        from . import unit_import_batch
+
+        try:
+            return Response(unit_import_batch.void_preview(job))
+        except unit_import_batch.BatchError as exc:
+            return _batch_refusal(exc)
 
     @answers_busy
     def post(self, request, pk):
@@ -763,9 +775,10 @@ class AdminUnitImportVoidView(APIView):
             return error
         from . import unit_import_batch
 
-        reason = request.data.get('reason') if isinstance(request.data, dict) else ''
+        data = request.data if isinstance(request.data, dict) else {}
         try:
-            job, changed = unit_import_batch.void_job(job, reason=reason, actor=request.user, request=request)
+            job, changed = unit_import_batch.void_job(job, reason=data.get('reason') or '', actor=request.user,
+                                                      request=request, confirm_used=data.get('confirm_used') is True)
         except unit_import_batch.BatchError as exc:
             return _batch_refusal(exc)
         return Response({**_job_payload(job), 'changed': changed, 'voided': (job.summary or {}).get('voided')})
@@ -902,6 +915,10 @@ class AdminImportHistoryView(APIView):
             return error
 
         import_type = request.query_params.get('type') or ''
+        # INV-LOAD-02 review — `?status=applied`: the registered loads, however many previews came after them.
+        wanted_status = request.query_params.get('status') or ''
+        if wanted_status and wanted_status not in dict(BulkImportJob.STATUS_CHOICES):
+            return _error('Estado de importación inválido.')
         if import_type:
             if import_type not in dict(BulkImportJob.TYPE_CHOICES):
                 return _error('Tipo de importación inválido.')
@@ -918,7 +935,7 @@ class AdminImportHistoryView(APIView):
 
         queryset = (
             BulkImportJob.objects
-            .filter(company=company, import_type__in=sorted(visible))
+            .filter(company=company, import_type__in=sorted(visible), **({'status': wanted_status} if wanted_status else {}))
             .select_related('created_by', 'applied_by')
             .order_by('-created_at', '-pk')
         )

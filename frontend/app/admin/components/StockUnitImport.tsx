@@ -13,12 +13,13 @@
  */
 
 import Link from "next/link";
-import { useRef, useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import {
-  applyUnitImport, previewUnitImport, unitImportErrorsUrl, unitImportReportUrl, unitImportTemplateUrl,
-  voidUnitImport, UnitImportVoidError,
-  type UnitImportBlocking, type UnitImportJob, type UnitImportRow, type UnitImportSimulation,
+  applyUnitImport, fetchUnitImportVoidPreview, previewUnitImport, unitImportErrorsUrl, unitImportReportUrl,
+  unitImportTemplateUrl, voidUnitImport, UnitImportVoidError,
+  type UnitImportBlocking, type UnitImportJob, type UnitImportLine, type UnitImportRow, type UnitImportSimulation,
+  type UnitImportVoidPreview,
 } from "@/app/lib/stock-units";
 
 import { CostColumnNotice } from "./CostColumnNotice";
@@ -96,11 +97,15 @@ const LINE_LABELS: Record<string, string> = { new: "equipos nuevos", used: "semi
  * them has done anything since it entered, the answer names it and nothing changes. The reason is mandatory.
  */
 export function AnnulLoad({ job, onAnnulled }: { job: UnitImportJob; onAnnulled: (job: UnitImportJob) => void }) {
+  const headingId = useId();
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [blocking, setBlocking] = useState<UnitImportBlocking[]>([]);
+  // INV-LOAD-02 review — what the annulment would do, asked to the server before confirming.
+  const [preview, setPreview] = useState<UnitImportVoidPreview | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
   const voided = job.summary.voided;
 
   if (voided) {
@@ -112,12 +117,27 @@ export function AnnulLoad({ job, onAnnulled }: { job: UnitImportJob; onAnnulled:
     );
   }
 
+  async function start() {
+    setOpen(true);
+    setWorking(true);
+    setError(null);
+    try {
+      const next = await fetchUnitImportVoidPreview(job.id);
+      setPreview(next);
+      setBlocking(next.blocking);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "No se pudo preparar la anulación.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
   async function annul() {
     setWorking(true);
     setError(null);
     setBlocking([]);
     try {
-      onAnnulled(await voidUnitImport(job.id, reason.trim()));
+      onAnnulled(await voidUnitImport(job.id, reason.trim(), confirmed));
       setOpen(false);
     } catch (e: unknown) {
       if (e instanceof UnitImportVoidError) setBlocking(e.blocking);
@@ -129,24 +149,39 @@ export function AnnulLoad({ job, onAnnulled }: { job: UnitImportJob; onAnnulled:
 
   if (!open) {
     return (
-      <button type="button" className={internalButtonClass} onClick={() => setOpen(true)}>
+      <button type="button" className={internalButtonClass} onClick={start}>
         Anular esta carga
       </button>
     );
   }
+  const prepared = preview ? preview.inspected + preview.published + preview.with_photos > 0 : false;
+  const count = preview?.units ?? job.summary.applied?.units ?? 0;
   return (
-    <section aria-labelledby="unit-import-annul" className="space-y-3 rounded-lg border border-bd-border px-4 py-3">
-      <h3 id="unit-import-annul" className="text-sm font-semibold text-foreground">Anular esta carga</h3>
+    <section aria-labelledby={headingId} className="space-y-3 rounded-lg border border-bd-border px-4 py-3">
+      <h3 id={headingId} className="text-sm font-semibold text-foreground">Anular esta carga</h3>
       <p className="text-sm text-muted">
         Cada equipo que entró con este archivo sale del stock con una línea de corrección en el Kardex (nada se
         borra). Si alguno ya se vendió, apartó, trasladó o cambió de variante, no se anula ninguno.
       </p>
+      {prepared && preview ? (
+        <div role="note" aria-label="Trabajo hecho sobre estos equipos" className="space-y-2 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning">
+          <p>
+            Ya se trabajó sobre estos equipos: {preview.inspected} inspeccionados, {preview.published} publicados y{" "}
+            {preview.with_photos} con fotos. Al anular la carga salen del stock y de la web.
+          </p>
+          <label className="flex items-center gap-2 font-semibold">
+            <input type="checkbox" checked={confirmed} disabled={working}
+              onChange={(e) => setConfirmed(e.target.checked)} />
+            Entiendo que se anulan también los equipos inspeccionados, publicados o con fotos
+          </label>
+        </div>
+      ) : null}
       <label className="block text-xs font-semibold text-muted">
         Motivo de la anulación
         <textarea
           className={`mt-1 ${internalInputClass}`}
           value={reason}
-          maxLength={300}
+          maxLength={preview?.reason_max ?? 240}
           rows={2}
           disabled={working}
           onChange={(e) => setReason(e.target.value)}
@@ -166,10 +201,10 @@ export function AnnulLoad({ job, onAnnulled }: { job: UnitImportJob; onAnnulled:
         <button
           type="button"
           className={internalPrimaryButtonClass}
-          disabled={working || !reason.trim()}
+          disabled={working || !preview || !reason.trim() || blocking.length > 0 || (prepared && !confirmed)}
           onClick={annul}
         >
-          Anular {plural(job.summary.applied?.units ?? 0, "equipo", "equipos")}
+          Anular {plural(count, "equipo", "equipos")}
         </button>
         <button type="button" className={internalButtonClass} disabled={working} onClick={() => setOpen(false)}>
           Cancelar
@@ -188,6 +223,9 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
   const [branch, setBranch] = useState("");
   const [reason, setReason] = useState("");
   const [entryKind, setEntryKind] = useState<"purchase" | "opening">("purchase");
+  // INV-LOAD-02 review — which devices the file loads, ALWAYS said: a renamed or pasted sheet no longer says it, and
+  // a used device must never enter as new by default. «mixed» = the combined template, row by row (its «Línea»).
+  const [line, setLine] = useState<UnitImportLine | "mixed" | "">("");
   const [job, setJob] = useState<UnitImportJob | null>(null);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -279,6 +317,22 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
               </select>
             </label>
             <fieldset className="md:col-span-2">
+              <legend className="block text-xs font-semibold text-muted">Equipos del archivo (obligatorio)</legend>
+              <div className="mt-1 flex flex-wrap gap-4 text-sm text-foreground">
+                {([
+                  ["new", "Nuevos"],
+                  ["used", "Seminuevos"],
+                  ["mixed", "Ambos: la columna «Línea» de la plantilla combinada lo dice en cada fila"],
+                ] as const).map(([value, label]) => (
+                  <label key={value} className="flex items-center gap-2">
+                    <input type="radio" name="unit-import-line" value={value} disabled={working}
+                      checked={line === value} onChange={() => { setLine(value); setJob(null); }} />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </fieldset>
+            <fieldset className="md:col-span-2">
               {/* INV-OPENING-01 — what these devices ARE in the Kardex. */}
               <legend className="block text-xs font-semibold text-muted">Tipo de ingreso</legend>
               <div className="mt-1 flex flex-wrap gap-4 text-sm text-foreground">
@@ -311,12 +365,16 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
             <button
               type="button"
               className={internalPrimaryButtonClass}
-              disabled={!file || working || applied}
-              onClick={() => file && run(() => previewUnitImport(file, { branch: branch ? Number(branch) : null, reason, entryKind }))}
+              disabled={!file || !line || working || applied}
+              onClick={() => file && line && run(() => previewUnitImport(file, {
+                branch: branch ? Number(branch) : null, reason, entryKind, line: line === "mixed" ? undefined : line,
+              }))}
             >
               Previsualizar
             </button>
-            <span className="text-xs text-muted">Previsualizar no registra nada.</span>
+            <span className="text-xs text-muted">
+              {line ? "Previsualizar no registra nada." : "Elige si el archivo trae equipos nuevos o seminuevos."}
+            </span>
           </div>
         </div>
       </Panel>

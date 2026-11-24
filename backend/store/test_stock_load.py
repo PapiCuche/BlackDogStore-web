@@ -840,3 +840,124 @@ class SyntheticStockLoadTest(LoadShop, SaleShop, TestCase):
 
     def client_for_inspector(self):
         return client_for(self.inspector)
+
+
+# ---------------------------------------------------------------------------
+# 8. Review of #409
+# ---------------------------------------------------------------------------
+
+class LineNeverGuessedTest(LoadShop, TestCase):
+    """A used device never enters as new because the sheet was renamed or pasted into another workbook."""
+
+    def setUp(self):
+        self.build('invload2-guess')
+        # The dangerous case: the same options exist in BOTH lines, so a default of «new» would find a variant.
+        self.new_blue = self.variant('Teléfono X 128 GB Azul', 'tx-128-azul', '3100.00', [self.gb128, self.blue])
+
+    def renamed(self, rows, sheet='Hoja1'):
+        book = load_workbook(io.BytesIO(self.template('used').content))
+        book.worksheets[0].title = sheet
+        headers = [c.value for c in book.worksheets[0][1]]
+        for offset, row in enumerate(rows):
+            for header, value in row.items():
+                book.worksheets[0].cell(row=3 + offset, column=headers.index(header) + 1, value=value)
+        out = io.BytesIO()
+        book.save(out)
+        return SimpleUploadedFile('copia.xlsx', out.getvalue(), content_type=XLSX)
+
+    def test_used_details_without_a_line_are_a_row_error_not_a_new_device(self):
+        upload = self.renamed([self.used_row('GUESS-0001', **{'Garantía (días)': 90})])
+        response = self.loader_api.post(PREVIEW_URL, {'file': upload, 'reason': 'X'}, format='multipart')
+        self.assertEqual(response.status_code, 201, response.content)
+        payload = response.json()
+        self.assertEqual(payload['counts']['create'], 0, payload['rows'])
+        self.assertIn('nuevo o seminuevo', self.errors(payload)[3])
+
+    def test_the_same_file_with_the_line_chosen_on_screen_loads_used(self):
+        upload = self.renamed([self.used_row('GUESS-0002', **{'Garantía (días)': 90})])
+        response = self.loader_api.post(PREVIEW_URL, {'file': upload, 'reason': 'X', 'line': 'used'},
+                                        format='multipart')
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertEqual(response.json()['counts']['error'], 0, response.json()['rows'])
+        self.apply(response.json())
+        self.assertEqual(StockUnit.objects.get(serial_number='GUESS-0002').product, self.used128)
+
+    def test_a_row_that_says_its_line_keeps_the_old_behaviour(self):
+        from store.test_cost_imports import upload as legacy_upload
+        from store.test_unit_import import HEADERS as LEGACY
+
+        headers = [*LEGACY, 'Modelo', 'Capacidad', 'Color', 'Línea', 'Garantía (días)']
+        file = legacy_upload(headers, [['', '', self.branch.name, 'GUESS-0003', next(self._imeis), '', '', '',
+                                        'Inventario', 'Teléfono X', '128 GB', 'Negro', 'Nuevo', '30']], title='Equipos')
+        payload = self.loader_api.post(PREVIEW_URL, {'file': file}, format='multipart').json()
+        self.assertEqual(payload['counts']['error'], 0, payload['rows'])
+        self.assertTrue(any('ignorado en un equipo nuevo' in w for r in payload['rows'] for w in r['warnings']))
+
+
+class VoidReviewTest(LoadShop, TestCase):
+    def setUp(self):
+        self.build('invload2-vrev')
+        self.job = self.apply(self.preview('used', [self.used_row('VREV-0001'), self.used_row('VREV-0002')],
+                                           entry_kind='purchase', reason='Compra F001-1'))
+        self.units = list(StockUnit.objects.filter(serial_number__startswith='VREV-').order_by('pk'))
+
+    def preview_void(self):
+        response = self.loader_api.get(void_url(self.job['id']))
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_a_device_in_a_draft_transfer_blocks_the_batch_and_the_single_annulment(self):
+        from store import transfer_unit_services
+
+        transfer = inventory.create_stock_transfer(company=self.company, source_branch=self.branch,
+                                                   destination_branch=self.north, actor=self.staff)
+        transfer_unit_services.add_unit(transfer, code=self.units[0].imei, method='scanner', actor=self.staff)
+        body = self.loader_api.post(void_url(self.job['id']), {'reason': 'Error'}, format='json')
+        self.assertEqual(body.status_code, 409, body.content)
+        self.assertEqual([b['unit_id'] for b in body.json()['blocking']], [self.units[0].pk])
+        self.assertIn('transferencia', body.json()['blocking'][0]['reason'])
+        with self.assertRaises(units.StockUnitError):
+            units.void_unit(self.units[0], reason='Error', reason_code='typo', actor=self.staff)
+        self.assertEqual(self.preview_void()['blocking'][0]['unit_id'], self.units[0].pk)
+
+    def test_the_preview_counts_what_was_already_prepared_and_the_annulment_asks_to_confirm_it(self):
+        clean = self.preview_void()
+        self.assertEqual((clean['units'], clean['inspected'], clean['published'], clean['with_photos'],
+                          clean['blocking']), (2, 0, 0, 0, []))
+        self.assertGreater(clean['reason_max'], 200)
+        self.assertLess(clean['reason_max'], 300)
+        from store.used_unit_test_support import ready_used
+
+        ready_used(self.units[0], sale_price='1999.00')
+        said = self.preview_void()
+        self.assertEqual((said['inspected'], said['published'], said['with_photos']), (1, 1, 1))
+        refused = self.loader_api.post(void_url(self.job['id']), {'reason': 'Error'}, format='json')
+        self.assertEqual(refused.status_code, 409, refused.content)
+        self.assertEqual(refused.json()['code'], 'confirm_used_ready')
+        self.assertEqual(StockUnit.objects.filter(status=StockUnit.Status.VOIDED).count(), 0)
+        done = self.loader_api.post(void_url(self.job['id']), {'reason': 'Error', 'confirm_used': True},
+                                    format='json')
+        self.assertEqual(done.status_code, 200, done.content)
+        self.assertEqual(StockUnit.objects.filter(status=StockUnit.Status.VOIDED).count(), 2)
+
+    def test_the_preview_writes_nothing_and_respects_the_tenant(self):
+        movements = StockMovement.objects.count()
+        self.preview_void()
+        self.assertEqual(StockMovement.objects.count(), movements)
+        other = _p3_company('invload2-vrev-otra', 'Otra')
+        stranger, _ = _p2d_member(other, 'invload2_vrev_ajeno', ['company.view', 'inventory.view', 'inventory.adjust'])
+        self.assertEqual(client_for(stranger).get(void_url(self.job['id'])).status_code, 404)
+
+
+class AppliedHistoryTest(LoadShop, TestCase):
+    def setUp(self):
+        self.build('invload2-hist')
+
+    def test_applied_loads_older_than_a_page_of_previews_are_still_listed(self):
+        applied = self.apply(self.preview('new', [self.new_row('HIST-0001')], entry_kind='purchase'))
+        BulkImportJob.objects.bulk_create([
+            BulkImportJob(company=self.company, import_type=BulkImportJob.UNITS, created_by=self.loader,
+                          mapping_snapshot={'branch_ids': [self.branch.pk]}) for _ in range(55)])
+        listed = self.loader_api.get('/api/admin/imports/', {'type': 'units', 'status': 'applied'}).json()['results']
+        self.assertEqual([job['id'] for job in listed], [applied['id']])
+        self.assertEqual(self.loader_api.get('/api/admin/imports/', {'status': 'otra'}).status_code, 400)

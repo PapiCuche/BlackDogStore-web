@@ -878,6 +878,13 @@ def entry_movement_if_clean(unit):
     return lines[0]
 
 
+def in_draft_transfer(unit) -> bool:
+    """SERIAL-TRANSFER-01 — the device is on a transfer still being prepared: its line there names it."""
+    from .models import StockTransfer, StockTransferUnit
+
+    return StockTransferUnit.objects.filter(unit_id=unit.pk, transfer__status=StockTransfer.STATUS_DRAFT).exists()
+
+
 def _not_correctable(why: str) -> StockUnitError:
     return StockUnitError(f'Este equipo no se puede anular: {why}', code=NOT_CORRECTABLE, status=409)
 
@@ -907,6 +914,9 @@ def void_unit(unit, *, reason, reason_code, actor=None, request=None) -> StockUn
     if entry is None:
         raise _not_correctable('tiene movimientos después de su ingreso (o no se encuentra su ingreso). '
                                'Un equipo con historial no se anula.')
+    if in_draft_transfer(current):
+        # INV-LOAD-02 review: annulled, it would still sit on the draft and break its dispatch.
+        raise _not_correctable('está en una transferencia en borrador. Quítalo de la transferencia primero.')
     movement = _move(
         current, expected=StockUnit.Status.AVAILABLE, to_status=StockUnit.Status.VOIDED,
         movement_type=StockMovement.CORRECTION_NEGATIVE,
@@ -968,9 +978,7 @@ def move_unit_to_variant(unit, *, product, reason, actor=None, request=None) -> 
     if entry is None:
         raise _not_correctable('tiene movimientos después de su ingreso (o no se encuentra su ingreso). '
                                'Un equipo con historial no se corrige aquí.')
-    from .models import StockTransfer, StockTransferUnit
-
-    if StockTransferUnit.objects.filter(unit_id=current.pk, transfer__status=StockTransfer.STATUS_DRAFT).exists():
+    if in_draft_transfer(current):
         # SERIAL-TRANSFER-01: its line in that draft names THIS variant; moving it would break the dispatch.
         raise _not_correctable('está en una transferencia en borrador. Quítalo de la transferencia primero.')
     if product.requires_imei and not current.imei:

@@ -698,6 +698,9 @@ def _opening_problem(branch, product) -> str:
     return opening_problem(branch, product)
 
 
+LINE_UNSAID = ('La fila trae datos de seminuevo y no dice si el equipo es nuevo o seminuevo: elige la línea al subir '
+               'el archivo, usa la plantilla de su línea o llena «Línea».')
+
 SUPPLIERS_FORBIDDEN = ('No tienes permiso para ver proveedores: deja vacía la columna «Proveedor» (lo completa quien '
                        'los administra).')
 
@@ -841,7 +844,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             product_id, match_error, _matched_by, match_warnings = index.match(
                 code=fields['code'], name=fields['name'],
             )
-        line_text, errors_line = fields['line'], ''
+        line_text, errors_line, by_model = fields['line'], '', False
         if line:
             # INV-LOAD-02 — the line of the template (or of the screen) decides; a «Línea» cell may only agree.
             try:
@@ -871,6 +874,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                 else:
                     # A2 (P8): what the company's vocabulary read (an alias, «256gb», a folded label) is said.
                     product_id, match_error, match_warnings = variant.pk, None, list(notes)
+                    by_model = True
         warnings.extend(match_warnings)
         product = products.get(product_id)
         if errors_line:
@@ -982,6 +986,12 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
 
         # USED-READY-01 — warranty, functional state, defects and accessories are a used device's: in a new one they
         # are ignored and said, like its price.
+        # INV-LOAD-02 review — a row found by its MODEL whose line nobody said (no template, no line chosen on screen,
+        # no «Línea» cell) took the default, NEW. With a used device's data on it, that is a guess: never loaded.
+        stated = [name for name in sorted(USED_TEMPLATE_FIELDS) if fields[name]]
+        if not line and not fields['line'] and stated and fields['model'] and (
+                product is None or (by_model and product.condition_line != LINE_USED)):
+            errors.append(LINE_UNSAID)
         used_details = {name: fields[name] for name in _USED_COLUMNS if fields[name]}
         if used_details and product is not None and product.condition_line != 'used':
             warnings.append(f'{", ".join(_USED_COLUMNS[n] for n in used_details)}: ignorado en un equipo nuevo.')

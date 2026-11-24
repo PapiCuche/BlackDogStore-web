@@ -36,6 +36,7 @@ let calls: Call[];
 let previewReply: { status: number; body: unknown };
 let applyReply: { status: number; body: unknown };
 let voidReply: { status: number; body: unknown };
+let voidPreviewReply: { status: number; body: unknown };
 
 function reply(status: number, body: unknown): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
@@ -45,6 +46,9 @@ beforeEach(() => {
   calls = [];
   previewReply = { status: 201, body: job() };
   applyReply = { status: 200, body: job({ status: 'applied', is_applicable: false, summary: { units: 2, applied: { units: 2, movements: 2 } } }) };
+  voidPreviewReply = { status: 200, body: {
+    units: 2, blocking: [], inspected: 0, published: 0, with_photos: 0, reason_max: 236, voided: null,
+  } };
   voidReply = { status: 200, body: job({
     status: 'applied', is_applicable: false, changed: true,
     summary: { units: 2, applied: { units: 2, movements: 2 }, voided: { units: 2, at: '2026-11-24T10:00:00Z', by: 'ana', reason: 'Archivo duplicado' } },
@@ -54,6 +58,9 @@ beforeEach(() => {
     const path = String(input).replace(/^.*\/admin\/inventory\/units/, '');
     calls.push({ method: (init.method ?? 'GET').toUpperCase(), path, form: init.body instanceof FormData ? init.body : null });
     if (path.startsWith('/import/preview/')) return reply(previewReply.status, previewReply.body);
+    if (path.includes('/void/') && (init.method ?? 'GET').toUpperCase() === 'GET') {
+      return reply(voidPreviewReply.status, voidPreviewReply.body);
+    }
     if (path.includes('/void/')) return reply(voidReply.status, voidReply.body);
     return reply(applyReply.status, applyReply.body);
   });
@@ -62,6 +69,8 @@ beforeEach(() => {
 function attach() {
   const file = new File(['x'], 'equipos.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   fireEvent.change(screen.getByLabelText('Archivo de equipos (.xlsx)'), { target: { files: [file] } });
+  // INV-LOAD-02 review: the line of the file is always said.
+  fireEvent.click(screen.getByRole('radio', { name: 'Nuevos' }));
   return file;
 }
 
@@ -255,15 +264,18 @@ test('INV-LOAD-02: an applied load offers its before/after and, for used devices
 test('INV-LOAD-02: annulling a load asks for a reason and says what it did', async () => {
   await applied();
   fireEvent.click(screen.getByRole('button', { name: 'Anular esta carga' }));
-  const confirm = screen.getByRole('button', { name: 'Anular 2 equipos' });
+  const confirm = await screen.findByRole('button', { name: 'Anular 2 equipos' });
   expect(confirm).toBeDisabled();
+  await waitFor(() => expect(screen.getByLabelText('Motivo de la anulación')).toHaveAttribute('maxLength', '236'));
   fireEvent.change(screen.getByLabelText('Motivo de la anulación'), { target: { value: 'Archivo duplicado' } });
   fireEvent.click(confirm);
 
   await screen.findByText(/Esta carga se anuló/);
   const sent = send.mock.calls.find(([input]) => String(input).includes('/void/'));
   expect(String(sent?.[0])).toMatch(/\/import\/31\/void\/$/);
-  expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ reason: 'Archivo duplicado' });
+  expect(JSON.parse(String(sent?.[1]?.body ?? 'null'))).toBeNull();      // the first call is the preview (GET)
+  const posted = send.mock.calls.find(([input, init]) => String(input).includes('/void/') && init?.method === 'POST');
+  expect(JSON.parse(String(posted?.[1]?.body))).toEqual({ reason: 'Archivo duplicado' });
   expect(screen.getByText(/2 equipos salieron del stock/)).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Anular esta carga' })).toBeNull();
 });
@@ -275,11 +287,63 @@ test('INV-LOAD-02: a load with a device that moved is not annulled, and the devi
   } };
   await applied();
   fireEvent.click(screen.getByRole('button', { name: 'Anular esta carga' }));
-  fireEvent.change(screen.getByLabelText('Motivo de la anulación'), { target: { value: 'Error' } });
+  fireEvent.change(await screen.findByLabelText('Motivo de la anulación'), { target: { value: 'Error' } });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Anular 2 equipos' })).toBeEnabled());
   fireEvent.click(screen.getByRole('button', { name: 'Anular 2 equipos' }));
 
   expect(await screen.findByRole('alert')).toHaveTextContent('No se anuló ningún equipo');
   const list = screen.getByRole('list', { name: 'Equipos que impiden anular' });
   expect(within(list).getByText(/U4827193056: Está vendido\./)).toBeInTheDocument();
   expect(screen.queryByText(/Esta carga se anuló/)).toBeNull();
+});
+
+test('INV-LOAD-02 review: nothing is previewed until the line of the file is said, and it travels', async () => {
+  render(<StockUnitImport branches={BRANCHES} />);
+  const file = new File(['x'], 'copia.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  fireEvent.change(screen.getByLabelText('Archivo de equipos (.xlsx)'), { target: { files: [file] } });
+  expect(screen.getByRole('button', { name: 'Previsualizar' })).toBeDisabled();
+  expect(screen.getByText('Elige si el archivo trae equipos nuevos o seminuevos.')).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole('radio', { name: 'Seminuevos' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
+  await screen.findByRole('table', { name: 'Equipos del archivo' });
+  expect(calls[0].form?.get('line')).toBe('used');
+
+  fireEvent.click(screen.getByRole('radio', { name: /Ambos: la columna «Línea»/ }));
+  fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
+  await waitFor(() => expect(calls).toHaveLength(2));
+  expect(calls[1].form?.has('line')).toBe(false);
+});
+
+test('INV-LOAD-02 review: devices already inspected, published or photographed need an explicit confirmation', async () => {
+  voidPreviewReply = { status: 200, body: {
+    units: 2, blocking: [], inspected: 2, published: 1, with_photos: 1, reason_max: 236, voided: null,
+  } };
+  await applied();
+  fireEvent.click(screen.getByRole('button', { name: 'Anular esta carga' }));
+  const said = await screen.findByRole('note', { name: 'Trabajo hecho sobre estos equipos' });
+  expect(said).toHaveTextContent('2 inspeccionados, 1 publicados y 1 con fotos');
+  fireEvent.change(screen.getByLabelText('Motivo de la anulación'), { target: { value: 'Error' } });
+  const confirm = screen.getByRole('button', { name: 'Anular 2 equipos' });
+  expect(confirm).toBeDisabled();
+  fireEvent.click(within(said).getByRole('checkbox'));
+  expect(confirm).toBeEnabled();
+  fireEvent.click(confirm);
+  await screen.findByText(/Esta carga se anuló/);
+  const posted = send.mock.calls.find(([input, init]) => String(input).includes('/void/') && init?.method === 'POST');
+  expect(JSON.parse(String(posted?.[1]?.body))).toEqual({ reason: 'Error', confirm_used: true });
+});
+
+test('INV-LOAD-02 review: devices that moved are named before anything is tried', async () => {
+  voidPreviewReply = { status: 200, body: {
+    units: 1, inspected: 0, published: 0, with_photos: 0, reason_max: 236, voided: null,
+    blocking: [{ unit_id: 9, label_code: 'U1111111116', product_id: 3, branch_id: 1, status: 'available',
+      reason: 'Está en una transferencia en borrador: quítalo de ella primero.' }],
+  } };
+  await applied();
+  fireEvent.click(screen.getByRole('button', { name: 'Anular esta carga' }));
+  const list = await screen.findByRole('list', { name: 'Equipos que impiden anular' });
+  expect(within(list).getByText(/U1111111116: Está en una transferencia en borrador/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Motivo de la anulación'), { target: { value: 'Error' } });
+  expect(screen.getByRole('button', { name: 'Anular 1 equipo' })).toBeDisabled();
 });

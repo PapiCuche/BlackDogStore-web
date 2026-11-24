@@ -55,11 +55,77 @@ def _blocking(unit, why: str) -> dict:
             'branch_id': unit.branch_id, 'status': unit.status, 'reason': why}
 
 
+CONFIRM_USED = 'confirm_used_ready'
+
+
+def reason_room(job) -> int:
+    """How long the reason of an annulment may be: each device's Kardex line reads «Anulación de ingreso (…): Carga
+    #N: <motivo>» and the whole of it fits the line."""
+    kardex = f'Anulación de ingreso ({stock_unit_services.VOID_REASONS[BATCH_REASON_CODE]}): '
+    return stock_unit_services.MAX_REASON - len(kardex) - len(f'Carga #{job.pk}: ')
+
+
+def _unit_ids(job) -> list:
+    unit_ids = ((job.summary or {}).get('applied') or {}).get('unit_ids')
+    if unit_ids is None:
+        raise BatchError(
+            'Esta carga se registró antes de que el sistema guardara la lista de sus equipos: no se adivina cuáles '
+            'eran. Anúlalos uno por uno desde Inventario › Equipos («Anular ingreso»).',
+            code=UNKNOWN_UNITS, status=409,
+        )
+    return unit_ids
+
+
+def _assess(devices) -> tuple[list, list]:
+    """(blocking, to_void) — the same verdict for the preview and the annulment."""
+    blocking, to_void = [], []
+    for unit in devices:
+        if unit.status == StockUnit.Status.VOIDED:
+            continue                    # annulled on its own already: nothing left to do for it
+        if unit.status != StockUnit.Status.AVAILABLE:
+            blocking.append(_blocking(unit, f'Está {unit.get_status_display().lower()}.'))
+        elif stock_unit_services.entry_movement_if_clean(unit) is None:
+            blocking.append(_blocking(unit, 'Tiene movimientos después de su ingreso.'))
+        elif stock_unit_services.in_draft_transfer(unit):
+            blocking.append(_blocking(unit, 'Está en una transferencia en borrador: quítalo de ella primero.'))
+        else:
+            to_void.append(unit)
+    return blocking, to_void
+
+
+def _prepared(units) -> dict:
+    """INV-LOAD-02 review — how many of `units` somebody already worked on: inspected, published, photographed."""
+    from .models import UnitPhoto
+
+    ids = [unit.pk for unit in units]
+    return {
+        'inspected': sum(unit.inspection_status != StockUnit.Inspection.PENDING for unit in units),
+        'published': sum(bool(unit.published_online) for unit in units),
+        'with_photos': UnitPhoto.objects.filter(unit_id__in=ids).values('unit_id').distinct().count() if ids else 0,
+    }
+
+
+def void_preview(job) -> dict:
+    """
+    What annulling the load would do NOW, without writing anything: how many devices, which ones stop it, and how many
+    were already inspected, published or photographed (that work is lost with the annulment, so it is confirmed).
+    """
+    _units_job(job)
+    summary = job.summary or {}
+    base = {'voided': summary.get('voided'), 'reason_max': reason_room(job)}
+    if summary.get('voided'):
+        return {**base, 'units': 0, 'blocking': [], 'inspected': 0, 'published': 0, 'with_photos': 0}
+    devices = list(StockUnit.objects.filter(company=job.company, pk__in=_unit_ids(job)).order_by('pk'))
+    blocking, to_void = _assess(devices)
+    return {**base, 'units': len(to_void), 'blocking': blocking, **_prepared(to_void)}
+
+
 @transaction.atomic
-def void_job(job, *, reason, actor=None, request=None):
+def void_job(job, *, reason, actor=None, request=None, confirm_used=False):
     """
     Annul every device an applied units load created. Returns `(job, changed)`; a second call is `(job, False)`.
-    Raises `BatchError` (409 `batch_not_voidable` with `blocking`) and writes nothing when any device moved.
+    Raises `BatchError` (409 `batch_not_voidable` with `blocking`) and writes nothing when any device moved, and 409
+    `confirm_used_ready` when a device was already inspected, published or photographed and `confirm_used` is not set.
     """
     job = BulkImportJob.objects.select_for_update().get(pk=job.pk)
     _units_job(job)
@@ -70,20 +136,11 @@ def void_job(job, *, reason, actor=None, request=None):
         text = stock_unit_services.clean_reason(reason)
     except stock_unit_services.StockUnitError:
         raise BatchError('Escribe el motivo de la anulación de la carga.', field='reason') from None
-    # Each device's Kardex line reads «Anulación de ingreso (…): Carga #N: <motivo>»: the whole of it fits the line.
-    prefix = f'Carga #{job.pk}: '
-    kardex = f'Anulación de ingreso ({stock_unit_services.VOID_REASONS[BATCH_REASON_CODE]}): '
-    room = stock_unit_services.MAX_REASON - len(kardex) - len(prefix)
+    room = reason_room(job)
     if len(text) > room:
         raise BatchError(f'El motivo de la anulación admite hasta {room} caracteres.', field='reason')
-    line_reason = prefix + text
-    unit_ids = (summary.get('applied') or {}).get('unit_ids')
-    if unit_ids is None:
-        raise BatchError(
-            'Esta carga se registró antes de que el sistema guardara la lista de sus equipos: no se adivina cuáles '
-            'eran. Anúlalos uno por uno desde Inventario › Equipos («Anular ingreso»).',
-            code=UNKNOWN_UNITS, status=409,
-        )
+    line_reason = f'Carga #{job.pk}: {text}'
+    unit_ids = _unit_ids(job)
 
     from .receipt_services import lock_shelves
 
@@ -93,21 +150,19 @@ def void_job(job, *, reason, actor=None, request=None):
     lock_shelves((branches[b], products[p]) for b, p in sorted(pairs))
     devices = list(StockUnit.objects.select_for_update().filter(company=job.company, pk__in=unit_ids).order_by('pk'))
 
-    blocking, to_void = [], []
-    for unit in devices:
-        if unit.status == StockUnit.Status.VOIDED:
-            continue                    # annulled on its own already: nothing left to do for it
-        if unit.status != StockUnit.Status.AVAILABLE:
-            blocking.append(_blocking(unit, f'Está {unit.get_status_display().lower()}.'))
-        elif stock_unit_services.entry_movement_if_clean(unit) is None:
-            blocking.append(_blocking(unit, 'Tiene movimientos después de su ingreso.'))
-        else:
-            to_void.append(unit)
+    blocking, to_void = _assess(devices)
     if blocking:
         raise BatchError(
             f'No se anuló ningún equipo: {len(blocking)} equipo(s) de esta carga ya se movieron (venta, apartado, '
             f'traslado, cambio de variante o baja). Resuélvelos uno por uno o anula los demás desde su ficha.',
             code=NOT_VOIDABLE, status=409, blocking=blocking,
+        )
+    prepared = _prepared(to_void)
+    if any(prepared.values()) and not confirm_used:
+        raise BatchError(
+            f'No se anuló ningún equipo: {prepared["inspected"]} ya se inspeccionaron, {prepared["published"]} están '
+            f'publicados y {prepared["with_photos"]} tienen fotos. Confírmalo para anular igual.',
+            code=CONFIRM_USED, status=409,
         )
 
     # Products in id order, then shelves, then devices: each line updates its product row (`create_stock_movement`).
@@ -129,7 +184,8 @@ def void_job(job, *, reason, actor=None, request=None):
         actor=actor, action='stock_units_import_voided', target_type='bulk_import_job', target_id=job.pk,
         # How many and where; the free reason may carry an identifier and stays on the job, never in the trail.
         metadata={'company_id': job.company_id, 'job_id': job.pk, 'units': len(to_void),
-                  'branch_ids': sorted({unit.branch_id for unit in to_void}), 'reason_code': BATCH_REASON_CODE},
+                  'branch_ids': sorted({unit.branch_id for unit in to_void}), 'reason_code': BATCH_REASON_CODE,
+                  **{key: value for key, value in prepared.items() if value}},
         request=request, company=job.company,
     )
     return job, True

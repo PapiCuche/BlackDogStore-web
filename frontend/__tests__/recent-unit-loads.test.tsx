@@ -31,7 +31,8 @@ test('nothing is asked until the person asks; only registered loads are listed',
   expect(send).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Ver cargas registradas' }));
   const table = await screen.findByRole('table', { name: 'Cargas de equipos registradas' });
-  expect(String(send.mock.calls[0][0])).toMatch(/\/admin\/imports\/\?type=units$/);
+  // The server filters the registered loads: an older one is listed however many previews came after it.
+  expect(String(send.mock.calls[0][0])).toMatch(/\/admin\/imports\/\?type=units&status=applied$/);
   expect(within(table).getByText('stock-41.xlsx')).toBeInTheDocument();
   expect(within(table).getByText('stock-39.xlsx')).toBeInTheDocument();
   expect(within(table).queryByText('stock-40.xlsx')).toBeNull();
