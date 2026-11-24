@@ -109,8 +109,13 @@ ORIGIN_PENDING, ORIGIN_ENABLED = 'Paleta · pendiente', 'Paleta · habilitada el
 STOCK_REPORT_HEADERS = ['Código', 'Código de barras', 'Producto', 'Categoría', 'Tipo', 'Sucursal', 'Cantidad',
                         'Costo promedio']
 UNIT_REASON_HEADER = 'Motivo / referencia'
+UNIT_SUPPLIER_HEADER = 'Proveedor'
+#: INV-LOAD-01 — the template's reception columns. The report keeps its own («Fecha de ingreso» with the time, «Notas»)
+#: and does not repeat these.
+UNIT_LOAD_ONLY = (UNIT_SUPPLIER_HEADER, 'Fecha de ingreso', 'Notas internas', 'Detalles para el comprador')
 #: The report says what happened to each device instead of asking why it came in.
-UNIT_REPORT_HEADERS = [header for header in unit_import_services.HEADERS if header != UNIT_REASON_HEADER] + [
+UNIT_REPORT_HEADERS = [header for header in unit_import_services.HEADERS
+                       if header != UNIT_REASON_HEADER and header not in UNIT_LOAD_ONLY] + [
     'Estado', 'Fecha de ingreso', 'Pedido', 'Notas',
 ]
 
@@ -121,7 +126,9 @@ UNIT_REPORT_HEADERS = [header for header in unit_import_services.HEADERS if head
 #: The template columns a download leaves EMPTY on purpose; every other one is
 #: filled (`test_inventory_exports.TemplateDriftTest` holds both lists to it).
 PRODUCT_LEFT_EMPTY = ('Imagen principal', 'Imágenes')
-UNIT_LEFT_EMPTY = (UNIT_REASON_HEADER,)
+#: «Proveedor» (INV-LOAD-01) is, like the reason, the reception's that loads the file — and not every exporter may
+#: read who sold a device (`stock_unit_views.may_see_suppliers`).
+UNIT_LEFT_EMPTY = (UNIT_REASON_HEADER, UNIT_SUPPLIER_HEADER)
 #: Identifiers: text cells whatever they look like.
 PRODUCT_TEXT_HEADERS = ('Código de barras', 'Código', IDENTIFIER_HEADER)
 UNIT_TEXT_HEADERS = ('Código', 'Número de serie', 'IMEI', 'IMEI 2')
@@ -712,6 +719,14 @@ def _units_sheet(company, filters: ExportFilters, mode: str) -> Sheet:
             # and the device load would only warn that it ignores one.
             'Precio de venta': unit.sale_price if used or report else None,
         }
+        if not report:
+            # INV-LOAD-01 — read back by the device load as they are written: the day it came in, the staff's notes
+            # and (only for a used device) what the buyer reads. «Proveedor» stays empty (UNIT_LEFT_EMPTY).
+            values.update({
+                'Fecha de ingreso': timezone.localtime(unit.received_at).date().isoformat(),
+                'Notas internas': unit.notes,
+                'Detalles para el comprador': unit.public_notes if used else '',
+            })
         if report:
             values.update({
                 'Estado': statuses.get(unit.status, unit.status),
@@ -723,7 +738,8 @@ def _units_sheet(company, filters: ExportFilters, mode: str) -> Sheet:
 
     widths = {'Código': 20, 'Producto': 43, 'Sucursal': 25, 'Número de serie': 27, 'IMEI': 22, 'IMEI 2': 22,
               'Condición': 23, 'Costo': 18, UNIT_REASON_HEADER: 48, 'Modelo': 30, 'Estado estético': 20,
-              'Precio de venta': 18, 'Fecha de ingreso': 20, 'Notas': 48}
+              'Precio de venta': 18, 'Fecha de ingreso': 20, 'Notas': 48, UNIT_SUPPLIER_HEADER: 28,
+              'Notas internas': 36, 'Detalles para el comprador': 40}
     return Sheet(
         import_exports.REPORT_SHEETS['units'] if report else unit_import_services.SHEET, headers, rows,
         tuple(_columns_of(headers, UNIT_TEXT_HEADERS)), tuple(widths.get(header, 16) for header in headers),

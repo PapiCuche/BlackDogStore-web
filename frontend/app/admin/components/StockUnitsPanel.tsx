@@ -160,7 +160,8 @@ function UnitDetail({ unit, canSeeCost, onClose }: { unit: StockUnit; canSeeCost
 }
 
 export function StockUnitsPanel({
-  branch, branches, canAdjust, canSeeCost = false, initialFilters, openRegistration = false, registerProductId = null,
+  branch, branches, canAdjust, canSeeCost = false, canSeeSuppliers = false, initialFilters, openRegistration = false,
+  registerProductId = null,
 }: {
   /** The branch in view; "all" for every branch the caller reaches. */
   branch: number | "all" | undefined;
@@ -168,6 +169,8 @@ export function StockUnitsPanel({
   canAdjust: boolean;
   /** `costs.view`: the drawer shows the cost the server sent. Without it there is none to show. */
   canSeeCost?: boolean;
+  /** INV-LOAD-01 — `products.view`: «Registrar equipo» offers the supplier list. */
+  canSeeSuppliers?: boolean;
   /** COMMERCE-ADMIN-UX-01: filters a link asked for (`unitFiltersFromSearch`). */
   initialFilters?: UnitInitialFilters;
   /** INV-UX-A1: «Recibir mercadería» opens the registration form (`?register=1`)… */
@@ -311,6 +314,7 @@ export function StockUnitsPanel({
             conditions={page?.conditions ?? [{ value: "new", label: "Nuevo" }]}
             canChangeTracking={canAdjust}
             canSeeCost={canSeeCost}
+            canSeeSuppliers={canSeeSuppliers}
             initialProductId={registerProductId}
             onSaved={(message, info) => { setNotice(message); setSaved(info ?? null); setReloadKey((key) => key + 1); }}
             onClose={() => setRegistering(false)}

@@ -27,6 +27,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import cost_services, supply_services
+from .db_busy import answers_busy
 from .admin_views import (
     CAP_INVENTORY_ADJUST, CAP_ORDERS_MANAGE, CAP_ORDERS_VIEW, CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW,
     _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES, _LEGACY_VIEW_ORDERS_ROLES, _company_context,
@@ -413,6 +414,7 @@ class AdminOrderSupplyActionView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     ACTIONS = ('confirm', 'receive', 'fail', 'real-cost')
 
+    @answers_busy       # INV-LOAD-01 review: a deadlock with another entry is 409 `busy`, never a 500
     def post(self, request, pk, line_pk, action):
         from .tenancy import visible_orders
 

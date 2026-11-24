@@ -22,13 +22,14 @@ somebody who holds it.
 """
 from __future__ import annotations
 
+from django.db import OperationalError, transaction
 from django.db.models import Count, Q, Sum
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import availability_views as availability
-from . import cost_services, label_batches
+from . import cost_services, db_busy, inventory_services, label_batches
 from . import stock_unit_services as units
 from . import storefront_media, unit_media
 from .product_media import ProductMediaError
@@ -40,7 +41,7 @@ from .inventory_views import (
     _LEGACY_INVENTORY_VIEW_ROLES, _branch_context, _company_context, _paginate,
     _scoped_product, may_view_costs,
 )
-from .models import BranchStock, Product, StockUnit, UnitPhoto
+from .models import BranchStock, Product, StockMovement, StockUnit, Supplier, UnitPhoto
 from .tenancy import (
     BranchAccessError, NoBranchError, company_fulfillment_branch, resolve_branch_for_user, visible_branches,
 )
@@ -143,6 +144,47 @@ def _refusal(exc) -> Response:
             body[name] = value
     # LABEL-02: a conflict with another record of the company is a 409.
     return Response(body, status=getattr(exc, 'status', None) or status.HTTP_400_BAD_REQUEST)
+
+
+ENTRY_KINDS = ('purchase', 'opening')
+
+
+SUPPLIERS_FORBIDDEN = 'suppliers_forbidden'
+
+
+def _entry_of(company, data, request) -> tuple[dict, Response | None]:
+    """
+    INV-LOAD-01 — `entry_kind` («purchase» by default, or «opening»), the optional `supplier` (an id of THIS company:
+    another company's answers 404, like one that does not exist) and the optional `received_on` (a date, never future).
+
+    D-F-3 — naming a supplier needs what reading one needs (`may_see_suppliers`), asked BEFORE any lookup: otherwise the
+    answer (404 or not) would say which ids exist.
+    """
+    kind = data.get('entry_kind') or 'purchase'
+    if kind not in ENTRY_KINDS:
+        return {}, Response({'detail': 'Indica si es una compra o inventario inicial.', 'field': 'entry_kind'},
+                            status=status.HTTP_400_BAD_REQUEST)
+    supplier = None
+    wanted = data.get('supplier')
+    if wanted not in (None, '') and not may_see_suppliers(request):
+        return {}, Response({'detail': 'No tienes permiso para indicar el proveedor: registra el equipo sin él.',
+                             'field': 'supplier', 'code': SUPPLIERS_FORBIDDEN}, status=status.HTTP_403_FORBIDDEN)
+    if wanted not in (None, ''):
+        if isinstance(wanted, bool) or not str(wanted).isdigit() or int(wanted) > 2_147_483_647:
+            return {}, Response({'detail': 'Proveedor no válido.', 'field': 'supplier'},
+                                status=status.HTTP_400_BAD_REQUEST)
+        supplier = Supplier.objects.filter(company=company, pk=int(wanted)).first()
+        if supplier is None:
+            return {}, Response({'detail': 'Proveedor no encontrado.', 'field': 'supplier', 'code': 'not_found'},
+                                status=status.HTTP_404_NOT_FOUND)
+        if not supplier.is_active:
+            return {}, Response({'detail': 'Ese proveedor está desactivado.', 'field': 'supplier'},
+                                status=status.HTTP_400_BAD_REQUEST)
+    try:
+        received_on = units.clean_received_on(data.get('received_on'))
+    except InventoryError as exc:
+        return {}, _refusal(exc)
+    return {'opening': kind == 'opening', 'supplier': supplier, 'received_on': received_on}, None
 
 
 class StockUnitListView(APIView):
@@ -290,13 +332,36 @@ class StockUnitListView(APIView):
                  'field': 'cost'},
                 status=status.HTTP_403_FORBIDDEN,           # DEC-INV-05, as the price just above
             )
+        # INV-LOAD-01 — what the entry IS (a purchase, as before, or the stock the shop already had), who sold it and
+        # the day it came in. The same rules as «Recibir mercadería» and the device file.
+        entry, refused = _entry_of(company, data, request)
+        if refused is not None:
+            return refused
         try:
-            created = units.receive_units(
-                branch=branch, product=product, units=rows, actor=request.user,
-                reason=data.get('reason') or '', request=request,
-            )
+            with transaction.atomic():
+                if entry['opening']:
+                    # The shelf first (the module's lock order, and `receive_units`' own): a sale or a hold cannot
+                    # slip in between the check and the entry. The row is created when the shelf never had one.
+                    inventory_services._locked_branch_stocks(branch, [product])
+                    from .receipt_services import OPENING_HAS_HISTORY, opening_problem
+
+                    problem = opening_problem(branch, product)
+                    if problem:
+                        return Response({'detail': problem, 'field': 'entry_kind', 'code': OPENING_HAS_HISTORY},
+                                        status=status.HTTP_400_BAD_REQUEST)
+                created = units.receive_units(
+                    branch=branch, product=product, units=rows, actor=request.user,
+                    reason=data.get('reason') or '', request=request,
+                    movement_type=StockMovement.INITIAL_STOCK if entry['opening'] else StockMovement.PURCHASE_ENTRY,
+                    supplier=entry['supplier'], received_on=entry['received_on'],
+                )
         except InventoryError as exc:
             return _refusal(exc)
+        except OperationalError as exc:
+            # A backstop: two entries waiting on each other's locks. Nothing was written; the person tries again.
+            if not db_busy.is_busy(exc):
+                raise
+            return db_busy.busy_response()
 
         # LABEL-A — the labels of what just entered; the screen says «Etiquetas listas para imprimir».
         batch = label_batches.create_for_movement(created.movement, units=created, actor=request.user)

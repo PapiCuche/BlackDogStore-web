@@ -57,6 +57,7 @@ function UnitsContent({ user, access }: { user: AuthUser; access: InternalAccess
             branches={(scope.access?.results ?? []).map((b) => ({ id: b.id, name: b.name }))}
             canAdjust={canAdjust}
             canSeeCost={access.can("costs.view", ["admin", "superadmin"])}
+            canSeeSuppliers={access.can("products.view", ["admin", "superadmin"])}
             initialFilters={initialFilters}
             openRegistration={receive.open && canAdjust}
             registerProductId={receive.productId}
