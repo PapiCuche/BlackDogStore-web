@@ -15,6 +15,7 @@ import { AdminShell } from "../../../components/AdminShell";
 import { ErrorBox, Spinner } from "../../../components/InventoryUi";
 import { PageHeader, internalButtonClass } from "../../../components/internal-ui";
 import { StockUnitImport } from "../../../components/StockUnitImport";
+import { UnitStockReconciliation } from "../../../components/UnitStockReconciliation";
 import type { InternalAccess } from "../../../lib/internal-access";
 import { useBranchScope } from "../../../lib/use-branch-scope";
 import type { AuthUser } from "../../../../lib/auth";
@@ -45,6 +46,8 @@ function ImportContent({ user, access }: { user: AuthUser; access: InternalAcces
             canSeeCost={access.can("costs.view", ["admin", "superadmin"])}
           />
         ) : null}
+        {/* INV-LOAD-02 — a read-only check, with `inventory.view` like the page itself. */}
+        <UnitStockReconciliation />
       </div>
     </AdminShell>
   );

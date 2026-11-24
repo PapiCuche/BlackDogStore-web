@@ -35,6 +35,7 @@ type Call = { method: string; path: string; form: FormData | null };
 let calls: Call[];
 let previewReply: { status: number; body: unknown };
 let applyReply: { status: number; body: unknown };
+let voidReply: { status: number; body: unknown };
 
 function reply(status: number, body: unknown): Response {
   return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
@@ -44,11 +45,16 @@ beforeEach(() => {
   calls = [];
   previewReply = { status: 201, body: job() };
   applyReply = { status: 200, body: job({ status: 'applied', is_applicable: false, summary: { units: 2, applied: { units: 2, movements: 2 } } }) };
+  voidReply = { status: 200, body: job({
+    status: 'applied', is_applicable: false, changed: true,
+    summary: { units: 2, applied: { units: 2, movements: 2 }, voided: { units: 2, at: '2026-11-24T10:00:00Z', by: 'ana', reason: 'Archivo duplicado' } },
+  }) };
   send.mockReset();
   send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
     const path = String(input).replace(/^.*\/admin\/inventory\/units/, '');
     calls.push({ method: (init.method ?? 'GET').toUpperCase(), path, form: init.body instanceof FormData ? init.body : null });
     if (path.startsWith('/import/preview/')) return reply(previewReply.status, previewReply.body);
+    if (path.includes('/void/')) return reply(voidReply.status, voidReply.body);
     return reply(applyReply.status, applyReply.body);
   });
 });
@@ -202,4 +208,78 @@ test('INV-OPENING-01: a purchase by default, and «Inventario inicial» travels 
   fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
   await waitFor(() => expect(calls).toHaveLength(2));
   expect(calls[1].form?.get('entry_kind')).toBe('opening');
+});
+
+// ---------------------------------------------------------------------------
+// INV-LOAD-02 — two stock templates, the before/after and annulling a load whole
+// ---------------------------------------------------------------------------
+
+async function applied(overrides: Record<string, unknown> = {}) {
+  previewReply = { status: 201, body: job(overrides) };
+  applyReply = { status: 200, body: job({ ...overrides, status: 'applied', is_applicable: false, summary: { units: 2, applied: { units: 2, movements: 2 } } }) };
+  render(<StockUnitImport branches={BRANCHES} />);
+  attach();
+  fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Registrar 2 equipos' }));
+  await screen.findByText(/Se registraron 2 equipos/);
+}
+
+test('INV-LOAD-02: one template per line, and the combined one still there', () => {
+  render(<StockUnitImport branches={BRANCHES} />);
+  expect(screen.getByRole('link', { name: 'Stock de equipos nuevos' }).getAttribute('href'))
+    .toMatch(/\/admin\/inventory\/units\/import\/template\/\?line=new$/);
+  expect(screen.getByRole('link', { name: 'Stock de seminuevos' }).getAttribute('href'))
+    .toMatch(/\/admin\/inventory\/units\/import\/template\/\?line=used$/);
+  expect(screen.getByRole('link', { name: 'Descargar plantilla' }).getAttribute('href'))
+    .toMatch(/\/admin\/inventory\/units\/import\/template\/$/);
+});
+
+test('INV-LOAD-02: the preview says which template the file is', async () => {
+  previewReply = { status: 201, body: job({ options: { line: 'used', entry_kind: 'opening' } }) };
+  render(<StockUnitImport branches={BRANCHES} />);
+  attach();
+  fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
+  expect(await screen.findByText(/plantilla de seminuevos/)).toBeInTheDocument();
+});
+
+test('INV-LOAD-02: an applied load offers its before/after and, for used devices, what comes next', async () => {
+  await applied({ options: { line: 'used' } });
+  expect(screen.getByRole('link', { name: 'Antes y después (CSV)' }).getAttribute('href'))
+    .toMatch(/\/admin\/inventory\/units\/import\/31\/report\/\?as=csv$/);
+  expect(screen.getByRole('link', { name: 'Antes y después (Excel)' }).getAttribute('href'))
+    .toMatch(/\/import\/31\/report\/\?as=xlsx$/);
+  expect(screen.getByRole('note', { name: 'Después de cargar seminuevos' }))
+    .toHaveTextContent('pendientes de inspección y sin publicar');
+});
+
+test('INV-LOAD-02: annulling a load asks for a reason and says what it did', async () => {
+  await applied();
+  fireEvent.click(screen.getByRole('button', { name: 'Anular esta carga' }));
+  const confirm = screen.getByRole('button', { name: 'Anular 2 equipos' });
+  expect(confirm).toBeDisabled();
+  fireEvent.change(screen.getByLabelText('Motivo de la anulación'), { target: { value: 'Archivo duplicado' } });
+  fireEvent.click(confirm);
+
+  await screen.findByText(/Esta carga se anuló/);
+  const sent = send.mock.calls.find(([input]) => String(input).includes('/void/'));
+  expect(String(sent?.[0])).toMatch(/\/import\/31\/void\/$/);
+  expect(JSON.parse(String(sent?.[1]?.body))).toEqual({ reason: 'Archivo duplicado' });
+  expect(screen.getByText(/2 equipos salieron del stock/)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Anular esta carga' })).toBeNull();
+});
+
+test('INV-LOAD-02: a load with a device that moved is not annulled, and the device is named by its label', async () => {
+  voidReply = { status: 409, body: {
+    detail: 'No se anuló ningún equipo: 1 equipo(s) de esta carga ya se movieron.', code: 'batch_not_voidable',
+    blocking: [{ unit_id: 7, label_code: 'U4827193056', product_id: 3, branch_id: 1, status: 'sold', reason: 'Está vendido.' }],
+  } };
+  await applied();
+  fireEvent.click(screen.getByRole('button', { name: 'Anular esta carga' }));
+  fireEvent.change(screen.getByLabelText('Motivo de la anulación'), { target: { value: 'Error' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Anular 2 equipos' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('No se anuló ningún equipo');
+  const list = screen.getByRole('list', { name: 'Equipos que impiden anular' });
+  expect(within(list).getByText(/U4827193056: Está vendido\./)).toBeInTheDocument();
+  expect(screen.queryByText(/Esta carga se anuló/)).toBeNull();
 });

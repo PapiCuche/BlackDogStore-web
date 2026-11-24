@@ -16,8 +16,9 @@ import Link from "next/link";
 import { useRef, useState } from "react";
 
 import {
-  applyUnitImport, previewUnitImport, unitImportErrorsUrl, unitImportTemplateUrl,
-  type UnitImportJob, type UnitImportRow, type UnitImportSimulation,
+  applyUnitImport, previewUnitImport, unitImportErrorsUrl, unitImportReportUrl, unitImportTemplateUrl,
+  voidUnitImport, UnitImportVoidError,
+  type UnitImportBlocking, type UnitImportJob, type UnitImportRow, type UnitImportSimulation,
 } from "@/app/lib/stock-units";
 
 import { CostColumnNotice } from "./CostColumnNotice";
@@ -88,6 +89,96 @@ function Simulation({ simulation }: { simulation: UnitImportSimulation }) {
   );
 }
 
+const LINE_LABELS: Record<string, string> = { new: "equipos nuevos", used: "seminuevos" };
+
+/**
+ * INV-LOAD-02 — annul an applied load WHOLE. The server voids every device the load created, or none: while one of
+ * them has done anything since it entered, the answer names it and nothing changes. The reason is mandatory.
+ */
+function AnnulLoad({ job, onAnnulled }: { job: UnitImportJob; onAnnulled: (job: UnitImportJob) => void }) {
+  const [open, setOpen] = useState(false);
+  const [reason, setReason] = useState("");
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [blocking, setBlocking] = useState<UnitImportBlocking[]>([]);
+  const voided = job.summary.voided;
+
+  if (voided) {
+    return (
+      <p role="status" className="text-sm text-foreground">
+        Esta carga se anuló: {plural(voided.units, "equipo salió", "equipos salieron")} del stock con una línea de
+        corrección en el Kardex. Motivo: {voided.reason}
+      </p>
+    );
+  }
+
+  async function annul() {
+    setWorking(true);
+    setError(null);
+    setBlocking([]);
+    try {
+      onAnnulled(await voidUnitImport(job.id, reason.trim()));
+      setOpen(false);
+    } catch (e: unknown) {
+      if (e instanceof UnitImportVoidError) setBlocking(e.blocking);
+      setError(e instanceof Error ? e.message : "No se pudo anular la carga.");
+    } finally {
+      setWorking(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <button type="button" className={internalButtonClass} onClick={() => setOpen(true)}>
+        Anular esta carga
+      </button>
+    );
+  }
+  return (
+    <section aria-labelledby="unit-import-annul" className="space-y-3 rounded-lg border border-bd-border px-4 py-3">
+      <h3 id="unit-import-annul" className="text-sm font-semibold text-foreground">Anular esta carga</h3>
+      <p className="text-sm text-muted">
+        Cada equipo que entró con este archivo sale del stock con una línea de corrección en el Kardex (nada se
+        borra). Si alguno ya se vendió, apartó, trasladó o cambió de variante, no se anula ninguno.
+      </p>
+      <label className="block text-xs font-semibold text-muted">
+        Motivo de la anulación
+        <textarea
+          className={`mt-1 ${internalInputClass}`}
+          value={reason}
+          maxLength={300}
+          rows={2}
+          disabled={working}
+          onChange={(e) => setReason(e.target.value)}
+        />
+      </label>
+      {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
+      {blocking.length ? (
+        <ul aria-label="Equipos que impiden anular" className="list-disc space-y-0.5 pl-5 text-sm text-danger">
+          {blocking.map((unit) => (
+            <li key={unit.unit_id}>
+              Equipo {unit.label_code || `#${unit.unit_id}`}: {unit.reason}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      <div className="flex flex-wrap gap-3">
+        <button
+          type="button"
+          className={internalPrimaryButtonClass}
+          disabled={working || !reason.trim()}
+          onClick={annul}
+        >
+          Anular {plural(job.summary.applied?.units ?? 0, "equipo", "equipos")}
+        </button>
+        <button type="button" className={internalButtonClass} disabled={working} onClick={() => setOpen(false)}>
+          Cancelar
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export function StockUnitImport({ branches, canSeeCost = false }: {
   branches: { id: number; name: string }[];
   /** `costs.view`: without it the screen says, before anything is attached, that the «Costo» column stays empty. */
@@ -146,9 +237,20 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
       <Panel
         title="Cargar equipos desde Excel"
         description="Para registrar de una vez los equipos de una compra o del inventario inicial."
-        action={<a className={internalButtonClass} href={unitImportTemplateUrl()}>Descargar plantilla</a>}
+        action={
+          <div className="flex flex-wrap gap-2">
+            {/* INV-LOAD-02 — one template per line; the combined one stays for the files people already have. */}
+            <a className={internalButtonClass} href={unitImportTemplateUrl("new")}>Stock de equipos nuevos</a>
+            <a className={internalButtonClass} href={unitImportTemplateUrl("used")}>Stock de seminuevos</a>
+            <a className={internalButtonClass} href={unitImportTemplateUrl()}>Descargar plantilla</a>
+          </div>
+        }
       >
         <div className="space-y-4">
+          <p className="text-sm text-muted">
+            Para cargar el stock real usa «Stock de equipos nuevos» o «Stock de seminuevos»: cada una carga sólo su
+            línea. «Descargar plantilla» es la plantilla combinada de siempre.
+          </p>
           <ImportKindNotice kind="units" />
           {canSeeCost ? null : <CostColumnNotice column="Costo" />}
 
@@ -227,17 +329,31 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
 
       {outdated ? <OutdatedPreviewNotice outdated={outdated} onUploadAgain={uploadAgain} /> : null}
 
-      {applied ? (
-        <div role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success">
-          Se registraron {plural(registered, "equipo", "equipos")} y quedaron en el Kardex.{" "}
-          <Link className="font-semibold underline" href="/admin/inventory/units">Ver los equipos</Link>
+      {applied && job ? (
+        <div className="space-y-3">
+          <div role="status" className="rounded-lg border border-success-border px-4 py-3 text-sm text-success">
+            Se registraron {plural(registered, "equipo", "equipos")} y quedaron en el Kardex.{" "}
+            <Link className="font-semibold underline" href="/admin/inventory/units">Ver los equipos</Link>
+          </div>
+          {job.options?.line === "used" ? (
+            <p role="note" aria-label="Después de cargar seminuevos" className="text-sm text-muted">
+              Los seminuevos entran pendientes de inspección y sin publicar. Inspecciónalos, súbeles fotos y
+              publícalos desde su ficha en{" "}
+              <Link className="underline" href="/admin/inventory/used">Seminuevos</Link>.
+            </p>
+          ) : null}
+          <div className="flex flex-wrap items-center gap-3">
+            <a className={internalButtonClass} href={unitImportReportUrl(job.id, "csv")}>Antes y después (CSV)</a>
+            <a className={internalButtonClass} href={unitImportReportUrl(job.id, "xlsx")}>Antes y después (Excel)</a>
+          </div>
+          <AnnulLoad job={job} onAnnulled={setJob} />
         </div>
       ) : null}
 
       {job && !applied ? (
         <Panel
           title="Lo que pasará con cada fila"
-          description={`${job.original_filename} · ${plural(job.counts.create, "equipo por registrar", "equipos por registrar")} · ${job.counts.error} con error · ${plural(job.counts.skip, "fila omitida", "filas omitidas")}`}
+          description={`${job.original_filename}${job.options?.line ? ` · plantilla de ${LINE_LABELS[job.options.line]}` : ""} · ${plural(job.counts.create, "equipo por registrar", "equipos por registrar")} · ${job.counts.error} con error · ${plural(job.counts.skip, "fila omitida", "filas omitidas")}`}
           action={
             job.counts.error ? (
               <a className={internalButtonClass} href={unitImportErrorsUrl(job.id)}>Descargar errores (CSV)</a>
