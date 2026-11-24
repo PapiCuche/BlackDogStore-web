@@ -167,7 +167,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "invalid_field"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -177,7 +191,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -187,7 +214,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "forbidden"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -197,7 +237,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -207,7 +260,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "method_not_allowed"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -217,7 +283,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "cursor_expired"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -235,7 +314,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -245,7 +337,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -328,7 +433,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "invalid_field"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -338,7 +457,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -348,7 +480,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "forbidden"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -358,7 +503,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -368,7 +526,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "method_not_allowed"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -378,7 +549,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "cursor_expired"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -396,7 +580,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -406,7 +603,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -417,16 +627,37 @@
     "/catalog/search/": {
       "get": {
         "operationId": "catalog_search",
-        "description": "Read only; no commercial mutation or fallback.",
+        "description": "Catalog-only rows have offer_kind/offer_id/branch_id null. Offer rows require BOTH prices.read and inventory.read; price and availability are mandatory on such rows and cannot be projected away. Optional promotion benefits require prices.read. No stock/price inference via ordering, filters, counts or offer existence.",
         "x-required-scope": "catalog.read",
         "x-enabled": true,
         "x-blocked-reason": null,
         "x-field-scopes": {
-          "product": "catalog.read",
-          "price": "prices.read",
-          "availability": "inventory.read",
-          "promotions": "promotions.read",
-          "branch": "branches.read",
+          "product": [
+            "catalog.read"
+          ],
+          "price": [
+            "catalog.read",
+            "prices.read",
+            "inventory.read"
+          ],
+          "availability": [
+            "catalog.read",
+            "prices.read",
+            "inventory.read"
+          ],
+          "promotions": [
+            "catalog.read",
+            "promotions.read"
+          ],
+          "promotions.benefit": [
+            "catalog.read",
+            "promotions.read",
+            "prices.read"
+          ],
+          "branch": [
+            "catalog.read",
+            "branches.read"
+          ],
           "used_details": [
             "catalog.read",
             "inventory.read",
@@ -652,7 +883,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "invalid_field"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -662,7 +907,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -672,7 +930,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "forbidden"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -682,7 +953,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -692,7 +976,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "method_not_allowed"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -702,7 +999,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "cursor_expired"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -720,7 +1030,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -730,7 +1053,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -741,7 +1077,7 @@
     "/availability/": {
       "get": {
         "operationId": "availability",
-        "description": "Read only; no commercial mutation or fallback.",
+        "description": "Read pure. Aggregate by variant and authorized branch; used-unit offer identity requires prices.read plus inventory.read. Under order supply is not physical stock. No reserved unit cleanup.",
         "x-required-scope": "inventory.read",
         "x-enabled": true,
         "x-blocked-reason": null,
@@ -1021,7 +1357,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "invalid_field"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1031,7 +1381,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1041,7 +1404,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "forbidden"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1051,7 +1427,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1061,7 +1450,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "method_not_allowed"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1071,7 +1473,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "cursor_expired"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1089,7 +1504,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1099,18 +1527,43 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
           }
+        },
+        "x-offer-scopes": {
+          "shelf": [
+            "inventory.read"
+          ],
+          "used_unit": [
+            "inventory.read",
+            "prices.read"
+          ],
+          "on_order": [
+            "inventory.read"
+          ]
         }
       }
     },
     "/prices/": {
       "get": {
         "operationId": "prices",
-        "description": "Read only; no commercial mutation or fallback.",
+        "description": "Base shelf configured prices require prices.read. Used-unit and on-order offer prices require inventory.read too, because their existence conveys availability. No administrative fallback.",
         "x-required-scope": "prices.read",
         "x-enabled": true,
         "x-blocked-reason": null,
@@ -1312,7 +1765,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "invalid_field"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1322,7 +1789,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1332,7 +1812,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "forbidden"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1342,7 +1835,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1352,7 +1858,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "method_not_allowed"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1362,7 +1881,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "cursor_expired"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1380,7 +1912,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1390,11 +1935,37 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
           }
+        },
+        "x-offer-scopes": {
+          "shelf": [
+            "prices.read"
+          ],
+          "used_unit": [
+            "prices.read",
+            "inventory.read"
+          ],
+          "on_order": [
+            "prices.read",
+            "inventory.read"
+          ]
         }
       }
     },
@@ -1494,7 +2065,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "invalid_field"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1504,7 +2089,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1514,7 +2112,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "forbidden"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1524,7 +2135,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1534,7 +2158,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "method_not_allowed"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1544,7 +2181,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "cursor_expired"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1562,7 +2212,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1572,11 +2235,30 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
           }
+        },
+        "x-field-scopes": {
+          "benefit": [
+            "promotions.read",
+            "prices.read"
+          ]
         }
       }
     },
@@ -1676,7 +2358,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "invalid_field"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1686,7 +2382,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1696,7 +2405,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "forbidden"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1706,7 +2428,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1716,7 +2451,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "method_not_allowed"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1726,7 +2474,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "cursor_expired"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1744,7 +2505,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1754,7 +2528,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -1824,16 +2611,6 @@
           }
         ],
         "responses": {
-          "400": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Structured error",
             "content": {
@@ -1844,37 +2621,7 @@
               }
             }
           },
-          "403": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "404": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "405": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "410": {
             "description": "Structured error",
             "content": {
               "application/json": {
@@ -1912,13 +2659,19 @@
               }
             }
           }
+        },
+        "x-field-scopes": {
+          "parts_availability": [
+            "services.read",
+            "inventory.read"
+          ]
         }
       }
     },
     "/orders/{id}/": {
       "get": {
         "operationId": "orders__id__detail",
-        "description": "Disabled; uniform 404 until approval. Future projection is Order",
+        "description": "Disabled; uniform 404 until approval. Future projection is Order No grant header accepted while disabled; future grant contract requires separate approval.",
         "x-required-scope": "orders.read",
         "x-enabled": false,
         "x-blocked-reason": "customer_grant_pending",
@@ -1953,29 +2706,9 @@
               "minLength": 1,
               "maxLength": 256
             }
-          },
-          {
-            "name": "X-Customer-Grant",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 2048
-            }
           }
         ],
         "responses": {
-          "400": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Structured error",
             "content": {
@@ -1986,37 +2719,7 @@
               }
             }
           },
-          "403": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "404": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "405": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "410": {
             "description": "Structured error",
             "content": {
               "application/json": {
@@ -2054,13 +2757,14 @@
               }
             }
           }
-        }
+        },
+        "x-future-customer-grant-required": true
       }
     },
     "/repairs/{id}/": {
       "get": {
         "operationId": "repairs__id__detail",
-        "description": "Disabled; uniform 404 until approval. Future projection is Repair",
+        "description": "Disabled; uniform 404 until approval. Future projection is Repair No grant header accepted while disabled; future grant contract requires separate approval.",
         "x-required-scope": "repairs.read",
         "x-enabled": false,
         "x-blocked-reason": "customer_grant_pending",
@@ -2095,29 +2799,9 @@
               "minLength": 1,
               "maxLength": 256
             }
-          },
-          {
-            "name": "X-Customer-Grant",
-            "in": "header",
-            "required": true,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 2048
-            }
           }
         ],
         "responses": {
-          "400": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "401": {
             "description": "Structured error",
             "content": {
@@ -2128,37 +2812,7 @@
               }
             }
           },
-          "403": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
           "404": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "405": {
-            "description": "Structured error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            }
-          },
-          "410": {
             "description": "Structured error",
             "content": {
               "application/json": {
@@ -2196,13 +2850,14 @@
               }
             }
           }
-        }
+        },
+        "x-future-customer-grant-required": true
       }
     },
     "/sync/changes/": {
       "get": {
         "operationId": "sync_changes",
-        "description": "Read only; no commercial mutation or fallback.",
+        "description": "Initial GET without cursor or watermark opens consistent snapshot: results=[], next_cursor=resume cursor, has_more=false, watermark=W. Bootstrap lists with snapshot=W; then resume feed after W. With cursor, watermark must be absent; scope/filters bound to cursor. Feed only domain-authorized invalidations, no prices or quantities. Offer-specific price/used-unit invalidation additionally requires inventory+prices scopes where its identity reveals availability.",
         "x-required-scope": "sync.read",
         "x-enabled": true,
         "x-blocked-reason": null,
@@ -2293,7 +2948,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "invalid_field"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2303,7 +2972,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2313,7 +2995,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "forbidden"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2323,7 +3018,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2333,7 +3041,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "method_not_allowed"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2343,7 +3064,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "cursor_expired"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2361,7 +3095,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2371,11 +3118,35 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
           }
+        },
+        "x-field-scopes": {
+          "domain:product": "catalog.read",
+          "domain:inventory": "inventory.read",
+          "domain:price": "prices.read",
+          "domain:promotion": "promotions.read",
+          "domain:branch": "branches.read",
+          "offer_specific_identity": [
+            "inventory.read",
+            "prices.read"
+          ]
         }
       }
     },
@@ -2419,7 +3190,21 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "invalid_request",
+                            "invalid_field"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2429,7 +3214,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2439,7 +3237,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "forbidden"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2449,7 +3260,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2459,7 +3283,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "method_not_allowed"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2469,7 +3306,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "cursor_expired"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2487,7 +3337,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2497,7 +3360,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2994,8 +3870,10 @@
           },
           "kind": {
             "type": "string",
-            "minLength": 1,
-            "maxLength": 24
+            "enum": [
+              "bundle_fixed_price",
+              "bundle_percent"
+            ]
           },
           "starts_at": {
             "anyOf": [
@@ -3043,6 +3921,49 @@
               "maxLength": 128
             },
             "maxItems": 50
+          },
+          "benefit": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "fixed_price"
+                  },
+                  "amount": {
+                    "type": "string",
+                    "pattern": "^[0-9]{1,8}\\.[0-9]{2}$"
+                  },
+                  "currency": {
+                    "type": "string",
+                    "pattern": "^[A-Z]{3}$"
+                  }
+                },
+                "required": [
+                  "type",
+                  "amount",
+                  "currency"
+                ]
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "type": {
+                    "const": "percent"
+                  },
+                  "percent": {
+                    "type": "string",
+                    "pattern": "^(100(\\.00)?|[0-9]{1,2}(\\.[0-9]{1,2})?)$"
+                  }
+                },
+                "required": [
+                  "type",
+                  "percent"
+                ]
+              }
+            ]
           }
         },
         "required": [
@@ -3056,6 +3977,54 @@
           "branch_ids",
           "eligibility",
           "product_ids"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "bundle_fixed_price"
+                }
+              },
+              "required": [
+                "benefit"
+              ]
+            },
+            "then": {
+              "properties": {
+                "benefit": {
+                  "properties": {
+                    "type": {
+                      "const": "fixed_price"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "bundle_percent"
+                }
+              },
+              "required": [
+                "benefit"
+              ]
+            },
+            "then": {
+              "properties": {
+                "benefit": {
+                  "properties": {
+                    "type": {
+                      "const": "percent"
+                    }
+                  }
+                }
+              }
+            }
+          }
         ]
       },
       "Branch": {
@@ -3136,9 +4105,7 @@
           "service_id",
           "data_version",
           "observed_at",
-          "name",
-          "conditions",
-          "parts_availability"
+          "name"
         ]
       },
       "Order": {
@@ -3231,11 +4198,66 @@
               "policy",
               "unknown"
             ]
+          },
+          "policy_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uri",
+                "pattern": "^https://",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
           "days",
           "source"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "source": {
+                  "enum": [
+                    "policy",
+                    "unknown"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "days": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "source": {
+                  "enum": [
+                    "unit",
+                    "company"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "days": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 3650
+                }
+              }
+            }
+          }
         ]
       },
       "UsedDetails": {
@@ -3403,6 +4425,9 @@
                 "type": "null"
               }
             ]
+          },
+          "warranty": {
+            "$ref": "#/components/schemas/Warranty"
           }
         },
         "required": [
@@ -3412,6 +4437,55 @@
           "data_version",
           "observed_at",
           "condition"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "condition": {
+                  "const": "used"
+                }
+              }
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "warranty"
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "required": [
+                "warranty"
+              ]
+            },
+            "then": {
+              "properties": {
+                "warranty": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Warranty"
+                    },
+                    {
+                      "properties": {
+                        "source": {
+                          "enum": [
+                            "policy",
+                            "unknown"
+                          ]
+                        },
+                        "days": {
+                          "type": "null"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
         ]
       },
       "SearchResult": {
@@ -3419,7 +4493,8 @@
         "additionalProperties": false,
         "properties": {
           "product": {
-            "$ref": "#/components/schemas/Product"
+            "$ref": "#/components/schemas/Product",
+            "description": "Required product identity; optional commercial fields follow Product allowlist."
           },
           "data_version": {
             "type": "integer",
@@ -3482,7 +4557,8 @@
             "maxItems": 10
           },
           "branch": {
-            "$ref": "#/components/schemas/Branch"
+            "$ref": "#/components/schemas/Branch",
+            "description": "Optional metadata only with branches.read; opaque branch_id is part of offer identity under authorized commercial scopes."
           },
           "used_details": {
             "$ref": "#/components/schemas/UsedDetails"
@@ -3577,6 +4653,111 @@
                     ]
                   }
                 ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "enum": [
+                    "shelf",
+                    "on_order"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "price",
+                "availability"
+              ],
+              "properties": {
+                "branch_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              },
+              "not": {
+                "required": [
+                  "used_details"
+                ]
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "shelf"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "offer_id": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "on_order"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "offer_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "availability": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Availability"
+                    },
+                    {
+                      "properties": {
+                        "status": {
+                          "const": "on_order"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "used_unit"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "product": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Product"
+                    },
+                    {
+                      "properties": {
+                        "condition": {
+                          "const": "used"
+                        }
+                      }
+                    }
+                  ]
+                }
               }
             }
           }
