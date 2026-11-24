@@ -6,9 +6,7 @@ asking price >= 0, battery 0-100 %, `imei_last4` empty or exactly four digits). 
 `PaymentMethod`, `StockMovement` or any fiscal table: the block is a referential valuation, never credit, payment,
 purchase or stock (D1-D12 pending, docs/decisiones-propietario-trade-in.md). No data, no capability.
 
-NUMBERING: named 0191 because SUPPLY-MARGIN-01 takes 0190. While that PR is not merged this node depends on
-`0189_sales_quote`; whoever merges the second of the two changes `dependencies` to the other's node. Nothing else
-names this file.
+NUMBERING: follows `0190_supplier_margin` (SUPPLY-MARGIN-01). Nothing else names this file.
 
 CODE-ONLY ROLLBACK: the previous release ignores the table; nothing it writes references it. The reverse
 (dropping the table) loses the valuations of every quote: do not unapply it unless that is intended.
@@ -23,7 +21,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0189_sales_quote'),
+        ('store', '0190_supplier_margin'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
