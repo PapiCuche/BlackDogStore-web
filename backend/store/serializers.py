@@ -121,6 +121,85 @@ class ReviewSerializer(serializers.ModelSerializer):
         return value
 
 
+def serializer_siblings(serializer) -> list:
+    """
+    The other objects serialised next to `serializer`'s, so a batch read covers all of them at once: the instances of
+    the list it is the child of, or — nested as the `product` of a row of a list (a cart) — that field of every row.
+    Empty when there is no such list in hand (a nested `many=True` reads per row).
+    """
+    from django.db.models.manager import BaseManager
+
+    def rows_of(instance):
+        # A queryset is iterated as it is (its result cache is the one the list is serialising); a related manager is
+        # asked `.all()`, as `ListSerializer.to_representation` does.
+        return list(instance.all() if isinstance(instance, BaseManager) else instance or [])
+
+    parent = getattr(serializer, 'parent', None)
+    if isinstance(parent, serializers.ListSerializer):
+        return rows_of(parent.instance)
+    grand = getattr(parent, 'parent', None)
+    if isinstance(grand, serializers.ListSerializer) and grand.instance is not None and serializer.source:
+        return [getattr(row, serializer.source, None) for row in rows_of(grand.instance)]
+    return []
+
+
+def prime_variant_galleries(context, products) -> dict:
+    """
+    Reads, in ONE batch, the public gallery of every device variant among `products` that the response's context
+    does not hold yet (`device_catalog.variant_galleries`), and keeps it there. Returns the context's cache. Called
+    by whoever has the whole response's products in hand — a list of orders, one order, a cart — so that each line
+    finds its picture already read (review of #408: no query per line).
+    """
+    from . import device_catalog
+
+    cache = context.setdefault('_variant_galleries', {})
+    wanted = {product.pk: product for product in products
+              if isinstance(product, Product) and product.product_model_id and product.pk not in cache}
+    if wanted:
+        found = device_catalog.variant_galleries(list(wanted.values()))
+        for pk in wanted:
+            cache[pk] = found.get(pk)
+    return cache
+
+
+def order_line_products(orders) -> list:
+    """The products of every line of `orders` (their prefetched `items`, as the serialiser reads them)."""
+    return [item.product for order in orders for item in order.items.all()]
+
+
+class OrdersPrimingListSerializer(serializers.ListSerializer):
+    """A list of orders: the pictures of every line of every order are read once, before any order is serialised."""
+
+    def to_representation(self, data):
+        from django.db.models.manager import BaseManager
+
+        rows = list(data.all() if isinstance(data, BaseManager) else data)
+        prime_variant_galleries(self.context, order_line_products(rows))
+        return super().to_representation(rows)
+
+
+def gated_image_url(context, product) -> str:
+    """The picture the shop may show of `product`: a device variant's gated one, else its own address."""
+    if not product.product_model_id:
+        return product.image_url
+    found = prime_variant_galleries(context, [product]).get(product.pk)
+    return found['image_url'] if found else ''
+
+
+def public_variant_gallery(serializer, product) -> dict | None:
+    """
+    IMG-GATE-01 — what the shop shows of a DEVICE VARIANT (`device_catalog.variant_galleries`), read ONCE for every
+    product being serialised in the same response (kept in the context: one batch for a list, a cart or a page).
+    None for a product without a model: its pictures are unchanged.
+    """
+    if product is None or not product.product_model_id:
+        return None
+    cache = serializer.context.setdefault('_variant_galleries', {})
+    if product.pk not in cache:
+        prime_variant_galleries(serializer.context, [product, *serializer_siblings(serializer)])
+    return cache.get(product.pk)
+
+
 class ProductSerializer(serializers.ModelSerializer):
     category = CategorySerializer(read_only=True)
     images = serializers.SerializerMethodField()
@@ -150,6 +229,27 @@ class ProductSerializer(serializers.ModelSerializer):
 
         return on_order_payload(obj)
 
+    def to_representation(self, instance):
+        """
+        IMG-GATE-01: a DEVICE VARIANT's `image_url` and `images` are what the shop may show of it — its own verified
+        pictures, else the verified finish of its colour, else nothing — never an unverified or external picture nor
+        another colour's photo (`device_catalog.variant_galleries`). It also says `image_pending` («Imagen
+        pendiente») and `image_is_demo` («Imagen referencial»), as the cart always did. A product without a model is
+        unchanged and carries neither key.
+        """
+        data = super().to_representation(instance)
+        gated = public_variant_gallery(self, instance)
+        if gated is not None:
+            from .device_catalog import PUBLIC_IMAGE_KEYS
+
+            data['image_url'] = gated['image_url']
+            # Review of #408: each picture says whether it is a demo resource («Imagen referencial» on the page).
+            data['images'] = [{**{key: image[key] for key in PUBLIC_IMAGE_KEYS}, 'is_demo': image['is_demo']}
+                              for image in gated['gallery']]
+            data['image_pending'] = gated['image_pending']
+            data['image_is_demo'] = gated['image_is_demo']
+        return data
+
     def get_product_model(self, obj):
         model = obj.product_model if obj.product_model_id else None
         return model.slug if model is not None and model.is_published_online else None
@@ -157,6 +257,8 @@ class ProductSerializer(serializers.ModelSerializer):
     def get_images(self, obj):
         # `image_url` sigue siendo la principal; esto es la galería completa.
         # `.all()` usa el prefetch de las vistas de catálogo.
+        if obj.product_model_id:
+            return []       # IMG-GATE-01: a device variant's gallery is the gated one (`to_representation`)
         from .product_media import public_payload
         return [public_payload(image) for image in obj.images.all()]
 
@@ -204,7 +306,7 @@ class CouponSerializer(serializers.ModelSerializer):
         fields = ['code', 'discount_percent']
 
 
-def closed_product_payload(product) -> dict:
+def closed_product_payload(product, context=None) -> dict:
     """
     What the PUBLIC may still read of a product that is no longer sold online.
 
@@ -215,7 +317,10 @@ def closed_product_payload(product) -> dict:
     Built by hand, not by trimming the full payload: a field added to the
     public product tomorrow must not reach these lines by default.
     """
-    return {'id': product.pk, 'name': product.name, 'image_url': product.image_url}
+    # IMG-GATE-01: a device variant's picture is the gated one, closed or not — read from the response's batch when
+    # the caller passes its context (`prime_variant_galleries`).
+    image_url = gated_image_url({} if context is None else context, product)
+    return {'id': product.pk, 'name': product.name, 'image_url': image_url}
 
 
 class OrderItemSerializer(serializers.ModelSerializer):
@@ -252,7 +357,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
         fields = self.fields
         return {
             'id': instance.pk,
-            'product': closed_product_payload(instance.product),
+            'product': closed_product_payload(instance.product, self.context),
             'quantity': fields['quantity'].to_representation(instance.quantity),
             'price': fields['price'].to_representation(instance.price),
         }
@@ -282,11 +387,17 @@ class OrderSerializer(serializers.ModelSerializer):
             'delivery',
         ]
         read_only_fields = fields
+        list_serializer_class = OrdersPrimingListSerializer
 
     def get_delivery(self, obj):
         from .delivery_services import buyer_payload_for
 
         return buyer_payload_for(obj)
+
+    def to_representation(self, instance):
+        # Review of #408: every line's picture in one batch (a list of orders primed them all already).
+        prime_variant_galleries(self.context, order_line_products([instance]))
+        return super().to_representation(instance)
 
 
 class CartItemSerializer(serializers.ModelSerializer):
@@ -304,6 +415,10 @@ class CartItemSerializer(serializers.ModelSerializer):
     lets the buyer recognise it and take it out: its id, its name and its
     picture. No price, no stock, no description, no address. A line whose
     product is on sale is unchanged, plus `available: true`.
+
+    G / IMG-GATE-01: the picture of a device variant's line is the one its model
+    page opens on, with `image_pending` and `image_is_demo` — set by the nested
+    `ProductSerializer` (`public_variant_gallery`), read once for every line.
     """
 
     product = ProductSerializer(read_only=True)
@@ -313,44 +428,16 @@ class CartItemSerializer(serializers.ModelSerializer):
         fields = ['id', 'session_key', 'product', 'quantity', 'added_at']
         read_only_fields = ['session_key', 'added_at']
 
-    @staticmethod
-    def _shows_variant_picture(product) -> bool:
-        return bool(product.product_model_id) and product.condition_line == Product.CONDITION_NEW
-
-    def _variant_picture(self, instance, data):
-        """
-        G (owner's path «photo per colour → cart»): a NEW variant of a model shows what its model page opens on —
-        its own picture, else its colour's finish, else the pending marker (`image_pending`) — never another colour's
-        photo nor the cover of a model with colours; a demo resource is said (`image_is_demo`), as on the page. Other
-        lines are unchanged. Read ONCE for every line of the cart (review of #377): the pictures of all the lines being
-        serialised are resolved together and kept in the context.
-        """
-        product = instance.product
-        if not self._shows_variant_picture(product):
-            return
-        from . import device_catalog
-
-        cache = self.context.setdefault('_variant_pictures', {})
-        if product.pk not in cache:
-            parent = getattr(self, 'parent', None)
-            siblings = list(parent.instance) if parent is not None and parent.instance is not None else [instance]
-            wanted = {item.product.pk: item.product for item in siblings
-                      if self._shows_variant_picture(item.product) and item.product.pk not in cache}
-            wanted.setdefault(product.pk, product)
-            cache.update(device_catalog.variant_pictures(list(wanted.values())))
-        address, pending, is_demo = cache[product.pk]
-        data['product']['image_url'] = address
-        data['product']['image_pending'] = pending
-        data['product']['image_is_demo'] = is_demo
-
     def to_representation(self, instance):
         product = instance.product
+        # Every line's picture in one batch, open and closed lines alike (review of #408).
+        prime_variant_galleries(self.context, [product, *(getattr(row, 'product', None)
+                                                          for row in serializer_siblings(self))])
         if product.is_sold_online:
             data = super().to_representation(instance)
             data['available'] = True
             data['sells_by_unit'] = product.sells_by_unit
             if instance.supply_origin == CartItem.SUPPLY_SUPPLIER:
-                self._variant_picture(instance, data)
                 # DC3 — taken on order: the offer that covers it now, at its price.
                 from .supply_services import offer_for_line
 
@@ -363,7 +450,6 @@ class CartItemSerializer(serializers.ModelSerializer):
                 data['line_total'] = str(offer.commercial_price * instance.quantity) if offer else None
                 return data
             data['supply'] = {'origin': 'own'}
-            self._variant_picture(instance, data)
             if product.sells_by_unit:
                 # DC2 — the devices this cart holds, each at ITS frozen price.
                 # Never the IMEI: its last four digits at most.
@@ -391,7 +477,7 @@ class CartItemSerializer(serializers.ModelSerializer):
         return {
             'id': instance.pk,
             'session_key': instance.session_key,
-            'product': closed_product_payload(product),
+            'product': closed_product_payload(product, self.context),
             'quantity': instance.quantity,
             'added_at': self.fields['added_at'].to_representation(instance.added_at),
             'available': False,
@@ -609,7 +695,13 @@ class AdminProductSerializer(serializers.ModelSerializer):
         asked = self.root.__dict__.setdefault('_publication_requires_image', {})
         if obj.company_id not in asked:
             asked[obj.company_id] = requires_image(obj.company_id)
-        return publication_problems(obj, require_image=asked[obj.company_id])
+        public_picture = None
+        if asked[obj.company_id] and obj.product_model_id:
+            # Review of #408: a device variant «has a picture» only if the shop may show one — read once for the
+            # whole list (`public_variant_gallery`).
+            gated = public_variant_gallery(self, obj)
+            public_picture = bool(gated and not gated['image_pending'])
+        return publication_problems(obj, require_image=asked[obj.company_id], public_picture=public_picture)
 
 
 class AdminProductDetailSerializer(AdminProductSerializer):
@@ -620,8 +712,9 @@ class AdminProductDetailSerializer(AdminProductSerializer):
         fields = AdminProductSerializer.Meta.fields + ['images']
 
     def get_images(self, obj):
-        from .product_media import gallery, payload
-        return [payload(image) for image in gallery(obj)]
+        # IMG-GATE-01: with each picture's provenance, licence check and whether the shop shows it.
+        from .product_media import payloads
+        return payloads(obj)
 
 
 class AdminProductWriteSerializer(serializers.ModelSerializer):

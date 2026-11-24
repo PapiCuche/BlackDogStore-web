@@ -61,7 +61,9 @@ describe('sitemap.xml', () => {
       ok: true,
       json: async () => (url.includes('/catalog/models')
         ? { results: [{ slug: 'iphone-15' }, { slug: '../malo' }] }
-        : [{ slug: 'funda-roja' }, { slug: 'cable_usb_c' }, { slug: null }]),
+        : [{ slug: 'funda-roja' }, { slug: 'cable_usb_c' }, { slug: null },
+          // IMG-GATE-01 (review of #408): a device variant lives on its model's page, not at /product/.
+          { slug: 'iphone-15-128-negro', product_model: 'iphone-15' }]),
     }));
     const urls = (await sitemap()).map((entry) => entry.url);
     expect(urls).toContain('https://tienda.example');
@@ -70,6 +72,7 @@ describe('sitemap.xml', () => {
     expect(urls).toContain('https://tienda.example/product/funda-roja');
     expect(urls).toContain('https://tienda.example/product/cable_usb_c');
     expect(urls.some((url) => /malo|admin|cart|checkout/.test(url))).toBe(false);
+    expect(urls.some((url) => url.includes('iphone-15-128-negro'))).toBe(false);
   });
 
   it('si la API falla, el sitemap sigue con las páginas públicas', async () => {

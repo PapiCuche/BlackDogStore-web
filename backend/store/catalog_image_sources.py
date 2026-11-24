@@ -217,8 +217,9 @@ def licensing(company) -> dict:
     * `uploads`: the shop's own uploads shown somewhere in the catalogue (model cover, a product's picture or
       gallery, a finish), each counted once: `unknown_source` (no provenance: uploaded before PR C or through a slot
       that does not ask), `unverified_license` (provenance given, nobody checked it yet — the shop's own photo only
-      when a finish shows it: a finish picture is published only once verified, whatever its origin, owner
-      2026-11-23; elsewhere an own photo has no licence to check), `demo` (a demo resource, flagged on the shop).
+      when a finish or a device variant shows it: those are published only once verified, whatever their origin,
+      owner 2026-11-23 and IMG-GATE-01; elsewhere an own photo has no licence to check), `demo` (a demo resource,
+      flagged on the shop).
     """
     finishes = catalog_finishes(company)
     pictured = set(ModelFinishImage.objects.filter(company=company).values_list('model_id', 'color_option_id'))
@@ -233,6 +234,12 @@ def licensing(company) -> dict:
     )
 
     finish_ids = _managed_ids(ModelFinishImage.objects.filter(company=company).values_list('image_url', flat=True))
+    # IMG-GATE-01: a device variant's own pictures are published only once verified too, an own photo included.
+    gated_ids = finish_ids | _managed_ids(
+        Product.objects.filter(company=company, product_model__isnull=False).exclude(image_url='')
+        .values_list('image_url', flat=True)) | _managed_ids(
+        ProductImage.objects.filter(company=company, product__product_model__isnull=False)
+        .values_list('image_url', flat=True))
     ids = (_managed_ids(ProductModel.objects.filter(company=company).exclude(image_url='')
                         .values_list('image_url', flat=True))
            | _managed_ids(Product.objects.filter(company=company).exclude(image_url='')
@@ -246,7 +253,7 @@ def licensing(company) -> dict:
             uploads['total'] += 1
             if kind == StorefrontImage.SOURCE_UNKNOWN:
                 uploads['unknown_source'] += 1
-            elif verified_at is None and (kind != StorefrontImage.SOURCE_OWN_PHOTO or public_id in finish_ids):
+            elif verified_at is None and (kind != StorefrontImage.SOURCE_OWN_PHOTO or public_id in gated_ids):
                 uploads['unverified_license'] += 1
             if kind == StorefrontImage.SOURCE_DEMO:
                 uploads['demo'] += 1
