@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — SUPPLY-WEEKLY-01 · semana de listas de proveedor, ofertas no mencionadas y combinación válida sin variante (rama, sin desplegar)
+
+Rama `feat/supply-weekly-01` sobre #402 (ya en `master`), PR abierto, **sin fusionar ni desplegar**, **sin migraciones**.
+
+- **Semana:** `GET /api/admin/supplier-offers/weekly/?supplier=&week=AAAA-Wnn|AAAA-MM-DD` (`products.view`). Una fila por proveedor × variante: modelo y opción de cada rol (capacidad, color, SIM, región), precio de la oferta, precio de la variante, confirmadas y quedan, plazo, vigencia, estado y **stock propio en su columna** (sucursales del usuario; nunca se suma lo del proveedor). Costo pactado sólo con `costs.view`. Cambio contra la lista anterior (hasta 28 días): nuevo, precio cambió, cantidad cambió, retirado, no mencionado, sin cambio; se lee de las listas APLICADAS por fecha del mensaje, no de ediciones a mano. Número fijo de consultas (probado).
+- **Panel:** pestaña «Semana» en Productos › Proveedores › Ofertas, con filtros por proveedor, semana, cambio y texto; tarjetas en el teléfono.
+- **Lista parcial:** la vista previa trae `unmentioned` (ofertas vigentes de los proveedores del archivo que no menciona). Sólo informativo: no desactiva nada (ADR §8.4).
+- **Excel:** una fila cuyo modelo y opciones son una combinación completa de la paleta sin variante ya no da el error genérico: `error_code = combinacion_valida_sin_variante` con `variant_proposal`; la vista previa ofrece «Crear variante» (borrador pendiente, confirmado) y vuelve a previsualizar.
+- **BLOCKED (migración):** el precio sugerido (costo + margen configurable por empresa) necesita una columna nueva en la configuración de la empresa: no hay un campo JSON reutilizable. Se dejó fuera hasta tener turno de migración (0187/0188 en curso).
+- **Pruebas:** `test_supply_weekly` (16) y suites de ofertas/guardas/catálogo relacionadas; Jest `supply-weekly` (8).
+
 ## 2026-11-23 — POS-ORDER-ARRIVAL-01 · el equipo que espera un pedido pagado no entra como stock libre (rama, sin desplegar)
 
 Hallazgo de la auditoría sobre `e5e1e70`, verificado en el código. Desde la caja, «Llegó el equipo» de una variante con una línea pagada bajo pedido lo registraba como stock libre: se podía vender otra vez, el pedido seguía pendiente y la oferta del proveedor, comprometida. Rama `feat/pos-order-arrival-01`, PR abierto, **sin fusionar ni desplegar**, sin migraciones.
