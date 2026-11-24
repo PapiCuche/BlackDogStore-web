@@ -192,6 +192,42 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    // NAV-SALES-01: the till, opened on its «Vender equipo por modelo» block. Not a screen of its own: the POS
+    // reads `?panel=equipo`, opens the block and puts the caret in the model search. Same authority as the till.
+    id: "sales.pos.device",
+    group: "sales",
+    label: "Venta rápida de equipo",
+    description: "La caja, abierta en el bloque de equipos: modelo, capacidad, color y SIM/región.",
+    href: "/admin/sales/pos?panel=equipo",
+    requiredCapabilities: ["sales.pos.use"],
+    status: "implemented",
+  },
+  {
+    // NAV-SALES-01: the orders list filtered to what was sold on order and already asked of the supplier. Same
+    // authority as the orders list, because it IS the orders list.
+    id: "sales.on_order",
+    group: "sales",
+    label: "Bajo pedido",
+    description: "Pedidos vendidos bajo pedido que esperan al proveedor.",
+    href: "/admin/orders?supply=pending",
+    requiredCapabilities: ["sales.orders.view"],
+    legacyRoles: STAFF_ROLES,
+    status: "implemented",
+  },
+  {
+    // NAV-SALES-01: the paid sales with no electronic receipt recorded (NOTE-NOT-SUBSTITUTE), the orders list
+    // filtered. The receipts themselves are issued and reprinted from each order; there is no list of them yet
+    // (`sales.invoicing`, partial).
+    id: "sales.receipts_pending",
+    group: "sales",
+    label: "Ventas sin comprobante",
+    description: "Ventas pagadas sin comprobante electrónico registrado en el sistema.",
+    href: "/admin/orders?receipt=pending",
+    requiredCapabilities: ["sales.orders.view"],
+    legacyRoles: STAFF_ROLES,
+    status: "implemented",
+  },
+  {
     id: "sales.notes",
     group: "sales",
     label: "Notas de venta",
@@ -201,6 +237,8 @@ export const INTERNAL_MODULES: InternalModule[] = [
     legacyRoles: ["sales", "admin", "superadmin"],
     status: "implemented",
   },
+  // NAV-SALES-01: already has its destination in Ventas. While pending (no screen, no `href`) the menu leaves it
+  // out; when SALES-QUOTE-01 gives it a page, an `href` and its capability, it appears there on its own.
   { id: "sales.quotes", group: "sales", label: "Cotizaciones", description: "Cotizaciones a clientes.", status: "pending" },
   {
     id: "sales.promotions",
@@ -389,6 +427,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     label: "Ofertas de proveedores",
     description: "Precio, cantidad confirmada, vigencia y plazo de entrega de cada oferta; carga semanal desde Excel.",
     href: "/admin/products/suppliers/offers",
+    requiredCapabilities: ["products.view"],
+    status: "implemented",
+  },
+  {
+    // NAV-SALES-01: «Actualizar lista de proveedor», the weekly list. Its page asks `products.view` to read how a
+    // list is interpreted; saving offers needs `products.manage`, checked inside and again by the server.
+    id: "products.supplier_list",
+    group: "products",
+    label: "Lista semanal",
+    description: "Pegar o subir la lista semanal de un proveedor y convertirla en ofertas.",
+    href: "/admin/products/suppliers/offers/update-list",
     requiredCapabilities: ["products.view"],
     status: "implemented",
   },
@@ -926,7 +975,51 @@ type Destination = {
 
 const m = (id: string, label?: string, caption?: string): DestinationMember => ({ id, label, caption });
 
+// The key is the SIDEBAR section a destination is drawn in, which need not be its members' registry group: «Más
+// herramientas» carries `products.import`, and Compras › Proveedores carries `sales.availability`. Each module is a
+// member of one destination at most (a test checks it), so it is drawn once.
 const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
+  // NAV-SALES-01 — by task: the till, the orders, the documents. «Cotizaciones» waits for its screen (pending);
+  // «Parte de pago» has no entry while the function is not approved.
+  sales: [
+    { id: "nav.sales.summary", label: "Resumen comercial", members: [m("sales.summary")] },
+    {
+      id: "nav.sales.till",
+      label: "Caja",
+      // A work screen with a scanner in hand: no tab bar above it. The quick device sale is the same screen.
+      noTabs: true,
+      members: [m("sales.pos", "Punto de venta"), m("sales.pos.device")],
+    },
+    {
+      id: "nav.sales.orders",
+      label: "Pedidos y bajo pedido",
+      members: [m("sales.orders", "Pedidos"), m("sales.on_order"), m("sales.cancellations", "Cancelaciones")],
+    },
+    { id: "nav.sales.quotes", label: "Cotizaciones", members: [m("sales.quotes")] },
+    {
+      id: "nav.sales.documents",
+      label: "Documentos",
+      members: [m("sales.notes"), m("sales.receipts_pending")],
+    },
+    { id: "nav.sales.promotions", label: "Promociones", members: [m("sales.promotions")] },
+    { id: "nav.sales.commissions", label: "Comisiones", members: [m("sales.commissions")] },
+  ],
+  // NAV-SALES-01 — Proveedores left Catálogo: whom the company buys from sits with what it owes them (Finanzas).
+  // The directory is the destination's own page; the weekly list, the offers and what can be sold on order are its
+  // options. Disponibilidad keeps the till's permission, so a seller finds it here with nothing else of suppliers.
+  purchases: [
+    {
+      id: "nav.suppliers",
+      label: "Proveedores",
+      members: [
+        m("products.suppliers", "Directorio"),
+        m("products.supplier_list"),
+        m("products.supplier_offers", "Ofertas"),
+        m("sales.availability", "Disponibilidad"),
+      ],
+    },
+    { id: "nav.finance", label: "Finanzas", members: [m("finance.obligations")] },
+  ],
   products: [
     {
       id: "nav.catalog",
@@ -939,11 +1032,6 @@ const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
         m("products.categories"),
         m("products.images"),
       ],
-    },
-    {
-      id: "nav.suppliers",
-      label: "Proveedores",
-      members: [m("products.suppliers", "Directorio"), m("products.supplier_offers", "Ofertas y listas")],
     },
   ],
   inventory: [
@@ -1030,18 +1118,21 @@ function sidebarItemFor(destination: Destination, ctx: ModuleAccessContext): Sid
  */
 export function sidebarSections(ctx: ModuleAccessContext): SidebarSection[] {
   const reachable = navigableModules(ctx);
+  const claimed = new Set(sidebarClaimedModuleIds());
   return MODULE_GROUPS.flatMap((group) => {
-    const destinations = SIDEBAR_DESTINATIONS[group.id];
+    const destinations = SIDEBAR_DESTINATIONS[group.id] ?? [];
     const label = SIDEBAR_SECTION_LABELS[group.id] ?? group.label;
     if (group.id === "dashboard") return [];
-    const items: SidebarItem[] = destinations
-      ? destinations.flatMap((d) => {
-          const item = sidebarItemFor(d, ctx);
-          return item ? [item] : [];
-        })
-      : reachable
-          .filter((x) => x.group === group.id)
-          .map((x) => ({ id: x.id, label: x.label, href: x.href!, children: [], tabs: false }));
+    const grouped: SidebarItem[] = destinations.flatMap((d) => {
+      const item = sidebarItemFor(d, ctx);
+      return item ? [item] : [];
+    });
+    // What no destination claims keeps one link of its own in its registry group: a screen added later never
+    // disappears from the menu for want of a destination, and a claimed one is never drawn twice.
+    const loose: SidebarItem[] = reachable
+      .filter((x) => x.group === group.id && !claimed.has(x.id))
+      .map((x) => ({ id: x.id, label: x.label, href: x.href!, children: [], tabs: false }));
+    const items = [...grouped, ...loose];
     // `Más herramientas` carries products.import, which belongs to the catalogue
     // group in the registry: the inventory section may therefore be the only
     // place a catalogue-only caller finds it.

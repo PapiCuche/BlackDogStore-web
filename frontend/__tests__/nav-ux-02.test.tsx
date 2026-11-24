@@ -56,9 +56,9 @@ describe('barra de pestañas por destino', () => {
     expect(tabsAt(master, '/admin/inventory/units/55')?.tabs.find((t) => t.active)?.label).toBe('Equipos nuevos');
   });
 
-  it('Proveedores no mezcla el directorio con las ofertas: dos pestañas con su propio nombre', () => {
+  it('Proveedores no mezcla el directorio con las ofertas: pestañas con su propio nombre', () => {
     expect(tabsAt(master, '/admin/products/suppliers/offers')?.tabs.map((t) => [t.label, t.active])).toEqual([
-      ['Directorio', false], ['Ofertas y listas', true],
+      ['Directorio', false], ['Lista semanal', false], ['Ofertas', true], ['Disponibilidad', false],
     ]);
   });
 

@@ -5,7 +5,7 @@
  * distintas a la misma tarea. Ahora el menú tiene nueve destinos entre Catálogo
  * e Inventario, y las pantallas que antes eran enlaces sueltos son sus
  * opciones. No se quita ninguna ruta ni se toca ningún permiso: el menú sólo
- * decide qué enseña.
+ * decide qué enseña. NAV-SALES-01 llevó Proveedores a Compras: quedan ocho.
  */
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { InternalSidebar, MobileSidebar } from '@/app/admin/components/InternalSidebar';
@@ -61,14 +61,15 @@ const CONTEXTS: Record<string, ModuleAccessContext> = {
 };
 
 describe('el menú de Catálogo e Inventario', () => {
-  it('un administrador con todo ve nueve destinos, no veinticinco enlaces', () => {
-    expect(labels(FULL, 'products')).toEqual(['Productos y variantes', 'Proveedores']);
+  it('un administrador con todo ve ocho destinos, no veinticinco enlaces', () => {
+    // NAV-SALES-01: Proveedores salió de Catálogo hacia Compras.
+    expect(labels(FULL, 'products')).toEqual(['Productos y variantes']);
     expect(labels(FULL, 'inventory')).toEqual([
       'Centro de operaciones', 'Recibir mercadería', 'Stock y equipos', 'Recuentos',
       'Etiquetas', 'Movimientos', 'Más herramientas',
     ]);
     expect(section(FULL, 'products')?.label).toBe('Catálogo');
-    expect(labels(FULL, 'products').length + labels(FULL, 'inventory').length).toBe(9);
+    expect(labels(FULL, 'products').length + labels(FULL, 'inventory').length).toBe(8);
   });
 
   it('cada pantalla de antes sigue a un clic de un destino', () => {
@@ -80,8 +81,8 @@ describe('el menú de Catálogo e Inventario', () => {
 
   it('el menú tiene menos de la mitad de los enlaces de primer nivel que antes', () => {
     // Antes de NAV-UX-02 (que añade la página «Más herramientas») eran 25 enlaces planos. P2 · F4 añadió
-    // después «Imágenes por reemplazar», que no estaba entre ellos.
-    const later = ['inventory.tools', 'products.images'];
+    // después «Imágenes por reemplazar», y NAV-SALES-01 «Lista semanal», que no estaban entre ellos.
+    const later = ['inventory.tools', 'products.images', 'products.supplier_list'];
     const before = navigableModules(FULL).filter((m) => (m.group === 'products' || m.group === 'inventory') && !later.includes(m.id)).length;
     const after = labels(FULL, 'products').length + labels(FULL, 'inventory').length;
     expect(before).toBe(25);
@@ -111,11 +112,13 @@ describe('el menú de Catálogo e Inventario', () => {
     );
   });
 
-  it('Proveedores no mezcla el directorio con las ofertas: son dos pantallas distintas', () => {
-    const item = section(FULL, 'products')?.items.find((i) => i.label === 'Proveedores');
+  it('Proveedores no mezcla el directorio con las ofertas: son pantallas distintas (en Compras desde NAV-SALES-01)', () => {
+    const item = section(FULL, 'purchases')?.items.find((i) => i.label === 'Proveedores');
     expect(item?.href).toBe('/admin/products/suppliers');
     expect(item?.children).toEqual([
-      expect.objectContaining({ label: 'Ofertas y listas', href: '/admin/products/suppliers/offers' }),
+      expect.objectContaining({ label: 'Lista semanal', href: '/admin/products/suppliers/offers/update-list' }),
+      expect.objectContaining({ label: 'Ofertas', href: '/admin/products/suppliers/offers' }),
+      expect.objectContaining({ label: 'Disponibilidad', href: '/admin/sales/availability' }),
     ]);
   });
 
@@ -139,12 +142,11 @@ describe('el menú de Catálogo e Inventario', () => {
     expect(tools.children.filter((c) => c.caption).map((c) => c.caption)).toEqual(['Cargas y exportaciones', 'Análisis']);
   });
 
-  it('las demás secciones no cambian', () => {
-    const sales = section(FULL, 'sales')!.items.map((i) => i.label);
-    expect(sales.slice(0, 5)).toEqual([
-      'Resumen comercial', 'Punto de venta', 'Consultar disponibilidad', 'Pedidos', 'Cancelaciones / historial',
-    ]);
-    expect(section(FULL, 'sales')!.items.every((i) => i.children.length === 0)).toBe(true);
+  it('las demás secciones no cambian: un enlace por pantalla', () => {
+    // Ventas y Compras pasaron a destinos en NAV-SALES-01 (nav-sales-01.test.tsx).
+    for (const id of ['customers', 'service', 'reports', 'administration']) {
+      expect(section(FULL, id)!.items.every((i) => i.children.length === 0)).toBe(true);
+    }
   });
 });
 
