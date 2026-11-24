@@ -1251,19 +1251,19 @@ def _unit_price(unit, product) -> Decimal | None:
 def offered_units(products, branch, *, now=None):
     """
     The units the shop offers RIGHT NOW from `branch`: available, of a product
-    sold online. A used unit without its own price is not offered.
+    sold online. A used unit only when it is ready for the web
+    (USED-READY-01, `used_unit_services.web_ready_q`): its own price greater
+    than zero (INV-RECEIVE-PRICE-03), its inspection approved, itself
+    published and at least one real photo of it.
     """
+    from .used_unit_services import offerable_q
+
     if branch is None:
         return StockUnit.objects.none()
-    return (
-        StockUnit.objects.filter(
-            company_id=branch.company_id, branch=branch, product__in=products,
-            status=StockUnit.Status.AVAILABLE,
-        )
-        # INV-RECEIVE-PRICE-03: «priced» is greater than zero, as at the till — a zero is no price.
-        .exclude(Q(product__condition_line=Product.CONDITION_USED)
-                 & (Q(sale_price__isnull=True) | Q(sale_price__lte=0)))
-    )
+    return StockUnit.objects.filter(
+        company_id=branch.company_id, branch=branch, product__in=products,
+        status=StockUnit.Status.AVAILABLE,
+    ).filter(offerable_q())
 
 
 def models_with_new_for_sale(products, branch) -> set[int]:
@@ -1322,7 +1322,14 @@ def new_for_sale_prices(products, branch) -> dict[int, Decimal]:
     return prices
 
 
-def public_unit(unit, product, option_labels: dict) -> dict:
+def company_used_warranty_days(company_id) -> int | None:
+    """USED-READY-01 — the company's default warranty days for a used device (None: only its policy text)."""
+    from .models import CompanySettings
+
+    return CompanySettings.objects.filter(company_id=company_id).values_list('used_warranty_days', flat=True).first()
+
+
+def public_unit(unit, product, option_labels: dict, *, default_warranty_days=None) -> dict:
     """ONE used device as the shop shows it. An allowlist: nothing else leaves."""
     photos = [
         {'url': photo.image_url, 'alt_text': photo.alt_text, 'width': photo.width, 'height': photo.height}
@@ -1341,6 +1348,16 @@ def public_unit(unit, product, option_labels: dict) -> dict:
         'photos': photos,
         'notes': unit.public_notes,
         'imei_hint': mask_imei(unit.imei),
+        # USED-READY-01 — what the shop states about THIS device. `warranty_days`: its own, else the company's
+        # default (`warranty_source` says which); null: only the company's warranty policy text applies (the page
+        # shows it); 0: sold without warranty.
+        'warranty_days': unit.warranty_days if unit.warranty_days is not None else default_warranty_days,
+        'warranty_source': ('unit' if unit.warranty_days is not None
+                            else 'company' if default_warranty_days is not None else 'policy'),
+        'functional_state': unit.functional_state or None,
+        'functional_state_label': unit.get_functional_state_display() if unit.functional_state else '',
+        'defects': unit.defects,
+        'accessories': unit.accessories,
     }
 
 
@@ -1669,13 +1686,14 @@ def public_model(model, branch) -> dict:
     used_units = []
     if used_products and branch is not None:
         by_product = {product.pk: (product, labels) for product, _sel, labels in used_products}
+        default_warranty = company_used_warranty_days(model.company_id)
         for unit in (
             offered_units([p for p, _s, _l in used_products], branch)
             .select_related('cosmetic_grade').prefetch_related('photos')
             .order_by('sale_price', 'received_at', 'pk')
         ):
             product, labels = by_product[unit.product_id]
-            used_units.append(public_unit(unit, product, labels))
+            used_units.append(public_unit(unit, product, labels, default_warranty_days=default_warranty))
 
     labels = line_labels(model.company)
     return {

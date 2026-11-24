@@ -463,13 +463,14 @@ def _units_for_movement(*, branch, product, quantity, units, expected_status,
             )
         return None
 
+    # USED-READY-01 — a used device leaves in a sale only once its inspection is approved, whoever sells it.
+    used = product.condition_line == product.CONDITION_USED
     if assign_for_sale:
-        picked = list(
-            StockUnit.objects.select_for_update()
-            .filter(company_id=branch.company_id, branch=branch, product=product,
-                    status=StockUnit.Status.AVAILABLE)
-            .order_by('received_at', 'pk')[:quantity]
-        )
+        candidates = StockUnit.objects.select_for_update().filter(
+            company_id=branch.company_id, branch=branch, product=product, status=StockUnit.Status.AVAILABLE)
+        if used:
+            candidates = candidates.filter(inspection_status=StockUnit.Inspection.APPROVED)
+        picked = list(candidates.order_by('received_at', 'pk')[:quantity])
         if len(picked) < quantity:
             raise InsufficientStockError(
                 f'Stock insuficiente para "{product.name}" en {branch.name}. '
@@ -502,6 +503,11 @@ def _units_for_movement(*, branch, product, quantity, units, expected_status,
                     'no admite esta operación.'
                 )
     ids = sorted(unit.pk for unit in locked)
+    if sell and used:
+        for unit in locked:
+            if unit.inspection_status != StockUnit.Inspection.APPROVED:
+                raise InvalidMovementError(
+                    f'El equipo {unit.identifier} no tiene la inspección aprobada: no se vende.')
     if sell:
         # SERIAL-PICK-01: THESE devices, the ones somebody identified, leave in
         # this sale — not the oldest of the branch.
@@ -847,6 +853,15 @@ def _sell_chosen_units(order: Order, branch, items, *, actor=None, strict: bool 
             .filter(pk=item.stock_unit_id, company_id=order.company_id, branch=branch, product_id=item.product_id)
             .first()
         )
+        if (unit is not None and product.condition_line == product.CONDITION_USED
+                and unit.inspection_status != StockUnit.Inspection.APPROVED):
+            # USED-READY-01 — its inspection was rejected (or reopened) after the buyer took it: the money is in, so
+            # the payment is not refused; the line is flagged for a person, as a device that is gone.
+            _flag_stock_shortfall(
+                order, item,
+                f'El equipo elegido de "{product.name}" ya no tiene la inspección aprobada: no se vende.',
+            )
+            continue
         held_for_us = (
             unit is not None and unit.status == StockUnit.Status.RESERVED and unit.hold_key
             and (unit.hold_order_id == order.pk or (buyer_key and unit.hold_key == buyer_key))

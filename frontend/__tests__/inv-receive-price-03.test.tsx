@@ -68,10 +68,12 @@ describe('las tres autoridades de la pantalla', () => {
   const access = (...caps: string[]) => ({ can: (c: string) => caps.includes(c) });
 
   it('ajustar inventario no da el precio, gestionar productos solo no da la ficha, el costo va aparte', () => {
-    expect(usedUnitsAccess(access('inventory.adjust'))).toEqual({ canEdit: true, canManagePrice: false, canManageProducts: false, canSeeCost: false });
-    expect(usedUnitsAccess(access('products.manage'))).toEqual({ canEdit: false, canManagePrice: false, canManageProducts: true, canSeeCost: false });
-    expect(usedUnitsAccess(access('inventory.adjust', 'products.manage'))).toEqual({ canEdit: true, canManagePrice: true, canManageProducts: true, canSeeCost: false });
-    expect(usedUnitsAccess(access('costs.view'))).toEqual({ canEdit: false, canManagePrice: false, canManageProducts: false, canSeeCost: true });
+    expect(usedUnitsAccess(access('inventory.adjust'))).toEqual({ canEdit: true, canManagePrice: false, canManageProducts: false, canSeeCost: false, canInspect: false });
+    expect(usedUnitsAccess(access('products.manage'))).toEqual({ canEdit: false, canManagePrice: false, canManageProducts: true, canSeeCost: false, canInspect: false });
+    expect(usedUnitsAccess(access('inventory.adjust', 'products.manage'))).toEqual({ canEdit: true, canManagePrice: true, canManageProducts: true, canSeeCost: false, canInspect: false });
+    expect(usedUnitsAccess(access('costs.view'))).toEqual({ canEdit: false, canManagePrice: false, canManageProducts: false, canSeeCost: true, canInspect: false });
+    // USED-READY-01: approving an inspection is its own authority, implied by none of the others.
+    expect(usedUnitsAccess(access('inventory.units.inspect'))).toEqual({ canEdit: false, canManagePrice: false, canManageProducts: false, canSeeCost: false, canInspect: true });
   });
 
   it('el enlace de la recepción preselecciona artículo y «sin precio»; lo demás se ignora', () => {

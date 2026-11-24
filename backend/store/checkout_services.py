@@ -179,7 +179,7 @@ def lines_from_cart(company, branch, session_key, cart_items) -> list[CheckoutLi
     is not charged silently: the hold takes the new price and the buyer is
     told before anything is created.
     """
-    from . import unit_hold_services
+    from . import unit_hold_services, used_unit_services
 
     from . import supply_services
 
@@ -208,6 +208,11 @@ def lines_from_cart(company, branch, session_key, cart_items) -> list[CheckoutLi
                 continue
             current = unit_hold_services.price_for(unit, product)
             if current is None:
+                errors.append(f'{product.name} ya no está disponible.')
+                continue
+            if used_unit_services.web_problems(unit):
+                # USED-READY-01 — held, and since then withdrawn (inspection, publication or its last real photo):
+                # the web no longer sells it. Told before any order or payment exists.
                 errors.append(f'{product.name} ya no está disponible.')
                 continue
             if current != unit.hold_price:

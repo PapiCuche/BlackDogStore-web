@@ -43,7 +43,11 @@ for u in data['units']:
     if u.get('cost'): row['cost'] = u['cost']
     if u['serial'].endswith('1'): row['battery_health'] = 88
     rows.append(row)
-stock_unit_services.receive_units(branch=branch, product=product, actor=actor, reason='Prueba de navegador', units=rows)
+received = stock_unit_services.receive_units(branch=branch, product=product, actor=actor, reason='Prueba de navegador', units=rows)
+# USED-READY-01: the till sells a used device once its inspection is approved.
+from store import used_unit_services
+for unit in received:
+    used_unit_services.set_inspection(unit, decision='approved', actor=actor)
 out({'product': product.pk})
 `, { name: MODEL, units: [U1, U2, U3, U4, U5] });
 }

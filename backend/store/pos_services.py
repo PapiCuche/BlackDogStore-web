@@ -59,6 +59,12 @@ class PosValidationError(PosError):
     """The request is malformed or asks for something that does not exist here."""
 
 
+class PosUnitNotInspectedError(PosValidationError):
+    """USED-READY-01 — a used device whose inspection is not approved is not sold. Answered 409 `unit_not_inspected`."""
+
+    code = 'unit_not_inspected'
+
+
 class PosStockAvailableError(PosValidationError):
     """
     DC3 — «Bajo pedido» asked for a line this shelf covers. Answered 409
@@ -885,6 +891,7 @@ def unit_prices(company, branch, products, items, *, lock: bool = False) -> dict
     A line that names fewer devices than it sells is priced for those it names: the preview runs while devices are
     still being scanned, and a sale never passes (`check_line_units` refuses it first).
     """
+    from . import used_unit_services
     from .models import StockUnit
 
     wanted: dict[int, list[int]] = {}
@@ -917,6 +924,11 @@ def unit_prices(company, branch, products, items, *, lock: bool = False) -> dict
             price = unit.sale_price
             if price is None or not price.is_finite() or price <= 0:
                 raise PosValidationError(f'«{product.name}»: {UNPRICED_UNIT}')
+            # USED-READY-01 — a used device is sold at the till only once its inspection is APPROVED (pending or
+            # rejected is refused, and the sentence says which). Its web publication is not asked: it is here.
+            refusal = used_unit_services.till_refusal(unit)
+            if refusal:
+                raise PosUnitNotInspectedError(f'«{product.name}»: {refusal}')
             priced.append((unit, _money(price)))
         out[product_id] = priced
     return out

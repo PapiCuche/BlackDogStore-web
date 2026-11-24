@@ -18,6 +18,8 @@ export function usedUnitsAccess(access: Pick<InternalAccess, "can">) {
     canManagePrice: canEdit && canManageProducts,
     canManageProducts,
     canSeeCost: access.can("costs.view", ["admin", "superadmin"]),
+    // USED-READY-01: approving a device's inspection is its own authority (not `inventory.adjust`).
+    canInspect: access.can("inventory.units.inspect", ["admin", "superadmin"]),
   };
 }
 

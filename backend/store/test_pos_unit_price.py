@@ -25,6 +25,7 @@ from store.models import (
 )
 from store.test_stock_units import IMEI_A, IMEI_B, IMEI_C, IMEI_D, UnitsBase
 from store.tests import _c1_sale, _c13_combo, _p2d_branch, _p2d_member, _prod
+from store.used_unit_test_support import approve_all
 
 SCANNER = 'scanner'
 
@@ -43,8 +44,10 @@ class UsedBase(UnitsBase):
         self.used.refresh_from_db()
         self.cable = _prod(self.company, 'Cable USB-C', 'cable-usb-c-precio', price='49.00', inventory=20)
 
-    def receive_used(self, *rows, **extra):
-        return self.receive(*rows, product=self.used, **extra)
+    def receive_used(self, *rows, inspected=True, **extra):
+        # USED-READY-01: the till sells a used device once its inspection is approved (`test_used_ready`).
+        received = self.receive(*rows, product=self.used, **extra)
+        return approve_all(received) if inspected else received
 
     def sell(self, items, **extra):
         extra.setdefault('actor', self.cashier)
