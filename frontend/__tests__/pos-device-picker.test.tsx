@@ -305,3 +305,47 @@ it('a colour chip shows its finish picture, else the company swatch, else only i
   expect(blue.querySelector('[style*="background"]')).toBeNull();
   expect(blue).toHaveTextContent('Azul');
 });
+
+describe('NAV-SALES-01 — «Venta rápida de equipo» abre este bloque', () => {
+  const scrolled = jest.fn();
+  beforeAll(() => { Element.prototype.scrollIntoView = scrolled; });
+  afterAll(() => { delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView; });
+  beforeEach(() => scrolled.mockReset());
+
+  it('pedido desde el menú: se abre, se muestra y el cursor queda en la búsqueda del modelo', () => {
+    const onFocusHandled = jest.fn();
+    renderPicker({ focusRequested: true, onFocusHandled });
+    expect(screen.getByRole('button', { name: /Vender equipo por modelo/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByLabelText('Modelo')).toHaveFocus();
+    expect(scrolled).toHaveBeenCalled();
+    expect(onFocusHandled).toHaveBeenCalledTimes(1);
+  });
+
+  it('sin sucursal todavía, se abre y espera a que la caja tenga una para poner el cursor', () => {
+    const onFocusHandled = jest.fn();
+    const handlers = { onAddProduct: jest.fn(), onAddOnOrder: jest.fn(), onReceived: jest.fn() };
+    const view = render(<PosDevicePicker companyId={3} branch={null} focusRequested onFocusHandled={onFocusHandled} {...handlers} />);
+    expect(screen.getByRole('button', { name: /Vender equipo por modelo/ })).toHaveAttribute('aria-expanded', 'true');
+    expect(onFocusHandled).not.toHaveBeenCalled();
+    view.rerender(<PosDevicePicker companyId={3} branch={8} focusRequested onFocusHandled={onFocusHandled} {...handlers} />);
+    expect(screen.getByLabelText('Modelo')).toHaveFocus();
+    expect(onFocusHandled).toHaveBeenCalledTimes(1);
+  });
+
+  it('sin pedido, sigue cerrado y no toca el foco (el escáner es de la caja)', () => {
+    renderPicker();
+    expect(screen.getByRole('button', { name: /Vender equipo por modelo/ })).toHaveAttribute('aria-expanded', 'false');
+    expect(scrolled).not.toHaveBeenCalled();
+  });
+
+  it('con un modelo ya elegido, el cursor va al botón del bloque', async () => {
+    const onFocusHandled = jest.fn();
+    const handlers = { onAddProduct: jest.fn(), onAddOnOrder: jest.fn(), onReceived: jest.fn() };
+    const view = render(<PosDevicePicker companyId={3} branch={8} {...handlers} />);
+    await openModel();
+    await userEvent.click(document.body);
+    view.rerender(<PosDevicePicker companyId={3} branch={8} focusRequested onFocusHandled={onFocusHandled} {...handlers} />);
+    expect(screen.getByRole('button', { name: /Vender equipo por modelo/ })).toHaveFocus();
+    expect(onFocusHandled).toHaveBeenCalledTimes(1);
+  });
+});
