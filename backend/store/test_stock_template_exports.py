@@ -59,13 +59,13 @@ class _Stock(_Base):
         colour = device_catalog.create_attribute(company=self.company, name='Color', kind='color', role='color')
         sim = device_catalog.create_attribute(company=self.company, name='Tipo de SIM', role='sim')
         region = device_catalog.create_attribute(company=self.company, name='Región', role='region')
-        gb128 = device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label='128 GB')
-        black = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Negro',
+        self.gb128 = gb128 = device_catalog.create_option(company=self.company, attribute_id=capacity.pk, label='128 GB')
+        self.black = black = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Negro',
                                              swatch_hex='#111111')
-        blue = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Azul',
+        self.blue = blue = device_catalog.create_option(company=self.company, attribute_id=colour.pk, label='Azul',
                                             swatch_hex='#1d4ed8')
-        esim = device_catalog.create_option(company=self.company, attribute_id=sim.pk, label='eSIM')
-        lla = device_catalog.create_option(company=self.company, attribute_id=region.pk, label='LL/A')
+        self.esim = esim = device_catalog.create_option(company=self.company, attribute_id=sim.pk, label='eSIM')
+        self.lla = lla = device_catalog.create_option(company=self.company, attribute_id=region.pk, label='LL/A')
         self.model = device_catalog.create_model(company=self.company, name='Serie 16')
         device_catalog.set_variant(self.phone, model_id=self.model.pk, option_ids=[gb128.pk, black.pk, esim.pk, lla.pk])
         self.used = self.product('Teléfono X usado', 'telefono-x-usado', '1.00', self.phones,
@@ -138,6 +138,56 @@ class TemplateShapeTest(_Stock):
             with self.subTest(line):
                 fields = {field for _header, field in spec['columns']}
                 self.assertLessEqual(fields, set(inventory_exports.TEMPLATE_FIELDS), fields)
+
+    def test_a_fully_filled_device_fills_every_column_of_both_templates(self):
+        """
+        Review of #428: no template column may come out empty by omission. A device with everything stated, read by
+        somebody who may see costs, suppliers and whole identifiers, fills every column of its template.
+        """
+        from store import stock_unit_services
+
+        full_new = self.product('Teléfono X lleno', 'telefono-x-lleno', '4999.00', self.phones,
+                                is_serialized=True, requires_imei=True)
+        full_new = device_catalog.set_variant(full_new, model_id=self.model.pk,
+                                   option_ids=[self.gb128.pk, self.blue.pk, self.esim.pk, self.lla.pk])
+        full_used = self.product('Teléfono X usado lleno', 'telefono-x-usado-lleno', '1.00', self.phones,
+                                 is_serialized=True, requires_imei=True)
+        full_used = device_catalog.set_variant(full_used, model_id=self.model.pk, condition_line=Product.CONDITION_USED,
+                                   option_ids=[self.gb128.pk, self.black.pk, self.esim.pk, self.lla.pk])
+        stock_unit_services.receive_units(
+            branch=self.norte, product=full_new, actor=self.admin, reason='Compra', supplier=self.supplier,
+            units=[{'serial_number': 'SER-LLENO-N', 'imei': imei('35693803564391'), 'imei2': imei('35693803564392'),
+                    'cost': '4000.00', 'notes': 'Vitrina 1'}])
+        stock_unit_services.receive_units(
+            branch=self.norte, product=full_used, actor=self.admin, reason='Compra', supplier=self.supplier,
+            units=[{'serial_number': 'SER-LLENO-U', 'imei': imei('35693803564393'), 'imei2': imei('35693803564394'),
+                    'condition': 'used', 'cost': '900.00', 'cosmetic_grade': self.grade.pk, 'battery_health': 91,
+                    'sale_price': '1500.00', 'notes': 'Vitrina 3', 'public_notes': 'Como nuevo', 'warranty_days': 30,
+                    'functional_state': 'full', 'defects': 'Ninguno visible', 'accessories': 'Caja y cable'}])
+        for kind, line, serial in (('units_new', NEW, 'SER-LLENO-N'), ('units_used', USED, 'SER-LLENO-U')):
+            with self.subTest(kind):
+                _title, headers, rows = self.data(self.get(kind, mode='full'))
+                row = next(row for row in rows if row['Serie'] == serial)
+                self.assertEqual(headers, _headers(line))
+                self.assertEqual([header for header in headers if row[header] in (None, '')], [])
+
+    def test_the_writer_maps_every_field_and_a_new_device_carries_its_variant_price(self):
+        """
+        Every field of `TEMPLATE_FIELDS` has a value for every device (the writer reads them by key, never with a
+        default). «Precio de venta» of a NEW device is its VARIANT's price (#426: the new template reads it as the
+        expected price and compares it with the variant's, so a reload proposes nothing); a USED one carries its own.
+        Checked on the mapping, not on the header, so it holds whether or not the new template has the column yet.
+        """
+        new_unit = StockUnit.objects.get(serial_number='SER-0001')
+        used_unit = StockUnit.objects.get(serial_number='SER-U001')
+        filters = inventory_exports.ExportFilters(branches=[self.centro, self.norte], full_identifiers=True)
+        for unit, line in ((new_unit, NEW), (used_unit, USED)):
+            values = inventory_exports.template_values(unit, line=line, filters=filters, company=self.company)
+            self.assertEqual(set(values), set(inventory_exports.TEMPLATE_FIELDS))
+        self.assertEqual(inventory_exports.template_values(new_unit, line=NEW, filters=filters,
+                                                           company=self.company)['sale_price'], Decimal('4500.00'))
+        self.assertEqual(inventory_exports.template_values(used_unit, line=USED, filters=filters,
+                                                           company=self.company)['sale_price'], Decimal('1899.90'))
 
     def test_identifiers_are_text_cells(self):
         page = self.book(self.get('units_new', mode='full')).worksheets[0]

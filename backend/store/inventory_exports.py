@@ -869,7 +869,8 @@ TEMPLATE_FIELDS = {
     'imei': 'IMEI 1, whole or masked', 'imei2': 'IMEI 2, whole or masked', 'serial_number': 'serial, whole or masked',
     'supplier': 'who sold it, `include_supplier` only', 'cost': 'its specific cost, `include_cost` only',
     'received_on': 'the day it came in', 'notes': 'the staff notes',
-    'sale_price': 'its own sale price', 'grade': 'its cosmetic grade', 'battery': 'measured battery health',
+    'sale_price': ('a NEW device: its variant\'s price (what the new template reads as the expected price, #426, so a '
+                   'reload proposes no change); a USED one: its own sale price'), 'grade': 'its cosmetic grade', 'battery': 'measured battery health',
     'functional_state': 'the template\'s words', 'defects': 'what is wrong', 'accessories': 'what it comes with',
     'warranty_days': 'its own warranty', 'public_notes': 'what the buyer reads',
 }
@@ -899,6 +900,55 @@ def _template_notice(spec, *, full: bool) -> list:
     ]
 
 
+class _TemplateRow:
+    """
+    {field: value} of ONE device for the stock template of `line` — every key of `TEMPLATE_FIELDS`, always.
+    Built once per download: the variant and grade lookups read the company once.
+    """
+
+    def __init__(self, company, filters: ExportFilters, line: str):
+        self.filters, self.line = filters, line
+        self.full = filters.full_identifiers
+        self.variant_cells, self.grade_cell = _VariantCells(company), _GradeCells(company)
+        self.identifier = _identifier_cell(filters)
+
+    def __call__(self, unit) -> dict:
+        filters, full, identifier = self.filters, self.full, self.identifier
+        variant = dict.fromkeys(_VARIANT_FIELDS.values())
+        variant.update({_VARIANT_FIELDS[header]: value for header, value in self.variant_cells(unit.product).items()
+                        if header in _VARIANT_FIELDS})
+        if not full and not variant['model']:
+            # A review copy is read by a person: the product's name says which device it is. The full file leaves
+            # «Modelo» empty instead, because a reload would guess another variant from it.
+            variant['model'] = unit.product.name
+        return {
+            'branch': unit.branch.name,
+            **variant,
+            'imei': identifier(unit.imei),
+            'imei2': identifier(unit.imei2),
+            'serial_number': identifier(unit.serial_number),
+            'supplier': unit.supplier.name if filters.include_supplier and unit.supplier_id else None,
+            'cost': unit.cost if filters.include_cost else None,
+            'received_on': timezone.localtime(unit.received_at).date().isoformat(),
+            'notes': unit.notes or None,
+            # #426: a NEW device sells at its variant's price, which the new template reads as the expected price;
+            # a USED one has its own.
+            'sale_price': unit.sale_price if self.line == Product.CONDITION_USED else unit.product.price,
+            'grade': self.grade_cell(unit.cosmetic_grade_id, report=not full),
+            'battery': unit.battery_health,
+            'functional_state': _FUNCTIONAL_WORDS.get(unit.functional_state),
+            'defects': unit.defects or None,
+            'accessories': unit.accessories or None,
+            'warranty_days': unit.warranty_days,
+            'public_notes': unit.public_notes or None,
+        }
+
+
+def template_values(unit, *, line: str, filters: ExportFilters, company) -> dict:
+    """{field: value} of one device for the stock template of `line` (`_TemplateRow`)."""
+    return _TemplateRow(company, filters, line)(unit)
+
+
 def stock_template_workbook(company, filters: ExportFilters, line: str, mode: str) -> tuple[bytes, dict]:
     """
     The devices of `line` on the caller's shelves as the stock template of that line. `(bytes, {kind: rows})`.
@@ -926,36 +976,12 @@ def stock_template_workbook(company, filters: ExportFilters, line: str, mode: st
     )
     _check_rows(queryset.count())
 
-    variant_cells, grade_cell = _VariantCells(company), _GradeCells(company)
-    identifier = _identifier_cell(filters)
+    row_values = _TemplateRow(company, filters, line)
     rows = []
     for unit in queryset.iterator(chunk_size=2000):
-        variant = {_VARIANT_FIELDS[header]: value for header, value in variant_cells(unit.product).items()
-                   if header in _VARIANT_FIELDS}
-        if not full and not variant.get('model'):
-            # A review copy is read by a person: the product's name says which device it is. The full file leaves
-            # «Modelo» empty instead, because a reload would guess another variant from it.
-            variant['model'] = unit.product.name
-        values = {
-            'branch': unit.branch.name,
-            **variant,
-            'imei': identifier(unit.imei),
-            'imei2': identifier(unit.imei2),
-            'serial_number': identifier(unit.serial_number),
-            'supplier': unit.supplier.name if filters.include_supplier and unit.supplier_id else None,
-            'cost': unit.cost if filters.include_cost else None,
-            'received_on': timezone.localtime(unit.received_at).date().isoformat(),
-            'notes': unit.notes or None,
-            'sale_price': unit.sale_price,
-            'grade': grade_cell(unit.cosmetic_grade_id, report=not full),
-            'battery': unit.battery_health,
-            'functional_state': _FUNCTIONAL_WORDS.get(unit.functional_state),
-            'defects': unit.defects or None,
-            'accessories': unit.accessories or None,
-            'warranty_days': unit.warranty_days,
-            'public_notes': unit.public_notes or None,
-        }
-        rows.append([values.get(field) for _header, field in columns])
+        values = row_values(unit)
+        # By key, never with a default: a template column without a value is an error here, not an empty cell.
+        rows.append([values[field] for _header, field in columns])
 
     fields = [field for _header, field in columns]
     widths = {'branch': 22, 'model': 26, 'region': 30, 'imei': 19, 'imei2': 19, 'serial_number': 28, 'supplier': 26,
