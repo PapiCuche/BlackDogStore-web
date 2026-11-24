@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 
-import { UsedUnitsPanel, publicationBlockers, warrantyText } from '@/app/admin/components/UsedUnitsPanel';
+import { UsedUnitsPanel, publicationBlockers, warrantyText, webStatusText } from '@/app/admin/components/UsedUnitsPanel';
 import { UsedUnitCardV4 } from '@/app/components/v4/UsedUnitCardV4';
 import { fetchWithAuth } from '@/app/lib/auth';
 import { unitWarrantyText, type UsedUnit } from '@/app/lib/catalog-models';
@@ -115,6 +115,25 @@ describe('la publicación', () => {
     expect(within(dialog).getByTestId('unit-publication')).toHaveTextContent('Publicado en línea');
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Retirar de la tienda en línea' })); });
     expect(writes[1].body).toEqual({ published: false });
+  });
+
+  it('STOCK-UX-WALK: tras publicar, la ficha dice lo que el servidor responde de la web, no lo de antes', async () => {
+    // Recorrido real: «Equipo publicado en la tienda en línea.» y, más arriba, «No se ofrece …: el equipo no está
+    // publicado». La ficha leía la fila con la que se abrió.
+    unit = { ...BASE, inspection_status: 'approved', photos: [{ id: 1, url: 'http://localhost/p.png', alt_text: '' }],
+      web: { offered: false, reasons: ['unit_not_published'] } };
+    const before = webStatusText(unit as unknown as StockUnit) ?? '';
+    const dialog = await openDialog({ canManagePrice: true });
+    expect(dialog).toHaveTextContent(before);
+    send.mockImplementation(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      if ((init.method ?? 'GET').toUpperCase() === 'POST' && String(input).endsWith('/publication/')) {
+        return reply({ ...unit, published_online: true, web: { offered: true, reasons: [] } });
+      }
+      return reply({}, 404);
+    });
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Publicar este equipo' })); });
+    expect(dialog).not.toHaveTextContent(before);
+    expect(dialog).toHaveTextContent('Se ofrece en la tienda en línea.');
   });
 
   it('sin gestionar productos no se publica', async () => {

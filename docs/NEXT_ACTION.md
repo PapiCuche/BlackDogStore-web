@@ -144,6 +144,10 @@ También: #406 y #412 (pruebas E2E ajustadas a la ola 1, `3435a068`).
 - vista previa con la simulación del stock antes y después;
 - conciliación del stock con las unidades y anulación de una carga completa.
 
+**STOCK-REAL-READY** (rama `feat/stock-real-ready`, PR abierto): auditoría de las plantillas y simulación completa
+(`store.test_stock_real_simulation`, 13 escenarios). Sin migraciones. Necesita una decisión del propietario: ¿lleva
+precio la plantilla de equipos nuevos?
+
 La venta rápida en caja (#400) ofrece primero el pedido pendiente. Cargar el stock real en producción necesita los archivos reales y el «GO carga stock real prod-02» (`docs/carga-stock-real.md` §11). Antes hay que desplegar la release.
 
 **Experiencia visual tipo Apple Store: NO terminada.** El configurador, la regla de fotos y la licencia están hechos. **Faltan las fotografías autorizadas** de los modelos y acabados (0 verificadas) y las fotos confirmadas de los seminuevos. Sin ellas, la tienda muestra «Imagen pendiente» o «Sin fotos de este equipo».

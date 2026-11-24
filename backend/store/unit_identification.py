@@ -187,8 +187,18 @@ def sellable_unit(*, company, branch, code, method):
         )
     if not unit.product.is_active:
         raise UnitIdentificationError('not_available', 'El producto de ese equipo está desactivado.')
+    if unit.product.is_pending_draft:
+        # STOCK-UX-WALK — the till never sells a variant nobody enabled for sale (`resolve_pos_products`): said here,
+        # at the scan, instead of after «Confirmar este equipo» as a product «no encontrado».
+        raise UnitIdentificationError('variant_pending_draft', pending_draft_refusal(unit.product))
     _refuse_uninspected(unit)
     return unit
+
+
+def pending_draft_refusal(product) -> str:
+    """What the till says of a variant born from the palette that nobody has enabled for sale yet."""
+    return (f'«{product.name}» es una variante en borrador, sin habilitar para la venta: habilítala en '
+            'Catálogo › Modelos antes de venderla.')
 
 
 def _refuse_uninspected(unit) -> None:

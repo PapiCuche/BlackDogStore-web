@@ -237,6 +237,41 @@ class LookingADeviceUpTest(_Base):
         self.sell([self.line(self.new)])
         self.assertEqual(self.refused(IMEI_B), 'not_available')
 
+    def test_a_device_of_a_variant_nobody_enabled_for_sale_is_refused_at_the_scan_with_the_reason(self):
+        """
+        STOCK-UX-WALK — a variant born from the palette and not yet enabled for sale (`is_pending_draft`) receives
+        devices, but the till does not sell it. The scan offered «Confirmar este equipo» and the basket then said
+        «Producto no encontrado o no disponible en esta empresa». Both now say what is missing.
+        """
+        Product.objects.filter(pk=self.phone.pk).update(draft_origin=Product.DRAFT_ORIGIN_PALETTE, sale_enabled_at=None)
+        with self.assertRaises(picking.UnitIdentificationError) as refused:
+            self.find(IMEI_B)
+        self.assertEqual(refused.exception.code, 'variant_pending_draft')
+        self.assertEqual(refused.exception.http_status, 409)
+        self.assertIn('«iPhone 16»', refused.exception.detail)
+        self.assertIn('habilítala en Catálogo › Modelos antes de venderla.', refused.exception.detail)
+        with self.assertRaises(pos.PosValidationError) as basket:
+            self.sell([self.line(self.new)])
+        self.assertIn('«iPhone 16»', str(basket.exception))
+        self.assertIn('habilítala en Catálogo › Modelos antes de venderla.', str(basket.exception))
+        self.assertEqual(self.status(self.new), (StockUnit.Status.AVAILABLE, None))
+
+    def test_another_company_draft_or_an_inactive_draft_keeps_the_message_that_tells_nothing(self):
+        """Review of STOCK-UX-WALK: only a sellable-but-unenabled draft of THIS company is named."""
+        generic = 'Producto no encontrado o no disponible en esta empresa.'
+        Product.objects.filter(pk=self.foreign_phone.pk).update(
+            draft_origin=Product.DRAFT_ORIGIN_PALETTE, sale_enabled_at=None)
+        with self.assertRaises(pos.PosValidationError) as foreign:
+            self.sell([{'product': self.foreign_phone.pk, 'quantity': 1}])
+        self.assertEqual(str(foreign.exception), generic)
+        self.assertNotIn(self.foreign_phone.name, str(foreign.exception))
+        Product.objects.filter(pk=self.phone.pk).update(
+            draft_origin=Product.DRAFT_ORIGIN_PALETTE, sale_enabled_at=None, is_active=False)
+        with self.assertRaises(pos.PosValidationError) as inactive:
+            self.sell([self.line(self.new)])
+        self.assertEqual(str(inactive.exception), generic)
+        self.assertNotIn(self.phone.name, str(inactive.exception))
+
     def test_typed_by_hand_a_phone_is_its_imei(self):
         """A serial typed by hand is one wrong character away from another device; an IMEI checks itself."""
         self.assertEqual(self.refused('F2LXK1NEW2', method=MANUAL), 'manual_needs_imei')
@@ -883,6 +918,11 @@ class OverHttpTest(_Base):
             self.assertEqual(
                 call(foreign, f'/api/v1/internal/{self.other.slug}/{path}').status_code, 404, path)   # their company: not their order
         self.assertEqual(OrderUnit.objects.count(), 0)
+
+    def test_the_app_till_refuses_at_the_scan_a_device_of_a_draft_variant(self):
+        Product.objects.filter(pk=self.phone.pk).update(draft_origin=Product.DRAFT_ORIGIN_PALETTE, sale_enabled_at=None)
+        lookup = self.till.get(self.v1('sales/pos/units/lookup/') + f'?branch={self.branch_a.pk}&code={IMEI_B}&method={SCANNER}')
+        self.assertEqual((lookup.status_code, lookup.json()['code']), (409, 'variant_pending_draft'), lookup.content)
 
     def test_the_app_till_sells_a_device_it_looked_up(self):
         lookup = self.till.get(self.v1('sales/pos/units/lookup/') + f'?branch={self.branch_a.pk}&code={IMEI_B}&method={SCANNER}')

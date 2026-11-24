@@ -110,7 +110,7 @@ export function PosReviewPanel({ lines, preview, error = null, customerName, sel
           <dd className="text-right text-foreground">
             {document ? document.label : "Sin elegir"}
             {document ? (
-              <span className={`ml-2 rounded px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${
+              <span className={`ml-2 inline-block whitespace-nowrap rounded px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${
                 document.value === "sales_note" ? "bg-warning-surface text-warning" : "bg-info-surface text-info"}`}>
                 {document.value === "sales_note" ? "Interno · no fiscal" : "Comprobante electrónico · BETA"}
               </span>

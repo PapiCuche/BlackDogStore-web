@@ -310,7 +310,8 @@ export function UnitListingDialog({
     }
   }
 
-  const web = webStatusText(unit);
+  // STOCK-UX-WALK: what the web says NOW — every decision answers with it (`current`), not the row the ficha opened.
+  const web = webStatusText(current);
   const missing = missingDetails(unit);
   const nextPrice = confirming?.sale_price ?? null;
   const inspection = inspectionOf(current);
@@ -471,7 +472,7 @@ export function UnitListingDialog({
                 {PENDING_PRICE_TEXT}
               </p>
             ) : null}
-            {web ? <p className={`text-xs ${unit.web?.offered ? "text-success" : "text-muted"}`}>{web}</p> : null}
+            {web ? <p className={`text-xs ${current.web?.offered ? "text-success" : "text-muted"}`}>{web}</p> : null}
             {missing.length > 0 && !sold ? (
               <p className="text-xs text-muted">Se recomienda añadir {missing.join(" y ")}.</p>
             ) : null}

@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — STOCK-REAL-READY · PARCIAL (rama `feat/stock-real-ready`, PR abierto, sin fusionar ni desplegar)
+
+Auditoría de los importadores desplegados en la R13 y simulación completa de la carga del stock real. Sin migraciones.
+
+- **Columnas:** las dos plantillas ya cubren todo lo que pidió el propietario y puede venir de un Excel. Lo que no
+  puede venir de un Excel está fuera por regla: inspección, publicación y fotos, que se hacen después en la ficha de
+  cada seminuevo. Falta una decisión del propietario: la plantilla de nuevos no lleva «Precio de venta», porque el
+  equipo nuevo se vende al precio de su variante.
+- **Simulación:** `store.test_stock_real_simulation` recorre 13 escenarios con las vistas y los permisos reales, y
+  compara el stock y el Kardex antes y después de cada uno. El motor es portátil: el mismo código corre con
+  `manage.py shell` sobre una copia aislada, sin dejar rastro.
+- **Plantilla:** la fila de ejemplo lleva ahora un IMEI sintético evidente (`350000000000006`).
+- **Hallazgos:** un equipo dado de baja conserva su IMEI (sólo «Anulado» lo libera). La exportación de equipos sale
+  en el formato combinado, no en el de las plantillas de stock, y con el IMEI completo.
+
 ## 2026-11-24 — RELEASE R13 `f47bd477` DESPLEGADA en prod-02
 
 Desplegada con el GO exacto del propietario entre las 14:05 y las 14:07 (Lima). El esquema pasa a `0192_unit_photo_provenance`, en 31 s de migración y sin esperas.
