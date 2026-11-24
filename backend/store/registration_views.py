@@ -37,6 +37,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import registration_services as registration
+from .db_busy import answers_busy
 from .admin_views import CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES
 from .admin_views import _company_context as _catalog_context
 from .inventory_views import CAP_INVENTORY_ADJUST, _LEGACY_INVENTORY_ADJUST_ROLES, may_view_costs
@@ -70,6 +71,7 @@ class AdminProductRegisterView(APIView):
     throttle_classes = [AdminProductWriteThrottle]
     http_method_names = ['post', 'options']
 
+    @answers_busy       # INV-LOAD-01 review: a deadlock with another entry is 409 `busy`, never a 500
     def post(self, request):
         company, error = _catalog_context(request, CAP_PRODUCTS_MANAGE, _LEGACY_MANAGE_CATALOG_ROLES)
         if error:

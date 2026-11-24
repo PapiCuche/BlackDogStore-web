@@ -139,7 +139,7 @@ export const ENTRY_KINDS: { value: EntryKind; label: string; help: string }[] = 
   { value: "purchase", label: "Compra a proveedor", help: "Mercadería que llega comprada. Queda como compra en el Kardex." },
   {
     value: "opening", label: "Inventario inicial",
-    help: "El stock que ya tenías antes de usar el sistema. Sólo en artículos sin movimientos en esta sucursal.",
+    help: "El stock que ya tenías antes de usar el sistema. Se puede cargar en varias tandas mientras el artículo no tenga otros movimientos (ventas, compras, traslados) en esta sucursal.",
   },
 ];
 export const entryKindLabel = (kind?: string | null): string =>

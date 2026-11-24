@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-23 — INV-LOAD-01: cargar el stock real sin compras ficticias (PR abierto, sin fusionar)
+
+**Changed**
+- Inventario inicial por tandas: un producto en una sucursal admite otra carga de inventario inicial mientras su Kardex allí sólo tenga líneas de inventario inicial. Una venta, compra, traslado, corrección, baja o apartado lo cierra. Misma regla en «Recibir mercadería», la carga de equipos y «Registrar equipo».
+- Unas notas internas de equipo de más de 300 caracteres son un error claro (antes se recortaban en silencio).
+- **Para quien llama a la API:** `notes` de más de 300 caracteres ahora responde 400 con `field` en las notas: en el registro (`POST /api/admin/inventory/units/`), la edición (`PATCH /api/admin/inventory/units/<id>/`) y la recepción (`lines[i].units[n].notes`, antes admitía 2000). Antes se guardaban recortadas.
+- El inventario inicial se decide con el estante bloqueado, igual en la recepción, la carga de equipos y «Registrar equipo»: una venta, un apartado o una baja no puede colarse entre la comprobación y el ingreso. `receive_units` bloquea el estante antes que los identificadores, como dice el orden de bloqueo del módulo. Una recepción de inventario inicial que pasa un artículo a control por equipo bloquea antes el producto (orden producto → estante). Un bloqueo mutuo responde 409 `busy`, sin escribir nada, en «Registrar equipo», la carga de equipos, el alta de artículos, la recepción rápida de la caja y la recepción de una línea de proveedor (`store/db_busy.py`).
+- Indicar un proveedor exige poder verlos (`products.view` o `costs.view`). Sin ese permiso, la columna «Proveedor» es un error de la fila y el registro responde 403 `suppliers_forbidden` antes de buscar el proveedor.
+
+**Added**
+- Plantilla de equipos: «Proveedor» (nombre o RUC, sólo de la empresa), «Fecha de ingreso» (no futura, no antes de 2000; vacía = hoy), «Notas internas» y «Detalles para el comprador». Una «Fecha», «Notas» u «Observaciones» genérica de un archivo anterior sigue sin leerse.
+- Previsualización de la carga de equipos: aviso de número de serie ya registrado en otro producto y simulación por sucursal × producto (antes → después) con movimientos por tipo.
+- «Registrar equipo»: tipo de ingreso (inventario inicial / compra), proveedor y fecha de ingreso opcionales.
+- Sin migraciones.
+
 ## 2026-11-23 — POS-ORDER-ARRIVAL-01: el equipo de un pedido pagado, en caja
 
 **Fixed**
