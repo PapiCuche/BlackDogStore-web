@@ -41,6 +41,20 @@ def first_photo_is_primary(apps, schema_editor):
         UnitPhoto.objects.filter(pk__in=primaries[start:start + 1000]).update(is_primary=True)
 
 
+
+def refuse_reverse_with_quote_tickets(apps, schema_editor):
+    """Reverse guard: the pre-0189 print-job check refuses any `sales_quote_ticket` row, so going back with one
+    would stop halfway (rehearsal R13). Every node from 0189 to the leaf carries it LAST, so a reverse from ANY
+    of them refuses before anything is undone. A future node after 0192 must carry it too."""
+    PrintJob = apps.get_model('store', 'PrintJob')
+    tickets = PrintJob.objects.filter(kind='sales_quote_ticket').count()
+    if tickets:
+        raise RuntimeError(
+            f'0192: hay {tickets} trabajo(s) de impresión de cotizaciones (incluidos los cancelados). '
+            f"Antes de volver atrás: DELETE FROM store_printjob WHERE kind='sales_quote_ticket'; "
+            f'(docs/despliegue-produccion.md §7).')
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -79,4 +93,6 @@ class Migration(migrations.Migration):
             model_name='unitphoto',
             constraint=models.UniqueConstraint(condition=models.Q(('is_primary', True)), fields=('unit',), name='unit_photo_one_primary_per_unit'),
         ),
+        # Last: on reverse it runs FIRST, before any data is undone.
+        migrations.RunPython(migrations.RunPython.noop, refuse_reverse_with_quote_tickets),
     ]
