@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-25 — Plan maestro comercial: olas 2 y 3 en `master`
+
+**Added**
+- Menú por tareas, panel semanal de proveedores y precio sugerido.
+- Archivo y eliminación segura de variantes, y editor de catálogo con búsqueda.
+- Plantillas de carga de stock real, conciliación y anulación por lote.
+- Regla de licencia de fotos e informe de salud de imágenes.
+- Cotizaciones comerciales con parte de pago referencial.
+- Fotos reales confirmadas por seminuevo.
+
+**Docs**
+- `AGENTS.md` §6: variables y limitaciones del entorno E2E.
+
 ## 2026-11-24 — UNIT-PHOTO-02: fotos reales de cada seminuevo (rama, sin PR ni despliegue)
 
 **Added**
