@@ -42,7 +42,8 @@ test.afterAll(async () => {
 // ── Recorrido del administrador, en cada ventana ───────────────────────────────────────────────────────────────
 
 async function tour(page: Page, env: Env) {
-  // 1 · /admin: nueve destinos, todo recogido salvo lo de uso diario.
+  // 1 · /admin: ocho destinos entre Catálogo e Inventario (NAV-SALES-01 llevó Proveedores a Compras), todo recogido
+  // salvo lo de uso diario.
   await page.goto("/admin", { waitUntil: "domcontentloaded" });
   let nav = await menu(page, env);
   const sections = await nav.evaluate((el) => {
@@ -53,7 +54,7 @@ async function tour(page: Page, env: Env) {
     });
     return out;
   });
-  expect(sections["Catálogo"]).toBe(2);
+  expect(sections["Catálogo"]).toBe(1);
   expect(sections["Inventario"]).toBe(7);
   observations.push({ env: env.name, metric: "destinos Catálogo+Inventario", value: sections["Catálogo"] + sections["Inventario"] });
   for (const hidden of ["Equipos seminuevos", "Carga de equipos", "Costos y precios", "Transferencias"]) {
@@ -274,7 +275,8 @@ test("5 · otra empresa ve su propio menú y su propio catálogo", async ({ brow
 
 const OLD_ROUTES = [
   "/admin/products", "/admin/products/models", "/admin/products/register", "/admin/products/publication",
-  "/admin/products/categories", "/admin/products/suppliers", "/admin/products/suppliers/offers", "/admin/products/import",
+  "/admin/products/categories", "/admin/products/suppliers", "/admin/products/suppliers/offers",
+  "/admin/products/suppliers/offers/update-list", "/admin/products/import",
   "/admin/inventory/operations", "/admin/inventory/receive", "/admin/inventory", "/admin/inventory/units?line=new",
   "/admin/inventory/used", "/admin/inventory/stock", "/admin/inventory/costs", "/admin/inventory/movements",
   "/admin/inventory/labels", "/admin/inventory/labels/settings", "/admin/inventory/bulk", "/admin/inventory/import",

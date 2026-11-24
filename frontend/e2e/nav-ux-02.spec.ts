@@ -61,13 +61,14 @@ async function tour(page: Page, env: Env) {
   await expect(tabsNav(page, "Stock y equipos").getByRole("link", { name: "Equipos seminuevos" })).toHaveAttribute("aria-current", "page");
   await page.screenshot({ path: `${SHOTS}/${env.name}-tabs.png`, fullPage: false });
 
-  // 2 · Proveedores: el directorio y las ofertas son dos pestañas con su propio nombre.
+  // 2 · Proveedores (en Compras desde NAV-SALES-01): directorio, lista semanal, ofertas y disponibilidad, cada una con
+  // su propio nombre.
   await page.goto("/admin/products/suppliers", { waitUntil: "domcontentloaded" });
   tabs = tabsNav(page, "Proveedores");
-  await expect(tabs.getByRole("link")).toHaveText(["Directorio", "Ofertas y listas"], { timeout: 60_000 });
-  await tabs.getByRole("link", { name: "Ofertas y listas" }).click();
+  await expect(tabs.getByRole("link")).toHaveText(["Directorio", "Lista semanal", "Ofertas", "Disponibilidad"], { timeout: 60_000 });
+  await tabs.getByRole("link", { name: "Ofertas", exact: true }).click();
   await expect(page).toHaveURL(/\/admin\/products\/suppliers\/offers$/);
-  await expect(tabsNav(page, "Proveedores").getByRole("link", { name: "Ofertas y listas" })).toHaveAttribute("aria-current", "page");
+  await expect(tabsNav(page, "Proveedores").getByRole("link", { name: "Ofertas", exact: true })).toHaveAttribute("aria-current", "page");
 
   // 3 · Más herramientas: una página por tarea; sin pestañas; cada tarjeta lleva a la pantalla de siempre.
   await page.goto("/admin/inventory/tools", { waitUntil: "domcontentloaded" });
