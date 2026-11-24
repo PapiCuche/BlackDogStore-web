@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-11-24 — GD-001 review (PR #424, rama documental, sin fusionar)
+
+**Changed**
+- Seis documentos de integración Good Doggy revisados: scopes por operación/campo/feed, proyecciones específicas, identidad comercial, stock desconocido distinto de agotado, sincronización consistente y webhooks sin escritura.
+- Propiedad permanente: maestro Web, CRM lector. Prohibidos fallback y limpieza de reservas por consulta; pedidos/reparaciones deshabilitados hasta autorización de cliente.
+
+**Validation**
+- OpenAPI 3.1 / 0.2.0: Ajv 8.17.1, metaesquema oficial con ancla resuelta, PASS estructural; 22 componentes, 93 respuestas, 66 parámetros, 9 positivos y 16 negativos. Sin cambios de backend, migraciones ni producción; pruebas de runtime pendientes. Ver auditoría GD-001.
+
+
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
