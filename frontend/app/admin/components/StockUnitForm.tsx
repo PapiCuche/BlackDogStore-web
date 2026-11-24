@@ -157,6 +157,10 @@ export function StockUnitForm({
   const [working, setWorking] = useState(false);
   const [done, setDone] = useState<Done[]>([]);
   const serialInput = useRef<HTMLInputElement>(null);
+  // STOCK-UX-WALK: the picker swaps its search box for the chosen product, and focus fell to <body>. A product
+  // tracked by serial sends the cursor to its first identifier, ready for the reader.
+  const [focusSerial, setFocusSerial] = useState(0);
+  useEffect(() => { if (focusSerial > 0) serialInput.current?.focus(); }, [focusSerial]);
 
   // `?product=`: load that product once and put it in the picker.
   useEffect(() => {
@@ -315,7 +319,10 @@ export function StockUnitForm({
             label="Producto / modelo"
             inputId="unit-product"
             value={product}
-            onChange={(next) => { setProduct(next); setProblem(null); setCellular(false); }}
+            onChange={(next) => {
+              setProduct(next); setProblem(null); setCellular(false);
+              if (next?.is_serialized) setFocusSerial((n) => n + 1);
+            }}
             disabled={working}
           />
         </div>
