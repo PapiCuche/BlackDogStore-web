@@ -3,7 +3,11 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-24 — STOCK-REAL-READY · PARCIAL (rama `feat/stock-real-ready`, PR abierto, sin fusionar ni desplegar)
+## 2026-11-24 — POST-R13: sistema listo para recibir el inventario real (en `master` `bf6a3307`, sin desplegar)
+
+#420–#423 fusionados. Simulación del stock real 13/13 en CI, en local y sobre una copia aislada de producción. Candidata R13.1 `bf6a3307` (sólo código) ensayada; espera «GO despliegue bf6a330 prod-02». Kits de cron, normalización, muestras y producto 12 reensayados sobre R13. Detalle y GO en `docs/NEXT_ACTION.md`.
+
+## 2026-11-24 — STOCK-REAL-READY (#421, fusionado `d0da5591`)
 
 Auditoría de los importadores desplegados en la R13 y simulación completa de la carga del stock real. Sin migraciones.
 

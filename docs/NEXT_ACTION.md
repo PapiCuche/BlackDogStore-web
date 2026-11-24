@@ -1,6 +1,6 @@
 # NEXT ACTION — 2026-11-24
 
-## PRODUCCIÓN (prod-02) — `f47bd477` (R13), esquema `0192_unit_photo_provenance`, imágenes `release-f47bd47`; sana
+## PRODUCCIÓN (prod-02) — `f47bd477` (R13), esquema `0192_unit_photo_provenance`, imágenes `release-f47bd47`; sana · candidata R13.1 `bf6a3307` ensayada, espera «GO despliegue bf6a330 prod-02»
 
 Desplegada el 2026-11-24 entre las 14:05 y las 14:07 (Lima) con el GO exacto del propietario («GO despliegue f47bd47 prod-02»). Detalle en la sección «RELEASE R13» más abajo.
 
@@ -30,6 +30,47 @@ Regla nueva en `AGENTS.md` §10. Todo cambio productivo se hace con el GO exacto
 - El candado se niega (código 75) si otro lo tiene o si hay un deploy, un migrate, un `compose up`/`build` o un backup en marcha.
 - Ensayado: un segundo titular, un deploy simulado y la liberación al terminar.
 - Todos los scripts de GO del kit se relanzan solos bajo el candado.
+
+## POST-R13 — preparación del inventario real (2026-11-24) · todo en `master` `bf6a3307`, **nada desplegado salvo R13**
+
+**Fusionado** (cada PR con revisión independiente, sus correcciones y CI verde sobre el SHA exacto):
+- #419 docs del despliegue de R13 (`2fcd38ab`).
+- #421 STOCK-REAL-READY (`d0da5591`): auditoría de los importadores, simulación de 13 escenarios como prueba (`store.test_stock_real_simulation`) y guía en `docs/carga-stock-real.md`. Ningún campo pedido por el propietario necesitó columna nueva ni migración.
+- #422 recorrido real del empleado (`c839e5db`): la caja rechaza al escanear un equipo de variante en borrador (409 `variant_pending_draft`), foco tras elegir producto, textos de recepción, cortes en 390 px, estado web fresco en la ficha del seminuevo.
+- #423 tabla de seminuevos (`c0088c63`): «Editar» en la primera columna, tarjetas en móvil, aviso de variante en borrador al recibir; E2E de recepción corregido para 390 px.
+- #420 cotizaciones (`bf6a3307`): `expire_sales_quotes --dry-run`, `previous_status` en la auditoría, bloque del `healthcheck.sh` que sólo vigila el log si existe, §6.1.3e de `docs/despliegue-produccion.md` (incluida la nota del minuto :41).
+
+**Simulación del stock real: 13/13** en tres sitios: CI, base local y una copia aislada de producción con la imagen `release-f47bd47` (`backups/release-r13-ops/r13ops-simstock.log`; copia idéntica después: 139 tablas, 3416 filas). Repetida con la candidata R13.1: 13/13.
+
+**Plantillas** (generadas por el código real; para la carga real se descargan del panel, «Inventario › Más herramientas › Carga de equipos»):
+- «Stock de equipos nuevos»: Sucursal, Modelo, Capacidad, Color, SIM, Versión, IMEI 1, IMEI 2, Serie, Proveedor, Costo, Fecha de ingreso, Observaciones.
+- «Stock de seminuevos»: lo anterior más Precio de venta, Estado estético, Salud de batería (%), Estado funcional, Defectos, Accesorios, Garantía (días) y Detalles para el comprador.
+- Inspección, fotos y publicación se hacen en el panel, nunca desde Excel (regla del propietario).
+- Exportación previa para conciliar: «Carga de stock › Exportar › Equipos con serie».
+
+**Stock actual en producción** (lectura, 2026-11-24): 202 unidades en 11 filas (172 en Almacén, 30 en Tienda principal), casi todo accesorios. Sólo 2 equipos con serie: 1 seminuevo pendiente de inspección (IMEI ****3699) y 1 dado de baja (****7982, conserva su IMEI y no se puede volver a cargar con él).
+
+### Kits listos, cada uno con su GO propio (ninguno ejecutado)
+
+| GO exacto | Kit (servidor, `backups/`) | Ensayo |
+|---|---|---|
+| «GO despliegue bf6a330 prod-02» | `release-r131/d_deploy_r131.sh` (sólo código, sin migraciones; vuelta atrás `rollback_r131_code.sh`) | copia `db-20261124-170751`: huellas idénticas, humo 32/32, 284 pruebas en la imagen, simulación 13/13, vuelta atrás a `release-f47bd47` OK |
+| «GO cron cotizaciones prod-02» | `release-r13-ops/cron_expire_quotes_install.sh` (retirada `cron_expire_quotes_remove.sh`) | ensayo local con crontab falso 33/33 |
+| «GO normalización catálogo prod-02» | `release-r13-ops/f11p_go.sh` | copia `db-20261124-145438`: aplicar, repetir sin cambios, rechazo por huella, vuelta atrás, reaplicar |
+| «GO muestras 167 prod-02» | `release-r13-ops/f12s_go.sh` (las 38 dudosas excluidas y comprobadas en la base) | ídem |
+| «GO producto 12 prod-02» | `release-r13-ops/p12_go.sh` | ídem |
+| «GO carga stock real prod-02» | archivos reales del propietario + `docs/carga-stock-real.md` | simulación 13/13 |
+
+Runbooks: `release-r131/RUNBOOK-bf6a330-prod02.md`, `release-r13-ops/RUNBOOK-r13-ops-prod02.md`, `release-r13-ops/RUNBOOK-cron-expire-quotes.md`. Los kits anteriores de normalización, muestras y producto 12 (para `16189e4`) quedan con el sufijo `.v16189e4` y no se usan.
+
+### Hallazgo: la reimpresión histórica del kit de R13 escribe en la base
+
+`historical_reprint.py` sella `SalesNote.pdf_generated_at` al generar cada nota. El despliegue de R13 lo ejecutó en producción: las 7 notas de venta tienen ese sello reescrito al 2026-11-24. Nada más cambió. El valor anterior está en el backup `db-20261124-140538`. El kit de R13.1 usa `historical_reprint_ro.py`, que deshace siempre la transacción (ensayado: 0 filas cambiadas). Restaurar los sellos antiguos sería una escritura en producción y pide GO.
+
+### Decisiones pendientes del propietario
+- ¿Columna «Precio de venta» en la plantilla de nuevos? Hoy un equipo nuevo se vende al precio de su variante.
+- Un seminuevo sin precio impide habilitar la venta de su variante y así bloquea a sus hermanos ya inspeccionados.
+- Exportación con IMEI enmascarado y en el formato de las plantillas nuevas (hoy no existe).
 
 ## VARIANT-SAFE-01 — rama `feat/variant-safe-01` (migración `0188`, sobre `0187` ya en master); PR abierto, sin fusionar ni desplegar
 

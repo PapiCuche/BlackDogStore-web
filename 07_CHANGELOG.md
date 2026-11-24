@@ -3,7 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-24 — STOCK-REAL-READY (rama, sin fusionar)
+## 2026-11-24 — Post-R13 en `master` (`bf6a3307`, sin desplegar)
+
+**Fixed**
+- La caja rechaza al escanear un equipo de una variante en borrador (#422).
+- Tabla de seminuevos con «Editar» visible y tarjetas en móvil; aviso de variante en borrador al recibir (#423).
+- Textos de recepción, foco al registrar equipo y cortes de línea en 390 px (#422).
+
+**Added**
+- `expire_sales_quotes --dry-run`, estado anterior en la auditoría y vigilancia del log en `healthcheck.sh` (#420).
+
+## 2026-11-24 — STOCK-REAL-READY (#421)
 
 **Added**
 - `store.test_stock_real_simulation`: simulación de la carga del stock real en 13 escenarios, sobre las vistas reales,
