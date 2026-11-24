@@ -145,6 +145,12 @@ def till_refusal(unit) -> str:
 
 
 def _locked_used(unit) -> StockUnit:
+    # THE MODULE'S ONE LOCK ORDER (stock_unit_services): the shelf row first, the device second — a decision here may
+    # release a web hold, which writes a Kardex line on that shelf.
+    from .inventory_services import _locked_branch_stocks
+
+    plain = StockUnit.objects.select_related('branch', 'product').get(pk=unit.pk)
+    _locked_branch_stocks(plain.branch, [plain.product])
     locked = StockUnit.objects.select_for_update().get(pk=unit.pk)
     locked = StockUnit.objects.select_related('product', 'company').get(pk=locked.pk)
     if not is_used(locked):
@@ -189,14 +195,22 @@ def set_inspection(unit, *, decision, note='', actor=None, request=None) -> Stoc
         locked.published_online, locked.published_at, locked.published_by = False, None, None
         fields += ['published_online', 'published_at', 'published_by']
     locked.save(update_fields=[*fields, 'updated_at'])
+    released = decision == StockUnit.Inspection.REJECTED and _release_web_hold(locked)
     AdminAuditLog.log(
         actor=actor, action='stock_unit_inspection', target_type='stock_unit', target_id=locked.pk,
         metadata={'product_id': locked.product_id, 'branch_id': locked.branch_id, 'decision': decision,
                   'previous': previous, 'unpublished': bool(was_published and not locked.published_online),
-                  **({'note': note[:120]} if note else {})},
+                  'released_web_hold': bool(released), **({'note': note[:120]} if note else {})},
         request=request, company=locked.company,
     )
-    return locked
+    return StockUnit.objects.select_related('product', 'company').get(pk=locked.pk)
+
+
+def _release_web_hold(unit) -> bool:
+    """A cart's hold of a device just withdrawn goes back to the shelf (`unit_hold_services.release_withdrawn`)."""
+    from . import unit_hold_services
+
+    return unit_hold_services.release_withdrawn(unit)
 
 
 @transaction.atomic
@@ -219,13 +233,15 @@ def set_publication(unit, *, published: bool, actor=None, request=None) -> Stock
     locked.published_at = timezone.now() if published else None
     locked.published_by = (actor if getattr(actor, 'pk', None) else None) if published else None
     locked.save(update_fields=['published_online', 'published_at', 'published_by', 'updated_at'])
+    released = not published and _release_web_hold(locked)
     AdminAuditLog.log(
         actor=actor, action='stock_unit_published' if published else 'stock_unit_unpublished',
         target_type='stock_unit', target_id=locked.pk,
-        metadata={'product_id': locked.product_id, 'branch_id': locked.branch_id},
+        metadata={'product_id': locked.product_id, 'branch_id': locked.branch_id,
+                  **({} if published else {'released_web_hold': bool(released)})},
         request=request, company=locked.company,
     )
-    return locked
+    return StockUnit.objects.select_related('product', 'company').get(pk=locked.pk)
 
 
 def require_reinspection(unit_id, *, why: str, actor=None, request=None) -> bool:

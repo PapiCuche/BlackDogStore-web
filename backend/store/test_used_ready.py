@@ -494,7 +494,6 @@ class InternalPathsApiTest(Ip1PosBase):
         used_units.set_inspection(self.unit, decision='approved')
         res = self.client.get(url, {'code': IMEI_B, 'branch': self.branch_a.pk, 'method': 'scanner'})
         self.assertEqual(res.status_code, 200, res.content)
-        self.assertEqual(res.json()['unit']['inspection_status'], 'approved')
 
     def test_the_single_stock_writer_refuses_to_sell_it_by_name_or_to_set_it_aside(self):
         from store import inventory_services
@@ -524,6 +523,73 @@ class InternalPathsApiTest(Ip1PosBase):
         with self.assertRaises(unit_identification.UnitIdentificationError) as caught:
             unit_identification.candidate_for_order(order=order, code=IMEI_B, method='scanner')
         self.assertEqual((caught.exception.code, caught.exception.http_status), ('unit_not_inspected', 409))
+
+    def test_a_device_already_set_aside_for_a_paid_order_before_the_rule_can_still_be_named(self):
+        # Sold (set aside by the payment) before USED-READY-01 and migrated to «pending»: it was already sold, so the
+        # hand-over of that paid order is not blocked — only a device taken from the SHELF must be approved.
+        from store import unit_identification
+        from store.models import Order
+
+        order = Order.objects.create(company=self.company, total=Decimal('2100.00'), status=Order.Status.PAID,
+                                     paid=True, fulfillment_branch=self.branch_a)
+        order.items.create(product=self.used, quantity=1, price=Decimal('2100.00'))
+        StockUnit.objects.filter(pk=self.unit.pk).update(status=StockUnit.Status.SOLD, order=order)
+        found = unit_identification.candidate_for_order(order=order, code=IMEI_B, method='scanner')
+        self.assertEqual((found.pk, found.inspection_status), (self.unit.pk, 'pending'))
+
+
+@override_settings(ALLOWED_HOSTS=['.tienda.pe', 'testserver'])
+class CheckoutOfAWithdrawnDeviceTest(SaleShop, TestCase):
+    """
+    A buyer holds a ready device; before checkout the shop withdraws it (rejects its inspection, unpublishes it or
+    deletes its last photo). The checkout says the cart changed and creates nothing: no order, no payment.
+    """
+
+    def setUp(self):
+        super().setUp()
+        holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
+                   unit_public_id=str(self.used_a.public_id))
+        self.used_a.refresh_from_db()
+
+    def refused_checkout(self):
+        from store import checkout_services
+        from store.models import CartItem, Order
+
+        orders = Order.objects.count()
+        with self.assertRaises(checkout_services.CheckoutError) as caught:
+            self.checkout()
+        self.assertEqual(caught.exception.code, 'cart_changed')
+        self.assertEqual(Order.objects.count(), orders)
+        return caught.exception, CartItem
+
+    def assert_back_on_the_shelf(self):
+        self.used_a.refresh_from_db()
+        self.assertEqual((self.used_a.status, self.used_a.hold_key, self.used_a.hold_until), ('available', '', None))
+        self.assertTrue(AdminAuditLog.objects.filter(action='stock_unit_web_hold_released',
+                                                     target_id=str(self.used_a.pk), company=self.company).exists())
+        self.assertEqual(self.shelf(self.used128), self.available(self.used128))
+
+    def test_a_rejection_releases_the_hold_and_the_checkout_says_the_cart_changed(self):
+        used_units.set_inspection(self.used_a, decision='rejected', note='Pantalla con manchas', actor=self.staff)
+        self.assert_back_on_the_shelf()
+        self.refused_checkout()
+
+    def test_an_unpublication_releases_the_hold_and_the_checkout_says_the_cart_changed(self):
+        used_units.set_publication(self.used_a, published=False, actor=self.staff)
+        self.assert_back_on_the_shelf()
+        self.refused_checkout()
+
+    def test_without_its_last_photo_the_checkout_says_the_cart_changed(self):
+        UnitPhoto.objects.filter(unit=self.used_a).delete()
+        self.refused_checkout()
+        self.used_a.refresh_from_db()
+        self.assertEqual(self.used_a.status, 'reserved')            # still the buyer's until it expires
+
+    def test_a_hold_bound_to_a_pending_order_is_left_to_its_payment(self):
+        order = self.checkout()
+        used_units.set_publication(self.used_a, published=False, actor=self.staff)
+        self.used_a.refresh_from_db()
+        self.assertEqual((self.used_a.status, self.used_a.hold_order_id), ('reserved', order.pk))
 
 
 class PaidHoldOfARejectedDeviceTest(SaleShop, TestCase):

@@ -395,8 +395,10 @@ def candidate_for_order(*, order, code, method):
         raise UnitIdentificationError('already_identified', 'Ese equipo ya está identificado en este pedido.')
     if unit.product_id not in pending_units(order):
         raise UnitIdentificationError('complete', f'Los equipos de «{unit.product.name}» de este pedido ya están identificados.')
-    _standing(order, unit)
-    _refuse_uninspected(unit)
+    if _standing(order, unit) == SHELF:
+        # USED-READY-01 — a device taken from the shelf for this order must be approved. One already out for a paid
+        # order (MINE / THEIRS) left the shelf before: it was sold under the rule of its day and is handed over.
+        _refuse_uninspected(unit)
     return unit
 
 
