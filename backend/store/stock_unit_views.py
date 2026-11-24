@@ -744,3 +744,31 @@ class StockUnitPhotoDetailView(_UnitMixin, APIView):
             return Response({'detail': NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
         unit_media.remove_photo(photo=photo, actor=request.user, request=request)
         return self.answer(request, unit)
+
+
+class StockUnitReconciliationView(APIView):
+    """
+    INV-LOAD-02 — GET /api/admin/inventory/units/reconciliation/?branch=  «Conciliación»
+
+    `inventory.view`, within the branches the caller reaches: per branch × product that sells by device, the shelf
+    (`BranchStock.quantity`) against the available devices, and only where they differ. Read-only — the same reading as
+    `manage.py check_unit_stock`. Counts and names; never a cost, a serial or an IMEI.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminInventoryReportsThrottle]
+
+    def get(self, request):
+        company, _branch, branches, error = _branch_context(
+            request, CAP_INVENTORY_VIEW, _LEGACY_INVENTORY_VIEW_ROLES, allow_all=True,
+        )
+        if error:
+            return error
+        from .unit_stock_check import mismatches
+
+        result = mismatches(company=company, branch_ids=list(branches.values_list('pk', flat=True)))
+        return Response({
+            'checked': result['checked'],
+            'mismatches': [{key: row[key] for key in ('branch_id', 'branch', 'product_id', 'product', 'quantity',
+                                                      'available', 'difference')} for row in result['mismatches']],
+        })

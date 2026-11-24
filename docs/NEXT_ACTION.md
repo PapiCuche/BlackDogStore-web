@@ -64,7 +64,7 @@ El plan, la auditoría y el orden de los PR están en `docs/plan-maestro-comerci
 
 **Pendiente:**
 - SUPPLY-MARGIN-01 (`0189`): precio sugerido con el margen de la empresa.
-- INV-LOAD-02: conciliación, anulación por lote y comprobación del stock. Incluye mapear «busy» en la entrada de stock por cantidad.
+- INV-LOAD-02 — PR abierto (`feat/inv-load-02`, sin migración): dos plantillas del stock real, `check_unit_stock` y «Conciliación», anulación por lote, informe antes/después y «busy» en la entrada por cantidad. Procedimiento: `docs/carga-stock-real.md`. La carga real en prod-02 pide datos reales y el GO «GO carga stock real prod-02».
 - Plantillas Excel de nuevos y seminuevos.
 - UNIT-PHOTO-02, IMG-GATE-01 e IMG-HEALTH-01.
 - TRADE-IN-QUOTE-00.

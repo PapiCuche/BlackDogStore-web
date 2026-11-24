@@ -149,6 +149,7 @@ describe('Cargas de Excel', () => {
     fireEvent.change(screen.getByLabelText('Archivo de equipos (.xlsx)'), {
       target: { files: [new File(['x'], 'equipos.xlsx')] },
     });
+    fireEvent.click(screen.getByRole('radio', { name: 'Nuevos' }));      // INV-LOAD-02: the line is always said
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' })); });
     expect(await screen.findByText(IN_FILE)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Registrar/ })).toBeNull();
