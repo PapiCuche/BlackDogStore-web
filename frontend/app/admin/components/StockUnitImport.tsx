@@ -95,7 +95,7 @@ const LINE_LABELS: Record<string, string> = { new: "equipos nuevos", used: "semi
  * INV-LOAD-02 — annul an applied load WHOLE. The server voids every device the load created, or none: while one of
  * them has done anything since it entered, the answer names it and nothing changes. The reason is mandatory.
  */
-function AnnulLoad({ job, onAnnulled }: { job: UnitImportJob; onAnnulled: (job: UnitImportJob) => void }) {
+export function AnnulLoad({ job, onAnnulled }: { job: UnitImportJob; onAnnulled: (job: UnitImportJob) => void }) {
   const [open, setOpen] = useState(false);
   const [reason, setReason] = useState("");
   const [working, setWorking] = useState(false);

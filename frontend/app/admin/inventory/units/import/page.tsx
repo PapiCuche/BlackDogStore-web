@@ -14,6 +14,7 @@ import { AccessGuard } from "../../../components/AccessGuard";
 import { AdminShell } from "../../../components/AdminShell";
 import { ErrorBox, Spinner } from "../../../components/InventoryUi";
 import { PageHeader, internalButtonClass } from "../../../components/internal-ui";
+import { RecentUnitLoads } from "../../../components/RecentUnitLoads";
 import { StockUnitImport } from "../../../components/StockUnitImport";
 import { UnitStockReconciliation } from "../../../components/UnitStockReconciliation";
 import type { InternalAccess } from "../../../lib/internal-access";
@@ -46,6 +47,8 @@ function ImportContent({ user, access }: { user: AuthUser; access: InternalAcces
             canSeeCost={access.can("costs.view", ["admin", "superadmin"])}
           />
         ) : null}
+        {/* INV-LOAD-02 — registered loads: before/after and annulment (the server asks `inventory.adjust` again). */}
+        {canAdjust ? <RecentUnitLoads /> : null}
         {/* INV-LOAD-02 — a read-only check, with `inventory.view` like the page itself. */}
         <UnitStockReconciliation />
       </div>

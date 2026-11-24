@@ -454,6 +454,18 @@ export async function voidUnitImport(
   return body;
 }
 
+/** INV-LOAD-02 — the device loads already registered (newest first), for their before/after and annulment. */
+export async function fetchRecentUnitLoads(): Promise<(UnitImportJob & { applied_at?: string | null })[]> {
+  const res = await fetchWithAuth(`${API_BASE}/admin/imports/?type=units`);
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = body && typeof body === "object" && "detail" in body ? String(body.detail) : "";
+    throw new StockUnitApiError(detail || "No se pudo cargar el historial.", res.status);
+  }
+  const results: (UnitImportJob & { applied_at?: string | null })[] = body?.results ?? [];
+  return results.filter((job) => job.status === "applied");
+}
+
 /** INV-LOAD-02 — the before/after of an applied load, per branch × product, as a file. */
 export function unitImportReportUrl(jobId: number, kind: "csv" | "xlsx"): string {
   return withSelectedCompany(`${BASE}/import/${jobId}/report/?as=${kind}`);
