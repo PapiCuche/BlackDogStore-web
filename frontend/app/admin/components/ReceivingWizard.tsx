@@ -31,7 +31,7 @@ import { isEnded } from "@/app/lib/session-state";
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import {
   buildReceiptBody, confirmReceipt, deleteReceiptDraft, DOCUMENT_REF_MAX, draftAge, draftPayload, DRAFT_SAVE_DELAY_MS, ENTRY_KINDS,
-  entryKindLabel, fetchReceiptDraft,
+  entryKindLabel, fetchReceiptDraft, lineReceiveText, receiptTotalsText,
   fingerprint, hasProblems, isUsedLine, limitProblem, locksTracking, newLine, newReceiptKey, NOTES_MAX, previewReceipt, ReceiptApiError, saveReceiptDraft,
   stashDraft, takeStashedDraft, UNIT_CONDITIONS, unitsInUse, validateLines,
   type DraftLine, type DraftSaveOutcome, type DraftScope, type LineProblems, type ReceiptOrigin, type ReceiptPreview, type ReceiptResult,
@@ -1024,9 +1024,7 @@ export function ReceivingWizard({
                 </p>
               ) : (
                 <p className="text-sm text-foreground" role="status">
-                  Entrarán {plural(preview.data.totals.quantity_units, "unidad", "unidades")} por cantidad y{" "}
-                  {plural(preview.data.totals.devices, "equipo identificado", "equipos identificados")}. Se prepararán{" "}
-                  {plural(preview.data.totals.labels, "etiqueta", "etiquetas")}.
+                  {receiptTotalsText(preview.data.totals, "future")}
                 </p>
               )}
 
@@ -1041,9 +1039,7 @@ export function ReceivingWizard({
                           {l.status === "error" || l.duplicates.length > 0
                             ? "Esta línea tiene errores; corrígela para poder confirmar."
                             : <>
-                              {l.kind === "units"
-                                ? `Entran ${plural(l.will_receive, "equipo identificado", "equipos identificados")}.`
-                                : `Entran ${plural(l.will_receive, "unidad", "unidades")}.`}{" "}
+                              {lineReceiveText(l.kind, l.will_receive)}{" "}
                               {l.labels > 0 ? `${plural(l.labels, "etiqueta", "etiquetas")}.` : ""}
                             </>}
                         </p>
@@ -1188,8 +1184,7 @@ function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: 
         <h2 id="step-done" ref={headingRef} tabIndex={-1} className="text-base font-semibold text-foreground outline-none">Recepción registrada</h2>
         <p className="mt-1 text-sm text-foreground" role="status">
           {result.replayed ? "Esta recepción ya estaba registrada: no se repitió. " : ""}
-          Entraron {plural(result.totals.quantity_units, "unidad", "unidades")} por cantidad y{" "}
-          {plural(result.totals.devices, "equipo identificado", "equipos identificados")}
+          {receiptTotalsText(result.totals, "past")}
           {branch ? ` en ${branch}` : ""}{supplier ? `, de ${supplier}` : ""}
           {result.document_ref ? ` (${result.document_ref})` : ""}.
           {result.entry_kind === "opening" ? " Quedó como inventario inicial en el Kardex." : ""}

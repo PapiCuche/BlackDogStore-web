@@ -431,10 +431,10 @@ describe('paso 3 · Revisar y confirmar', () => {
       branch: 1, supplier: 3, document_ref: 'F001-9', notes: '', entry_kind: 'purchase',
       lines: [{ kind: 'units', product: 5, units: [{ serial: 'SER1', imei: '356789012345678', condition: 'new' }] }],
     });
-    expect(await screen.findByText(/Entrarán 0 unidades por cantidad y 1 equipo identificado\. Se prepararán 1 etiqueta\./)).toBeInTheDocument();
+    expect(await screen.findByText(/Entrará 1 equipo identificado\. Se preparará 1 etiqueta\./)).toBeInTheDocument();
     expect(screen.getByText('Importadora Sur')).toBeInTheDocument();
     expect(screen.getByText('F001-9')).toBeInTheDocument();
-    expect(screen.getByText(/Se usa el artículo que ya existe \(SKU-5\)\. Entran 1 equipo identificado/)).toBeInTheDocument();
+    expect(screen.getByText(/Se usa el artículo que ya existe \(SKU-5\)\. Entra 1 equipo identificado/)).toBeInTheDocument();
   });
 
   it('errores y duplicados por línea, con «Corregir» que vuelve a esa línea', async () => {
@@ -584,8 +584,8 @@ describe('foco, textos y totales (hallazgos del E2E)', () => {
     const u = await renderWizard();
     await toReview(u, PHONE);
     expect(await screen.findByText('No se puede confirmar todavía: corrige 1 línea.')).toBeInTheDocument();
-    expect(screen.queryByText(/Entrarán/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Se prepararán/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Entrar(á|án) /)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Se preparar(á|án) /)).not.toBeInTheDocument();
   });
 
   it('una línea con errores nunca dice «Entran 0 …»: pide corregirla', async () => {
@@ -599,7 +599,7 @@ describe('foco, textos y totales (hallazgos del E2E)', () => {
     await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
     const lines = await screen.findAllByText(/Esta línea tiene errores; corrígela para poder confirmar\./);
     expect(lines).toHaveLength(2);
-    expect(screen.queryByText(/Entran \d/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Entran? \d/)).not.toBeInTheDocument();
     expect(screen.queryByText(/etiqueta/)).not.toBeInTheDocument();
   });
 
