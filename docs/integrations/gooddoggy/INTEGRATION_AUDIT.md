@@ -27,3 +27,7 @@ Evidencia reabierta en ese SHA:
 - P0 reafirmado: PublicModelDetailView.get -> release_expired; prohibido cualquier fallback público/administrativo incluso GET. No get_or_create, ajuste, reserva, liberación, checkout ni efectos de señales/serializers. Worker autónomo maestro conserva responsabilidad.
 - AGENTS.md §5–6 requiere entradas arriba de 02_ y 07_, diff documental; CI backend solo si backend/** cambia. No ejecutar suite comercial en este PR documental; baseline aún no certificado.
 Estado: campos verificados en código, proyecciones y feed PROPUESTA, sin implementación. No hay evidencia de catálogo publicable de servicios suficiente; ruta bloqueada hasta verificar fuente. Pedidos/reparaciones deshabilitados independientemente del catálogo.
+
+### Evidencia adicional
+models.py:4063–4067 contiene warranty_policy_text/url y used_warranty_days, no se verificó plazo numérico de nuevos. ProductBarcode constraints (4934,4941) dan unicidad de código por empresa y primario por producto. Promotion.BUNDLE_FIXED_PRICE/BUNDLE_PERCENT (5174–5178) son los tipos reales; beneficio requiere prices.read además de promotions.read. ProductCard.tsx:78 enlaza /product/{slug}; verificar URL canónica de modelos/ofertas en fase de implementación, no inventar enlace de unidad. La composición de scopes de ofertas específicas evita inferencia de disponibilidad por presencia de precio; ver aclaración final API_CONTRACT.
+
