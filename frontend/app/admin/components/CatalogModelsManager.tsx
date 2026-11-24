@@ -747,11 +747,34 @@ function LineLabelsSection({ canManage, companyId }: { canManage: boolean; compa
   );
 }
 
-export function CatalogModelsManager({ canManage, companyId }: { canManage: boolean; companyId: number | null }) {
+export function CatalogModelsManager({ canManage, companyId, goTo = null }: {
+  canManage: boolean;
+  companyId: number | null;
+  /**
+   * NAV-SALES-01 — «Productos › Colores» (`?seccion=colores`): the section to bring into view and focus once the
+   * models table has arrived. A new `request` goes there again (the menu entry clicked with the page already open).
+   */
+  goTo?: { anchor: string; request: number } | null;
+}) {
   // «#atributos» from a model's page: the panels move down once the models table arrives, so the page goes
   // there after that (review: scrolling on mount ended above the panel).
   const scrolled = useRef(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
+  const anchor = goTo?.anchor ?? null;
+  const request = goTo?.request ?? 0;
+  useEffect(() => {
+    if (!anchor || !modelsLoaded) return;
+    const frame = requestAnimationFrame(() => {
+      const target = document.getElementById(anchor);
+      if (!target) return;
+      target.scrollIntoView?.({ block: "start" });
+      if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
+      target.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [anchor, request, modelsLoaded]);
   const goToHash = useCallback(() => {
+    setModelsLoaded(true);
     if (scrolled.current) return;
     scrolled.current = true;
     const target = window.location.hash.slice(1);

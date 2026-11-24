@@ -410,6 +410,18 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    // NAV-SALES-01 — «Colores»: the company's colours are the options of its colour attribute, with their swatch,
+    // in the «Atributos y opciones» section of Modelos. The page opens there with `?seccion=colores`
+    // (`lib/models-sections.ts`). Same authority as Modelos: `products.view` to look, `products.manage` to change.
+    id: "products.colors",
+    group: "products",
+    label: "Colores",
+    description: "Colores de la empresa con su muestra, y los demás atributos que distinguen a las variantes.",
+    href: "/admin/products/models?seccion=colores",
+    requiredCapabilities: ["products.view"],
+    status: "implemented",
+  },
+  {
     // DEVICE-COMMERCE-01 · DC3: quién abastece lo que se vende bajo pedido.
     // Ver con `products.view`; cambiar, `products.manage`. Lo pendiente de
     // liquidar, sólo con `costs.view` (la pantalla lo decide).
@@ -1022,15 +1034,20 @@ const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
   ],
   products: [
     {
+      // NAV-SALES-01 — the owner's order: Modelos · Variantes · Colores · Fotografías. A variant of a model is a
+      // product, so «Variantes» is the products list; «Fotografías» is where the photos the shop did not take are
+      // found and replaced (each colour's gallery is edited in its model). Registering, publishing and the
+      // categories follow, once each.
       id: "nav.catalog",
-      label: "Productos y variantes",
+      label: "Productos",
       members: [
-        m("products.list", "Productos"),
-        m("products.models"),
-        m("products.register", "Registrar artículo"),
-        m("products.publication"),
-        m("products.categories"),
-        m("products.images"),
+        m("products.models", "Modelos"),
+        m("products.list", "Variantes"),
+        m("products.colors"),
+        m("products.images", "Fotografías"),
+        m("products.register", "Registrar artículo", "Registro y tienda"),
+        m("products.publication", undefined, "Registro y tienda"),
+        m("products.categories", undefined, "Registro y tienda"),
       ],
     },
   ],
@@ -1040,11 +1057,16 @@ const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
     {
       id: "nav.stock",
       label: "Stock y equipos",
+      // NAV-SALES-01 — the owner's order: Equipos nuevos · Equipos seminuevos · Carga de stock · Kardex. The stock
+      // and device loads came out of «Más herramientas»; Kardex out of «Movimientos».
       members: [
         m("inventory.stock", "Resumen"),
         m("inventory.availability", "Existencias"),
         m("inventory.serial"),
         m("inventory.used"),
+        m("inventory.import"),
+        m("inventory.units.import"),
+        m("inventory.movements", "Kardex"),
       ],
     },
     { id: "nav.counts", label: "Recuentos", members: [m("inventory.counts")] },
@@ -1053,11 +1075,7 @@ const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
       label: "Etiquetas",
       members: [m("inventory.labels", "Vista previa y PDF"), m("inventory.labels.settings", "Configuración")],
     },
-    {
-      id: "nav.movements",
-      label: "Movimientos",
-      members: [m("inventory.movements", "Kardex"), m("inventory.transfers")],
-    },
+    { id: "nav.transfers", label: "Transferencias", members: [m("inventory.transfers")] },
     {
       id: "nav.tools",
       label: "Más herramientas",
@@ -1066,8 +1084,6 @@ const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
         m("inventory.tools"),
         m("inventory.bulk", "Gestión masiva", "Cargas y exportaciones"),
         m("products.import", "Carga de productos", "Cargas y exportaciones"),
-        m("inventory.import", undefined, "Cargas y exportaciones"),
-        m("inventory.units.import", undefined, "Cargas y exportaciones"),
         m("inventory.costs", undefined, "Análisis"),
         m("inventory.reports", undefined, "Análisis"),
         m("inventory.replenishment", undefined, "Análisis"),

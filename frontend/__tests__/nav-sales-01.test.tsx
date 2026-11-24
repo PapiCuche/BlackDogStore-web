@@ -5,7 +5,7 @@
  *              Bajo pedido, Cancelaciones) · Cotizaciones (sólo cuando exista) · Documentos (Notas de venta, Ventas sin
  *              comprobante) · Promociones · Comisiones
  *   COMPRAS    Proveedores (Directorio, Lista semanal, Ofertas, Disponibilidad) · Finanzas
- *   CATÁLOGO   Productos y variantes (Proveedores salió de aquí: ninguna entrada se repite)
+ *   CATÁLOGO   Productos (Proveedores salió de aquí: ninguna entrada se repite; ver nav-owner-target.test.tsx)
  *
  * Sólo cambia el menú. Cada entrada la abre el mismo permiso que su pantalla, y la pantalla y el servidor siguen
  * decidiendo por su cuenta. Parte de pago no tiene entrada: la función no está aprobada.
@@ -141,7 +141,7 @@ describe('Proveedores sale de Catálogo', () => {
   });
 
   it('Catálogo ya no tiene Proveedores, y Ventas ya no tiene Consultar disponibilidad', () => {
-    expect(section(FULL, 'products')?.items.map((i) => i.label)).toEqual(['Productos y variantes']);
+    expect(section(FULL, 'products')?.items.map((i) => i.label)).toEqual(['Productos']);
     const salesHrefs = sidebarHrefs([section(FULL, 'sales')!]);
     expect(salesHrefs).not.toContain('/admin/sales/availability');
     const catalogHrefs = sidebarHrefs([section(FULL, 'products')!]);

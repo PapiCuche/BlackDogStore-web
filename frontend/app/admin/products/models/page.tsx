@@ -8,8 +8,11 @@
  */
 
 import Link from "next/link";
+import { useCallback, useState } from "react";
 
 import { AccessGuard } from "../../components/AccessGuard";
+import { AddressQuery } from "../../components/AddressQuery";
+import { modelsAnchorFor } from "../../lib/models-sections";
 import { AdminShell } from "../../components/AdminShell";
 import { CatalogModelsManager } from "../../components/CatalogModelsManager";
 import { CatalogReadinessPanel } from "../../components/CatalogReadinessPanel";
@@ -19,8 +22,15 @@ import type { InternalAccess } from "../../lib/internal-access";
 import type { AuthUser } from "../../../lib/auth";
 
 function ModelsContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
+  // NAV-SALES-01: «Productos › Colores» opens this page with `?seccion=colores`, also while it is already open.
+  const [goTo, setGoTo] = useState<{ anchor: string; request: number } | null>(null);
+  const onQuery = useCallback((query: string) => {
+    const anchor = modelsAnchorFor(query);
+    if (anchor) setGoTo((previous) => ({ anchor, request: (previous?.request ?? 0) + 1 }));
+  }, []);
   return (
     <AdminShell user={user}>
+      <AddressQuery onChange={onQuery} />
       <div className="space-y-6">
         <PageHeader
           eyebrow="Productos"
@@ -43,6 +53,7 @@ function ModelsContent({ user, access }: { user: AuthUser; access: InternalAcces
         <CatalogModelsManager
           canManage={access.can("products.manage", ["admin", "superadmin"])}
           companyId={access.dashboard?.company?.id ?? null}
+          goTo={goTo}
         />
       </div>
     </AdminShell>

@@ -40,14 +40,16 @@ const tabsAt = (ctx: ModuleAccessContext, path: string, search = '') => {
 };
 
 describe('barra de pestañas por destino', () => {
-  it('Stock y equipos: resumen, existencias, nuevos y seminuevos, con la pantalla actual marcada', () => {
+  it('Stock y equipos: resumen, existencias, nuevos, seminuevos, cargas y Kardex, con la pantalla actual marcada', () => {
     const found = tabsAt(master, '/admin/inventory/used');
     expect(found?.label).toBe('Stock y equipos');
     expect(found?.tabs.map((t) => [t.label, t.active])).toEqual([
       ['Resumen', false], ['Existencias', false], ['Equipos nuevos', false], ['Equipos seminuevos', true],
+      ['Carga de stock', false], ['Carga de equipos', false], ['Kardex', false],
     ]);
     expect(found?.tabs.map((t) => t.href)).toEqual([
       '/admin/inventory', '/admin/inventory/stock', '/admin/inventory/units?line=new', '/admin/inventory/used',
+      '/admin/inventory/import', '/admin/inventory/units/import', '/admin/inventory/movements',
     ]);
   });
 
@@ -62,19 +64,18 @@ describe('barra de pestañas por destino', () => {
     ]);
   });
 
-  it('Productos y variantes, Etiquetas y Movimientos tienen las suyas; Kardex y Transferencias no se mezclan con recibir ni contar', () => {
+  it('Productos y Etiquetas tienen las suyas; Transferencias, recibir y contar son pantallas sueltas', () => {
     expect(tabsAt(master, '/admin/products/models')?.tabs.map((t) => t.label)).toEqual(
-      ['Productos', 'Modelos y variantes', 'Registrar artículo', 'Publicación e-commerce', 'Categorías', 'Imágenes por reemplazar'],
+      ['Modelos', 'Variantes', 'Colores', 'Fotografías', 'Registrar artículo', 'Publicación e-commerce', 'Categorías'],
     );
     expect(tabsAt(master, '/admin/inventory/labels')?.tabs.map((t) => t.label)).toEqual(['Vista previa y PDF', 'Configuración']);
-    expect(tabsAt(master, '/admin/inventory/transfers')?.tabs.map((t) => t.label)).toEqual(['Kardex', 'Transferencias']);
-    for (const path of ['/admin/inventory/receive', '/admin/inventory/counts', '/admin/inventory/operations']) {
+    for (const path of ['/admin/inventory/receive', '/admin/inventory/counts', '/admin/inventory/operations', '/admin/inventory/transfers']) {
       expect(tabsAt(master, path)).toBeNull();
     }
   });
 
   it('Más herramientas no lleva pestañas: sus pantallas son tareas distintas', () => {
-    for (const path of ['/admin/inventory/tools', '/admin/inventory/bulk', '/admin/inventory/costs', '/admin/inventory/units/import']) {
+    for (const path of ['/admin/inventory/tools', '/admin/inventory/bulk', '/admin/inventory/costs', '/admin/products/import']) {
       expect(tabsAt(master, path)).toBeNull();
     }
   });
@@ -82,10 +83,10 @@ describe('barra de pestañas por destino', () => {
   it('las pestañas muestran lo que el menú muestra: sin permiso no hay pestaña, y con una sola pantalla no hay barra', () => {
     const noManage = member(['products.view']);
     expect(tabsAt(noManage, '/admin/products/models')?.tabs.map((t) => t.label)).toEqual(
-      ['Productos', 'Modelos y variantes', 'Publicación e-commerce', 'Categorías', 'Imágenes por reemplazar'],
+      ['Modelos', 'Variantes', 'Colores', 'Fotografías', 'Publicación e-commerce', 'Categorías'],
     );
     expect(tabsAt(member(['inventory.view']), '/admin/inventory/used')?.tabs.map((t) => t.label)).toEqual(
-      ['Resumen', 'Existencias', 'Equipos nuevos', 'Equipos seminuevos'],
+      ['Resumen', 'Existencias', 'Equipos nuevos', 'Equipos seminuevos', 'Kardex'],
     );
     expect(tabsAt(member(['inventory.view']), '/admin/inventory/counts')).toBeNull();
     // Sin ver ofertas (products.view) no hay Proveedores en absoluto.
@@ -105,7 +106,7 @@ describe('barra de pestañas por destino', () => {
     mockPathname = '/admin/inventory/used';
     render(<SectionTabs access={master} />);
     const nav = screen.getByRole('navigation', { name: 'Secciones de Stock y equipos' });
-    expect(within(nav).getAllByRole('link')).toHaveLength(4);
+    expect(within(nav).getAllByRole('link')).toHaveLength(7);
     expect(within(nav).getByRole('link', { name: 'Equipos seminuevos' })).toHaveAttribute('aria-current', 'page');
     expect(within(nav).getByRole('link', { name: 'Existencias' })).not.toHaveAttribute('aria-current');
     for (const link of within(nav).getAllByRole('link')) expect(link.className).toContain('min-h-11');
@@ -121,7 +122,7 @@ describe('barra de pestañas por destino', () => {
     }
     mockPathname = '/admin/products/models';
     render(<SectionTabs access={master} />);
-    expect(screen.getByRole('navigation', { name: 'Secciones de Productos y variantes' })).toBeInTheDocument();
+    expect(screen.getByRole('navigation', { name: 'Secciones de Productos' })).toBeInTheDocument();
   });
 
   it('en una pantalla sin destino con pestañas no se dibuja nada', () => {
@@ -143,14 +144,12 @@ describe('Más herramientas', () => {
 
   it('muestra cada herramienta según el permiso y no repite ni inventa ninguna', () => {
     const labelsFor = (ctx: ModuleAccessContext) => visibleToolGroups(ctx).flatMap((g) => g.tools.map((t) => t.mod.label));
+    // NAV-SALES-01: «Carga de stock» y «Carga de equipos» pasaron a Stock y equipos.
     expect(labelsFor(master)).toEqual([
-      'Gestión masiva de inventario', 'Carga de productos', 'Carga de stock', 'Carga de equipos',
-      'Costos y precios', 'Reportes', 'Reposición',
+      'Gestión masiva de inventario', 'Carga de productos', 'Costos y precios', 'Reportes', 'Reposición',
     ]);
     expect(labelsFor(member(['inventory.view']))).toEqual(['Gestión masiva de inventario']);
-    expect(labelsFor(member(['inventory.view', 'inventory.adjust']))).toEqual([
-      'Gestión masiva de inventario', 'Carga de stock', 'Carga de equipos',
-    ]);
+    expect(labelsFor(member(['inventory.view', 'inventory.adjust']))).toEqual(['Gestión masiva de inventario']);
     expect(labelsFor(member(['inventory.view', 'inventory.reports']))).not.toContain('Costos y precios');
     expect(labelsFor(member([]))).toEqual([]);
   });
@@ -163,7 +162,8 @@ describe('Más herramientas', () => {
     expect(screen.queryByText(/Sólo lectura/)).toBeNull();
     expect(screen.getByText(/también puede corregir precios y costos/)).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Reponer' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Carga de equipos/ })).toHaveAttribute('href', '/admin/inventory/units/import');
+    expect(screen.getByRole('link', { name: /Carga de productos/ })).toHaveAttribute('href', '/admin/products/import');
+    expect(screen.queryByRole('link', { name: /Carga de equipos/ })).toBeNull();
     expect(screen.getByRole('link', { name: /Gestión masiva de inventario/ })).toHaveAttribute('href', '/admin/inventory/bulk');
   });
 
