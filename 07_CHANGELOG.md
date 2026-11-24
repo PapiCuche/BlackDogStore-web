@@ -15,6 +15,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - El detalle del modelo lee el historial de todas sus variantes de una vez: el número de consultas ya no crece con las variantes.
 - Un modelo sin paleta no crea variantes desde la paleta (409 `no_palette`); el editor lo avisa y pide confirmación para clasificar un producto.
 - Los colores de un modelo van primero en su paleta; los demás de la empresa, aparte.
+- `PUT /api/admin/products/<pk>/variant/` acepta `expected_model_id`, `expected_condition_line` y `expected_option_ids`: si la variante cambió, 409 `stale` y nada se escribe.
 
 ## 2026-11-24 — INV-LOAD-02: cargar el stock real con dos plantillas, comprobarlo y anular una carga (rama, sin desplegar)
 
