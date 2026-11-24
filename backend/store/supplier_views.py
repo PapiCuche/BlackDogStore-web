@@ -207,7 +207,8 @@ class AdminOfferListView(APIView):
         if state == 'active':
             qs = qs.filter(is_active=True, supplier__is_active=True, valid_until__gte=today)
         elif state == 'expired':
-            qs = qs.filter(valid_until__lt=today)
+            # `offer_state`'s order: switched on with its supplier off is «supplier_inactive» first (review #402).
+            qs = qs.filter(valid_until__lt=today).exclude(is_active=True, supplier__is_active=False)
         elif state == 'inactive':
             qs = qs.filter(is_active=False)
         elif state == 'supplier_inactive':

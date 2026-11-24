@@ -426,13 +426,15 @@ def margin_check(values: dict, *, current=None, may_view_costs: bool) -> str | N
     return BELOW_COST if price < cost else None
 
 
-def _guard_margin(values, *, current, may_view_costs, confirm_below_cost, reason='') -> tuple[str | None, str]:
+def _guard_margin(values, *, current, may_view_costs, confirm_below_cost, reason='',
+                  margin_judged=False) -> tuple[str | None, str]:
     """
-    `confirm_below_cost`: None = the caller judged it already (the weekly file, per job); False/True = the
-    panel's request. Refuses an unconfirmed one (409) and a confirmed one without a reason (400
-    `margin_reason_required`); returns the verdict and the reason, to audit once written.
+    Refuses an unconfirmed exception (409) and a confirmed one without a reason (400 `margin_reason_required`);
+    returns the verdict and the reason, to audit once written. SECURE BY DEFAULT (review of #402): every write
+    is judged unless `margin_judged` — only the weekly file's apply says so, having judged and confirmed the whole
+    job under its locks (`supplier_offer_import._margin_rows`).
     """
-    if confirm_below_cost is None:
+    if margin_judged:
         return None, ''
     verdict = margin_check(values, current=current, may_view_costs=may_view_costs)
     if verdict is None:
@@ -484,12 +486,14 @@ def _is_duplicate(exc) -> bool:
 
 
 def create_offer(*, company, actor=None, request=None, may_view_costs: bool = False,
-                 confirm_below_cost: bool | None = None, below_cost_reason: str = '', **fields) -> SupplierOffer:
+                 confirm_below_cost: bool = False, below_cost_reason: str = '', margin_judged: bool = False,
+                 **fields) -> SupplierOffer:
     fields.setdefault('supplier_id', None)
     fields.setdefault('product_id', None)
     values = _offer_values(company, fields, may_view_costs=may_view_costs)
     verdict, reason = _guard_margin(values, current=None, may_view_costs=may_view_costs,
-                                    confirm_below_cost=confirm_below_cost, reason=below_cost_reason)
+                                    confirm_below_cost=confirm_below_cost, reason=below_cost_reason,
+                                    margin_judged=margin_judged)
     try:
         with transaction.atomic():
             offer = SupplierOffer.objects.create(company=company, created_by=actor, **values)
@@ -504,8 +508,9 @@ def create_offer(*, company, actor=None, request=None, may_view_costs: bool = Fa
 
 
 def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = False,
-                 confirm_below_cost: bool | None = None, below_cost_reason: str = '', **fields) -> SupplierOffer:
-    """`confirm_below_cost`: see `_guard_margin` (None: not judged here)."""
+                 confirm_below_cost: bool = False, below_cost_reason: str = '', margin_judged: bool = False,
+                 **fields) -> SupplierOffer:
+    """The margin is judged here unless `margin_judged` (see `_guard_margin`)."""
     fields = {k: v for k, v in fields.items() if k not in ('supplier_id', 'product_id')}
     with transaction.atomic():
         locked = SupplierOffer.objects.select_for_update().get(pk=offer.pk)
@@ -514,7 +519,8 @@ def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = Fals
             return locked
         # Under the lock: the price and the cost compared are the ones this write replaces.
         verdict, reason = _guard_margin(values, current=locked, may_view_costs=may_view_costs,
-                                        confirm_below_cost=confirm_below_cost, reason=below_cost_reason)
+                                        confirm_below_cost=confirm_below_cost, reason=below_cost_reason,
+                                        margin_judged=margin_judged)
         before = _offer_snapshot(locked)
         try:
             with transaction.atomic():

@@ -1927,9 +1927,11 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
             elif row.action == BulkImportRow.CREATE:
                 # Owner D1 with the safe cut-off: what the supplier declared minus what sold since the message.
                 fields['confirmed_quantity'] = None if declared is None else max(int(declared) - sold_pair, 0)
+                # `margin_judged`: the job's margin was judged and confirmed above (`_margin_rows`), under the locks.
                 offer = supply_services.create_offer(company=job.company, actor=actor, request=request,
                                                      may_view_costs=with_cost, supplier_id=data.get('supplier_id'),
-                                                     product_id=data.get('product_id'), **fields)
+                                                     product_id=data.get('product_id'), margin_judged=True,
+                                                     **fields)
                 if row.row_number in margins:
                     offer.refresh_from_db()
                     supply_services.audit_margin(margins[row.row_number]['verdict'], offer, reason=margin_reason,
@@ -1973,7 +1975,8 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                           'job_id': job.pk, 'row_number': row.row_number,
                                           'previous_valid_until': offer.valid_until.isoformat(),
                                           'valid_until': data.get('valid_until')})
-                supply_services.update_offer(offer, actor=actor, request=request, may_view_costs=with_cost, **fields)
+                supply_services.update_offer(offer, actor=actor, request=request, may_view_costs=with_cost,
+                                             margin_judged=True, **fields)
                 if row.row_number in margins:
                     offer.refresh_from_db()
                     supply_services.audit_margin(margins[row.row_number]['verdict'], offer, reason=margin_reason,

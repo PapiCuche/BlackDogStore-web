@@ -94,6 +94,17 @@ class SupplierInactiveStateTest(GuardShop, TestCase):
         self.assertEqual(self.ids('supplier_inactive'), [])
         self.assertEqual(self.ids('inactive'), [self.offer.pk])
 
+    def test_an_expired_offer_of_an_inactive_supplier_is_listed_once(self):
+        # Review of #402: the filters follow `offer_state`'s order — switched on, supplier off: «Proveedor
+        # inactivo», whatever its days; never also under «Vencidas».
+        old = self.make_offer(valid_from=today() - timedelta(days=20), valid_until=today() - timedelta(days=10))
+        self.assertEqual(self.ids('expired'), [old.pk])
+        self.deactivate_supplier()
+        old.refresh_from_db()
+        self.assertEqual(offer_state(old), 'supplier_inactive')
+        self.assertEqual(self.ids('expired'), [])
+        self.assertEqual(sorted(self.ids('supplier_inactive')), sorted([self.offer.pk, old.pk]))
+
     def test_the_supplier_back_on_makes_it_vigente_again(self):
         self.deactivate_supplier()
         supply.update_supplier(self.supplier, actor=self.staff, is_active=True)
@@ -237,18 +248,63 @@ class BelowCostPanelTest(GuardShop, TestCase):
         url = f'/api/admin/supplier-offers/{self.offer.pk}/'
         self.api.patch(url, {'commercial_price': '60.00', 'confirm_below_cost': True, 'below_cost_reason': WHY},
                        format='json')
+        self.blind.patch(url, {'commercial_price': '65.00', 'confirm_below_cost': True, 'below_cost_reason': WHY},
+                         format='json')
         auditor, _ = _p2d_member(self.company, 'sg_auditor_sin_costos', ['company.view', 'memberships.view'])
-        rows = self.as_(auditor).get('/api/admin/audit-logs/?action=below_cost').json()['results']
-        self.assertEqual(len(rows), 1, rows)
-        self.assertEqual(rows[0]['metadata']['reason'], WHY)
-        self.assertNotIn('agreed_cost', rows[0]['metadata'])
-        self.assertNotIn('commercial_price', rows[0]['metadata'])     # price + «below» would bound the cost
-        assert_no_amount(self, rows, '70', '60')
+        # Review of #402: the row ITSELF says «below the cost»; with the offer's visible price it bounds the cost.
+        # Absent for who cannot see costs — like the offer's history.
+        rows = self.as_(auditor).get('/api/admin/audit-logs/?action=supplier_offer').json()['results']
+        self.assertNotIn('supplier_offer_below_cost_confirmed', [row['action'] for row in rows])
+        unseen = [row for row in rows if row['action'] == 'supplier_offer_cost_unseen_confirmed']
+        self.assertEqual(len(unseen), 1, rows)
+        self.assertEqual(unseen[0]['metadata']['reason'], WHY)
+        self.assertNotIn('agreed_cost', unseen[0]['metadata'])
+        assert_no_amount(self, rows, '70')
         owner, _ = _p2d_member(self.company, 'sg_auditor_con_costos',
                                ['company.view', 'memberships.view', 'costs.view'])
         rows = self.as_(owner).get('/api/admin/audit-logs/?action=below_cost').json()['results']
+        self.assertEqual(len(rows), 1, rows)
         self.assertEqual((rows[0]['metadata']['agreed_cost'], rows[0]['metadata']['commercial_price']),
                          ('70.00', '60.00'))
+
+    def test_the_audit_log_hides_the_below_cost_line_per_company(self):
+        # A reader of two companies: sees the line where they hold `costs.view`, not where they do not.
+        self.api.patch(f'/api/admin/supplier-offers/{self.offer.pk}/',
+                       {'commercial_price': '60.00', 'confirm_below_cost': True, 'below_cost_reason': WHY},
+                       format='json')
+        other = GuardShop()
+        other.build('sg-otra')
+        other.api.patch(f'/api/admin/supplier-offers/{other.offer.pk}/',
+                        {'commercial_price': '50.00', 'confirm_below_cost': True, 'below_cost_reason': WHY},
+                        format='json')
+        reader, _ = _p2d_member(self.company, 'sg_lector_dos', ['company.view', 'memberships.view', 'costs.view'])
+        from store.models import Membership, UserProfile
+        from store.tests import _assign, _role
+
+        second = Membership.objects.create(user=reader, company=other.company, role=UserProfile.ROLE_CUSTOMER,
+                                           branch_access_mode=Membership.ACCESS_MODE_ALL)
+        _assign(second, _role(other.company, 'Rol lector sin costos', ['company.view', 'memberships.view'],
+                              slug='rol-lector-sin-costos'))
+        rows = self.as_(reader).get('/api/admin/audit-logs/?action=below_cost').json()['results']
+        self.assertEqual([row['target_id'] for row in rows], [str(self.offer.pk)], rows)
+
+    def test_the_service_checks_the_margin_by_default(self):
+        # Review of #402: no caller gets a below-cost offer by forgetting the flag (`registration_services` did).
+        with self.assertRaises(supply.SupplyError) as refused:
+            supply.create_offer(company=self.company, supplier_id=self.supplier.pk, product_id=self.case.pk,
+                                actor=self.staff, may_view_costs=True, agreed_cost='120.00', commercial_price='100.00',
+                                confirmed_quantity=1, valid_from=self.later, valid_until=self.later, lead_time_days=2)
+        self.assertEqual(refused.exception.code, supply.BELOW_COST)
+        with self.assertRaises(supply.SupplyError) as refused:
+            supply.update_offer(self.offer, actor=self.staff, may_view_costs=True, commercial_price='60.00')
+        self.assertEqual(refused.exception.code, supply.BELOW_COST)
+        with self.assertRaises(supply.SupplyError) as refused:
+            supply.update_offer(self.offer, actor=self.seller, commercial_price='120.00')
+        self.assertEqual(refused.exception.code, supply.COST_UNSEEN)
+        self.offer.refresh_from_db()
+        self.assertEqual(self.offer.commercial_price, D('110.00'))
+        # What does not touch the margin never asks.
+        supply.update_offer(self.offer, actor=self.seller, lead_time_days=6)
 
 
 # ---------------------------------------------------------------------------
@@ -393,6 +449,34 @@ class ImportGuardTest(GuardShop, TestCase):
         row = self.preview([self.row(**{'Cantidad confirmada': 9})])['rows'][0]
         self.assertNotIn('supplier_inactive', row['data'])
         self.assertFalse(any('inactivo' in text for text in row['warnings']))
+
+
+# ---------------------------------------------------------------------------
+# 3b. «Registrar artículo» — never a below-cost offer (review of #402)
+# ---------------------------------------------------------------------------
+
+from store.test_registration import RegistrationFixture  # noqa: E402
+
+
+class RegistrationBelowCostTest(RegistrationFixture):
+    """
+    The wizard has no confirmation step: a below-cost offer is refused here, with nothing written, and the
+    message sends the person to the offers panel, where it is confirmed with a reason and audited.
+    """
+
+    def test_a_below_cost_offer_is_refused_and_nothing_is_written(self):
+        body = self.on_order(offer=self.offer(agreed_cost='5000.00', commercial_price='4199.00'))
+        before = self.counts()
+        res = self.post(self.admin, body, expect=400).json()
+        self.assertEqual((res['step'], res['code'], res['field']),
+                         ('supplier', 'below_cost_use_offers_panel', 'offer.commercial_price'), res)
+        self.assertIn('Ofertas', res['detail'])
+        self.assertEqual(self.counts(), before)
+        self.assertFalse(AdminAuditLog.objects.filter(action__in=supply.MARGIN_AUDITS).exists())
+
+    def test_at_or_above_the_cost_it_registers_as_before(self):
+        body = self.on_order(offer=self.offer(agreed_cost='4199.00', commercial_price='4199.00'))
+        self.post(self.admin, body, expect=201)
 
 
 # ---------------------------------------------------------------------------

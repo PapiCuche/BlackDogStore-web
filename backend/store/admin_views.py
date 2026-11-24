@@ -383,8 +383,9 @@ class AdminUserRoleView(APIView):
 def _audit_metadata_for(user, log, sees_costs: dict):
     """
     SUPPLY-GUARDS-01 — a margin confirmation keeps the offer's cost in its audit row; it is returned only to who
-    may see costs in that row's company (`sees_costs` caches the answer per company). A «below the cost» row also
-    loses its price for them: price and comparison together would bound the cost.
+    may see costs in that row's company (`sees_costs` caches the answer per company). The «below the cost» line
+    never reaches them at all (`_without_below_cost_lines`): the line itself, with the offer's visible price,
+    would bound the cost.
     """
     from . import supply_services
     from .cost_services import user_may_view_costs
@@ -395,8 +396,21 @@ def _audit_metadata_for(user, log, sees_costs: dict):
         sees_costs[log.company_id] = bool(log.company_id) and user_may_view_costs(user, log.company)
     if sees_costs[log.company_id]:
         return log.metadata
-    hidden = {'agreed_cost'} | ({'commercial_price'} if log.action == supply_services.BELOW_COST_AUDIT else set())
-    return {key: value for key, value in log.metadata.items() if key not in hidden}
+    return supply_services.audit_metadata_without_cost(log.metadata)
+
+
+def _without_below_cost_lines(logs, user, company_ids):
+    """Review of #402 — in the query (so pages stay whole): no «below the cost» line of a company where `user`
+    may not see costs."""
+    from . import supply_services
+    from .cost_services import user_may_view_costs
+    from .models import Company
+
+    blind = [company.pk for company in Company.objects.filter(pk__in=company_ids)
+             if not user_may_view_costs(user, company)]
+    if not blind:
+        return logs
+    return logs.exclude(action=supply_services.BELOW_COST_AUDIT, company_id__in=blind)
 
 
 class AdminAuditLogListView(APIView):
@@ -441,6 +455,7 @@ class AdminAuditLogListView(APIView):
                     status=status.HTTP_403_FORBIDDEN,
                 )
             logs = logs.filter(company_id__in=readable)
+            logs = _without_below_cost_lines(logs, request.user, readable)
 
         action_filter = request.query_params.get('action', '').strip()
         if action_filter:
