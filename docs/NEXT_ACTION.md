@@ -15,13 +15,13 @@ No se revierte: producción está sana. **El propietario debe confirmar si dio e
 | Punto | Evidencia |
 |---|---|
 | Quién lo ejecutó | Otra sesión, sin identificar. Ninguna transcripción local la registra: ni Claude Code, ni Codex (su última sesión acabó a las 16:37:15), ni Antigravity, ni Gemini. La sesión del CRM sólo lo observó. |
-| Cuándo | 2026-11-23, hora de Lima. Imágenes `rc-16189e4` compiladas a las 16:40:35. Primer intento a las 16:40:43: migró `0185` y `0186`, falló la espera de salud y volvió el código a `ed9f5e0` a las 16:41:31, sin rebobinar la base. Segundo intento a las 16:42:24: correcto. |
+| Cuándo | 2026-11-23, hora de Lima. Imágenes `rc-16189e4` compiladas a las 16:40:35. Primer intento a las 16:40:43: hizo su backup (16:40:57), migró `0185` y `0186`, falló la espera de salud y volvió el código a `ed9f5e0` a las 16:41:31, sin rebobinar la base. Segundo intento a las 16:42:24: correcto. |
 | GO del propietario | **No encontrado.** El #367 no tiene comentarios ni revisiones. Lo fusionó la cuenta del propietario (14:52 Lima), pero fusionar no es autorizar el despliegue. |
 | SHA y alcance | `16189e4` (#367, LABEL-04). Contiene `d32f43b`, así que también desplegó el código de la Fase 1.2 y su migración `0185`. |
 | Runbook | `backups/deploy-label04-16189e4.sh` y `backups/deploy-label04-16189e4-retry.sh`. No existe un runbook revisado. |
-| Backup previo | **El verdadero es `backups/label04-20261123-164057/`** (esquema `0184`, completo). El del reintento, `label04-20261123-164229`, ya contiene `0185` y `0186`. |
-| Resultado | Rutas de la tienda y del panel en 200. Caddy y CRM sin cambios. 0 fotos de acabado, 0 muestras por modelo y 0 licencias verificadas. |
-| Concurrencia | Entre las 16:40:58 y las 16:41:48 la sesión del CRM desplegó el CRM en el mismo servidor. Coincidió con el primer intento de la tienda, el que falló. |
+| Backup previo | **El verdadero es `backups/label04-20261123-164057/`**: completo, y su dump no contiene `0185` ni `0186` (comprobado). El del reintento, `label04-20261123-164229`, ya contiene `0185` y `0186`. |
+| Resultado | Rutas de la tienda y del panel en 200. LABEL-04 no cambió Caddy ni los archivos de enrutamiento del CRM (md5 iguales). 0 fotos de acabado, 0 muestras por modelo y 0 licencias verificadas. |
+| Concurrencia | Aparte, entre las 16:40:58 y las 16:41:48, la sesión del CRM desplegó el CRM (sus propios contenedores) en el mismo servidor. Coincidió con el primer intento de la tienda, el que falló. |
 
 ### Un solo ejecutor en producción
 
@@ -40,15 +40,16 @@ Runbook: `backups/release-f12/RUNBOOK-16189e4-prod02.md`.
   - repetirla no escribe nada y la vuelta atrás es exacta.
   - #19, #22 y #23 no se tocan.
 - **Muestras.** Sólo las **167 aplicables** (40 modelos), marcadas «aproximada» y editables (`backups/f12s-batch-rehearsal-16189e4.log`).
-  - Las **38 dudosas** (9 modelos) quedan fuera; `f12s_go.sh` rechaza cualquier propuesta que las contenga.
+  - Las **38 dudosas** (9 modelos, ninguno común con los 40) quedan fuera; `f12s_go.sh` rechaza cualquier propuesta que las contenga.
   - La vuelta atrás deshace el último lote no revertido.
 - **Producto 12** («Cable Apple USB-C a USB-C»: activo, publicado, 90 en stock). La tienda muestra el icono de imagen rota porque la URL apunta a un sitio de terceros.
   - La operación sólo vacía `image_url` a través de la vista del panel, que deja su propia auditoría. Así la tienda muestra el marcador neutro.
   - No cambia precio, stock, publicación ni otras imágenes.
   - Ensayada (`backups/p12-rehearsal-16189e4.log`): un fallo provocado y una huella equivocada no cambian nada; se aplica; repetirla se rechaza; la vuelta atrás repone la URL y vuelve a la huella `10e9b5c6256a054b`.
 - **Producto 7** sigue inactivo hasta sustituir su foto, que mezcla cuatro acabados.
-- **Release del #396 (`edbeeb0`)**, para que la caja sólo muestre fotos con licencia verificada.
-  - Contenido auditado entre `16189e4` y `edbeeb0`: `finish_media.py`, `pos_device_services.py`, `test_finish_images.py` y documentación. Sin migraciones, sin cambios en `deploy/` ni en el compose, sin cambios en el frontend.
+- **Release `edbeeb0` (master con el #396)**, para que la caja sólo muestre fotos con licencia verificada.
+  - `edbeeb0` es la fusión del #397 (sólo documentación) sobre el #396 (`8899bf9`). Entre `16189e4` y `edbeeb0` entran además los PR de documentación #394, #395 y #397.
+  - Código auditado: `finish_media.py`, `pos_device_services.py` y `test_finish_images.py`; el resto es documentación. Sin migraciones, sin cambios en `deploy/` ni en el compose, sin cambios en el frontend.
   - `d_deploy_pos.sh` aborta si el HEAD no es `16189e4`, si el esquema no es `0186`, si las imágenes en marcha no son `release-16189e4`, si aparece un archivo de código no auditado o si la nueva imagen planea migraciones.
   - Sólo recrea backend y frontend: nunca Caddy ni el CRM. Vuelta atrás de sólo código con `rollback_pos.sh`.
   - Ensayo sobre una copia aislada de un backup recién hecho (`backups/pos-rehearsal-edbeeb0.log`), en verde:
@@ -59,11 +60,11 @@ Runbook: `backups/release-f12/RUNBOOK-16189e4-prod02.md`.
     - rutas del frontend correctas (la página inexistente da 404).
 - **Fotos:** las 58 del manifiesto no tienen licencia acreditada; ninguna se da por autorizada. El plan de sustitución está en `release-f12/biblioteca-visual/SUSTITUCIONES.md`.
 
-**GO pedidos**, cada uno por separado y por este orden:
+**GO pedidos**, cada uno por separado y por este orden. Se ejecutan en prod-02, en `/srv/blackdogstore`. Los scripts no están en el repositorio: viven en el kit privado `backups/release-p1/` y `backups/release-f12/` del servidor (las copias de `/tmp` se comprobaron idénticas).
 1. **«GO normalización catálogo prod-02»**: `sh backups/release-p1/f11p_go.sh`.
 2. **«GO muestras aproximadas prod-02»**: sólo las 167, con `sh /tmp/f12s_go.sh /tmp/swatch-approx-aplicables.json`.
-3. **«GO quitar enlace roto producto 12 prod-02»**: `sh /tmp/p12_go.sh`.
-4. **«GO despliegue edbeeb0 prod-02»**: `sh /tmp/d_deploy_pos.sh edbeeb0b28c500424e77609d145cebfff07e000d`.
+3. **«GO quitar enlace roto producto 12 prod-02»**: `sh backups/release-f12/p12_go.sh`. Independiente de 1 y 2.
+4. **«GO despliegue edbeeb0 prod-02»**: `sh backups/release-f12/d_deploy_pos.sh edbeeb0b28c500424e77609d145cebfff07e000d`. Vuelta atrás: `sh backups/release-f12/rollback_pos.sh`.
 5. **«GO importación fotos prod-02»**: sólo después del 4 y con fotos propias o con licencia verificable.
 
 **Decisiones del propietario (BLOCKED):**
@@ -83,7 +84,7 @@ En caja, actualizar el agente a 1.4 y asociar la Advance con la cola `POS-80-Ser
 ## Producción anterior: Fase 1 `ed9f5e0` (esquema `0184`), desplegada el 2026-11-22 08:11 en prod-02 (sustituida el 2026-11-23 16:42 por `16189e4`)
 
 - Detalle y verificación en la entrada del 2026-11-22 de `02_ESTADO_ACTUAL.md`.
-- **Vuelta atrás de la Fase 1:** `sh backups/release-p1/rollback_p1.sh` en `/srv/blackdogstore` (sólo código, a `release-4a3ce34`). Repone los tres archivos de enrutamiento del CRM desde `backups/p1-routing-20261122-081143/`: en `ed9f5e0` están versionados y un checkout simple a R12b borraría dos de ellos.
+- **Vuelta atrás de la Fase 1 — YA NO APLICA:** producción está en `16189e4` con `0185` y `0186`; este script volvería a un código anterior a ese esquema. No ejecutarlo. Texto histórico: `sh backups/release-p1/rollback_p1.sh` en `/srv/blackdogstore` (sólo código, a `release-4a3ce34`). Repone los tres archivos de enrutamiento del CRM desde `backups/p1-routing-20261122-081143/`: en `ed9f5e0` están versionados y un checkout simple a R12b borraría dos de ellos.
 - **Catálogo importado** el 2026-11-22 (entrada «CATÁLOGO iPHONE IMPORTADO» de `02_ESTADO_ACTUAL.md`): 21 modelos nuevos ocultos, 28 enlazados, 6 parciales pendientes de revisión; nada publicado, sin variantes ni stock.
 - **Fase 1.1 (CATALOG-F11):** código #383 fusionado (`ffc1315`, sin desplegar y no necesario para el GO), ensayo aislado y simulación final verdes, producción sin cambios. Detalle en `docs/adr-catalog-reference.md` §9.
 - **Simulación final v2 (2026-11-22 15:30 Lima)**, sobre una copia aislada de `db-20261122-153017`, con el código de producción tal cual. Producción leída sin escribir: precondiciones exactas, huella `1689fd2825cc5724`. «Región» es procedencia (mercado de venta), así que #23 queda fuera: `docs/adr-catalog-reference.md` §9.5.

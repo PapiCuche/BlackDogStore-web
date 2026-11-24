@@ -5,17 +5,17 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-11-23 — P0 coordinación de producción · LABEL-04 con autorización no acreditada; un solo ejecutor; release del #396 ensayada · producción SIN CAMBIOS por mi parte
 
-Orden del propietario «P0 COORDINACIÓN DE PRODUCCIÓN Y CIERRE FASE 1.2». Mi sesión no escribió nada en producción: sólo backups, ensayos sobre copias aisladas y compilación de imágenes candidatas.
+Orden del propietario «P0 COORDINACIÓN DE PRODUCCIÓN Y CIERRE FASE 1.2». Mi sesión no cambió la base, los contenedores, el código ni el enrutamiento de producción. En prod-02, bajo el candado, sólo hizo backups, compiló las imágenes candidatas `rc-edbeeb0` y ensayó sobre copias aisladas; además dejó scripts del kit en `backups/` y `/tmp`.
 
 - **LABEL-04 (`16189e4`)** queda registrado como **cambio productivo con autorización no acreditada**. No se revierte: producción está sana.
   - Ejecutor sin identificar; ninguna transcripción local lo registra. El #367 no tiene comentarios ni revisiones.
   - Primer intento a las 16:40:43: migró `0185` y `0186`, falló la espera de salud y volvió el código a `ed9f5e0` sin rebobinar la base. Reintento correcto a las 16:42:24.
-  - Backup previo verdadero: `backups/label04-20261123-164057/` (`0184`).
+  - Backup previo verdadero: `backups/label04-20261123-164057/`; su dump no contiene `0185` ni `0186`.
   - El CRM se desplegó en el mismo servidor entre las 16:40:58 y las 16:41:48, a la vez que el primer intento.
   - Tabla de evidencias en `docs/NEXT_ACTION.md`. El propietario debe confirmar si dio el GO.
 - **Un solo ejecutor:** regla nueva en `AGENTS.md` §10 y candado `backups/ops/prod_lock.sh` en el servidor. Se niega si otro lo tiene o si hay un deploy, un migrate, un build o un backup en marcha. Probado. Los scripts de GO se relanzan solos bajo el candado.
 - **Producto 12:** operación mínima que sólo vacía su `image_url` rota, ensayada (fallos sin cambios, aplicar, repetir rechazado, vuelta atrás exacta).
-- **Release del #396 (`edbeeb0`):** contenido auditado (tres archivos del backend y documentación, sin migraciones). Ensayo aislado en verde:
+- **Release `edbeeb0` (master con el #396 y los PR de documentación #394, #395 y #397):** código auditado (tres archivos del backend), sin migraciones. Ensayo aislado en verde:
   - plan sin migraciones; humo profundo 32/32 con la imagen vieja y con la nueva; reimpresión histórica correcta;
   - la caja no muestra una foto sin licencia verificada y sí la muestra tras verificarla;
   - 368 pruebas de los módulos afectados, en verde.
