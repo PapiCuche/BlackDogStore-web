@@ -73,6 +73,12 @@ C=docker compose -f docker-compose.prod.yml --env-file deploy/.env.production
 # ANTERIOR A INV-DRAFT-01, QUITA ESTA LÍNEA: esa versión no tiene este comando.
 37 * * * *  cd $REPO && mkdir -p backups && $C exec -T backend python manage.py purge_receipt_drafts >> backups/purge_receipt_drafts.log 2>&1
 
+# SALES-QUOTE-01: cotizaciones aprobadas, enviadas o aceptadas cuya vigencia terminó, marcadas «Vencida» (con su
+# línea de auditoría). El panel ya las muestra vencidas y no deja convertirlas aunque esto no corra; sólo ordena
+# los reportes. Idempotente. Una vez por hora. SI SE VUELVE A UNA VERSIÓN ANTERIOR A SALES-QUOTE-01, QUITA ESTA
+# LÍNEA (esa versión no tiene este comando) y antes cancela sus tickets: docs/despliegue-produccion.md §7.
+41 * * * *  cd $REPO && mkdir -p backups && $C exec -T backend python manage.py expire_sales_quotes >> backups/expire_sales_quotes.log 2>&1
+
 # Estado: contenedores, tienda, base, pagos, WhatsApp, copia y disco. Cada 15
 # minutos. No imprime nada si todo está bien; si algo necesita atención lo
 # escribe (y cron lo envía a MAILTO). El registro completo queda en el archivo.

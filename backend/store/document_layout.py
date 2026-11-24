@@ -485,8 +485,12 @@ def _classic_story(document: dict, usable: float) -> list:
     # absent: the order every paper had).
     blocks = {key: [] for key in _CLOSING_ORDER}
     if document.get('notes'):
-        blocks['notes'] = [Spacer(1, 10), Paragraph('OBSERVACIONES', styles['heading']), Spacer(1, 2),
-                           Paragraph(style.markup(document['notes']), styles['value'])]
+        # SALES-QUOTE-01: `notes_heading` names the block and keeps the lines of the text (a quote prints
+        # its commercial conditions there). Absent: «OBSERVACIONES» on one paragraph, as every paper had.
+        heading = document.get('notes_heading')
+        text = _lines_markup(document['notes']) if heading else style.markup(document['notes'])
+        blocks['notes'] = [Spacer(1, 10), Paragraph(style.markup(heading or 'OBSERVACIONES'), styles['heading']),
+                           Spacer(1, 2), Paragraph(text, styles['value'])]
     for footnote in document.get('footnotes') or []:
         blocks['warranty'] += [Spacer(1, 6), Paragraph(style.markup(footnote), styles['small'])]
     if document.get('closing_message'):

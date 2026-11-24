@@ -58,6 +58,8 @@ from .document_style import Watermark
 KINDS = (
     'sales_note', 'order_receipt', 'ticket80_sales_note',
     'boleta', 'factura', 'ticket80_boleta', 'ticket80_factura',
+    # SALES-QUOTE-01: the commercial quote, A4 and 80 mm.
+    'sales_quote', 'ticket80_sales_quote',
 )
 
 SAMPLE_NUMBER = 'MUESTRA-000000'
@@ -99,7 +101,7 @@ def file_name(kind: str) -> str:
 
 #: The papers a company design applies to in full (DOC-DESIGN-03). The fiscal ones take only the logo's size
 #: and alignment, the thank-you message and the footer (FISCAL-DESIGN-01).
-DESIGNED_KINDS = ('sales_note', 'order_receipt', 'ticket80_sales_note')
+DESIGNED_KINDS = ('sales_note', 'order_receipt', 'ticket80_sales_note', 'sales_quote', 'ticket80_sales_quote')
 
 
 def render_preview(kind: str, *, company, extra_lines: int = 0, design=None) -> bytes:
@@ -129,6 +131,13 @@ def render_preview(kind: str, *, company, extra_lines: int = 0, design=None) -> 
             watermark=SAMPLE_MARK)
     if kind == 'ticket80_sales_note':
         return ticket_services.ticket_pdf_from_ctx(_sales_note_ctx(company, lines, design), watermark=SAMPLE_MARK)
+    if kind in ('sales_quote', 'ticket80_sales_quote'):
+        from . import sales_quote_documents
+
+        ctx = _quote_ctx(company, lines, design)
+        if kind == 'sales_quote':
+            return document_layout.render_a4(sales_quote_documents.quote_document(ctx), watermark=SAMPLE_MARK)
+        return sales_quote_documents.ticket_pdf_from_ctx(ctx, watermark=SAMPLE_MARK)
     if kind == 'order_receipt':
         return document_layout.render_a4(
             pdf_services.order_receipt_document(_receipt_ctx(company, lines, design)), watermark=SAMPLE_MARK)
@@ -281,6 +290,43 @@ def _sales_note_ctx(company, lines, design=None) -> dict:
         'design': design,
         # DOC-NV-PREMIUM: the company's own brand accent, as a real note freezes it.
         'accent_color': _accent(company),
+    }
+
+
+def _quote_ctx(company, lines, design=None) -> dict:
+    """The same keys as `sales_quote_documents.build_context`, from made-up data (devices masked)."""
+    from . import device_identity
+    from .document_design import DEFAULT
+    from .sales_note_services import tax_context_from_breakdown
+    from .tax_services import breakdown_from_total
+
+    def masked(value):
+        return device_identity.mask(value).replace('•', '*')
+
+    items = [{
+        'line_number': number, 'code': code, 'name': name, 'details': ['256 GB · Negro'] if units else [],
+        'units': [{key: masked(value) for key, value in unit.items()} for unit in units],
+        'unit': 'UND', 'quantity': quantity, 'unit_price': price, 'amount': price * quantity,
+    } for number, (name, code, quantity, price, units) in enumerate(lines, start=1)]
+    subtotal = sum((item['amount'] for item in items), Decimal('0.00'))
+    total = subtotal - _DISCOUNT
+    tax = tax_context_from_breakdown(breakdown_from_total(
+        total=total, subtotal=subtotal, discount_amount=_DISCOUNT, tax_rate=_RATE, currency='PEN'))
+    identity = _identity(company)
+    presentation = _presentation(company)
+    return {
+        'logo_png': presentation['logo_png'], 'design': design or DEFAULT,
+        'store_name': identity.name, 'store_legal_name': identity.legal_name, 'store_ruc': identity.tax_id,
+        'store_address': identity.legal_address, 'store_city': identity.city, 'store_phone': identity.phone,
+        'store_email': identity.contact_email, 'store_website': identity.website_url,
+        'branch_name': presentation['branch_name'], 'branch_address': presentation['branch_address'],
+        'number': SAMPLE_NUMBER, 'revision': 1, 'issued_at': _SAMPLE_STAMP, 'valid_until': '08/01/2026',
+        'seller_name': presentation['seller_name'],
+        'customer_name': 'CLIENTE DE MUESTRA', 'customer_document': 'DNI 00000000',
+        'customer_phone': '999 999 999', 'customer_email': 'cliente@muestra.invalid',
+        'items': items, 'tax': tax, 'discount_label': 'Descuento',
+        'conditions': 'Condiciones comerciales de muestra.\nForma de pago y entrega de muestra.',
+        'stamp': '',
     }
 
 

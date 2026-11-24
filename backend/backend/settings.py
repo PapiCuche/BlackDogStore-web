@@ -191,6 +191,8 @@ REST_FRAMEWORK = {
         # operator works through a basket, so this ceiling is generous.
         'admin_pos': '600/min',
         'admin_pos_sale': '60/min',
+        'admin_sales_quotes': '300/min',
+        'admin_sales_quote_write': '60/min',
         'admin_sales_analytics': '120/min',
         # AUTH-B. The warning asks how long is left; «Continuar sesión» is a person.
         'session_status': '120/min',

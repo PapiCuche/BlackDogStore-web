@@ -344,8 +344,9 @@ class CrontabExampleTest(SimpleTestCase):
                  if line and not line.startswith('#') and 'cd $REPO' in line]
         # backup, sessions, images, WhatsApp, conversions, payments, device holds (DC2),
         # supplier offers (DC3), fixed-payment periods (FIN-B1), finance pass + reminders (FIN-REMIND-01),
-        # expired receipt drafts (INV-DRAFT-01), health
-        self.assertEqual(len(lines), 12)
+        # expired receipt drafts (INV-DRAFT-01), expired sales quotes (SALES-QUOTE-01), health
+        self.assertEqual(len(lines), 13)
+        self.assertTrue(any('expire_sales_quotes' in line for line in lines))
         self.assertTrue(any('purge_receipt_drafts' in line for line in lines))
         self.assertTrue(any('expire_supplier_offers' in line for line in lines))
         self.assertTrue(any('generate_finance_obligations' in line for line in lines))

@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-24 — SALES-QUOTE-01: cotizaciones comerciales (rama, sin fusionar ni desplegar)
+
+**Added**
+- Cotizaciones comerciales (`/admin/sales/quotes`): crear, editar un borrador, revisar lo ya ofrecido (la revisión anterior queda «Reemplazada»), duplicar, aprobar, marcar como enviada y registrar si el cliente aceptó o rechazó.
+- Numeración `COT-` por empresa, vigencia, condiciones comerciales impresas y notas internas que no se imprimen.
+- Convertir en venta desde la cotización, con las reglas de la caja y sin cobrar dos veces; si el precio cambió, se ven los dos totales y alguien decide.
+- PDF A4, PDF de 80 mm y ticket en la impresora térmica por la cola de impresión.
+- Capacidades `sales.quotes.view`, `sales.quotes.manage` y `sales.quotes.approve`; migración `0189_sales_quote`.
+- Comandos `expire_sales_quotes` (cron) y `cancel_sales_quote_print_jobs` (antes de volver atrás).
+
+**Changed**
+- La cola de impresión cancela un ticket sin pedido de un tipo que no conoce, en vez de detenerse.
+
 ## 2026-11-24 — IMG-GATE-01: la foto propia de una variante necesita licencia verificada (PR abierto, sin fusionar)
 
 **Changed**

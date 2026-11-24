@@ -116,6 +116,26 @@ ORDER_RECEIPT_COPY_NOTE = 'Documento interno del pedido. No es un comprobante el
 QUOTE_DISCLAIMER = 'No es un comprobante de pago ni un documento tributario.'
 
 # ---------------------------------------------------------------------------
+# Commercial quote (SALES-QUOTE-01)
+# ---------------------------------------------------------------------------
+
+#: The title every commercial quote prints, A4 and roll. Not configurable: it says what the paper IS.
+SALES_QUOTE_TITLE = 'COTIZACIÓN'
+#: The statement every commercial quote prints (owner's words): a quote is an offer, not a receipt.
+SALES_QUOTE_LEGEND = 'No es comprobante de pago.'
+#: The line under it: what the offer binds and until when is said by the validity on the paper.
+SALES_QUOTE_LEGEND_DETAIL = ('Precios y disponibilidad sujetos a la vigencia indicada. '
+                             'La venta se confirma al cobrar y se documenta por separado.')
+
+
+def quote_prefix_error(prefix) -> str:
+    """Why `prefix` may not number commercial quotes, or '' when it may (never F or B, like the sales note)."""
+    if (prefix or '')[:1].upper() in FISCAL_SERIES_INITIALS:
+        return ('El prefijo de las cotizaciones no puede empezar por F ni por B: '
+                'son las letras de las series de facturas y boletas electrónicas.')
+    return ''
+
+# ---------------------------------------------------------------------------
 # Fiscal documents — MANDATORY, unchanged texts (fiscal goldens byte-identical)
 # ---------------------------------------------------------------------------
 

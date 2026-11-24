@@ -63,7 +63,9 @@ test('opened, it lists what is not finished, and none of it is a link', () => {
   mount(['company.manage', 'company.view']);
   fireEvent.click(screen.getByRole('button', { name: 'Ver lista' }));
   const section = screen.getByRole('region', { name: 'En desarrollo / Próximamente' });
-  for (const label of ['Cotizaciones', 'Cuentas por pagar', 'Facturación electrónica', 'Garantías']) {
+  // SALES-QUOTE-01: «Cotizaciones» is implemented now, so it left the roadmap.
+  expect(within(section).queryByText('Cotizaciones')).not.toBeInTheDocument();
+  for (const label of ['Cuentas por pagar', 'Facturación electrónica', 'Garantías']) {
     expect(within(section).getByText(label)).toBeInTheDocument();
   }
   // Only unfinished modules: an existing one such as «Punto de venta» is not here.

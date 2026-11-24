@@ -35,7 +35,7 @@ from store.models import (
     AccessoryCompatibility, AdminAuditLog, Branch, BranchStock, CartItem, Customer, Device, InventoryCount,
     InventoryCountItem, LabelBatch, LabelBatchItem, Order, OrderItem, PartUsage, Product, ProductBarcode, ProductImage,
     ProductModel, ProductVariantOption, Promotion, PromotionItem, ReceiptDraft, RepairExecution, RepairOrder,
-    RepairQuote, RepairQuoteItem, Review, StockMovement, StockTransfer, StockTransferItem, StockUnit,
+    RepairQuote, RepairQuoteItem, Review, SalesQuote, SalesQuoteItem, StockMovement, StockTransfer, StockTransferItem, StockUnit,
     StorefrontCampaign, Supplier, SupplierOffer, SupplierProductRef,
 )
 from store.tenancy import company_storefront_products
@@ -143,6 +143,12 @@ class LifecycleShop(DraftShop):
             'campaigns': lambda p: _row(StorefrontCampaign, company=self.company, product=p, title='Campaña',
                                         slot=_first_choice(StorefrontCampaign, 'slot')),
             'repair_quote_items': quote_item,
+            # SALES-QUOTE-01: a commercial quote that offered it.
+            'sales_quote_items': lambda p: _row(SalesQuoteItem, product=p, description='Variante', quantity=1,
+                                                unit_price=D('10'), line_total=D('10'), quote=_row(
+                                                    SalesQuote, company=self.company, branch=self.branch,
+                                                    number='COT-000001', sequence_value=1,
+                                                    valid_until=date.today())),
             'part_usages': part_usage,
             'supplier_offers': lambda p: _row(SupplierOffer, company=self.company, supplier=supplier(), product=p,
                                               commercial_price=D('10'), valid_from=date.today(),

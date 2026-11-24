@@ -80,6 +80,7 @@ from .inventory_views import (
 from .pos_device_views import (
     AdminPosDeviceReceiveView, AdminPosModelConfigurationsView, AdminPosModelSearchView,
 )
+from . import sales_quote_views as sq
 from .pos_views import (
     AdminPosSaleByKeyView,
     AdminPosSaleNotChargedView,
@@ -664,6 +665,25 @@ urlpatterns = [
     path('admin/sales/coupons/', AdminCouponView.as_view(), name='admin-coupons'),
     path('admin/sales/coupons/<int:pk>/', AdminCouponView.as_view(), name='admin-coupon-detail'),
     path('admin/pos/combos/', AdminPosCombosView.as_view(), name='admin-pos-combos'),
+    # --- SALES-QUOTE-01: commercial quotes (`sales.quotes.*`; converting is a till sale) ---
+    path('admin/sales/quotes/', sq.AdminSalesQuoteListView.as_view(), name='admin-sales-quotes'),
+    path('admin/sales/quotes/context/', sq.AdminSalesQuoteContextView.as_view(), name='admin-sales-quotes-context'),
+    path('admin/sales/quotes/products/', sq.AdminSalesQuoteProductSearchView.as_view(),
+         name='admin-sales-quotes-products'),
+    path('admin/sales/quotes/units/', sq.AdminSalesQuoteUnitsView.as_view(), name='admin-sales-quotes-units'),
+    path('admin/sales/quotes/<int:pk>/', sq.AdminSalesQuoteDetailView.as_view(), name='admin-sales-quote'),
+    path('admin/sales/quotes/<int:pk>/duplicate/', sq.AdminSalesQuoteDuplicateView.as_view(),
+         name='admin-sales-quote-duplicate'),
+    path('admin/sales/quotes/<int:pk>/revise/', sq.AdminSalesQuoteReviseView.as_view(), name='admin-sales-quote-revise'),
+    path('admin/sales/quotes/<int:pk>/approve/', sq.AdminSalesQuoteApproveView.as_view(),
+         name='admin-sales-quote-approve'),
+    path('admin/sales/quotes/<int:pk>/send/', sq.AdminSalesQuoteSendView.as_view(), name='admin-sales-quote-send'),
+    path('admin/sales/quotes/<int:pk>/accept/', sq.AdminSalesQuoteAcceptView.as_view(), name='admin-sales-quote-accept'),
+    path('admin/sales/quotes/<int:pk>/reject/', sq.AdminSalesQuoteRejectView.as_view(), name='admin-sales-quote-reject'),
+    path('admin/sales/quotes/<int:pk>/convert/', sq.AdminSalesQuoteConvertView.as_view(),
+         name='admin-sales-quote-convert'),
+    path('admin/sales/quotes/<int:pk>/pdf/', sq.AdminSalesQuotePdfView.as_view(), name='admin-sales-quote-pdf'),
+    path('admin/sales/quotes/<int:pk>/print/', sq.AdminSalesQuotePrintView.as_view(), name='admin-sales-quote-print'),
 
     # --- C1.4: bulk imports ------------------------------------------------
     path('admin/imports/inspect/', AdminImportInspectView.as_view(), name='admin-import-inspect'),
