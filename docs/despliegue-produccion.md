@@ -880,8 +880,18 @@ Da las capacidades `sales.quotes.*` a los roles existentes. Después de `migrate
    $C exec -T backend python manage.py cancel_sales_quote_print_jobs --apply   # cancela
    ```
 2. **Quita del `crontab` la línea `expire_sales_quotes`**.
-3. `git checkout <commit anterior>`, `$C build`, `$C up -d`. La migración **se deja aplicada**: la versión anterior
-   no lee sus tablas ni sus columnas. Las ventas ya convertidas siguen siendo ventas normales.
+3. `git checkout <commit anterior>` y `$C build`. **Justo antes de `$C up -d`, vuelve a ejecutar
+   `cancel_sales_quote_print_jobs --apply`**: mientras compilabas, alguien pudo pedir otro ticket de cotización.
+   Después, `$C up -d`. La migración **se deja aplicada**: la versión anterior no lee sus tablas ni sus columnas.
+   Las ventas ya convertidas siguen siendo ventas normales.
+4. Si la versión anterior ya está en marcha y aun así queda un ticket de cotización (ese código no tiene el
+   comando), cancélalos directamente en la base; sólo toca tickets de cotización sin terminar:
+   ```sh
+   $C exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "UPDATE store_printjob SET status='"'"'cancelled'"'"' WHERE kind='"'"'sales_quote_ticket'"'"' AND status IN ('"'"'pending'"'"','"'"'printing'"'"');"'
+   ```
+   Es la misma sentencia que `UPDATE store_printjob SET status='cancelled' WHERE kind='sales_quote_ticket' AND
+   status IN ('pending','printing');`, escrita para que el usuario y la base los lea el propio contenedor (como en
+   `deploy/backup.sh`).
 
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya
