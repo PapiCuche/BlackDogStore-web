@@ -864,6 +864,35 @@ ven ni se pueden confirmar (siguen en la tabla); las comisiones anuladas siguen 
 Antes de volver, apunta los reembolsos pendientes (Órdenes › Reembolso: pendiente) para
 seguirlos a mano. Deshacer `0137` (`migrate store 0136`) borraría los reembolsos registrados.
 
+**SALES-QUOTE-01 (`0189_sales_quote`, sobre `0188_variant_safe`): cotizaciones comerciales.** Aditiva: dos
+tablas nuevas vacías (`store_salesquote`, `store_salesquoteitem`), `Order.source_quote` y `PrintJob.sales_quote`
+(nulas, `db_default` NULL), una opción más en dos listas de valores y la regla de destino de los trabajos de
+impresión reescrita como `print_job_target_matches_kind_v2` (toda fila que escribe la versión anterior la cumple).
+Da las capacidades `sales.quotes.*` a los roles existentes. Después de `migrate`, añade al `crontab` la línea
+`expire_sales_quotes` de `deploy/crontab.example` (cada hora).
+
+*Volver atrás desde SALES-QUOTE-01* — en este orden, **antes** de cambiar los contenedores:
+
+1. La cola de impresión de la versión anterior se detiene ante un ticket de cotización (no tiene pedido). Cuéntalos y
+   cancélalos:
+   ```sh
+   $C exec -T backend python manage.py cancel_sales_quote_print_jobs           # cuenta
+   $C exec -T backend python manage.py cancel_sales_quote_print_jobs --apply   # cancela
+   ```
+2. **Quita del `crontab` la línea `expire_sales_quotes`**.
+3. `git checkout <commit anterior>` y `$C build`. **Justo antes de `$C up -d`, vuelve a ejecutar
+   `cancel_sales_quote_print_jobs --apply`**: mientras compilabas, alguien pudo pedir otro ticket de cotización.
+   Después, `$C up -d`. La migración **se deja aplicada**: la versión anterior no lee sus tablas ni sus columnas.
+   Las ventas ya convertidas siguen siendo ventas normales.
+4. Si la versión anterior ya está en marcha y aun así queda un ticket de cotización (ese código no tiene el
+   comando), cancélalos directamente en la base; sólo toca tickets de cotización sin terminar:
+   ```sh
+   $C exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "UPDATE store_printjob SET status='"'"'cancelled'"'"' WHERE kind='"'"'sales_quote_ticket'"'"' AND status IN ('"'"'pending'"'"','"'"'printing'"'"');"'
+   ```
+   Es la misma sentencia que `UPDATE store_printjob SET status='cancelled' WHERE kind='sales_quote_ticket' AND
+   status IN ('pending','printing');`, escrita para que el usuario y la base los lea el propio contenedor (como en
+   `deploy/backup.sh`).
+
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya
 duplicados, y la migración no fusiona ni borra. La web anterior sigue en línea. Lista

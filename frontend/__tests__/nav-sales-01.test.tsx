@@ -21,7 +21,6 @@ import {
   sidebarClaimedModuleIds,
   sidebarHrefs,
   sidebarSections,
-  type InternalModule,
   type ModuleAccessContext,
 } from '@/app/admin/lib/internal-modules';
 
@@ -63,7 +62,7 @@ const CONTEXTS: Record<string, ModuleAccessContext> = {
 describe('Ventas por destinos', () => {
   it('un administrador con todo ve los destinos de Ventas en el orden de la tarea', () => {
     expect(section(FULL, 'sales')?.items.map((i) => i.label)).toEqual([
-      'Resumen comercial', 'Caja', 'Pedidos y bajo pedido', 'Documentos', 'Promociones', 'Comisiones',
+      'Resumen comercial', 'Caja', 'Pedidos y bajo pedido', 'Cotizaciones', 'Documentos', 'Promociones', 'Comisiones',
     ]);
   });
 
@@ -101,30 +100,13 @@ describe('Ventas por destinos', () => {
   });
 });
 
-describe('Cotizaciones: aparece sola cuando el módulo exista', () => {
-  const quotes = () => INTERNAL_MODULES.find((m) => m.id === 'sales.quotes')!;
-
-  it('mientras está pendiente no hay entrada, ni para el master', () => {
-    expect(quotes().status).toBe('pending');
-    expect(quotes().href).toBeUndefined();
-    expect(item(master, 'sales', 'Cotizaciones')).toBeUndefined();
-  });
-
-  it('cuando tiene pantalla, entra entre Pedidos y Documentos, y sólo para quien tiene su permiso', () => {
-    const entry = quotes();
-    const original: InternalModule = { ...entry };
-    Object.assign(entry, { status: 'implemented', href: '/admin/sales/quotes', requiredCapabilities: ['sales.quotes.view'] });
-    try {
-      expect(section(master, 'sales')?.items.map((i) => i.label)).toEqual([
-        'Resumen comercial', 'Caja', 'Pedidos y bajo pedido', 'Cotizaciones', 'Documentos', 'Promociones', 'Comisiones',
-      ]);
-      expect(item(member(['sales.quotes.view']), 'sales', 'Cotizaciones')?.href).toBe('/admin/sales/quotes');
-      expect(item(member(['sales.pos.use']), 'sales', 'Cotizaciones')).toBeUndefined();
-    } finally {
-      Object.keys(entry).forEach((key) => delete (entry as Record<string, unknown>)[key]);
-      Object.assign(entry, original);
-    }
-    expect(item(master, 'sales', 'Cotizaciones')).toBeUndefined();
+describe('Cotizaciones: con su pantalla (SALES-QUOTE-01), entra sola', () => {
+  it('entra entre Pedidos y Documentos, y sólo para quien tiene su permiso', () => {
+    expect(section(master, 'sales')?.items.map((i) => i.label)).toEqual([
+      'Resumen comercial', 'Caja', 'Pedidos y bajo pedido', 'Cotizaciones', 'Documentos', 'Promociones', 'Comisiones',
+    ]);
+    expect(item(member(['sales.quotes.view']), 'sales', 'Cotizaciones')?.href).toBe('/admin/sales/quotes');
+    expect(item(member(['sales.pos.use']), 'sales', 'Cotizaciones')).toBeUndefined();
   });
 });
 

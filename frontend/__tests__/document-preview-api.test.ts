@@ -19,10 +19,10 @@ function reply(status: number, body: string, headers: Record<string, string> = {
 
 beforeEach(() => send.mockReset());
 
-test('ofrece exactamente los siete PDF del servidor y la térmica de la nota', () => {
+test('ofrece exactamente los nueve PDF del servidor y la térmica de la nota', () => {
   expect(PREVIEW_OPTIONS.map((o) => o.kind)).toEqual([
     'sales_note', 'order_receipt', 'ticket80_sales_note', 'thermal_sales_note', 'boleta', 'factura', 'ticket80_boleta',
-    'ticket80_factura',
+    'ticket80_factura', 'sales_quote', 'ticket80_sales_quote',
   ]);
   expect(PREVIEW_OPTIONS.filter((o) => o.format === 'escpos').map((o) => [o.kind, o.fiscal]))
     .toEqual([['thermal_sales_note', false]]);

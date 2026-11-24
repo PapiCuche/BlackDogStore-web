@@ -18,6 +18,20 @@ El editor de modelos y variantes a escala. Rama `feat/catalog-admin-ux-b` sobre 
 - **Revisión de #411:** el precio y «Publicar» de la fila mandan la identidad que leyeron (`expected_model_id`, `expected_condition_line`, `expected_option_ids`); el servidor la compara bajo el candado del producto y responde 409 `stale` sin escribir nada si otra persona cambió la variante (antes la reponía en silencio). Una página que ya no existe vuelve a la primera. La prueba del historial por lotes compara con el cuerpo anterior congelado (todos los estados de equipo y de pedido).
 - **Pruebas:** `store.test_catalog_admin_ux_b` (35) y suites de catálogo relacionadas (1483 en verde); Jest `catalog-admin-ux-b` (19) y suite completa. `e2e/catalog-editor.spec.ts` abre la lista con `?buscar=` (lista paginada); Playwright no se corrió.
 
+## 2026-11-24 — SALES-QUOTE-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0189_sales_quote`
+
+Cotizaciones comerciales, independientes de las de reparación. Sólo en la rama.
+
+- **Modelo:** `SalesQuote` y `SalesQuoteItem`; numeración propia `COT-` (`InternalSequence` `sales_quote`, nunca F ni B); revisiones que reemplazan sin reescribir (una sola vigente por número); copias; totales congelados con el desglose de IGV de la caja. `Order.source_quote` enlaza la venta.
+- **Precio:** lo calcula `pos_services.build_pos_sale` (mismos totales, promociones y reglas de descuento que la caja). Aprobar vuelve a calcular. Un descuento manual cubre las líneas y precios sobre los que se decidió: cambiarlos pide `sales.discounts.apply`.
+- **Nunca** cobra, mueve stock, aparta un equipo ni es un comprobante (pruebas de conteo de Kardex, pagos y pedidos).
+- **Convertir en venta:** es una venta de caja (`create_pos_sale`): `sales.pos.use`, `Idempotency-Key`, stock estricto, equipos identificados, regla USED-READY, 409 `price_changed` con los dos totales (cobrar el de hoy, o mantener el cotizado como descuento auditado con permiso).
+- **Papeles:** A4, PDF 80 mm y ESC/POS por la cola de impresión; «COTIZACIÓN» y «No es comprobante de pago.»; identidad, logo y diseño de la empresa; equipos enmascarados; vista previa en Ajustes › Documentos.
+- **Autoridad:** `sales.quotes.view` / `.manage` (Ventas y el rol legacy de ventas) y `.approve` (roles con `company.manage`).
+- **Panel:** Ventas › Cotizaciones (lista, editor, revisiones, conversión).
+- **Despliegue y vuelta atrás:** añadir `expire_sales_quotes` al crontab; antes de volver a una versión sin cotizaciones, `cancel_sales_quote_print_jobs --apply` (`docs/despliegue-produccion.md` §7).
+- **Pendiente:** TRADE-IN-QUOTE-00; decisiones del propietario listadas en el PR (precio cambiado, aprobación obligatoria, vigencia por defecto de 7 días).
+
 ## 2026-11-24 — IMG-GATE-01 · la foto propia de una variante también necesita licencia verificada (PR abierto, sin fusionar ni desplegar)
 
 Rama `fix/img-gate-01`. **Sin migraciones.** Producción sin cambios.

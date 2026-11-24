@@ -97,13 +97,18 @@ class CostsViewMigrationTest(TestCase):
         copies = importlib.import_module('store.migrations.0161_document_copy_capability')
         self.assertEqual(finance.ADMIN_PREVIOUS | set(finance.NEW_CAPABILITIES), copies.ADMIN_PREVIOUS)
         # USED-READY-01 (0187, `inventory.units.inspect`) starts where SALES-EMAIL-03 ended; VARIANT-SAFE-01
-        # (0188, `products.delete`) starts where 0187 ended and is the last node.
+        # (0188, `products.delete`) starts where 0187 ended; SALES-QUOTE-01 (`sales.quotes.*`) starts where 0188
+        # ended and is the last node.
         inspect_used = importlib.import_module('store.migrations.0187_used_unit_readiness')
         self.assertEqual(copies.ADMIN_PREVIOUS | set(copies.NEW_CAPABILITIES), inspect_used.ADMIN_PREVIOUS)
         variant_safe = importlib.import_module('store.migrations.0188_variant_safe')
         self.assertEqual(inspect_used.ADMIN_PREVIOUS | set(inspect_used.NEW_CAPABILITIES), variant_safe.ADMIN_PREVIOUS)
+        from store.test_sales_quotes import sales_quote_migration
+
+        quotes = sales_quote_migration()
+        self.assertEqual(variant_safe.ADMIN_PREVIOUS | set(variant_safe.NEW_CAPABILITIES), quotes.ADMIN_PREVIOUS)
         self.assertEqual(
-            variant_safe.ADMIN_PREVIOUS | set(variant_safe.NEW_CAPABILITIES),
+            quotes.ADMIN_PREVIOUS | set(quotes.NEW_CAPABILITIES),
             frozenset(DEFAULT_ADMIN_CAPABILITY_CODES),
         )
         self.assertTrue(DEFAULT_ADMIN_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES)
