@@ -16,8 +16,14 @@ Rama `feat/inv-load-02`, PR abierto, **sin fusionar ni desplegar**, **sin migrac
 - **Comprobación:** `manage.py check_unit_stock [--company]` (sólo lectura; 0 cuadra, 2 diferencias) y `GET /api/admin/inventory/units/reconciliation/` («Conciliación», `inventory.view`, sucursales del usuario).
 - **busy:** `inventory-adjust` y la aplicación de la carga de stock por cantidad responden 409 `busy` ante un bloqueo mutuo.
 - **Asistente:** reconoce las dos plantillas por su hoja.
+- **Revisión de #409:**
+  - La pantalla pide siempre la línea del archivo («Nuevos», «Seminuevos» o «Ambos» para la combinada) y la envía.
+  - En el servidor, una fila hallada por modelo sin línea dicha (ni plantilla, ni pantalla, ni «Línea») que trae datos de seminuevo es error: nunca entra como nueva por defecto.
+  - Un equipo en una transferencia en borrador no se anula (ni por lote ni solo).
+  - `GET …/void/` previsualiza la anulación: equipos, bloqueos, inspeccionados, publicados, con fotos y largo máximo del motivo. Con trabajo hecho, el POST exige `confirm_used` (409 `confirm_used_ready`).
+  - El historial admite `?status=applied`.
 - **Panel:** botones de las dos plantillas, «Antes y después», «Anular esta carga» (también en «Cargas registradas»), «Conciliación de equipos». Las respuestas no llevan `unit_ids`.
-- **Pruebas:** `test_stock_load` (47, incluido el ensayo completo con datos sintéticos, una venta de un nuevo y de dos seminuevos); Jest `stock-unit-import`, `unit-stock-reconciliation`, `recent-unit-loads`.
+- **Pruebas:** `test_stock_load` (54, incluido el ensayo completo con datos sintéticos, una venta de un nuevo y de dos seminuevos); Jest `stock-unit-import`, `unit-stock-reconciliation`, `recent-unit-loads`.
 
 ## 2026-11-24 — SUPPLY-WEEKLY-01 · semana de listas de proveedor, ofertas no mencionadas y combinación válida sin variante (rama, sin desplegar)
 

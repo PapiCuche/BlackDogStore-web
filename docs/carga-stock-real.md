@@ -120,7 +120,11 @@ Kardex de cada equipo.
 
 ## 5. Previsualizar y leer el resultado
 
-1. Elige el archivo, el tipo de ingreso y el motivo. Si el archivo no dice la sucursal, elígela.
+1. Elige el archivo y, **siempre**, «Equipos del archivo»: «Nuevos», «Seminuevos» o «Ambos» (sólo para la plantilla
+   combinada, cuya columna «Línea» lo dice en cada fila). Si el archivo es una de las dos plantillas, debe coincidir
+   con ella. Elige también el tipo de ingreso y el motivo, y la sucursal si el archivo no la dice.
+   Una fila con datos de seminuevo (precio, garantía, estado…) en un archivo que no dice su línea es un **error**:
+   nunca entra como equipo nuevo por defecto.
 2. Pulsa «Previsualizar». **No registra nada.**
 3. Lee «Lo que pasará con cada fila». Arriba sale la plantilla detectada («plantilla de equipos nuevos» o «de
    seminuevos»). Primero salen las filas con error, después las que tienen un aviso.
@@ -203,15 +207,17 @@ Para una carga equivocada (archivo duplicado, sucursal equivocada, tipo de ingre
 
 1. En el resultado de la carga, pulsa «Anular esta carga». Si ya saliste de esa pantalla: en la misma página,
    «Cargas registradas» → «Ver cargas registradas», y en la fila de la carga, «Anular esta carga».
-2. Escribe el «Motivo de la anulación» (obligatorio) y pulsa «Anular N equipos».
+2. El sistema dice antes de nada cuántos equipos anularía y cuáles lo impiden. Si alguno ya se **inspeccionó, publicó
+   o tiene fotos**, lo dice con sus cantidades y pide marcar «Entiendo que se anulan también…»: ese trabajo se pierde.
+3. Escribe el «Motivo de la anulación» (obligatorio, hasta unos 235 caracteres) y pulsa «Anular N equipos».
 
 Qué hace:
 
 - Cada equipo de **esa** carga sale del stock con una línea de corrección en el Kardex («Anulación de ingreso (Carga
   por archivo anulada): Carga #N: …»). **No se borra nada**: el ingreso y la corrección quedan los dos.
 - Los equipos quedan «Anulado» y su IMEI y su serie quedan libres para cargarlos bien.
-- **Todo o nada:** si un solo equipo ya se vendió, se apartó, está en un carrito, se trasladó, cambió de variante o
-  se dio de baja, no se anula ninguno, y la pantalla lista esos equipos por su código de etiqueta. Resuélvelos uno por
+- **Todo o nada:** si un solo equipo ya se vendió, se apartó, está en un carrito, se trasladó, está en una
+  transferencia en borrador, cambió de variante o se dio de baja, no se anula ninguno, y la pantalla lista esos equipos por su código de etiqueta. Resuélvelos uno por
   uno («Anular ingreso» en su ficha) o deja la carga.
 - Repetir la anulación no hace nada más. Queda en la auditoría con la empresa.
 - Una carga registrada antes de INV-LOAD-02 no guarda la lista de sus equipos: el sistema no la adivina y pide anular
