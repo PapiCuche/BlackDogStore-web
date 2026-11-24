@@ -5,7 +5,7 @@
  * distintas a la misma tarea. Ahora el menú tiene nueve destinos entre Catálogo
  * e Inventario, y las pantallas que antes eran enlaces sueltos son sus
  * opciones. No se quita ninguna ruta ni se toca ningún permiso: el menú sólo
- * decide qué enseña.
+ * decide qué enseña. NAV-SALES-01 llevó Proveedores a Compras: quedan ocho.
  */
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { InternalSidebar, MobileSidebar } from '@/app/admin/components/InternalSidebar';
@@ -61,14 +61,16 @@ const CONTEXTS: Record<string, ModuleAccessContext> = {
 };
 
 describe('el menú de Catálogo e Inventario', () => {
-  it('un administrador con todo ve nueve destinos, no veinticinco enlaces', () => {
-    expect(labels(FULL, 'products')).toEqual(['Productos y variantes', 'Proveedores']);
+  it('un administrador con todo ve ocho destinos, no veinticinco enlaces', () => {
+    // NAV-SALES-01: Proveedores salió de Catálogo hacia Compras; Kardex entró en Stock y equipos y Transferencias
+    // quedó como destino propio.
+    expect(labels(FULL, 'products')).toEqual(['Productos']);
     expect(labels(FULL, 'inventory')).toEqual([
       'Centro de operaciones', 'Recibir mercadería', 'Stock y equipos', 'Recuentos',
-      'Etiquetas', 'Movimientos', 'Más herramientas',
+      'Etiquetas', 'Transferencias', 'Más herramientas',
     ]);
     expect(section(FULL, 'products')?.label).toBe('Catálogo');
-    expect(labels(FULL, 'products').length + labels(FULL, 'inventory').length).toBe(9);
+    expect(labels(FULL, 'products').length + labels(FULL, 'inventory').length).toBe(8);
   });
 
   it('cada pantalla de antes sigue a un clic de un destino', () => {
@@ -80,8 +82,8 @@ describe('el menú de Catálogo e Inventario', () => {
 
   it('el menú tiene menos de la mitad de los enlaces de primer nivel que antes', () => {
     // Antes de NAV-UX-02 (que añade la página «Más herramientas») eran 25 enlaces planos. P2 · F4 añadió
-    // después «Imágenes por reemplazar», que no estaba entre ellos.
-    const later = ['inventory.tools', 'products.images'];
+    // después «Imágenes por reemplazar», y NAV-SALES-01 «Lista semanal» y «Colores», que no estaban entre ellos.
+    const later = ['inventory.tools', 'products.images', 'products.supplier_list', 'products.colors'];
     const before = navigableModules(FULL).filter((m) => (m.group === 'products' || m.group === 'inventory') && !later.includes(m.id)).length;
     const after = labels(FULL, 'products').length + labels(FULL, 'inventory').length;
     expect(before).toBe(25);
@@ -98,32 +100,35 @@ describe('el menú de Catálogo e Inventario', () => {
     expect(unclaimed.map((m) => m.id)).toEqual([]);
   });
 
-  it('Stock y equipos reúne resumen, existencias, equipos nuevos y seminuevos', () => {
+  it('Stock y equipos reúne resumen, existencias, equipos nuevos y seminuevos, las cargas y el Kardex', () => {
     expect(childLabels(FULL, 'inventory', 'Stock y equipos')).toEqual(
-      ['Existencias', 'Equipos nuevos', 'Equipos seminuevos'],
+      ['Existencias', 'Equipos nuevos', 'Equipos seminuevos', 'Carga de stock', 'Carga de equipos', 'Kardex'],
     );
     expect(section(FULL, 'inventory')?.items.find((i) => i.label === 'Stock y equipos')?.href).toBe('/admin/inventory');
   });
 
-  it('Productos y variantes reúne modelos, registro, publicación, categorías e imágenes por reemplazar', () => {
-    expect(childLabels(FULL, 'products', 'Productos y variantes')).toEqual(
-      ['Modelos y variantes', 'Registrar artículo', 'Publicación e-commerce', 'Categorías', 'Imágenes por reemplazar'],
+  it('Productos reúne modelos, variantes, colores, fotografías, registro, publicación y categorías', () => {
+    expect(section(FULL, 'products')?.items.find((i) => i.label === 'Productos')?.href).toBe('/admin/products/models');
+    expect(childLabels(FULL, 'products', 'Productos')).toEqual(
+      ['Variantes', 'Colores', 'Fotografías', 'Registrar artículo', 'Publicación e-commerce', 'Categorías'],
     );
   });
 
-  it('Proveedores no mezcla el directorio con las ofertas: son dos pantallas distintas', () => {
-    const item = section(FULL, 'products')?.items.find((i) => i.label === 'Proveedores');
+  it('Proveedores no mezcla el directorio con las ofertas: son pantallas distintas (en Compras desde NAV-SALES-01)', () => {
+    const item = section(FULL, 'purchases')?.items.find((i) => i.label === 'Proveedores');
     expect(item?.href).toBe('/admin/products/suppliers');
     expect(item?.children).toEqual([
-      expect.objectContaining({ label: 'Ofertas y listas', href: '/admin/products/suppliers/offers' }),
+      expect.objectContaining({ label: 'Lista semanal', href: '/admin/products/suppliers/offers/update-list' }),
+      expect.objectContaining({ label: 'Ofertas', href: '/admin/products/suppliers/offers' }),
+      expect.objectContaining({ label: 'Disponibilidad', href: '/admin/sales/availability' }),
     ]);
   });
 
-  it('Recuentos, Movimientos y Etiquetas siguen siendo tareas separadas', () => {
+  it('Recuentos, Transferencias y Etiquetas siguen siendo tareas separadas', () => {
     const inv = section(FULL, 'inventory')!;
     expect(inv.items.find((i) => i.label === 'Recuentos')?.href).toBe('/admin/inventory/counts');
-    expect(inv.items.find((i) => i.label === 'Movimientos')?.children.map((c) => c.href)).toEqual(['/admin/inventory/transfers']);
-    expect(inv.items.find((i) => i.label === 'Movimientos')?.href).toBe('/admin/inventory/movements');
+    expect(inv.items.find((i) => i.label === 'Transferencias')?.children).toEqual([]);
+    expect(inv.items.find((i) => i.label === 'Transferencias')?.href).toBe('/admin/inventory/transfers');
     expect(inv.items.find((i) => i.label === 'Etiquetas')?.children.map((c) => c.href)).toEqual(['/admin/inventory/labels/settings']);
   });
 
@@ -132,19 +137,17 @@ describe('el menú de Catálogo e Inventario', () => {
     expect(tools.href).toBe('/admin/inventory/tools');
     expect(tools.tabs).toBe(false);
     expect(tools.children.map((c) => c.href)).toEqual([
-      '/admin/inventory/bulk', '/admin/products/import', '/admin/inventory/import',
-      '/admin/inventory/units/import', '/admin/inventory/costs', '/admin/inventory/reports',
+      '/admin/inventory/bulk', '/admin/products/import', '/admin/inventory/costs', '/admin/inventory/reports',
       '/admin/inventory/replenishment',
     ]);
     expect(tools.children.filter((c) => c.caption).map((c) => c.caption)).toEqual(['Cargas y exportaciones', 'Análisis']);
   });
 
-  it('las demás secciones no cambian', () => {
-    const sales = section(FULL, 'sales')!.items.map((i) => i.label);
-    expect(sales.slice(0, 5)).toEqual([
-      'Resumen comercial', 'Punto de venta', 'Consultar disponibilidad', 'Pedidos', 'Cancelaciones / historial',
-    ]);
-    expect(section(FULL, 'sales')!.items.every((i) => i.children.length === 0)).toBe(true);
+  it('las demás secciones no cambian: un enlace por pantalla', () => {
+    // Ventas y Compras pasaron a destinos en NAV-SALES-01 (nav-sales-01.test.tsx).
+    for (const id of ['customers', 'service', 'reports', 'administration']) {
+      expect(section(FULL, id)!.items.every((i) => i.children.length === 0)).toBe(true);
+    }
   });
 });
 
@@ -163,7 +166,7 @@ describe('permisos: el menú nunca enseña más de lo que el registro permite', 
 
   it('sin products.manage no hay registro ni carga de productos', () => {
     const ctx = CONTEXTS.inventoryClerk;
-    expect(childLabels(ctx, 'products', 'Productos y variantes')).not.toContain('Registrar artículo');
+    expect(childLabels(ctx, 'products', 'Productos')).not.toContain('Registrar artículo');
     const tools = section(ctx, 'inventory')?.items.find((i) => i.label === 'Más herramientas');
     expect(tools?.children.map((c) => c.label) ?? []).not.toContain('Carga de productos');
   });
@@ -171,7 +174,7 @@ describe('permisos: el menú nunca enseña más de lo que el registro permite', 
   it('sin costs.view, Reportes y Reposición siguen bajo su encabezado «Análisis»', () => {
     const tools = section(CONTEXTS.noCostsFullStock, 'inventory')!.items.find((i) => i.label === 'Más herramientas')!;
     expect(tools.children.map((c) => [c.label, c.caption ?? ''])).toEqual([
-      ['Gestión masiva', 'Cargas y exportaciones'], ['Carga de productos', ''], ['Carga de stock', ''], ['Carga de equipos', ''],
+      ['Gestión masiva', 'Cargas y exportaciones'], ['Carga de productos', ''],
       ['Reportes', 'Análisis'], ['Reposición', ''],
     ]);
   });
@@ -212,7 +215,7 @@ describe('permisos: el menú nunca enseña más de lo que el registro permite', 
   it('un destino sin su página principal cae en la primera pantalla que sí se puede abrir', () => {
     // Registrar un artículo pide sólo products.manage: sin products.view, la entrada cae en esa pantalla.
     const ctx = member(['products.manage']);
-    const item = section(ctx, 'products')?.items.find((i) => i.label === 'Productos y variantes');
+    const item = section(ctx, 'products')?.items.find((i) => i.label === 'Productos');
     expect(item?.href).toBe('/admin/products/register');
     expect(isNavigable(INTERNAL_MODULES.find((m) => m.id === 'products.register')!, ctx)).toBe(true);
   });
@@ -263,9 +266,9 @@ describe('el menú dibujado', () => {
   });
 
   it('en la página principal del destino se marca el destino', () => {
-    render_('/admin/products');
-    expect(within(nav()).getByRole('link', { name: 'Productos y variantes' })).toHaveAttribute('aria-current', 'page');
-    expect(within(nav()).getByRole('link', { name: 'Modelos y variantes' })).not.toHaveAttribute('aria-current');
+    render_('/admin/products/models');
+    expect(within(nav()).getByRole('link', { name: 'Productos' })).toHaveAttribute('aria-current', 'page');
+    expect(within(nav()).getByRole('link', { name: 'Variantes' })).not.toHaveAttribute('aria-current');
   });
 
   it('el botón de cada destino muestra y oculta sus opciones, con aria-expanded', () => {
@@ -288,15 +291,21 @@ describe('el menú dibujado', () => {
     expect(button).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(button);
     expect(button).toHaveAttribute('aria-expanded', 'true');
-    for (const name of ['Gestión masiva', 'Carga de productos', 'Carga de stock', 'Carga de equipos', 'Costos y precios', 'Reportes', 'Reposición']) {
+    for (const name of ['Gestión masiva', 'Carga de productos', 'Costos y precios', 'Reportes', 'Reposición']) {
       expect(within(nav()).getByRole('link', { name })).toBeInTheDocument();
     }
     expect(within(nav()).getByText('Análisis')).toBeInTheDocument();
   });
 
   it('una importación avanzada abre Más herramientas sola', () => {
-    render_('/admin/inventory/units/import');
+    render_('/admin/products/import');
     expect(within(nav()).getByRole('button', { name: 'Opciones de Más herramientas' })).toHaveAttribute('aria-expanded', 'true');
+    expect(within(nav()).getByRole('link', { name: 'Carga de productos' })).toHaveAttribute('aria-current', 'page');
+  });
+
+  it('la carga de equipos abre Stock y equipos (NAV-SALES-01)', () => {
+    render_('/admin/inventory/units/import');
+    expect(within(nav()).getByRole('button', { name: 'Opciones de Stock y equipos' })).toHaveAttribute('aria-expanded', 'true');
     expect(within(nav()).getByRole('link', { name: 'Carga de equipos' })).toHaveAttribute('aria-current', 'page');
   });
 

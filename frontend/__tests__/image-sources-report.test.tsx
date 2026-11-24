@@ -15,7 +15,7 @@ import { reply } from './support/device-commerce-fixtures';
  *   - el enlace a «Imágenes en lote» sólo con `products.manage`;
  *   - sin imágenes externas lo dice; cargando lo dice; un error se muestra con «Reintentar»;
  *   - pasa de página pidiendo la siguiente al servidor;
- *   - la entrada está en «Productos y variantes», con `products.view`.
+ *   - la entrada está en «Productos» (pestaña «Fotografías» desde NAV-SALES-01), con `products.view`.
  *
  * Nombres y dominios inventados: nada aquí es de Apple ni de la tienda piloto.
  */
@@ -233,12 +233,12 @@ describe('la entrada del menú', () => {
     });
   });
 
-  it('es una pestaña de «Productos y variantes»', () => {
+  it('es la pestaña «Fotografías» de «Productos»', () => {
     const sections = sidebarSections({
       capabilities: ['products.view'], legacyRole: null, isPlatformAdmin: false, hasCompanyContext: true,
     });
     const tabs = sectionTabsFor(sections, '/admin/products/images');
-    expect(tabs?.label).toBe('Productos y variantes');
-    expect(tabs?.tabs.find((t) => t.active)?.label).toBe('Imágenes por reemplazar');
+    expect(tabs?.label).toBe('Productos');
+    expect(tabs?.tabs.find((t) => t.active)?.label).toBe('Fotografías');
   });
 });
