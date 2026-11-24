@@ -16,6 +16,21 @@ Valoración **referencial y no vinculante** del equipo que el cliente ofrece en 
 - **Panel:** bloque plegable opcional en el editor, resumen en el detalle y aviso en la conversión.
 - **Bloqueado (sin cambios):** recibir el equipo, crédito en caja, documentos de compra y todo lo de D1–D12 (`docs/decisiones-propietario-trade-in.md`).
 
+## 2026-11-24 — CATALOG-ADMIN-UX-B · PARCIAL (PR abierto, sin fusionar ni desplegar) · sin migraciones
+
+El editor de modelos y variantes a escala. Rama `feat/catalog-admin-ux-b` sobre `master` con #407.
+
+- **Lista de modelos:** `GET /api/admin/catalog/models/` busca en el servidor (nombre sin mayúsculas ni tildes, dirección y alias de proveedor del modelo) y filtra por categoría (`category=<id>|none`), activo (`active=true|false`), variantes incompletas o fuera de paleta (`incomplete=1`, sólo variantes vivas), combinaciones válidas sin variante (`missing=1`) y sin paleta (`no_palette=1`). Paginación opcional (`page_size` ≤ 100); sin parámetros responde todas las filas como antes (otras pantallas la leen así). Trae `count` y `facets`. Número fijo de consultas (12 con 4 o con 12 modelos, probado).
+- **Panel de la lista:** buscador, categoría, estado y chips con su cuenta (teclado, `aria-pressed`), 25 por página, todo en la dirección (`?buscar=&categoria=&estado=&filtro=&pagina=`). Cada fila dice su paleta: «Sin paleta», «N variantes incompletas», «N combinaciones sin variante». El menú «Colores» sólo quita `seccion` y deja la búsqueda.
+- **Rendimiento del editor:** `device_catalog.variant_histories` lee el historial de todas las variantes con 5 consultas agregadas; `variant_history` pasa por ella (mismo resultado, probado). El detalle del modelo cuesta 16 consultas con 1 o con 30 variantes (antes 19 y 251).
+- **«Crear variante» por línea:** la tabla de configuraciones se lee por «Todas las líneas» (como antes) o por una línea; en una línea, lo que sólo existe en la otra aparece «Sin variante» y se crea ahí (formulario con la línea fija). El resumen trae `valid_without_variant_by_line`. Nace borrador, oculta y a 0,00, como siempre.
+- **Sin paleta:** `create_variant_product` responde 409 `no_palette` (decidido bajo el candado del modelo). Clasificar un producto existente («Agregar variante») sigue la regla A1 (un modelo sin paleta admite cualquier opción), pero el panel avisa arriba y pide confirmación explícita.
+- **Exclusiones:** `POST/DELETE /api/admin/catalog/models/<pk>/exclusions/` (`products.manage`, auditadas con empresa, por empresa, bajo el candado del modelo). Añadir un par que ya es una variante → 409 `exclusion_held_by_variants` con `variants`; quitar nunca invalida nada. Panel «Combinaciones que no existen» para añadir y quitar pares.
+- **Colores por modelo:** la matriz y «Crear variante» sólo usan la paleta del modelo (probado con dos modelos de colores distintos); en el selector, los colores del modelo van primero y los demás de la empresa aparte, con aviso.
+- **Fila de variante:** precio y publicación en la fila (por `PUT /api/admin/products/<pk>/variant/` con la identidad intacta y las reglas de publicación del servidor), equipos, apartados y pedidos por entregar bajo el stock, e «Sin imágenes» como estado.
+- **Revisión de #411:** el precio y «Publicar» de la fila mandan la identidad que leyeron (`expected_model_id`, `expected_condition_line`, `expected_option_ids`); el servidor la compara bajo el candado del producto y responde 409 `stale` sin escribir nada si otra persona cambió la variante (antes la reponía en silencio). Una página que ya no existe vuelve a la primera. La prueba del historial por lotes compara con el cuerpo anterior congelado (todos los estados de equipo y de pedido).
+- **Pruebas:** `store.test_catalog_admin_ux_b` (35) y suites de catálogo relacionadas (1483 en verde); Jest `catalog-admin-ux-b` (19) y suite completa. `e2e/catalog-editor.spec.ts` abre la lista con `?buscar=` (lista paginada); Playwright no se corrió.
+
 ## 2026-11-24 — SALES-QUOTE-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0189_sales_quote`
 
 Cotizaciones comerciales, independientes de las de reparación. Sólo en la rama.

@@ -2287,6 +2287,39 @@ export type AdminCatalogModel = {
   used_unit_count: number;
   /** A1: whether the model says which options it admits («Opciones de este modelo»). */
   has_palette?: boolean;
+  /** VARIANT-SAFE-01: a deactivated model is out of the public shop (absent from an older server). */
+  is_active?: boolean;
+  /**
+   * CATALOG-ADMIN-UX-B (the list only; absent from an older server): configurations of the palette still without a
+   * variant (null without a palette), and LIVE variants incomplete or outside the palette.
+   */
+  valid_without_variant?: number | null;
+  incomplete_variant_count?: number;
+  outside_variant_count?: number;
+};
+
+/** CATALOG-ADMIN-UX-B — the state filters of the models list (the server's parameter names). */
+export type CatalogModelFlag = "incomplete" | "missing" | "no_palette";
+
+/** CATALOG-ADMIN-UX-B — what the models list asks the server: everything is filtered there. */
+export type CatalogModelQuery = {
+  search?: string;
+  /** A category id, or "none" for the models without one. */
+  category?: string;
+  active?: "true" | "false";
+  flags?: CatalogModelFlag[];
+  page?: number;
+  pageSize?: number;
+};
+
+export type CatalogModelPage = {
+  results: AdminCatalogModel[];
+  /** After every filter. */
+  count: number;
+  /** How many of the searched models each state flag would keep (absent from an older server). */
+  facets?: Partial<Record<CatalogModelFlag, number>>;
+  page?: number;
+  page_size?: number;
 };
 
 /**
@@ -2457,6 +2490,8 @@ export type AdminModelPalette = {
     archived?: number;
     /** A1b-2 (absent from an older server): drafts still pending, variants under «Revisar», roles the palette lacks. */
     pending_drafts?: number; needs_review?: number; roles_missing?: AttributeRole[];
+    /** CATALOG-ADMIN-UX-B (absent from an older server): configurations each line still lacks. */
+    valid_without_variant_by_line?: Partial<Record<CatalogLine, number>>;
   };
   truncated: boolean;
 };
@@ -2513,6 +2548,8 @@ export class CatalogApiError extends Error {
     /** A1b-2: `not_ready` lists every reason (codes) and the server's text for each. */
     readonly problems: string[] = [],
     readonly labels: Record<string, string> = {},
+    /** CATALOG-ADMIN-UX-B: `exclusion_held_by_variants` names the variants that already are that combination. */
+    readonly variants: HeldVariant[] = [],
   ) {
     super(message);
     this.name = "CatalogApiError";
@@ -2544,8 +2581,15 @@ async function catalogCall<T>(path: string, init: RequestInit, fallback: string)
       if (typeof value === "string") labels[key] = value;
     }
   }
-  throw new CatalogApiError(message, res.status, code, field, fields, problems, labels);
+  const variants: HeldVariant[] = body && Array.isArray(body.variants)
+    ? (body.variants as unknown[]).filter((row): row is HeldVariant =>
+      Boolean(row) && typeof (row as HeldVariant).product_id === "number" && typeof (row as HeldVariant).name === "string")
+    : [];
+  throw new CatalogApiError(message, res.status, code, field, fields, problems, labels, variants);
 }
+
+/** CATALOG-ADMIN-UX-B — a variant a refused exclusion names. */
+export type HeldVariant = { product_id: number; name: string; condition_line: CatalogLine; archived: boolean };
 
 const jsonInit = (method: string, body?: unknown): RequestInit =>
   body === undefined ? { method } : { method, body: JSON.stringify(body) };
@@ -2554,6 +2598,31 @@ export function fetchAdminCatalogModels(companyId?: number | null): Promise<Admi
   return catalogCall<AdminCatalogModel[] | { results: AdminCatalogModel[] }>(
     `/admin/catalog/models/${companyQuery(companyId)}`, {}, "No se pudieron cargar los modelos.",
   ).then((data) => (Array.isArray(data) ? data : data?.results ?? []));
+}
+
+/** CATALOG-ADMIN-UX-B — the address of one page of the models list (the company stays a selection). */
+export function catalogModelsPath(query: CatalogModelQuery, companyId?: number | null): string {
+  const params = new URLSearchParams();
+  if (companyId) params.set("company", String(companyId));
+  if (query.search?.trim()) params.set("search", query.search.trim());
+  if (query.category) params.set("category", query.category);
+  if (query.active) params.set("active", query.active);
+  for (const flag of query.flags ?? []) params.set(flag, "1");
+  if (query.pageSize) {
+    params.set("page_size", String(query.pageSize));
+    params.set("page", String(query.page ?? 1));
+  }
+  const text = params.toString();
+  return `/admin/catalog/models/${text ? `?${text}` : ""}`;
+}
+
+/** CATALOG-ADMIN-UX-B — one page of the models list, searched and filtered by the server. */
+export function fetchAdminCatalogModelPage(query: CatalogModelQuery, companyId?: number | null): Promise<CatalogModelPage> {
+  return catalogCall<CatalogModelPage | AdminCatalogModel[]>(
+    catalogModelsPath(query, companyId), {}, "No se pudieron cargar los modelos.",
+  ).then((data) => (Array.isArray(data) ? { results: data, count: data.length } : {
+    ...data, results: data?.results ?? [], count: typeof data?.count === "number" ? data.count : data?.results?.length ?? 0,
+  }));
 }
 
 export function createAdminCatalogModel(body: AdminCatalogModelWrite, companyId?: number | null): Promise<AdminCatalogModel> {
@@ -2843,6 +2912,21 @@ export function setModelPalette(
 }
 
 /**
+ * CATALOG-ADMIN-UX-B — «Combinaciones que no existen»: add (POST) or remove (DELETE) impossible pairs of options of
+ * the palette. `products.manage`, audited by the server. Adding a pair a variant already is answers 409
+ * `exclusion_held_by_variants` with `variants`. Answers the palette, like a palette save.
+ */
+export function changeModelExclusions(
+  modelId: number, action: "add" | "remove", pairs: [number, number][], companyId?: number | null,
+): Promise<AdminModelPalette> {
+  return catalogCall<unknown>(
+    `/admin/catalog/models/${modelId}/exclusions/${companyQuery(companyId)}`,
+    jsonInit(action === "add" ? "POST" : "DELETE", { pairs }),
+    action === "add" ? "No se pudo añadir la exclusión." : "No se pudo quitar la exclusión.",
+  ).then(asPalette);
+}
+
+/**
  * A1b-2 — «Crear variante»: the product that IS one complete combination of the palette, born as a PENDING
  * DRAFT (hidden, without a price, without stock). `products.manage`. Without `name` the server generates it
  * (`device_catalog.variant_name`). 400 `option_not_in_palette` / `variant_incomplete` / `duplicate`; 404 for a
@@ -2905,6 +2989,11 @@ export function setProductVariant(
     model_id: number | null; condition_line: CatalogLine; option_ids: number[]; reason?: string;
     /** CATALOG-EDITOR-FIX-01: saved in the same transaction as the variant (all or nothing). */
     price?: string; is_published_online?: boolean;
+    /**
+     * CATALOG-ADMIN-UX-B review: the identity the caller read. The server compares it under the product's lock and
+     * answers 409 `stale` (nothing written) when somebody changed the variant meanwhile.
+     */
+    expected_model_id?: number | null; expected_condition_line?: CatalogLine; expected_option_ids?: number[];
   },
   companyId?: number | null,
 ): Promise<unknown> {

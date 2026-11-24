@@ -31,13 +31,14 @@ import Link from "next/link";
 import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import {
-  CatalogApiError, DEFAULT_LINE_LABELS, createModelVariant, setModelPalette,
-  type AdminModelPalette, type CatalogLine, type CatalogVocabulary, type CockpitVariant, type PaletteAttribute,
-  type PaletteCombination, type PaletteStatus, type VocabularyAliasRef,
+  CatalogApiError, DEFAULT_LINE_LABELS, changeModelExclusions, createModelVariant, setModelPalette,
+  type AdminModelPalette, type CatalogLine, type CatalogVocabulary, type CockpitVariant, type HeldVariant,
+  type PaletteAttribute, type PaletteCombination, type PaletteStatus, type VocabularyAliasRef,
 } from "../lib/internal-api";
 import {
-  PALETTE_STATUS_LABELS, ROLE_LABELS, clockTime, cockpitErrorMessage, paletteChanges, paletteSelection, pendingCreations,
-  rebaseSelection, sameSelection, suggestionMissing, variantNamePreview, type PaletteChange,
+  PALETTE_STATUS_LABELS, ROLE_LABELS, archivedInLine, clockTime, cockpitErrorMessage, heldInLine, lineKey,
+  paletteChanges, paletteSelection, pendingForKey, pendingLineCreations, rebaseSelection, sameSelection,
+  suggestionMissing, variantNamePreview, type LineView, type PaletteChange,
 } from "../lib/palette";
 import { ProductImage } from "@/app/components/ProductImage";
 import { SWATCH_APPROXIMATE_LABEL, SWATCH_UNSET_LABEL } from "../lib/catalog-presentation-api";
@@ -172,8 +173,11 @@ export const VOCABULARY_OPTIONS_HREF = "/admin/products/models#vocabulario-opcio
 
 function CreateVariantForm({
   id, modelId, companyId, modelName, combination, columns, lineLabels, onCreated, onCancel, onStale, onBusy, blocked = false,
+  fixedLine,
 }: {
   id: string;
+  /** CATALOG-ADMIN-UX-B: the table reads ONE line — the variant is created in that line (no choice offered). */
+  fixedLine?: CatalogLine;
   /** The palette shown is stale (its re-read failed): nothing is created on it. */
   blocked?: boolean;
   modelId: number;
@@ -183,7 +187,7 @@ function CreateVariantForm({
   /** The palette's attributes in reading order: the order of the generated name. */
   columns: PaletteAttribute[];
   lineLabels: Record<CatalogLine, string>;
-  onCreated: (variant: CockpitVariant) => void;
+  onCreated: (variant: CockpitVariant, line: CatalogLine) => void;
   onCancel: () => void;
   /** The server said the palette moved under us (duplicate, gone): the panel says why and reads it again. */
   onStale: (text: string) => void;
@@ -192,7 +196,7 @@ function CreateVariantForm({
 }) {
   const title = comboTitle(combination, columns);
   const labels = columns.map((attribute) => combination.labels[String(attribute.id)]).filter(Boolean);
-  const [line, setLine] = useState<CatalogLine>("new");
+  const [line, setLine] = useState<CatalogLine>(fixedLine ?? "new");
   const proposal = variantNamePreview(modelName, labels, line);
   // Until the operator types, the name follows the proposal (a line change updates it).
   const [typed, setTyped] = useState<string | null>(null);
@@ -222,13 +226,13 @@ function CreateVariantForm({
         option_ids: combination.option_ids,
         ...(clean !== proposal ? { name: clean } : {}),
       }, companyId);
-      onCreated({ ...created, name: created?.name || clean });
+      onCreated({ ...created, name: created?.name || clean }, line);
     } catch (err) {
       const text = cockpitErrorMessage(err, "No se pudo crear la variante.",
         "El modelo o alguna de sus opciones ya no existe en esta empresa. La paleta se volvió a cargar.");
       const refused = err as { code?: string | null; status?: number };
       // The palette moved under us: the re-read closes this form, so the panel keeps the reason.
-      if (refused?.status === 404 || ["duplicate", "option_not_in_palette", "variant_incomplete"].includes(refused?.code ?? "")) onStale(text);
+      if (refused?.status === 404 || ["duplicate", "option_not_in_palette", "variant_incomplete", "combination_excluded", "no_palette"].includes(refused?.code ?? "")) onStale(text);
       else setError(text);
     } finally {
       sending.current = false;
@@ -251,6 +255,12 @@ function CreateVariantForm({
         Nace como <strong className="text-foreground">borrador</strong>: oculta, sin precio y sin stock. No se vende
         hasta que le pongas precio y la habilites para la venta en «Variantes».
       </p>
+      {fixedLine ? (
+        <p className="text-xs text-muted">
+          Línea: <strong className="text-foreground">{lineLabels[fixedLine]}</strong>
+          <span className="mt-1 block">La tabla muestra sólo esta línea: la variante se crea en ella.</span>
+        </p>
+      ) : (
       <div className="text-xs text-muted">
         <label className="block">
           Línea
@@ -266,9 +276,11 @@ function CreateVariantForm({
           </select>
         </label>
         <span id={`${ids}-linea`} className="mt-1 block">
-          La tabla marca una configuración «Con variante» en cuanto existe en cualquiera de las dos líneas.
+          La tabla marca una configuración «Con variante» en cuanto existe en cualquiera de las dos líneas. Para crear
+          la que falta en una línea, elige esa línea arriba de la tabla.
         </span>
       </div>
+      )}
       <label className="block text-xs text-muted">
         Nombre de la variante
         <input
@@ -361,8 +373,12 @@ export function ModelPalettePanel({
     { palette: null, pending: new Map() },
   );
   if (palette && justCreated.palette !== palette && justCreated.pending.size > 0) {
-    setJustCreated({ palette, pending: pendingCreations(justCreated.pending, palette) });
+    setJustCreated({ palette, pending: pendingLineCreations(justCreated.pending, palette) });
   }
+  // CATALOG-ADMIN-UX-B: the configurations table reads every line together (as before) or ONE line, where what exists
+  // only in the other line is still missing and «Crear variante» creates it in this one.
+  const [lineView, setLineView] = useState<LineView>("all");
+  const lineOf = (view: LineView): CatalogLine | undefined => (view === "all" ? undefined : view);
   // A1b-2b debt 2: a palette is shown but its last re-read failed.
   const paletteStale = Boolean(palette && error);
   // «Volver a leer» is busy while its read is on its way (one at a time).
@@ -467,16 +483,18 @@ export function ModelPalettePanel({
   }
 
   const paletteColumns = palette ? palette.attributes.filter((a) => a.options.some((o) => o.in_palette)) : [];
-  const combinations = palette
-    ? (onlyFree ? palette.combinations.filter((c) => c.status !== "variante_existente" && !c.archived) : palette.combinations)
-    : [];
+  const viewLine = lineOf(lineView);
+  const free = (c: PaletteCombination) => (viewLine ? !heldInLine(c, viewLine) : c.status !== "variante_existente" && !c.archived);
+  const combinations = palette ? (onlyFree ? palette.combinations.filter(free) : palette.combinations) : [];
   const troubled = palette ? palette.variants.filter((v) => v.status === "fuera_de_paleta" || v.status === "incompleta") : [];
   // «Crear variante» is offered only on complete configurations without a variant, and only to `products.manage`.
   const canCreate = canManage && Boolean(onCreated);
   const showActions = canCreate;
   const columnCount = paletteColumns.length + 2;
-  const offerable = (combination: PaletteCombination) =>
-    combination.status === "combinacion_valida_sin_variante" && !justCreated.pending.has(combination.key);
+  const offerable = (combination: PaletteCombination) => (viewLine
+    ? !heldInLine(combination, viewLine) && !justCreated.pending.has(lineKey(combination.key, viewLine))
+    : combination.status === "combinacion_valida_sin_variante" && !pendingForKey(justCreated.pending, combination.key));
+  const missingByLine = palette?.summary.valid_without_variant_by_line;
 
   // The comparison is shown once the server's palette has been read again (and that read did not fail).
   const conflictRead = conflict !== null && palette !== null && palette !== conflict.from && !paletteStale;
@@ -522,11 +540,11 @@ export function ModelPalettePanel({
     createButtons.current.get(key)?.focus();
   }
 
-  function created(variant: CockpitVariant) {
+  function created(variant: CockpitVariant, line: CatalogLine) {
     setStaleAlert(null);
     if (creatingKey) {
       const pending = new Map(justCreated.pending);
-      pending.set(creatingKey, typeof variant?.id === "number" ? variant.id : null);
+      pending.set(lineKey(creatingKey, line), typeof variant?.id === "number" ? variant.id : null);
       setJustCreated({ palette, pending });
     }
     setCreatingKey(null);
@@ -568,9 +586,9 @@ export function ModelPalettePanel({
               </p>
             ) : null}
             {!palette.has_palette && palette.attributes.length > 0 ? (
-              <p role="note" className="rounded-lg border border-bd-border px-3 py-2 text-sm text-muted">
-                Este modelo todavía no dice qué opciones admite: sus variantes pueden combinar cualquier opción de la empresa.
-                Marca las que correspondan y guarda la paleta.
+              <p role="note" className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-sm text-warning">
+                <strong>Sin paleta.</strong> Este modelo todavía no dice qué opciones admite: sus variantes pueden combinar cualquier opción de la empresa.
+                Marca las que correspondan y guarda la paleta. Mientras tanto no se crean variantes desde aquí.
               </p>
             ) : null}
 
@@ -586,7 +604,15 @@ export function ModelPalettePanel({
             ) : null}
 
             <div className="space-y-4">
-              {palette.attributes.map((attribute) => (
+              {palette.attributes.map((attribute) => {
+                // CATALOG-ADMIN-UX-B: a model shows ITS colours. Once its saved palette has colours, they come first and
+                // the company's other colours follow apart, under a line that says what ticking one means: no colour of
+                // another model is taken by habit.
+                const colour = attribute.kind === "color" || attribute.role === "color";
+                const splits = colour && palette.has_palette && attribute.options.some((option) => option.in_palette);
+                const own = splits ? attribute.options.filter((option) => option.in_palette) : attribute.options;
+                const others = splits ? attribute.options.filter((option) => !option.in_palette) : [];
+                return (
                 <fieldset key={attribute.id} aria-label={attribute.name} className="min-w-0">
                   <legend className="flex flex-wrap items-baseline gap-x-2 text-sm font-semibold text-foreground">
                     {attribute.name}
@@ -597,11 +623,17 @@ export function ModelPalettePanel({
                   </legend>
                   <div className="mt-2 flex flex-wrap gap-2">
                     {attribute.options.length === 0 ? <span className="text-xs text-muted">Sin opciones.</span> : null}
-                    {attribute.options.map((option) => {
+                    {[...own, ...others].map((option, index) => {
                       const aliases = optionAliases.get(option.id) ?? [];
                       const open = aliasesOpen === option.id;
                       return (
-                        <span key={option.id} className="inline-flex max-w-full items-center gap-1">
+                        <Fragment key={option.id}>
+                        {splits && index === own.length ? (
+                          <span className="basis-full pt-1 text-xs text-muted">
+                            Otros colores de la empresa ({others.length}): márcalos sólo si este modelo también se fabrica en ellos.
+                          </span>
+                        ) : null}
+                        <span className="inline-flex max-w-full items-center gap-1">
                           <OptionChoice
                             attribute={attribute}
                             optionId={option.id}
@@ -630,6 +662,7 @@ export function ModelPalettePanel({
                             </button>
                           ) : null}
                         </span>
+                        </Fragment>
                       );
                     })}
                   </div>
@@ -652,7 +685,8 @@ export function ModelPalettePanel({
                     );
                   })()}
                 </fieldset>
-              ))}
+                );
+              })}
             </div>
 
             {canManage && palette.attributes.length > 0 ? (
@@ -745,8 +779,20 @@ export function ModelPalettePanel({
                     {palette.summary.incomplete ? ` · ${palette.summary.incomplete} ${palette.summary.incomplete === 1 ? "incompleta" : "incompletas"}` : ""}
                   </p>
                 </div>
-                {/* PR E: the pairs the reference catalogue says do not exist (PR B); only a model with some sends them. */}
-                {palette.excluded_pairs?.length ? (
+                {/* PR E: the pairs the reference catalogue says do not exist (PR B); only a model with some sends them.
+                    CATALOG-ADMIN-UX-B: with `products.manage` they are added and removed here. */}
+                {canManage ? (
+                  <ExclusionsEditor
+                    modelId={modelId}
+                    companyId={companyId}
+                    palette={palette}
+                    blocked={dirty || saving || creating || paletteStale || conflict !== null}
+                    blockedReason={paletteStale ? "La paleta no se pudo actualizar: vuelve a leerla antes de cambiar las exclusiones."
+                      : dirty ? "Guarda o cancela los cambios de la paleta antes de cambiar las exclusiones." : null}
+                    onSaved={(answer) => { setCreatingKey(null); onSaved(answer); }}
+                    onStale={() => onStale?.()}
+                  />
+                ) : palette.excluded_pairs?.length ? (
                   <ExcludedPairs pairs={palette.excluded_pairs} attributes={palette.attributes} />
                 ) : null}
                 {palette.truncated ? (
@@ -755,15 +801,43 @@ export function ModelPalettePanel({
                     Reduce las opciones marcadas para verlas todas.
                   </p>
                 ) : null}
+                <div role="group" aria-label="Línea de las configuraciones" className="flex flex-wrap items-center gap-2">
+                  {(["all", "new", "used"] as LineView[]).map((view) => {
+                    const missing = view === "all" ? null : missingByLine?.[view];
+                    return (
+                      <button
+                        key={view}
+                        type="button"
+                        aria-pressed={lineView === view}
+                        disabled={creating}
+                        onClick={() => { setLineView(view); setCreatingKey(null); }}
+                        className={`${touch} rounded-full border px-3 text-xs font-semibold transition-colors ${
+                          lineView === view ? "border-foreground/40 bg-foreground/[0.06] text-foreground" : "border-bd-border text-muted hover:border-foreground/25"
+                        }`}
+                      >
+                        {view === "all" ? "Todas las líneas" : lineLabels[view]}
+                        {typeof missing === "number" ? <span className="ml-1 font-normal">({missing} sin variante)</span> : null}
+                      </button>
+                    );
+                  })}
+                </div>
+                {viewLine ? (
+                  <p role="note" className="text-xs text-muted">
+                    Se muestra sólo la línea «{lineLabels[viewLine]}»: una configuración que existe sólo en la otra línea
+                    aparece «Sin variante» y se puede crear aquí.
+                  </p>
+                ) : null}
                 <label className={`inline-flex ${touch} cursor-pointer items-center gap-2 text-xs text-muted`}>
                   <input type="checkbox" className="h-4 w-4" checked={onlyFree} disabled={creating} onChange={(e) => setOnlyFree(e.target.checked)} />
-                  Sólo las que aún no tienen variante
+                  {viewLine ? `Sólo las que aún no tienen variante en «${lineLabels[viewLine]}»` : "Sólo las que aún no tienen variante"}
                 </label>
                 {showActions && dirty ? (
                   <p id={dirtyNoteId} role="note" className="text-xs text-muted">Guarda o cancela los cambios de la paleta antes de crear una variante.</p>
                 ) : null}
                 {combinations.length === 0 ? (
-                  <EmptyBox message={onlyFree ? "Todas las configuraciones tienen variante." : "La paleta no forma ninguna configuración."} />
+                  <EmptyBox message={onlyFree
+                    ? (viewLine ? `Todas las configuraciones tienen variante en «${lineLabels[viewLine]}».` : "Todas las configuraciones tienen variante.")
+                    : "La paleta no forma ninguna configuración."} />
                 ) : (
                   <div className="@container overflow-x-auto">
                     <table className="w-full min-w-[32rem] border-collapse text-sm" aria-label="Configuraciones de la paleta">
@@ -781,7 +855,11 @@ export function ModelPalettePanel({
                           <tr className="border-b border-bd-border/60">
                             <Td>
                               <span className="flex flex-col items-start gap-1.5">
-                                {combination.archived ? <ArchivedBadge /> : <PaletteStatusBadge status={combination.status} />}
+                                {viewLine ? (
+                                  archivedInLine(combination, viewLine) ? <ArchivedBadge /> : (
+                                    <PaletteStatusBadge status={heldInLine(combination, viewLine) ? "variante_existente" : "combinacion_valida_sin_variante"} />
+                                  )
+                                ) : combination.archived ? <ArchivedBadge /> : <PaletteStatusBadge status={combination.status} />}
                                 {showActions && offerable(combination) ? (
                                   <button
                                     type="button"
@@ -795,7 +873,9 @@ export function ModelPalettePanel({
                                     aria-describedby={conflictWhy ?? (paletteStale ? staleId : dirty ? dirtyNoteId : undefined)}
                                     aria-expanded={creatingKey === combination.key}
                                     aria-controls={creatingKey === combination.key ? formId : undefined}
-                                    aria-label={`Crear variante ${comboTitle(combination, paletteColumns)}`}
+                                    aria-label={viewLine
+                                      ? `Crear variante ${comboTitle(combination, paletteColumns)} en ${lineLabels[viewLine]}`
+                                      : `Crear variante ${comboTitle(combination, paletteColumns)}`}
                                   >
                                     Crear variante
                                   </button>
@@ -837,6 +917,7 @@ export function ModelPalettePanel({
                                   onStale={stale}
                                   onBusy={setCreating}
                                   blocked={paletteStale}
+                                  fixedLine={viewLine}
                                 />
                                 </div>
                               </td>
@@ -893,5 +974,154 @@ export function ExcludedPairs({ pairs, attributes }: { pairs: number[][]; attrib
         ))}
       </ul>
     </details>
+  );
+}
+
+/**
+ * CATALOG-ADMIN-UX-B — «Combinaciones que no existen», editable (`products.manage`): two options of the SAVED palette,
+ * of two different attributes (a SIM type and a region, say), that this model never combines. The server decides on
+ * every change (audited); adding a pair a variant already is comes back 409 naming those variants, and nothing changes.
+ */
+export function ExclusionsEditor({
+  modelId, companyId, palette, blocked, blockedReason, onSaved, onStale,
+}: {
+  modelId: number;
+  companyId: number | null;
+  palette: AdminModelPalette;
+  /** Something else of the panel is being changed (or the palette is stale): nothing is sent meanwhile. */
+  blocked: boolean;
+  blockedReason: string | null;
+  onSaved: (palette: AdminModelPalette) => void;
+  /** The model or an option is gone: the parent reads the palette again. */
+  onStale: () => void;
+}) {
+  const ids = useId();
+  const pairs = palette.excluded_pairs ?? [];
+  const columns = palette.attributes
+    .map((attribute) => ({ ...attribute, options: attribute.options.filter((option) => option.in_palette) }))
+    .filter((attribute) => attribute.options.length > 0);
+  const labels = new Map<number, string>();
+  const attributeOf = new Map<number, number>();
+  for (const attribute of columns) {
+    for (const option of attribute.options) { labels.set(option.id, option.label); attributeOf.set(option.id, attribute.id); }
+  }
+  const [first, setFirst] = useState("");
+  const [second, setSecond] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [held, setHeld] = useState<HeldVariant[]>([]);
+  const [notice, setNotice] = useState<string | null>(null);
+  const firstAttribute = first ? attributeOf.get(Number(first)) : undefined;
+  const name = (pair: number[]) => pair.map((id) => labels.get(id) ?? `opción #${id}`).join(" + ");
+  const describedBy = blockedReason ? `${ids}-bloqueo` : undefined;
+
+  async function send(action: "add" | "remove", pair: [number, number]) {
+    if (busy || blocked) return;
+    setBusy(true);
+    setError(null);
+    setHeld([]);
+    setNotice(null);
+    try {
+      const answer = await changeModelExclusions(modelId, action, [pair], companyId);
+      onSaved(answer);
+      if (action === "add") { setFirst(""); setSecond(""); }
+      setNotice(action === "add" ? `«${name(pair)}» ya no se ofrece en este modelo.` : `«${name(pair)}» vuelve a ofrecerse.`);
+    } catch (err) {
+      const refused = err instanceof CatalogApiError ? err : null;
+      setError(message(err, action === "add" ? "No se pudo añadir la exclusión." : "No se pudo quitar la exclusión."));
+      if (refused?.code === "exclusion_held_by_variants") setHeld(refused.variants);
+      if (refused?.status === 404) onStale();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section aria-labelledby={`${ids}-titulo`} className="space-y-3 rounded-lg border border-bd-border px-3 py-3 text-sm">
+      <div>
+        <h4 id={`${ids}-titulo`} className="font-semibold text-foreground">Combinaciones que no existen</h4>
+        <p className="mt-1 text-xs text-muted">
+          Dos opciones de la paleta que este modelo nunca combina (por ejemplo, un tipo de SIM que una región no vende). No
+          se ofrecen en la tabla y no se puede crear una variante con ellas.
+        </p>
+      </div>
+      {pairs.length === 0 ? (
+        <p className="text-xs text-muted">Ninguna: todas las combinaciones de la paleta existen.</p>
+      ) : (
+        <ul aria-label="Combinaciones que no existen" className="flex flex-wrap gap-2">
+          {pairs.map((pair) => (
+            <li key={pair.join("-")} className="inline-flex items-center gap-1 rounded-full border border-bd-border pl-3 text-foreground">
+              <span>{name(pair)}</span>
+              <button
+                type="button"
+                className={`${touch} min-w-[44px] rounded-full px-3 text-xs text-muted hover:text-foreground disabled:opacity-50`}
+                disabled={busy || blocked}
+                aria-describedby={describedBy}
+                aria-label={`Quitar la exclusión ${name(pair)}`}
+                onClick={() => void send("remove", [pair[0], pair[1]])}
+              >
+                Quitar
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {columns.length >= 2 ? (
+        <form
+          aria-label="Añadir una combinación que no existe"
+          className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] sm:items-end"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (first && second) void send("add", [Number(first), Number(second)]);
+          }}
+        >
+          <label className="block text-xs text-muted">
+            Esta opción
+            <select value={first} onChange={(e) => { setFirst(e.target.value); setSecond(""); }} disabled={busy || blocked}
+              aria-describedby={describedBy} className={`mt-1.5 ${touch} ${internalInputClass}`}>
+              <option value="">Elige…</option>
+              {columns.map((attribute) => (
+                <optgroup key={attribute.id} label={attribute.name}>
+                  {attribute.options.map((option) => <option key={option.id} value={String(option.id)}>{option.label}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          <label className="block text-xs text-muted">
+            no existe con
+            <select value={second} onChange={(e) => setSecond(e.target.value)} disabled={busy || blocked || !first}
+              aria-describedby={describedBy} className={`mt-1.5 ${touch} ${internalInputClass}`}>
+              <option value="">Elige…</option>
+              {columns.filter((attribute) => attribute.id !== firstAttribute).map((attribute) => (
+                <optgroup key={attribute.id} label={attribute.name}>
+                  {attribute.options.map((option) => <option key={option.id} value={String(option.id)}>{option.label}</option>)}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+          <button type="submit" className={`${touch} ${internalButtonClass}`} disabled={busy || blocked || !first || !second}
+            aria-describedby={describedBy}>
+            {busy ? "Guardando…" : "Añadir exclusión"}
+          </button>
+        </form>
+      ) : null}
+      {blockedReason ? <p id={`${ids}-bloqueo`} className="text-xs text-muted">{blockedReason}</p> : null}
+      {notice ? <p role="status" className="text-xs text-success">{notice}</p> : null}
+      {error ? (
+        <div role="alert" className="rounded-lg border border-danger-border px-3 py-2 text-danger">
+          <p>{error}</p>
+          {held.length > 0 ? (
+            <ul aria-label="Variantes que ya son esa combinación" className="mt-1 list-disc space-y-0.5 pl-5">
+              {held.map((variant) => (
+                <li key={variant.product_id}>
+                  <Link href={`/admin/products/${variant.product_id}`} className="underline underline-offset-4">{variant.name}</Link>
+                  {variant.archived ? " (archivada)" : ""}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
   );
 }

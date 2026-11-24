@@ -156,7 +156,8 @@ describe('los ayudantes de la paleta', () => {
 describe('«Opciones de este modelo»', () => {
   it('lista los atributos por rol con cada opción marcada según la paleta y resume las configuraciones', async () => {
     const panel = await mountEditor();
-    const groups = within(panel).getAllByRole('group');
+    // One fieldset per attribute (CATALOG-ADMIN-UX-B adds other groups: the line of the table, the exclusions' lists).
+    const groups = within(panel).getAllByRole('group').filter((g) => g.tagName === 'FIELDSET');
     expect(groups.map((g) => g.getAttribute('aria-label'))).toEqual(['Capacidad', 'Color', 'Tipo de SIM']);
     expect(within(groups[0]).getByRole('checkbox', { name: '128 GB' })).toBeChecked();
     expect(within(groups[0]).getByRole('checkbox', { name: '1 TB' })).not.toBeChecked();
