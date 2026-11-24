@@ -52,6 +52,14 @@ Regla nueva en `AGENTS.md` §10. Todo cambio productivo se hace con el GO exacto
 
 **Vuelta atrás:** `rollback_r13_code.sh` (sólo código; antes, `cancel_sales_quote_print_jobs --apply`). La reversión del esquema sólo con el `DELETE` manual de `docs/despliegue-produccion.md` §7 y aceptando la pérdida de datos listada abajo.
 
+**Riesgos residuales:**
+- El seminuevo existente no se vende por la web ni por caja hasta que alguien lo inspeccione, confirme su foto y lo publique. Avisar al equipo.
+- Cotizaciones vencidas: sin el cron `expire_sales_quotes` el panel ya las muestra vencidas y no deja convertirlas, pero los reportes no se ordenan.
+- Vuelta atrás del esquema: sólo tras el `DELETE` manual de los tickets de cotización, y pierde cotizaciones, parte de pago, archivo de variantes, margen, inspección y confirmación de fotos.
+- Fotos: 40 enlaces externos y 38 fotos públicas sin licencia verificada siguen en el catálogo; 2 variantes quedan como «Imagen pendiente». La experiencia visual tipo Apple Store no está terminada.
+- El 522 de la primera petición tras reiniciar el frontend puede repetirse en cada despliegue (arranque en frío). No afectó a las siguientes peticiones.
+- Un seminuevo rechazado entre el pago web y su confirmación necesita reembolso manual (deuda conocida).
+
 **Pendiente, cada paso con su GO propio:**
 - instalar en el cron la línea `expire_sales_quotes` (hoy no está);
 - inspeccionar, confirmar la foto y publicar el seminuevo;
