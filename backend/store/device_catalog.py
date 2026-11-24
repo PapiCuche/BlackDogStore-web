@@ -834,6 +834,11 @@ DRAFT_PROBLEM_LABELS = {
     'fuera_de_paleta': 'Lleva una opción que la paleta del modelo ya no admite.',
     'incompleta': 'Le falta una opción de la paleta del modelo.',
 }
+#: USED-UNIT-OWN-GATE-01 — a used variant has no price of its own: `no_price` says what is really missing.
+USED_DRAFT_PROBLEM_LABELS = {
+    'no_price': ('Es seminuevo: ningún equipo disponible tiene precio de venta. Fija el precio de al menos uno; '
+                 'los equipos sin precio no se venden, pero no frenan a los demás.'),
+}
 
 
 def variant_name(model, options, *, condition_line=Product.CONDITION_NEW) -> str:
@@ -929,8 +934,13 @@ def _draft_problems(product, model) -> list[str]:
     """
     What keeps a pending draft from being enabled: `product_publication`'s codes (without
     `draft_pending`, which is the state this step ends) plus the palette's. For the USED line the
-    product has no price of its own, so `no_price` means «no sellable device with a real unit price»
+    product has no price of its own, so `no_price` means «no available device with a real unit price»
     (`stock_unit_services.has_usable_price`): the exception is never an authorisation to sell at zero.
+
+    USED-UNIT-OWN-GATE-01 — ONE priced device is enough. A device without a price blocks itself only
+    (the till, the web, the cart and the payment refuse THAT device: `used_unit_services`), never the
+    siblings of its variant that meet every requirement. Asking a price of every available device made
+    one unpriced device stop the whole variant.
     """
     from .model_palette import variant_status
     from .product_publication import publication_problems
@@ -944,7 +954,7 @@ def _draft_problems(product, model) -> list[str]:
         if not prices:
             # Nothing sellable yet: receiving a device (serialized, `inventory.adjust`) is the step before.
             problems.insert(0, 'no_unit')
-        elif not all(has_usable_price(price) for price in prices):
+        elif not any(has_usable_price(price) for price in prices):
             problems.insert(0, 'no_price')
     status = variant_status(model, [o.pk for o in variant_options_of(product)])
     if status in PALETTE_NOT_READY:
@@ -955,14 +965,15 @@ def _draft_problems(product, model) -> list[str]:
 class NotReady(CatalogError):
     """`enable_variant_for_sale` refused: `problems` lists every code (publication rule + palette)."""
 
-    def __init__(self, problems):
+    def __init__(self, problems, *, used=False):
         super().__init__('La variante no está lista para la venta.', field='product', code='not_ready')
         self.problems = list(problems)
+        self.used = used
 
     def body(self) -> dict:
         from .product_publication import PROBLEM_LABELS
 
-        labels = {**PROBLEM_LABELS, **DRAFT_PROBLEM_LABELS}
+        labels = {**PROBLEM_LABELS, **DRAFT_PROBLEM_LABELS, **(USED_DRAFT_PROBLEM_LABELS if self.used else {})}
         return {**super().body(), 'problems': self.problems,
                 'labels': {code: labels[code] for code in self.problems if code in labels}}
 
@@ -993,9 +1004,9 @@ def enable_variant_for_sale(product, *, publish=False, actor, request) -> Produc
     and asks everything again under the lock: the row must still be pending (`already_enabled` 409 if
     somebody got there first; `not_a_draft` for a historical row, which needs no transition), the
     model present, the configuration `variante_existente` in the palette when the model has one, and
-    `product_publication`'s rule met — active, price > 0 (used line: a real price on every sellable
-    device), category, picture if the company asks — or `NotReady` lists the codes and nothing is
-    written.
+    `product_publication`'s rule met — active, price > 0 (used line: a real price on at least one
+    available device; the others wait by themselves, USED-UNIT-OWN-GATE-01), category, picture if
+    the company asks — or `NotReady` lists the codes and nothing is written.
 
     Writes `sale_enabled_at=now`, `sale_enabled_by=actor`; `draft_origin` stays (provenance); the
     sale mode and the price do not change. `publish=True` publishes THIS product in the same
@@ -1020,7 +1031,7 @@ def enable_variant_for_sale(product, *, publish=False, actor, request) -> Produc
     # The publication rule is asked whether or not `publish` was: enabled means «may be published».
     problems = _draft_problems(product, model)
     if problems:
-        raise NotReady(problems)
+        raise NotReady(problems, used=product.condition_line == Product.CONDITION_USED)
 
     from .model_palette import palette_of
     from .product_publication import requires_image

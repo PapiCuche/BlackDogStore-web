@@ -471,7 +471,8 @@ WITHDRAWN_RELEASE_REASON = 'Apartado web liberado: el equipo se retiró de la ve
 
 def release_withdrawn(unit) -> bool:
     """
-    USED-READY-01 — a device the shop withdrew from the web (inspection rejected, unpublished) while a cart held it:
+    USED-READY-01 — a device the shop withdrew from the web (inspection rejected, unpublished; USED-UNIT-OWN-GATE-01:
+    its price removed) while a cart held it:
     the hold goes back to the shelf at once, with its Kardex line and audit row, so the buyer is told at checkout
     and nothing is charged. ONLY a hold no order carries yet: a checked-out order's device is left to its payment
     (which flags it instead of selling it). Called inside the caller's transaction, with the shelf already locked
