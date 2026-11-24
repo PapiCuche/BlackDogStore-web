@@ -22,6 +22,17 @@ Rama `feat/inv-load-01`. Sin migraciones. Producción sin cambios.
 - **Exportación de equipos para recargar:** escribe «Fecha de ingreso», «Notas internas» y «Detalles para el comprador» (seminuevos); «Proveedor» queda vacío a propósito. El reporte no cambia.
 - Pruebas: `store.test_inv_load` y `__tests__/inv-load-01.test.tsx`. Playwright no se ejecutó (puertos compartidos).
 
+## 2026-11-23 — POS-ORDER-ARRIVAL-01 · el equipo que espera un pedido pagado no entra como stock libre (rama, sin desplegar)
+
+Hallazgo de la auditoría sobre `e5e1e70`, verificado en el código. Desde la caja, «Llegó el equipo» de una variante con una línea pagada bajo pedido lo registraba como stock libre: se podía vender otra vez, el pedido seguía pendiente y la oferta del proveedor, comprometida. Rama `feat/pos-order-arrival-01`, PR abierto, **sin fusionar ni desplegar**, sin migraciones.
+
+- **Lectura:** `configurations` dice, por combinación, qué líneas esperan un equipo (`pending_order_lines`, cliente enmascarado) y `can.receive_on_order`.
+- **Caja:** con líneas esperando pregunta «Es del pedido #N (cliente)» (manda `order_item`; el equipo no entra a la venta) o «Ingresar como stock».
+- **Servidor:** stock con líneas esperando en esa sucursal → 409 `pending_order_line`, salvo `confirm_stock` + motivo, auditado. La guarda bloquea esas líneas (`FOR UPDATE`) para serializarse con una entrega simultánea (revisión de #400).
+- **Correcciones:** la respuesta nombra la sucursal donde entró el equipo y `method` dice si se leyó con lector o a mano.
+- **Decisión:** ADR `docs/adr-catalog-reference.md` D-F-9 (revisada) y D-F-11.
+- **Pruebas:** `test_pos_order_arrival` (20, con una carrera en `TransactionTestCase`) y `test_pos_quick_device`; Jest `pos-device-picker` (28). Se añadió un caso a `e2e/pos-quick-device.spec.ts`, **sin ejecutar** (Playwright no se corrió en esta sesión).
+
 ## 2026-11-23 — P0 coordinación de producción · LABEL-04 con autorización no acreditada; un solo ejecutor; release del #396 ensayada · producción SIN CAMBIOS por mi parte
 
 Orden del propietario «P0 COORDINACIÓN DE PRODUCCIÓN Y CIERRE FASE 1.2». Mi sesión no cambió la base, los contenedores, el código ni el enrutamiento de producción. En prod-02, bajo el candado, sólo hizo backups, compiló las imágenes candidatas `rc-edbeeb0` y ensayó sobre copias aisladas; además dejó scripts del kit en `backups/` y `/tmp`.

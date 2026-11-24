@@ -46,7 +46,8 @@ def _configurations(request, company, branch, pk) -> Response:
     model = ProductModel.objects.filter(company=company, pk=pk).first()
     if model is None:
         return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
-    return Response(quick.configurations(company, model, branch, quick.authority_for(request.user, company)))
+    return Response(quick.configurations(company, model, branch, quick.authority_for(request.user, company),
+                                         actor=request.user))
 
 
 @answers_busy       # INV-LOAD-01 review: a deadlock with another entry is 409 `busy`, never a 500
