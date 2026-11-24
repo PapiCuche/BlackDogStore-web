@@ -195,7 +195,9 @@ test("«Registrar equipo»: cada equipo entra con su serie y su IMEI, y el stock
 
     const branch = page.getByLabel("Sucursal");
     if ((await branch.inputValue()) === "") await branch.selectOption({ index: 1 });
-    await page.getByLabel("Producto / modelo").selectOption(String(productId));
+    // INV-UX-A1: «Producto / modelo» is a search box with a list of results, no longer a <select>.
+    await page.getByRole("combobox", { name: "Producto / modelo" }).fill(`Equipo serializado ${RUN}`);
+    await page.locator(`[role="option"][id$="-opt-${productId}"]`).click();
 
     // El producto no lleva serie todavía: la pantalla lo dice y ofrece activarlo.
     await expect(page.getByRole("note")).toContainText("se controla por cantidad");

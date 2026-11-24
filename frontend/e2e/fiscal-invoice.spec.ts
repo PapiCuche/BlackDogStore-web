@@ -215,6 +215,17 @@ async function serveDocument(page: Page, document: object | null) {
   });
 }
 
+/**
+ * El texto de la página SIN el aviso de cobertura del comprobante (NOTE-NOT-SUBSTITUTE). Ese aviso lo escribe el
+ * servidor sobre el pedido REAL —no sobre el comprobante simulado— y dice que la venta «no tiene un comprobante
+ * electrónico aceptado por SUNAT»: es la negación, no la afirmación que estas pruebas prohíben.
+ */
+async function textoSinAviso(page: Page): Promise<string> {
+  const aviso = page.getByTestId("receipt-coverage");
+  const textoAviso = (await aviso.count()) ? await aviso.first().innerText() : "";
+  return (await page.locator("body").innerText()).replace(textoAviso, "");
+}
+
 /** El bloque «Comprobante electrónico», y sólo él. */
 const fiscalPanel = (page: Page) =>
   page.locator("section").filter({
@@ -280,7 +291,7 @@ test.describe("el comprobante electrónico en el detalle del pedido", () => {
     // Ya está preparado: el primer paso no se vuelve a ofrecer.
     await expect(page.getByRole("button", { name: /preparar factura/i })).toHaveCount(0);
     // LO QUE NO PUEDE DECIR. Sin constancia no hay aceptación.
-    const texto = await page.locator("body").innerText();
+    const texto = await textoSinAviso(page);
     expect(/aceptad[ao] por sunat/i.test(texto), texto.slice(0, 300)).toBe(false);
   });
 
@@ -310,7 +321,7 @@ test.describe("el comprobante electrónico en el detalle del pedido", () => {
     const boton = page.getByRole("button", { name: /reintentar el mismo comprobante/i });
     await expect(boton).toBeVisible();
     await expect(page.getByText(/readtimeout/i)).toBeVisible();
-    const texto = await page.locator("body").innerText();
+    const texto = await textoSinAviso(page);
     expect(/aceptad[ao] por sunat/i.test(texto)).toBe(false);
   });
 
