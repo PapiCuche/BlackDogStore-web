@@ -196,7 +196,8 @@ for (const env of ENVS) {
       expect(thermal.headers()["content-type"]).toContain("application/json");
       const roll = page.getByRole("figure", { name: /Simulación de la impresora térmica/ });
       await expect(roll).toBeVisible({ timeout: 30_000 });
-      await expect(roll.getByText("MUESTRA-000000")).toBeVisible();
+      // DOC-NV-PREMIUM prints the number large on its own line and again in «Pedido: #…»: the large one.
+      await expect(roll.getByText("MUESTRA-000000", { exact: true })).toBeVisible();
       await expect(page.getByRole("link", { name: "Abrir PDF" })).toHaveCount(0);
       await expectNoOverflow(page, `${env.name} thermal_sales_note`);
 
