@@ -26,7 +26,7 @@ product of another company exactly as for one that does not exist.
 """
 from __future__ import annotations
 
-from . import device_catalog, product_publication
+from . import device_catalog, product_publication, unit_media
 from .models import BranchStock, Product, StockUnit
 from .serializers import ProductSerializer
 from .tenancy import company_fulfillment_branch
@@ -79,7 +79,7 @@ def _units(product, branch):
         StockUnit.objects.filter(
             company_id=branch.company_id, branch=branch, product=product, status=StockUnit.Status.AVAILABLE,
         )
-        .select_related('cosmetic_grade').prefetch_related('photos')
+        .select_related('cosmetic_grade').prefetch_related(unit_media.photos_prefetch())
         .order_by('sale_price', 'received_at', 'pk')
     )
     rows = []
@@ -96,6 +96,8 @@ def _units(product, branch):
             'battery_health': unit.battery_health,
             'cosmetic_grade': grade.label if grade else None,
             'photo_count': len(unit.photos.all()),
+            # UNIT-PHOTO-02 — the ones the shop may show (attested as THIS device).
+            'public_photo_count': len(unit_media.public_photos(unit)),
         })
     return rows, len(offered_ids)
 

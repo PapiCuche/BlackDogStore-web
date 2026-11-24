@@ -82,7 +82,7 @@ export const FUNCTIONAL_STATE_TEXT: Record<FunctionalState, string> = {
 
 export type UnitWebReason =
   | "not_available" | "no_price" | "no_dispatch_branch" | "not_in_dispatch_branch" | "product_hidden" | "model_hidden"
-  | "not_inspected" | "inspection_rejected" | "unit_not_published" | "no_photo";
+  | "not_inspected" | "inspection_rejected" | "unit_not_published" | "no_photo" | "photo_not_attested";
 
 export type UnitWebStatus = { offered: boolean; reasons: UnitWebReason[] | string[] };
 
@@ -98,12 +98,51 @@ export const UNIT_WEB_REASON_TEXT: Record<UnitWebReason, string> = {
   inspection_rejected: "su inspección fue rechazada",
   unit_not_published: "el equipo no está publicado",
   no_photo: "no tiene fotos reales del equipo",
+  photo_not_attested: "ninguna de sus fotos está confirmada como de este equipo exacto",
 };
 
 export const unitWebReasonText = (code: string) =>
   (UNIT_WEB_REASON_TEXT as Record<string, string>)[code] ?? code;
 
-export type UnitPhoto = { id: number; url: string; alt_text: string };
+/** UNIT-PHOTO-02 — which side of THIS device a photo shows. `defect` says what it shows (`defect_note`). */
+export type UnitPhotoView = "main" | "front" | "back" | "left" | "right" | "top" | "bottom" | "defect" | "other";
+
+/** The server's labels (`UnitPhoto.VIEW_CHOICES`), in the order the panel offers them. */
+export const UNIT_PHOTO_VIEW_TEXT: Record<UnitPhotoView, string> = {
+  main: "Principal",
+  front: "Frontal",
+  back: "Posterior",
+  left: "Lateral izquierdo",
+  right: "Lateral derecho",
+  top: "Borde superior",
+  bottom: "Borde inferior",
+  defect: "Defecto",
+  other: "Otra",
+};
+
+/**
+ * A photo of one used device, as the panel reads it. UNIT-PHOTO-02: `attested` — somebody with
+ * `inventory.units.inspect` confirmed it is of THIS device; `public` — the shop shows it (attested and its file an own
+ * photo, verified). Older servers send only `id`, `url` and `alt_text`.
+ */
+export type UnitPhoto = {
+  id: number;
+  url: string;
+  alt_text: string;
+  view?: UnitPhotoView;
+  view_label?: string;
+  defect_note?: string;
+  sort_order?: number;
+  is_primary?: boolean;
+  attested?: boolean;
+  attested_at?: string | null;
+  attested_by?: string | null;
+  public?: boolean;
+};
+
+/** The photos the shop may show: all of them on a server before UNIT-PHOTO-02 (it sends no `public`). */
+export const publicPhotoCount = (photos: UnitPhoto[] | undefined) =>
+  (photos ?? []).filter((photo) => photo.public !== false).length;
 
 /** What staff may change about a device's public listing. Cost is not here: it stays as it was. */
 export type UnitListingWrite = Partial<{
@@ -285,16 +324,52 @@ export const inspectStockUnit = (id: number, decision: "approved" | "rejected", 
 export const setStockUnitPublication = (id: number, published: boolean) =>
   post<StockUnit>(`/${id}/publication/`, { published });
 
-/** DC2: add a photo of THIS device. No Content-Type: the browser writes the multipart boundary. */
-export function uploadUnitPhoto(id: number, file: File, altText = ""): Promise<UnitPhoto> {
+export type UnitPhotoUpload = { view?: UnitPhotoView; defectNote?: string; altText?: string };
+
+/**
+ * DC2 · UNIT-PHOTO-02: add a photo of THIS device, saying which side it shows. No Content-Type: the browser writes the
+ * multipart boundary. The server answers with the whole device (its photos in order). The photo is NOT attested.
+ */
+export function uploadUnitPhoto(id: number, file: File, options: UnitPhotoUpload | string = {}): Promise<StockUnit> {
+  const { view, defectNote, altText } = typeof options === "string" ? { altText: options } as UnitPhotoUpload : options;
   const form = new FormData();
   form.append("file", file);
-  form.append("alt_text", altText);
-  return call<UnitPhoto>(`/${id}/photos/`, { method: "POST", body: form });
+  form.append("alt_text", altText ?? "");
+  if (view) form.append("view", view);
+  if (view === "defect") form.append("defect_note", defectNote ?? "");
+  return call<StockUnit>(`/${id}/photos/`, { method: "POST", body: form });
 }
 
 export const deleteUnitPhoto = (id: number, photoId: number) =>
-  call<unknown>(`/${id}/photos/${photoId}/`, { method: "DELETE" });
+  call<StockUnit>(`/${id}/photos/${photoId}/`, { method: "DELETE" });
+
+/** UNIT-PHOTO-02: its side (a defect says what it shows), its alternative text, or make it the primary. */
+export const updateUnitPhoto = (
+  id: number, photoId: number,
+  body: Partial<{ view: UnitPhotoView; defect_note: string; alt_text: string; is_primary: true }>,
+) => call<StockUnit>(`/${id}/photos/${photoId}/`, { method: "PATCH", body: JSON.stringify(body) });
+
+/** UNIT-PHOTO-02: every photo of the device once, in its new order. */
+export const reorderUnitPhotos = (id: number, order: number[]) =>
+  post<StockUnit>(`/${id}/photos/order/`, { order });
+
+/**
+ * UNIT-PHOTO-02: a new file in the same place (order, primary, side). Its confirmation is cleared. The upload route
+ * with `replace` (as a finish image): no other address reads files.
+ */
+export function replaceUnitPhoto(id: number, photoId: number, file: File): Promise<StockUnit> {
+  const form = new FormData();
+  form.append("file", file);
+  form.append("replace", String(photoId));
+  return call<StockUnit>(`/${id}/photos/`, { method: "POST", body: form });
+}
+
+/**
+ * UNIT-PHOTO-02 — «Confirmo que esta foto es de este equipo exacto» (`inventory.units.inspect`), or its withdrawal.
+ * Only a confirmed photo reaches the shop. Audited.
+ */
+export const attestUnitPhoto = (id: number, photoId: number, attested: boolean) =>
+  post<StockUnit>(`/${id}/photos/${photoId}/attestation/`, { attested });
 
 export type UnitAction = "reserve" | "release" | "write-off" | "return" | "void" | "move-variant";
 

@@ -17,7 +17,8 @@
  *
  * USED-READY-01 — the shop sells THIS device, so it is offered online only when it is available, priced, its
  * inspection is APPROVED (`inventory.units.inspect`), it is itself PUBLISHED (`products.manage`) and it has at least
- * ONE real photo. The till sells it once approved. Warranty (days; empty = the company's policy), functional state,
+ * ONE real photo — UNIT-PHOTO-02: confirmed as THIS device by an inspector (`UnitPhotoManager`). The till sells it
+ * once approved. Warranty (days; empty = the company's policy), functional state,
  * defects and accessories are what the buyer reads on its card. Every device enters pending and unpublished.
  *
  * A battery nobody measured is «no informado», never a number. Staff see the full identifiers here, as on
@@ -27,8 +28,8 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import {
-  FUNCTIONAL_STATE_TEXT, INSPECTION_TEXT, deleteUnitPhoto, fetchStockUnits, inspectStockUnit, setStockUnitPublication,
-  unitWebReasonText, updateStockUnitListing, uploadUnitPhoto,
+  FUNCTIONAL_STATE_TEXT, INSPECTION_TEXT, fetchStockUnits, inspectStockUnit, publicPhotoCount, setStockUnitPublication,
+  unitWebReasonText, updateStockUnitListing,
   type FunctionalState, type StockUnit, type StockUnitPage, type UnitInspection, type UnitListingWrite,
 } from "@/app/lib/stock-units";
 import { unitIdentifier } from "@/app/lib/unit-identifier";
@@ -36,6 +37,7 @@ import { fetchCosmeticGrades, type CosmeticGradeRow } from "../lib/internal-api"
 import { PENDING_PRICE_TEXT } from "../lib/inventory-receipts";
 import { ClaimsHint } from "./ClaimsHint";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatSoles } from "./InventoryUi";
+import { UnitPhotoManager } from "./UnitPhotoManager";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
 const message = (error: unknown, fallback: string) => (error instanceof Error ? error.message : fallback);
@@ -85,15 +87,20 @@ export function missingDetails(unit: StockUnit): string[] {
 
 /**
  * USED-READY-01 — what still keeps THIS device from being published, in words: the server's own rule (it refuses
- * the publication with these same reasons). Empty: it may be published.
+ * the publication with these same reasons). Empty: it may be published. UNIT-PHOTO-02: only a photo confirmed as
+ * THIS device counts (`publicPhotoCount`); with photos but none confirmed, it says so.
  */
-export function publicationBlockers(unit: StockUnit, photoCount = unit.photos?.length ?? 0): string[] {
+export function publicationBlockers(unit: StockUnit, photoCount = publicPhotoCount(unit.photos)): string[] {
   const blockers: string[] = [];
   if (!["available", "reserved", "in_transit"].includes(unit.status)) blockers.push("ya no está en la tienda");
   if (!hasUsablePrice(unit.sale_price)) blockers.push("precio de venta");
   if (unit.inspection_status === "rejected") blockers.push("una inspección aprobada (fue rechazada)");
   else if (unit.inspection_status !== "approved") blockers.push("la inspección aprobada");
-  if (photoCount === 0) blockers.push("al menos una foto real del equipo");
+  if (photoCount === 0) {
+    blockers.push((unit.photos?.length ?? 0) > 0
+      ? "al menos una foto confirmada como de este equipo exacto"
+      : "al menos una foto real del equipo");
+  }
   return blockers;
 }
 
@@ -157,14 +164,11 @@ export function UnitListingDialog({
   const initial = useRef<ListingDraft>(toDraft(unit));
   const [draft, setDraft] = useState<ListingDraft>(() => toDraft(unit));
   const [photos, setPhotos] = useState(unit.photos ?? []);
-  const [file, setFile] = useState<File | null>(null);
-  const [alt, setAlt] = useState("");
   const [errors, setErrors] = useState<Partial<Record<keyof ListingDraft, string>>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // A price change waits for an explicit «Sí»: it is what the till charges and the shop shows.
   const [confirming, setConfirming] = useState<UnitListingWrite | null>(null);
-  const fileInput = useRef<HTMLInputElement>(null);
   const confirmButton = useRef<HTMLButtonElement>(null);
   // USED-READY-01 — the inspection and the publication are decided apart from «Guardar».
   const [current, setCurrent] = useState<StockUnit>(unit);
@@ -262,34 +266,11 @@ export function UnitListingDialog({
     await write(body);
   }
 
-  async function upload() {
-    if (!file) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const photo = await uploadUnitPhoto(unit.id, file, alt.trim());
-      setPhotos((current) => [...current, photo]);
-      setFile(null);
-      setAlt("");
-      if (fileInput.current) fileInput.current.value = "";
-    } catch (err) {
-      setError(message(err, "No se pudo subir la foto."));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function removePhoto(photoId: number) {
-    setBusy(true);
-    setError(null);
-    try {
-      await deleteUnitPhoto(unit.id, photoId);
-      setPhotos((current) => current.filter((p) => p.id !== photoId));
-    } catch (err) {
-      setError(message(err, "No se pudo eliminar la foto."));
-    } finally {
-      setBusy(false);
-    }
+  /** UNIT-PHOTO-02: every photo change answers with the whole device — its photos and what the web says of it. */
+  function photosChanged(saved: StockUnit) {
+    setPhotos(saved.photos ?? []);
+    setCurrent((before) => ({ ...before, ...saved }));
+    onChanged?.(saved);
   }
 
   async function decide(decision: "approved" | "rejected") {
@@ -334,7 +315,7 @@ export function UnitListingDialog({
   const nextPrice = confirming?.sale_price ?? null;
   const inspection = inspectionOf(current);
   const inHand = ["available", "reserved", "in_transit"].includes(current.status);
-  const blockers = publicationBlockers(current, photos.length);
+  const blockers = publicationBlockers(current, publicPhotoCount(photos));
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4">
@@ -419,47 +400,19 @@ export function UnitListingDialog({
               />
               {errors.defects ? <span role="alert" className="mt-1 block text-danger">{errors.defects}</span> : null}
             </label>
-
-            <div className="sm:col-span-2">
-              <p className="text-xs font-semibold text-muted">Fotos del equipo ({photos.length})</p>
-              {photos.length > 0 ? (
-                <ul className="mt-2 flex flex-wrap gap-3">
-                  {photos.map((photo, index) => (
-                    <li key={photo.id} className="w-24">
-                      {/* eslint-disable-next-line @next/next/no-img-element -- staff preview of an uploaded file */}
-                      <img src={photo.url} alt={photo.alt_text || `Foto ${index + 1}`} className="h-24 w-24 rounded-lg border border-bd-border bg-background object-contain" />
-                      {canEdit ? (
-                        <button
-                          type="button"
-                          disabled={busy}
-                          onClick={() => void removePhoto(photo.id)}
-                          aria-label={`Eliminar foto ${index + 1}`}
-                          className="mt-1 w-full rounded-md border border-danger-border px-2 py-1 text-xs font-semibold text-danger disabled:opacity-40"
-                        >
-                          Eliminar
-                        </button>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-              {canEdit ? (
-                <div className="mt-3 flex flex-wrap items-end gap-3">
-                  <label className="block min-w-40 flex-1 text-xs text-muted">
-                    Nueva foto
-                    <input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp" onChange={(e) => setFile(e.target.files?.[0] ?? null)} className="mt-1.5 block w-full text-sm text-foreground" />
-                  </label>
-                  <label className="block min-w-40 flex-1 text-xs text-muted">
-                    Texto alternativo
-                    <input value={alt} onChange={(e) => setAlt(e.target.value)} className={`mt-1.5 ${internalInputClass}`} />
-                  </label>
-                  <button type="button" className={internalButtonClass} disabled={busy || !file} onClick={() => void upload()}>Subir foto</button>
-                </div>
-              ) : (
-                <p className="mt-2 text-xs text-muted">Cambiar estos datos y las fotos necesita el permiso de ajustar inventario.</p>
-              )}
-            </div>
+            {!canEdit ? (
+              <p className="text-xs text-muted sm:col-span-2">Cambiar estos datos necesita el permiso de ajustar inventario.</p>
+            ) : null}
           </fieldset>
+
+          {/* UNIT-PHOTO-02 — outside the data fieldset: an inspector without `inventory.adjust` still confirms. */}
+          <UnitPhotoManager
+            unitId={unit.id}
+            photos={photos}
+            canEdit={canEdit}
+            canAttest={canInspect}
+            onChange={photosChanged}
+          />
 
           <section aria-label="Información comercial" className="space-y-3 rounded-lg border border-bd-border p-3 sm:p-4">
             <h3 className="text-xs font-semibold uppercase tracking-widest text-muted">Información comercial</h3>
@@ -671,7 +624,7 @@ export function UsedUnitsPanel({
   return (
     <Panel
       title="Equipos seminuevos"
-      description="Cada fila es un equipo. Se vende en caja con precio e inspección aprobada; en línea, además, publicado y con al menos una foto real. La batería, el estado, la garantía, los defectos y los accesorios completan lo que ve el comprador."
+      description="Cada fila es un equipo. Se vende en caja con precio e inspección aprobada; en línea, además, publicado y con al menos una foto real confirmada como de ese equipo. La batería, el estado, la garantía, los defectos y los accesorios completan lo que ve el comprador."
     >
       <form
         className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_12rem_12rem_12rem_auto]"
@@ -776,7 +729,12 @@ export function UsedUnitsPanel({
                         : <span title={webStatusText(unit) ?? undefined}>No · {unitWebReasonText(String(unit.web.reasons[0] ?? ""))}</span>)
                       : "—"}
                   </Td>
-                  <Td right>{unit.photos?.length ?? 0}</Td>
+                  <Td right>
+                    {/* UNIT-PHOTO-02: confirmed (shown in the shop) of all. */}
+                    <span title="Confirmadas como de este equipo / todas">
+                      {publicPhotoCount(unit.photos)}/{unit.photos?.length ?? 0}
+                    </span>
+                  </Td>
                   <Td right>
                     <button
                       type="button"

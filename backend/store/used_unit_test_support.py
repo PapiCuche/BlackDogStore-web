@@ -11,6 +11,32 @@ from __future__ import annotations
 PHOTO_URL = '/api/storefront/images/9001'
 
 
+def real_photo(unit, actor=None, *, view='front', attested=True, verified=True, **fields):
+    """
+    UNIT-PHOTO-02 — one REAL photo of `unit`: its file an own photo of the unit's company (a `StorefrontImage` row, no
+    pixels: nothing here reads them), licence verified, and the photo attested — what `unit_media.public_photos_q`
+    counts. `attested`/`verified` False build the cases the rule refuses. The first photo of a device is its primary.
+    """
+    import uuid
+
+    from django.utils import timezone
+
+    from .models import StorefrontImage, UnitPhoto
+
+    now = timezone.now()
+    public_id = uuid.uuid4().hex
+    stored = StorefrontImage.objects.create(
+        company_id=unit.company_id, public_id=public_id, storage_key=f'test/unit-photo/{public_id}.webp',
+        mime_type='image/webp', byte_size=1, width=10, height=10, source_kind=StorefrontImage.SOURCE_OWN_PHOTO,
+        license_verified_at=now if verified else None, license_verified_by=actor if verified else None,
+    )
+    fields.setdefault('is_primary', not UnitPhoto.objects.filter(unit_id=unit.pk, is_primary=True).exists())
+    return UnitPhoto.objects.create(
+        company_id=unit.company_id, unit_id=unit.pk, image_url=stored.url, width=10, height=10, view=view,
+        attested_at=now if attested else None, attested_by=actor if attested else None, **fields,
+    )
+
+
 def approve(unit, actor=None):
     """Approve the inspection of a used device still in the shop's hands (idempotent)."""
     from . import used_unit_services
@@ -29,19 +55,20 @@ def approve_all(units, actor=None):
 
 def ready_used(unit, actor=None, **fields):
     """
-    `update_unit(**fields)`, then — for a used device in the shop's hands — approve it, give it one photo and, when
-    it has a usable price, publish it: what the web needs. Idempotent; returns the fresh row.
+    `update_unit(**fields)`, then — for a used device in the shop's hands — approve it, give it one REAL photo
+    (attested and verified, UNIT-PHOTO-02) and, when it has a usable price, publish it: what the web needs.
+    Idempotent; returns the fresh row.
     """
     from . import stock_unit_services, used_unit_services
-    from .models import StockUnit, UnitPhoto
+    from .models import StockUnit
 
     if fields:
         stock_unit_services.update_unit(unit, **fields)
     fresh = approve(unit, actor)
     if not (used_unit_services.is_used(fresh) and fresh.status in used_unit_services.IN_HAND):
         return fresh
-    if not fresh.photos.exists():
-        UnitPhoto.objects.create(company_id=fresh.company_id, unit=fresh, image_url=PHOTO_URL, width=10, height=10)
+    if not used_unit_services.real_photos(fresh):
+        real_photo(fresh, actor)
     if stock_unit_services.has_usable_price(fresh.sale_price) and not fresh.published_online:
         used_unit_services.set_publication(fresh, published=True, actor=actor)
     return StockUnit.objects.get(pk=unit.pk)

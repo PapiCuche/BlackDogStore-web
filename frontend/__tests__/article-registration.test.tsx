@@ -310,7 +310,8 @@ describe('un seminuevo', () => {
       kind: 'used_device', dry_run: Boolean(body.dry_run), units: [{ id: body.dry_run ? null : 77 }],
       links: { product: '/admin/products/41', units: '/admin/inventory/units?product=41', storefront: null },
     }));
-    mUnits.uploadUnitPhoto.mockResolvedValue({ id: 1, url: '/x.jpg', alt_text: '' });
+    // UNIT-PHOTO-02: the server answers with the whole device, its photos in order.
+    mUnits.uploadUnitPhoto.mockResolvedValue({ id: 77, photos: [{ id: 1, url: '/x.jpg', alt_text: '' }] } as never);
     wizard(ALL);
     await choose(/Equipo seminuevo/);
     await fillProduct({ name: 'iPhone 15 seminuevo', category: '6', price: '2500' });

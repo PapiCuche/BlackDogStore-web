@@ -141,6 +141,14 @@ export type ModelAccessory = {
 
 export type CosmeticGrade = { code: string; label: string; description: string };
 
+export type UnitPublicPhoto = {
+  url: string; alt_text: string; width: number; height: number;
+  view?: string; view_label?: string; defect_note?: string; is_primary?: boolean;
+};
+
+/** UNIT-PHOTO-02 — what a used device says when it has no confirmed photo: never a generic picture in its place. */
+export const NO_UNIT_PHOTOS_TEXT = "Sin fotos de este equipo";
+
 export type UsedUnit = {
   id: string;
   product_id: number;
@@ -149,7 +157,11 @@ export type UsedUnit = {
   battery_health: number | null;
   cosmetic_grade: CosmeticGrade | null;
   price: string;
-  photos: { url: string; alt_text: string; width: number; height: number }[];
+  /**
+   * UNIT-PHOTO-02 — the photos of THIS device confirmed as such (never a generic picture), the primary first. Each says
+   * which side it shows (`view_label`: «Frontal», «Defecto: …»); absent on older servers.
+   */
+  photos: UnitPublicPhoto[];
   notes: string;
   imei_hint: string;
   /**

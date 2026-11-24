@@ -214,10 +214,22 @@ describe('rótulos de las fotos', () => {
     expect(within(gallery()).queryByText('Imagen referencial')).toBeNull();
   });
 
+  it('UNIT-PHOTO-02: cada foto de un seminuevo dice qué lado del equipo muestra', async () => {
+    model.used_units[1].photos = [
+      { url: MANAGED(6), alt_text: '', width: 800, height: 600, view: 'defect', view_label: 'Defecto: rayón en el marco', is_primary: true },
+      { url: MANAGED(7), alt_text: '', width: 800, height: 600, view: 'back', view_label: 'Posterior', is_primary: false },
+    ] as typeof model.used_units[1]['photos'];
+    await renderPage({ initialLine: 'used' });
+    fireEvent.click(screen.getByRole('button', { name: /256 GB · Rojo/ }));
+    expect(within(gallery()).getByText('Fotos de este equipo · Defecto: rayón en el marco')).toBeInTheDocument();
+    fireEvent.click(within(gallery()).getByRole('button', { name: 'Ver imagen 2 de 2: Posterior' }));
+    expect(within(gallery()).getByText('Fotos de este equipo · Posterior')).toBeInTheDocument();
+  });
+
   it('un seminuevo sin fotos no toma prestada la del modelo', async () => {
     await renderPage({ initialLine: 'used' });
     expect(within(gallery()).queryByRole('img')).toBeNull();
-    expect(within(gallery()).getByText('Este equipo no tiene fotos publicadas.')).toBeInTheDocument();
+    expect(within(gallery()).getByText('Sin fotos de este equipo')).toBeInTheDocument();
   });
 });
 

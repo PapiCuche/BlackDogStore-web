@@ -217,7 +217,7 @@ from .external_receipt_views import AdminOrderExternalReceiptView, AdminOrderExt
 from .receipt_views import InventoryReceiptConfirmView, InventoryReceiptDraftView, InventoryReceiptPreviewView
 from .label_views import LabelPdfView, LabelPreviewView
 from .stock_unit_views import (
-    StockUnitPhotoDetailView, StockUnitPhotoListView,
+    StockUnitPhotoAttestationView, StockUnitPhotoDetailView, StockUnitPhotoListView, StockUnitPhotoOrderView,
     ProductSerializationView, SerializedProductListView, StockUnitActionView,
     StockUnitDetailView, StockUnitInspectionView, StockUnitListView, StockUnitMoveVariantView,
     StockUnitPublicationView, StockUnitReconciliationView,
@@ -742,6 +742,12 @@ urlpatterns = [
     path('admin/inventory/units/<int:pk>/inspection/', StockUnitInspectionView.as_view(), name='admin-inventory-unit-inspection'),
     path('admin/inventory/units/<int:pk>/publication/', StockUnitPublicationView.as_view(), name='admin-inventory-unit-publication'),
     path('admin/inventory/units/<int:pk>/photos/', StockUnitPhotoListView.as_view(), name='admin-inventory-unit-photos'),
+    # UNIT-PHOTO-02 — order and the attestation «esta foto es de este equipo exacto». Replacing a photo's file is the
+    # upload route with `replace=<photo id>` (one file-reading route, one request-limit tier).
+    path('admin/inventory/units/<int:pk>/photos/order/', StockUnitPhotoOrderView.as_view(),
+         name='admin-inventory-unit-photo-order'),
+    path('admin/inventory/units/<int:pk>/photos/<int:photo_id>/attestation/', StockUnitPhotoAttestationView.as_view(),
+         name='admin-inventory-unit-photo-attestation'),
     path('admin/inventory/units/<int:pk>/photos/<int:photo_id>/', StockUnitPhotoDetailView.as_view(),
          name='admin-inventory-unit-photo'),
     path('admin/inventory/import/preview/', AdminStockImportPreviewView.as_view(), name='admin-stock-import-preview'),

@@ -208,7 +208,7 @@ describe('Inventario › Seminuevos', () => {
     render(<UsedUnitsPanel branch="all" canEdit canSeeCost={false} />);
     fireEvent.click(await screen.findByRole('button', { name: 'Editar SER123' }));
     const dialog = screen.getByRole('dialog');
-    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Eliminar foto 1' })); });
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: /^Eliminar foto 1/ })); });
     expect(writes[0]).toMatchObject({ method: 'DELETE', path: '/admin/inventory/units/7/photos/1/' });
     const file = new File(['x'], 'frente.png', { type: 'image/png' });
     fireEvent.change(within(dialog).getByLabelText('Nueva foto'), { target: { files: [file] } });

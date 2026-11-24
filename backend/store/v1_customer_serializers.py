@@ -21,10 +21,10 @@ the model, or to the legacy serializer, does not add it to this response.
 """
 from rest_framework import serializers
 
-from .models import Order, OrderItem
+from .models import Order, OrderItem, Product
 from .serializers import (
     DeliveryMethodLabelField, OrdersPrimingListSerializer, closed_product_payload, gated_image_url,
-    order_line_products, prime_variant_galleries,
+    order_line_products, order_line_unit_photo, prime_order_unit_photos, prime_variant_galleries,
 )
 
 
@@ -62,6 +62,10 @@ class V1CustomerOrderItemSerializer(serializers.ModelSerializer):
             data['product_name'] = closed['name']
             data['product_slug'] = ''
             data['image_url'] = closed['image_url']
+        elif product.condition_line == Product.CONDITION_USED and instance.supply_origin != OrderItem.SUPPLY_SUPPLIER:
+            # UNIT-PHOTO-02: the device it sold — its public primary photo, or nothing; never a generic picture.
+            photo = order_line_unit_photo(self.context, instance)
+            data['image_url'] = photo['url'] if photo else ''
         elif product.product_model_id:
             # IMG-GATE-01: a device variant's picture is the gated one (never an unverified or external picture),
             # from the response's batch (the order or the list of orders primed it).
@@ -116,6 +120,7 @@ class V1CustomerOrderSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         prime_variant_galleries(self.context, order_line_products([instance]))
+        prime_order_unit_photos(self.context, [instance])
         return super().to_representation(instance)
 
     # ── What is deliberately ABSENT, and why ────────────────────────────────

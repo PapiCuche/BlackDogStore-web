@@ -29,6 +29,7 @@ from store import device_catalog
 from store import inventory_services as inventory
 from store import stock_unit_services as units
 from store import unit_hold_services as holds
+from store import unit_media
 from store.models import (
     BranchStock, CartItem, CosmeticGrade, Order, OrderItem, OrderUnit, Product,
     ProductVariantOption, StockMovement, StockUnit, UnitPhoto,
@@ -400,7 +401,12 @@ class PublicModelApiTest(DeviceShop, TestCase):
         stored = storefront_media.StorefrontImage.objects.create(
             company=self.company, public_id='a' * 32, storage_key='k', mime_type='image/webp', byte_size=1,
             width=10, height=10)
-        UnitPhoto.objects.create(company=self.company, unit=self.used, image_url=stored.url, width=10, height=10)
+        added = UnitPhoto.objects.create(company=self.company, unit=self.used, image_url=stored.url, width=10,
+                                         height=10, sort_order=99)
+        card = {c['id']: c for c in self.detail().json()['used_units']}[str(self.used.public_id)]
+        # UNIT-PHOTO-02: not attested, its file not verified — not on the card.
+        self.assertNotIn(stored.url, [p['url'] for p in card['photos']])
+        unit_media.attest(unit=self.used, photo_id=added.pk, attested=True, actor=self.staff)
         card = {c['id']: c for c in self.detail().json()['used_units']}[str(self.used.public_id)]
         # USED-READY-01: the fixture's device already had the photo the web requires; this one is added after it.
         self.assertEqual(card['photos'][-1]['url'], stored.url)
