@@ -201,7 +201,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     legacyRoles: ["sales", "admin", "superadmin"],
     status: "implemented",
   },
-  { id: "sales.quotes", group: "sales", label: "Cotizaciones", description: "Cotizaciones a clientes.", status: "pending" },
+  {
+    // SALES-QUOTE-01: offers with price and validity. They never charge or move stock; converting one is a
+    // till sale (`sales.pos.use`, checked inside the screen and by the server).
+    id: "sales.quotes",
+    group: "sales",
+    label: "Cotizaciones",
+    description: "Cotizaciones a clientes: precio, vigencia, aprobación, PDF e impresión, y conversión en venta.",
+    href: "/admin/sales/quotes",
+    requiredCapabilities: ["sales.quotes.view"],
+    status: "implemented",
+  },
   {
     id: "sales.promotions",
     group: "sales",

@@ -28,7 +28,9 @@ import type { DocumentDesign } from "./document-design-api";
 /** Los PDF que acepta `/admin/document-preview/`. */
 export type PdfPreviewKind =
   | "sales_note" | "order_receipt" | "ticket80_sales_note"
-  | "boleta" | "factura" | "ticket80_boleta" | "ticket80_factura";
+  | "boleta" | "factura" | "ticket80_boleta" | "ticket80_factura"
+  // SALES-QUOTE-01: the commercial quote, A4 and 80 mm.
+  | "sales_quote" | "ticket80_sales_quote";
 
 /** DOC-PREVIEW-ESCPOS: la nota de venta en la térmica (`/admin/document-preview/thermal/`). */
 export type ThermalPreviewKind = "thermal_sales_note";
@@ -46,7 +48,7 @@ export type PreviewOption = {
   format: "pdf" | "escpos";
 };
 
-/** Los siete PDF y la térmica que el servidor acepta, en el orden en que se ofrecen. */
+/** Los nueve PDF y la térmica que el servidor acepta, en el orden en que se ofrecen. */
 export const PREVIEW_OPTIONS: readonly PreviewOption[] = [
   { kind: "sales_note", label: "Nota de venta interna", paper: "A4", fiscal: false, format: "pdf" },
   { kind: "order_receipt", label: "Constancia de pedido", paper: "A4", fiscal: false, format: "pdf" },
@@ -59,6 +61,8 @@ export const PREVIEW_OPTIONS: readonly PreviewOption[] = [
   { kind: "factura", label: "Factura electrónica", paper: "A4", fiscal: true, format: "pdf" },
   { kind: "ticket80_boleta", label: "Ticket de boleta", paper: "Ticket 80 mm", fiscal: true, format: "pdf" },
   { kind: "ticket80_factura", label: "Ticket de factura", paper: "Ticket 80 mm", fiscal: true, format: "pdf" },
+  { kind: "sales_quote", label: "Cotización", paper: "A4", fiscal: false, format: "pdf" },
+  { kind: "ticket80_sales_quote", label: "Ticket de cotización", paper: "Ticket 80 mm", fiscal: false, format: "pdf" },
 ];
 
 /** Un renglón del rollo térmico, tal como lo imprime la impresora. */

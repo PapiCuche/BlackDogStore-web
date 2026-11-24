@@ -129,8 +129,9 @@ test('elegir otro documento pide ese tipo y revoca el blob anterior (con margen)
   expect(revoked).toEqual(['blob:test/1']);
   expect(screen.getByTestId('fiscal-note')).toHaveTextContent(/sin validez tributaria/);
   expect(screen.getByTestId('sample-badge')).toBeInTheDocument();
-  // The seven PDF and the thermal roll (DOC-DESIGN-03 adds the logo-size radios to the page, in their own group).
-  expect(within(screen.getByRole('radiogroup', { name: 'Documento' })).getAllByRole('radio')).toHaveLength(8);
+  // The nine PDF (SALES-QUOTE-01 adds the quote, A4 and 80 mm) and the thermal roll (DOC-DESIGN-03 adds the
+  // logo-size radios to the page, in their own group).
+  expect(within(screen.getByRole('radiogroup', { name: 'Documento' })).getAllByRole('radio')).toHaveLength(10);
 });
 
 test('una respuesta lenta anterior no pisa a la elección nueva', async () => {
