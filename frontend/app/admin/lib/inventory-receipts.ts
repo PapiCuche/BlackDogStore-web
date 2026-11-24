@@ -323,6 +323,41 @@ export function validateLines(lines: DraftLine[], opts: { costs: boolean; prices
 
 export const hasProblems = (problems: Record<string, LineProblems>): boolean => Object.keys(problems).length > 0;
 
+// ── What the review and the closing screen say ─────────────────────────────
+
+const counted = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+/**
+ * STOCK-UX-WALK — «Entrará 1 equipo identificado. Se preparará 1 etiqueta.»: a part that is zero is not said, and
+ * the verb agrees with what enters (one thing: singular; two or more, or both kinds: plural). `past` is the closing
+ * screen, without the final full stop: it goes on with the branch and the supplier.
+ */
+export function receiptTotalsText(
+  totals: { quantity_units: number; devices: number; labels: number },
+  tense: "future" | "past",
+): string {
+  const parts: string[] = [];
+  if (totals.quantity_units > 0) parts.push(`${counted(totals.quantity_units, "unidad", "unidades")} por cantidad`);
+  if (totals.devices > 0) parts.push(counted(totals.devices, "equipo identificado", "equipos identificados"));
+  if (parts.length === 0) parts.push(counted(0, "equipo", "equipos"));
+  const one = totals.quantity_units + totals.devices === 1;
+  const verb = tense === "future" ? (one ? "Entrará" : "Entrarán") : (one ? "Entró" : "Entraron");
+  const entering = `${verb} ${parts.join(" y ")}`;
+  if (tense === "past") return entering;
+  const labels = totals.labels === 0
+    ? "No se prepararán etiquetas."
+    : `${totals.labels === 1 ? "Se preparará" : "Se prepararán"} ${counted(totals.labels, "etiqueta", "etiquetas")}.`;
+  return `${entering}. ${labels}`;
+}
+
+/** One line of the review: «Entra 1 equipo identificado.», «Entran 5 unidades.». */
+export function lineReceiveText(kind: "quantity" | "units", count: number): string {
+  const what = kind === "units"
+    ? counted(count, "equipo identificado", "equipos identificados")
+    : counted(count, "unidad", "unidades");
+  return `${count === 1 ? "Entra" : "Entran"} ${what}.`;
+}
+
 // ── Request body ──────────────────────────────────────────────────────────
 
 export type ReceiptLineBody =

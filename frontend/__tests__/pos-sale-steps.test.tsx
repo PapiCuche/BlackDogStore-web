@@ -11,6 +11,7 @@ import userEvent from '@testing-library/user-event';
 import { saleSteps, type StepInput } from '@/app/admin/lib/pos-steps';
 import { PosSaleSteps } from '@/app/admin/sales/pos/PosSaleSteps';
 import { PosReviewPanel } from '@/app/admin/sales/pos/PosReviewPanel';
+import { PosSoldUnits } from '@/app/admin/sales/pos/PosSoldUnits';
 import type { PosLine } from '@/app/admin/lib/unit-entry';
 import type { PosPreview } from '@/app/admin/lib/internal-api';
 
@@ -233,5 +234,34 @@ describe('PosReviewPanel', () => {
     const region = screen.getByRole('region', { name: 'Revisar la venta' });
     expect(region).toHaveTextContent('Calculando el total');
     expect(region).not.toHaveTextContent('S/ 3,899.80');
+  });
+});
+
+/**
+ * STOCK-UX-WALK — at 390 px the success screen cut the product name in the middle of a word («Inter nacional») and
+ * the review badge «Interno · no fiscal» broke over two lines. jsdom has no layout: what is fixed here is the
+ * wrapping rule each element carries (words wrap whole; the badge never wraps).
+ */
+describe('STOCK-UX-WALK wrapping at 390 px', () => {
+  it('the sold device line wraps between words, never inside one', () => {
+    render(<PosSoldUnits items={[{
+      product: 4, name: 'iPhone 16 128 GB Negro nano-SIM y eSIM Internacional (otros países)',
+      units: [{ serial_number: '', imei: '354956234901010', imei2: '', method: 'scanner' }],
+    }]} />);
+    const line = screen.getByText(/iPhone 16 128 GB Negro/);
+    expect(line).toHaveTextContent('Internacional (otros países): IMEI 354956234901010');
+    expect(line.className).not.toMatch(/break-all/);
+    expect(line.className).toMatch(/break-words/);
+  });
+
+  it('a sale without identified devices lists nothing', () => {
+    const { container } = render(<PosSoldUnits items={[{ product: 8, name: 'Funda', units: [] }]} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it('the document badge of the review stays on one line', () => {
+    render(<PosReviewPanel lines={[]} preview={null} customerName={null} sellerName="Ana" paymentLabel="Efectivo"
+      received={null} document={{ value: 'sales_note', label: 'Nota de venta interna' }} />);
+    expect(screen.getByText('Interno · no fiscal').className).toMatch(/whitespace-nowrap/);
   });
 });

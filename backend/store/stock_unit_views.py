@@ -517,10 +517,14 @@ class _UnitMixin:
         return unit, None
 
     def answer(self, request, unit) -> Response:
-        fresh = (StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade', 'supplier')
+        fresh = (StockUnit.objects.select_related('product', 'product__product_model', 'branch', 'cosmetic_grade',
+                                                  'supplier', 'company')
                  .prefetch_related(unit_media.photos_prefetch()).get(pk=unit.pk))
-        return Response(unit_payload(fresh, include_cost=may_view_costs(request),
-                                     include_supplier=may_see_suppliers(request)))
+        # STOCK-UX-WALK — what the web says of it NOW, as the list row says it: a ficha that has just published,
+        # inspected or photographed the device must not keep reading the reasons it had before.
+        return Response({**unit_payload(fresh, include_cost=may_view_costs(request),
+                                        include_supplier=may_see_suppliers(request)),
+                         'web': web_status(fresh, dispatch=company_fulfillment_branch(fresh.company))})
 
 
 def may_manage_products(request) -> bool:

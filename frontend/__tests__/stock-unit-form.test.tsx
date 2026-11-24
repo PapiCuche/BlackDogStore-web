@@ -368,3 +368,17 @@ test('INV-UX-A1 review: the server\'s can_change_tracking wins over the stock gu
   await pick('iPad Air');
   expect(screen.queryByRole('button', { name: 'Activar seguimiento por serie' })).toBeNull();
 });
+
+test('STOCK-UX-WALK: choosing a serial-tracked product puts the cursor on the first identifier, not on the page', async () => {
+  // Real browser: after picking the model the search box is replaced by the chip and focus fell to <body>, so the
+  // next scan of the reader went nowhere.
+  mount();
+  await pick('iPhone 16 Pro Max');
+  await waitFor(() => expect(screen.getByLabelText(/^Número de serie/)).toHaveFocus());
+});
+
+test('STOCK-UX-WALK: a product counted by quantity does not grab the focus into fields it cannot save', async () => {
+  mount();
+  await pick('Cable USB-C');
+  expect(screen.getByLabelText(/^Número de serie/)).not.toHaveFocus();
+});

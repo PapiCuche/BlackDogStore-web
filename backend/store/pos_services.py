@@ -962,6 +962,14 @@ def resolve_pos_products(company, items) -> dict[int, Product]:
     }
     missing = [i for i in ids if i not in found]
     if missing:
+        # STOCK-UX-WALK — a variant of this company that is only waiting to be enabled says so; anything else
+        # (another company's id, an inactive product) keeps the message that tells nothing about it.
+        draft = (Product.objects.filter(company=company, pk__in=missing, is_active=True)
+                 .filter(Product.pending_draft_q()).order_by('pk').first())
+        if draft is not None:
+            from .unit_identification import pending_draft_refusal
+
+            raise PosValidationError(pending_draft_refusal(draft))
         raise PosValidationError(
             'Producto no encontrado o no disponible en esta empresa.'
         )
