@@ -848,10 +848,60 @@ class ArchivedNeverHoldsStockTest(LifecycleShop, TestCase):
                              key='vs-recepcion', stamp='vs')
         self.assertFalse(BranchStock.objects.filter(product=product, quantity__gt=0).exists())
 
-    def test_the_till_decides_on_the_locked_row(self):
-        """`receive` re-reads the variant under its lock before `_usable` (an archive committed meanwhile)."""
+    def test_the_till_locks_the_variant_after_the_waiting_lines(self):
+        """
+        Re-review of #407 — the till locks the variant AFTER the paid order lines waiting for it, as a delivery does
+        (`supply_services.receive_line`: order → line → shelf → product). Locking it before them closed a cycle: the
+        till holding the product and waiting for a line, a delivery holding that line and its shelf and waiting for
+        the product. A true two-connection deadlock needs a paid on-order line mid-delivery; the order is pinned here
+        and the archive guarantee by `TillAndRegistrationLockTest`.
+        """
         import inspect
 
         source = inspect.getsource(pos_device_services.receive)
+        waiting = source.index('_refuse_over_waiting(company, actor, product, branch, confirmed)')
         lock = source.index("Product.objects.select_for_update(of=('self',)).get(pk=product.pk)")
-        self.assertLess(lock, source.index('_usable(product)'))
+        self.assertLess(waiting, lock)
+        self.assertEqual(source.count("select_for_update(of=('self',)).get(pk=product.pk)"), 2)   # + the price write
+        self.assertLess(waiting, source.index("locked = Product.objects.select_for_update"))
+
+
+class TillAndRegistrationLockTest(LifecycleShop, TestCase):
+    """
+    Re-review of #407 — the till and the guided registration decide on the LOCKED variant. Each test hands the
+    service a variant read BEFORE it was archived (the lookup is patched to return that stale row): only the
+    re-read under the lock can refuse it.
+    """
+
+    def setUp(self):
+        self.build('vs-candado')
+        self.stale = Product.objects.get(pk=self.new256.pk)
+        self.assertEqual(self.archive(self.new256).status_code, 200)
+
+    def stale_lookup(self):
+        from unittest import mock
+
+        return mock.patch.object(device_catalog, 'find_variant', lambda company, spec: self.stale)
+
+    def test_the_till_refuses_a_variant_archived_after_its_lookup(self):
+        from store.pos_device_services import Authority
+
+        authority = Authority(receive=True, create_variant=True, set_price=True, view_costs=False, choose_supplier=True,
+                              open_suppliers=True, receive_on_order=False)
+        with self.stale_lookup(), self.assertRaises(pos_device_services.QuickSaleError) as caught:
+            pos_device_services.receive(company=self.company, branch=self.branch, actor=self.staff, authority=authority,
+                                        body={'model': self.model.pk, 'option_ids': [self.gb256.pk, self.black.pk],
+                                              'imei': next(self._imei)})
+        self.assertEqual(caught.exception.code, 'variant_archived')
+        self.assertEqual(StockUnit.objects.filter(product=self.new256).count(), 0)
+
+    def test_the_registration_refuses_a_variant_archived_after_its_lookup(self):
+        with self.stale_lookup():
+            res = self.api.post(f'/api/admin/products/register/{self.q}', {
+                'kind': 'new_device', 'product': {'name': 'Otra', 'price': '3999.00', 'is_active': True},
+                'model': {'id': self.model.pk}, 'options': [self.gb256.pk, self.black.pk], 'requires_imei': True,
+                'branch': self.branch.pk, 'units': [{'serial_number': 'SNVSLOCK1', 'imei': next(self._imei)}],
+            }, format='json', HTTP_IDEMPOTENCY_KEY='vs-registro-candado')
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertIn('archivada', str(res.json()))
+        self.assertEqual(StockUnit.objects.filter(product=self.new256).count(), 0)
