@@ -264,10 +264,14 @@ _STOCK_BASE = [
     ('Sucursal', 'branch'), ('Modelo', 'model'), ('Capacidad', 'capacity'), ('Color', 'colour'), ('SIM', 'sim'),
     ('Versión (región / país de venta)', 'region'), ('IMEI 1', 'imei'), ('IMEI 2', 'imei2'), ('Serie', 'serial_number'),
     ('Proveedor', 'supplier'), ('Costo', 'cost'),
+    # NEW-TEMPLATE-PRICE (owner, 2026-11-24) — in BOTH templates, right after «Costo». In the used one it is the
+    # device's own price (as always); in the new one it is only a PROPOSAL for the variant's price: compared in the
+    # preview, never applied unless a person with `products.manage` confirms it when registering (`apply_units`).
+    ('Precio de venta', 'sale_price'),
 ]
 _STOCK_TAIL = [('Fecha de ingreso', 'received_on'), ('Observaciones (notas internas)', 'notes')]
 _STOCK_USED = [
-    ('Precio de venta', 'sale_price'), ('Estado estético', 'grade'), ('Salud de batería (%)', 'battery'),
+    ('Estado estético', 'grade'), ('Salud de batería (%)', 'battery'),
     ('Estado funcional', 'functional_state'), ('Defectos', 'defects'), ('Accesorios', 'accessories'),
     ('Garantía (días)', 'warranty_days'), ('Detalles para el comprador', 'public_notes'),
 ]
@@ -278,8 +282,8 @@ STOCK_TEMPLATES = {
                 'title': 'Stock de seminuevos', 'columns': [*_STOCK_BASE, *_STOCK_USED, *_STOCK_TAIL]},
 }
 #: The columns only the used template carries. A file of the NEW template that brings one is refused whole: what it
-#: says would otherwise be ignored on every row («ignorado en un equipo nuevo»). A new device sells at its variant's
-#: price, so «Precio de venta» is one of them.
+#: says would otherwise be ignored on every row («ignorado en un equipo nuevo»). «Precio de venta» is no longer one of
+#: them (NEW-TEMPLATE-PRICE): in the new template it proposes the variant's price, and is never stored on the device.
 USED_TEMPLATE_FIELDS = frozenset(field for _header, field in _STOCK_USED)
 #: What the importer reads that neither stock template carries, and why.
 NOT_IN_STOCK_TEMPLATES = {
@@ -330,8 +334,13 @@ def _stock_notes(line) -> dict:
                         'No puede ser futura ni anterior al año 2000.'),
         'notes': (f'Opcional: notas internas, sólo para el personal (ubicación, observaciones). Hasta '
                   f'{stock_unit_services.MAX_NOTES} caracteres.'),
-        'sale_price': ('El precio de ESTE equipo en la tienda, mayor que cero. Sin precio no se vende en línea ni en '
-                       'caja. Sólo lo fija quien administra productos.'),
+        'sale_price': (
+            ('El precio de ESTE equipo en la tienda, mayor que cero. Sin precio no se vende en línea ni en caja. Sólo '
+             'lo fija quien administra productos.') if line == LINE_USED else
+            ('Opcional: el precio de venta que esperas para la variante, mayor que cero (3499.90). Un equipo nuevo se '
+             'vende al precio de su variante: este valor NO lo cambia solo. Si es distinto, la vista previa muestra la '
+             'diferencia y quien administra productos puede confirmar el cambio al registrar. Nunca se toma del '
+             'costo: vacía = no se propone nada.')),
         'grade': 'Opcional: uno de los estados de la escala de la empresa (por ejemplo «Excelente»).',
         'battery': 'Opcional: la salud de la batería MEDIDA, de 0 a 100. Vacía = «no informado».',
         'functional_state': 'Opcional: «Sin fallas» o «Con fallas» (entonces llena «Defectos»).',
@@ -378,8 +387,19 @@ def _stock_help(line) -> list[list[str]]:
         *[[header, notes[field]] for header, field in spec['columns']],
     ]
     if line == LINE_NEW:
-        lines += [[], ['¿Y el precio?', 'Un equipo nuevo se vende al precio de su variante (Catálogo › Modelos): '
-                                        'esta plantilla no lleva «Precio de venta».']]
+        lines += [
+            [],
+            ['¿Y el precio?', 'Un equipo nuevo se vende al precio de su variante (Catálogo › Modelos). «Precio de '
+                              'venta» es opcional y no cambia solo el precio de la variante.'],
+            ['Si coincide', 'No pasa nada: la variante ya tiene ese precio.'],
+            ['Si es distinto', 'La vista previa muestra la variante, su precio actual, el del archivo, la diferencia, '
+                               'cuántos equipos entran y cuántos ya hay en stock. Quien administra productos puede '
+                               'marcar «Actualizar el precio de la variante» y confirmarlo al registrar; sin esa '
+                               'confirmación el precio de la variante no cambia.'],
+            ['Dos precios distintos', 'Si el archivo trae dos precios para la misma variante, no se propone ninguno: '
+                                      'corrige el archivo o cambia el precio en Catálogo › Modelos.'],
+            ['¿Y el costo?', 'El costo nunca se usa como precio de venta.'],
+        ]
     else:
         lines += [
             [],
@@ -706,6 +726,165 @@ SUPPLIERS_FORBIDDEN = ('No tienes permiso para ver proveedores: deja vacía la c
                        'los administra).')
 
 
+# ---------------------------------------------------------------------------
+# NEW-TEMPLATE-PRICE — «Precio de venta» of the new template: a proposal, never an automatic change
+# ---------------------------------------------------------------------------
+#
+# The owner's rules (2026-11-24): a price in the file that differs from the variant's commercial price is NOT applied
+# by itself. The preview says the difference, its reach and a proposal; changing the price needs `products.manage`
+# AND an explicit confirmation when registering, tied to THIS job (the proposed price is the file's, and the variant's
+# price is still the one the preview saw). The acquisition cost is never a price.
+
+#: The apply refused the price updates for want of `products.manage` (403). Nothing was written.
+PRICES_FORBIDDEN = 'prices_forbidden'
+#: `price_updates` is not a confirmed copy of a proposal of this job (400). Nothing was written.
+PRICE_UPDATE_INVALID = 'price_update_invalid'
+
+
+def _soles(amount: Decimal) -> str:
+    return f'S/ {amount:.2f}'
+
+
+def _price_note(product, file_price: Decimal) -> str:
+    """The row's warning when the file's price is not the variant's, or '' when they agree."""
+    current = product.price
+    if file_price == current:
+        return ''
+    if current <= 0:
+        return (f'«{product.name}» aún no tiene precio de venta; el archivo propone {_soles(file_price)}. No se aplica '
+                f'solo: revisa la propuesta antes de registrar.')
+    difference = file_price - current
+    sign = '+' if difference > 0 else '-'
+    return (f'Precio del archivo {_soles(file_price)} distinto del de la variante «{product.name}» '
+            f'({_soles(current)}; diferencia {sign}{abs(difference):.2f}). No se aplica solo: revisa la propuesta '
+            f'antes de registrar.')
+
+
+def price_review(company, staged: list[dict], *, products: dict, branch_ids) -> list[dict]:
+    """
+    Per variant whose file price is not its price: the price now, the file's price(s), the proposal (one price only;
+    two or more is a conflict, and nothing is proposed), how many devices of it the file brings and how many are
+    already available in `branch_ids` (the caller's branches), and whether it is published and sold online. Reads only.
+    """
+    per_variant: dict[int, dict] = {}
+    for values in staged:
+        product_id = values.get('product_id')
+        if product_id is None:
+            continue
+        entry = per_variant.setdefault(product_id, {'units': 0, 'priced': 0, 'prices': set()})
+        entry['units'] += 1
+        if values.get('file_price'):
+            entry['priced'] += 1
+            entry['prices'].add(Decimal(values['file_price']))
+    wanted = {pk: entry for pk, entry in per_variant.items()
+              if entry['prices'] and entry['prices'] != {products[pk].price}}
+    if not wanted:
+        return []
+    in_stock: dict[int, int] = {}
+    for product_id in StockUnit.objects.filter(company=company, status=StockUnit.Status.AVAILABLE,
+                                               product_id__in=wanted, branch_id__in=set(branch_ids)).values_list(
+                                                   'product_id', flat=True):
+        in_stock[product_id] = in_stock.get(product_id, 0) + 1
+    review = []
+    for product_id, entry in sorted(wanted.items(), key=lambda item: (products[item[0]].name, item[0])):
+        product = products[product_id]
+        prices = sorted(entry['prices'])
+        proposal = prices[0] if len(prices) == 1 else None
+        review.append({
+            'variant_id': product.pk, 'name': product.name, 'current_price': f'{product.price:.2f}',
+            'has_price': product.price > 0, 'file_prices': [f'{price:.2f}' for price in prices],
+            'conflict': len(prices) > 1,
+            'proposed_price': f'{proposal:.2f}' if proposal is not None else None,
+            'difference': f'{proposal - product.price:.2f}' if proposal is not None else None,
+            'units_in_file': entry['units'], 'rows_with_price': entry['priced'],
+            'units_in_stock': in_stock.get(product_id, 0),
+            'is_published_online': product.is_published_online, 'is_sold_online': product.is_sold_online,
+            'pending_draft': product.is_pending_draft,
+        })
+    return review
+
+
+def clean_price_updates(job, actor, raw) -> list[dict]:
+    """
+    The confirmed price updates of an apply, checked against THIS job's proposals. Reads only. [] when none was sent.
+
+    Refused whole: without `products.manage` (`PRICES_FORBIDDEN`, asked of whoever APPLIES — a preview made by somebody
+    who holds it is no way in for somebody who does not), or when an update is not a confirmed copy of a proposal
+    (`PRICE_UPDATE_INVALID`): not a list, `confirm` other than true, a variant the review did not propose (another
+    company's included), a conflict, a price other than the file's, or the same variant twice.
+    """
+    if raw in (None, '', []):
+        return []
+    if not device_catalog.user_may_manage_products(actor, job.company):
+        raise UnitImportError('Sólo quien administra productos puede cambiar el precio de una variante. No se registró '
+                              'nada: registra el archivo sin actualizar precios.', code=PRICES_FORBIDDEN)
+    invalid = UnitImportError('La actualización de precios no coincide con la propuesta de esta vista previa. No se '
+                              'registró nada: vuelve a revisarla.', code=PRICE_UPDATE_INVALID)
+    if not isinstance(raw, list):
+        raise invalid
+    proposals = {entry['variant_id']: entry for entry in (job.summary or {}).get('price_review') or []
+                 if isinstance(entry, dict) and not entry.get('conflict') and entry.get('proposed_price')}
+    cleaned, seen = [], set()
+    for update in raw:
+        if not isinstance(update, dict) or update.get('confirm') is not True:
+            raise invalid
+        variant_id = update.get('variant_id')
+        if isinstance(variant_id, bool) or not isinstance(variant_id, int) or variant_id in seen:
+            raise invalid
+        proposal = proposals.get(variant_id)
+        try:
+            price = stock_unit_services.clean_sale_price(update.get('price') if not isinstance(
+                update.get('price'), float) else None)
+        except stock_unit_services.StockUnitError:
+            price = None
+        if proposal is None or price is None or price != Decimal(proposal['proposed_price']):
+            raise invalid
+        seen.add(variant_id)
+        cleaned.append({'variant_id': variant_id, 'price': price, 'seen_price': Decimal(proposal['current_price'])})
+    return cleaned
+
+
+def apply_price_updates(job, actor, updates: list[dict], *, request=None) -> list[dict]:
+    """
+    Write the confirmed updates, inside the caller's transaction. Each variant is locked (pk order, BEFORE any shelf:
+    DEC-CATALOG-PALETTE-LOCK-01 is Product → shelf) and must still be this company's, not archived, and at the price
+    the preview saw; otherwise `preview_stale` (409) and nothing is written. The price goes through the product's own
+    write (`write_product_fields`: its validation and audit fields), never the sale switch: a draft stays a draft.
+    """
+    if not updates:
+        return []
+    from rest_framework.exceptions import ValidationError
+
+    from .admin_views import write_product_fields
+    from .import_freshness import PREVIEW_STALE
+
+    locked = {product.pk: product for product in Product.objects.select_for_update(of=('self',)).filter(
+        company=job.company, pk__in=[update['variant_id'] for update in updates]).order_by('pk')}
+    done = []
+    for update in sorted(updates, key=lambda item: item['variant_id']):
+        product = locked.get(update['variant_id'])
+        if product is None or product.archived_at is not None or product.price != update['seen_price']:
+            now = f' (ahora {_soles(product.price)})' if product is not None else ''
+            raise UnitImportError(
+                f'El precio de «{getattr(product, "name", "la variante")}» cambió desde la vista previa{now}. No se '
+                f'registró nada: sube el archivo otra vez para revisar la propuesta con el precio de ahora.',
+                code=PREVIEW_STALE)
+        old = product.price
+        try:
+            product, changed = write_product_fields(job.company, product, {'price': f'{update["price"]:.2f}'})
+        except ValidationError:                      # the product's own rule: the refusal of the whole apply
+            raise UnitImportError(f'No se pudo cambiar el precio de «{product.name}». No se registró nada.',
+                                  code=PRICE_UPDATE_INVALID) from None
+        AdminAuditLog.log(
+            actor=actor, action='product_updated', target_type='product', target_id=product.pk,
+            request=request, company=job.company,
+            metadata={'product_name': product.name, 'product_id': product.pk, 'changed_fields': changed,
+                      'via': 'stock_import', 'job_id': job.pk},
+        )
+        done.append({'variant_id': product.pk, 'old_price': f'{old:.2f}', 'new_price': f'{product.price:.2f}'})
+    return done
+
+
 @transaction.atomic
 def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                   default_branch=None, default_reason: str = '', entry_kind=None,
@@ -952,7 +1131,21 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                 if wanted_line != product.condition_line:
                     errors.append(f'«{product.name}» no es de la línea «{fields["line"][:20]}».')
         sale_price = _sheet_price(fields['sale_price'], numeric=columns.get('sale_price') in _numeric)
-        if sale_price and product is not None and product.condition_line != 'used':
+        if sale_price and template_line == LINE_NEW:
+            # NEW-TEMPLATE-PRICE — a PROPOSAL for the variant's price, read by the device price's own rule. Never
+            # stored on the device and never applied here: compared, said on the row, and summed up per variant.
+            try:
+                file_price = stock_unit_services.clean_sale_price(sale_price)
+            except stock_unit_services.StockUnitError as exc:
+                errors.append(ZERO_PRICE if _is_zero(sale_price) else str(exc))
+            else:
+                if product is not None:
+                    data['file_price'] = str(file_price)
+                    note = _price_note(product, file_price)
+                    if note:
+                        warnings.append(note)
+            sale_price = ''
+        elif sale_price and product is not None and product.condition_line != 'used':
             warnings.append('Precio de venta ignorado: un equipo nuevo se vende al precio de su variante.')
             sale_price = ''
         elif sale_price and not prices_allowed:
@@ -1125,6 +1318,11 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     BulkImportRow.objects.bulk_create(staged, batch_size=500)
     simulation = simulate(company, [row.normalized_data for row in staged if row.action == BulkImportRow.CREATE],
                           entry_kind=entry_kind)
+    review = {}
+    if template_line == LINE_NEW:
+        review['price_review'] = price_review(
+            company, [row.normalized_data for row in staged if row.action == BulkImportRow.CREATE],
+            products=products, branch_ids=reachable)
     job.rows_total = len(staged)
     job.rows_create = counts['create']
     job.rows_skip = counts['skip']
@@ -1132,7 +1330,8 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     job.mapping_snapshot = {**job.mapping_snapshot, 'branch_ids': sorted(branch_ids)}
     # How many rows carried an IMEI under a product not marked as carrying one:
     # kept, said on each row, and counted here so the load's audit line can say it.
-    job.summary = {'units': counts['create'], 'imei_on_unmarked_products': unmarked, 'simulation': simulation}
+    job.summary = {'units': counts['create'], 'imei_on_unmarked_products': unmarked, 'simulation': simulation,
+                   **review}
     job.save(update_fields=['rows_total', 'rows_create', 'rows_skip', 'rows_error',
                             'mapping_snapshot', 'summary'])
     return job
@@ -1143,7 +1342,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
 # ---------------------------------------------------------------------------
 
 @transaction.atomic
-def apply_units(*, job, actor, request=None):
+def apply_units(*, job, actor, request=None, price_updates=None):
     """
     Register every staged device. ALL OF THE FILE OR NONE OF IT.
 
@@ -1153,7 +1352,10 @@ def apply_units(*, job, actor, request=None):
     in stock NOW. The first row that can no longer enter aborts the transaction
     and names its row, and the job stays previewed.
 
-    Returns `(job, changed)`. A second apply of an applied job changes nothing.
+    `price_updates` (NEW-TEMPLATE-PRICE): the variant prices the person CONFIRMED, each a copy of a proposal of this
+    job (`clean_price_updates`). Written in the same transaction as the devices: all of it or nothing.
+
+    Returns `(job, changed)`. A second apply of an applied job changes nothing (its proposals included).
     """
     job = BulkImportJob.objects.select_for_update().get(pk=job.pk)
     if job.status == BulkImportJob.APPLIED:
@@ -1177,6 +1379,8 @@ def apply_units(*, job, actor, request=None):
     if not cost_services.user_may_view_costs(actor, job.company) and cost_services.staged_rows_carry_cost(
             rows, ('cost',)):
         raise UnitImportError(cost_services.COSTS_IN_JOB, code=cost_services.COSTS_FORBIDDEN)
+    # NEW-TEMPLATE-PRICE — asked of whoever APPLIES, before anything is written.
+    price_updates = clean_price_updates(job, actor, price_updates)
 
     def data(row):
         return row.normalized_data or {}
@@ -1217,6 +1421,9 @@ def apply_units(*, job, actor, request=None):
                 f'{problem[1]} Vuelve a subir el archivo.'
             )
         groups.setdefault(_reception_key(values), []).append(row)
+
+    # NEW-TEMPLATE-PRICE — the variants first (Product → shelf), then the shelves and the devices.
+    price_changes = apply_price_updates(job, actor, price_updates, request=request)
 
     # INV-OPENING-01 — a job staged before the option has none: a purchase, as it was.
     opening = (job.options_snapshot or {}).get('entry_kind') == ENTRY_OPENING
@@ -1285,6 +1492,7 @@ def apply_units(*, job, actor, request=None):
     job.summary = {**(job.summary or {}), 'applied': {
         'units': registered, 'movements': movements, 'imei_on_unmarked_products': unmarked,
         'unit_ids': sorted(unit.pk for unit in received_units),
+        **({'price_updates': price_changes} if price_changes else {}),
         'shelves': [{'branch_id': branch_id, 'product_id': product_id, **counts}
                     for (branch_id, product_id), counts in sorted(after.items())],
         # Only when something failed, so the answer of a repeated apply can say so too.
@@ -1298,7 +1506,9 @@ def apply_units(*, job, actor, request=None):
                   'movements': movements, 'branch_ids': sorted({key[0] for key in groups}),
                   'file_sha256': job.file_sha256,
                   # IMEIs stored under a product not marked «lleva IMEI»: how many, never which.
-                  'imei_on_unmarked_products': unmarked},
+                  'imei_on_unmarked_products': unmarked,
+                  # NEW-TEMPLATE-PRICE — how many variant prices changed; each has its own `product_updated` line.
+                  **({'price_updates': len(price_changes)} if price_changes else {})},
         request=request, company=job.company,
     )
     return job, True

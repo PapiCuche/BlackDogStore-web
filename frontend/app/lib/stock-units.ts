@@ -423,8 +423,35 @@ export type UnitImportRow = {
     received_on?: string;
     notes?: string;
     public_notes?: string;
+    /** NEW-TEMPLATE-PRICE — «Precio de venta» of the new template: a proposal for the variant, never the device's. */
+    file_price?: string;
   };
 };
+
+/**
+ * NEW-TEMPLATE-PRICE — a variant whose price in the file is not its price. The server compares; nothing here is
+ * computed. `proposed_price` is null when the file brings two or more prices for it (`conflict`).
+ */
+export type UnitImportPriceReview = {
+  variant_id: number;
+  name: string;
+  current_price: string;
+  has_price: boolean;
+  file_prices: string[];
+  conflict: boolean;
+  proposed_price: string | null;
+  difference: string | null;
+  units_in_file: number;
+  rows_with_price: number;
+  /** Available devices of the variant in the caller's branches. */
+  units_in_stock: number;
+  is_published_online: boolean;
+  is_sold_online: boolean;
+  pending_draft: boolean;
+};
+
+/** NEW-TEMPLATE-PRICE — a confirmed copy of a proposal, sent with the apply. */
+export type UnitImportPriceUpdate = { variant_id: number; price: string; confirm: true };
 
 /** INV-LOAD-01 — one shelf (branch × product) before and after the file, as the server simulated it. */
 export type UnitImportShelf = {
@@ -458,7 +485,13 @@ export type UnitImportJob = {
     units?: number;
     /** Rows that carry an IMEI under a product not marked «lleva IMEI». Kept, and said. */
     imei_on_unmarked_products?: number;
-    applied?: { units: number; movements: number; imei_on_unmarked_products?: number };
+    applied?: {
+      units: number; movements: number; imei_on_unmarked_products?: number;
+      /** NEW-TEMPLATE-PRICE — the variant prices changed with the load (only when some were confirmed). */
+      price_updates?: { variant_id: number; old_price: string; new_price: string }[];
+    };
+    /** NEW-TEMPLATE-PRICE — only in a file of the new template. */
+    price_review?: UnitImportPriceReview[];
     /** INV-LOAD-01 — absent in a job previewed before it. */
     simulation?: UnitImportSimulation;
     /** INV-LOAD-02 — the load was annulled whole: how many devices, when, by whom and why. */
@@ -469,6 +502,8 @@ export type UnitImportJob = {
   is_applicable: boolean;
   rows?: UnitImportRow[];
   rows_truncated?: boolean;
+  /** NEW-TEMPLATE-PRICE — in the preview's answer: whether this person may confirm a price proposal. */
+  can_update_prices?: boolean;
 };
 
 /**
@@ -604,7 +639,10 @@ export function previewUnitImport(
   return call<UnitImportJob>("/import/preview/", { method: "POST", body: form });
 }
 
-/** Register every staged device — all of the file or none of it. */
-export function applyUnitImport(jobId: number): Promise<UnitImportJob> {
-  return post<UnitImportJob>(`/import/${jobId}/apply/`);
+/**
+ * Register every staged device — all of the file or none of it. `priceUpdates` (NEW-TEMPLATE-PRICE): the variant
+ * prices the person confirmed; the server checks each against this job's proposals and the price it saw.
+ */
+export function applyUnitImport(jobId: number, priceUpdates: UnitImportPriceUpdate[] = []): Promise<UnitImportJob> {
+  return post<UnitImportJob>(`/import/${jobId}/apply/`, priceUpdates.length ? { price_updates: priceUpdates } : {});
 }

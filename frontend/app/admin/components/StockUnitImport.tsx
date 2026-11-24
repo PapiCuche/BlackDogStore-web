@@ -18,8 +18,8 @@ import { useId, useRef, useState } from "react";
 import {
   applyUnitImport, fetchUnitImportVoidPreview, previewUnitImport, unitImportErrorsUrl, unitImportReportUrl,
   unitImportTemplateUrl, voidUnitImport, UnitImportVoidError,
-  type UnitImportBlocking, type UnitImportJob, type UnitImportLine, type UnitImportRow, type UnitImportSimulation,
-  type UnitImportVoidPreview,
+  type UnitImportBlocking, type UnitImportJob, type UnitImportLine, type UnitImportPriceReview,
+  type UnitImportPriceUpdate, type UnitImportRow, type UnitImportSimulation, type UnitImportVoidPreview,
 } from "@/app/lib/stock-units";
 
 import { CostColumnNotice } from "./CostColumnNotice";
@@ -91,6 +91,88 @@ function Simulation({ simulation }: { simulation: UnitImportSimulation }) {
 }
 
 const LINE_LABELS: Record<string, string> = { new: "equipos nuevos", used: "seminuevos" };
+
+function soles(amount: string) {
+  return `S/ ${amount}`;
+}
+
+function signed(difference: string) {
+  return difference.startsWith("-") ? `-S/ ${difference.slice(1)}` : `+S/ ${difference}`;
+}
+
+function shopState(entry: UnitImportPriceReview) {
+  if (entry.pending_draft) return "Borrador sin habilitar: no se vende (cambiar el precio no la habilita)";
+  if (entry.is_sold_online) return "Publicada en la tienda";
+  return entry.is_published_online ? "No se vende en la tienda" : "No publicada";
+}
+
+/**
+ * NEW-TEMPLATE-PRICE — the variants whose price in the file is not their price, as the SERVER compared them. The
+ * price is never applied by itself: who administers products may tick a proposal, and registering asks to confirm.
+ */
+function PriceReview({ review, canUpdate, chosen, disabled, onToggle }: {
+  review: UnitImportPriceReview[];
+  canUpdate: boolean;
+  chosen: number[];
+  disabled: boolean;
+  onToggle: (variantId: number, on: boolean) => void;
+}) {
+  return (
+    <section className="mb-4 space-y-3" aria-labelledby="unit-import-prices">
+      <h3 id="unit-import-prices" className="text-sm font-semibold text-foreground">Precios de venta del archivo</h3>
+      <p role="note" aria-label="Precio de las variantes" className="rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning">
+        Un equipo nuevo se vende al precio de su variante. El precio del archivo no se aplica solo
+        {canUpdate
+          ? ": marca las variantes cuyo precio quieres actualizar; al registrar se te pedirá confirmarlo."
+          : ". Sólo quien administra productos puede cambiar el precio de una variante."}
+      </p>
+      <TableWrap>
+        <caption className="sr-only">Precios de venta del archivo</caption>
+        <thead>
+          <tr className="border-b border-bd-border">
+            <Th>Variante</Th><Th>Precio actual</Th><Th>Precio del archivo</Th><Th>Diferencia</Th>
+            <Th>Entran</Th><Th>Ya en stock (tus sucursales)</Th><Th>En la tienda</Th><Th>Propuesta</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {review.map((entry) => (
+            <tr key={entry.variant_id} className="border-b border-bd-border align-top">
+              <Td>{entry.name}</Td>
+              <Td>{entry.has_price ? soles(entry.current_price) : "Sin precio"}</Td>
+              <Td>{entry.file_prices.map(soles).join(" · ")}</Td>
+              <Td>{entry.difference !== null && entry.has_price ? signed(entry.difference) : "—"}</Td>
+              <Td>{entry.units_in_file}</Td>
+              <Td>{entry.units_in_stock}</Td>
+              <Td>{shopState(entry)}</Td>
+              <Td>
+                {entry.conflict || entry.proposed_price === null ? (
+                  <span className="text-danger">
+                    El archivo trae {entry.file_prices.length} precios para esta variante: no se propone ninguno.
+                  </span>
+                ) : canUpdate ? (
+                  <label className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={chosen.includes(entry.variant_id)}
+                      disabled={disabled}
+                      onChange={(e) => onToggle(entry.variant_id, e.target.checked)}
+                    />
+                    Actualizar el precio de la variante a {soles(entry.proposed_price)}
+                  </label>
+                ) : (
+                  <span className="text-muted">
+                    Propuesta: {soles(entry.proposed_price)}. Sólo quien administra productos puede aplicarla.
+                  </span>
+                )}
+              </Td>
+            </tr>
+          ))}
+        </tbody>
+      </TableWrap>
+    </section>
+  );
+}
 
 /**
  * INV-LOAD-02 — annul an applied load WHOLE. The server voids every device the load created, or none: while one of
@@ -231,12 +313,16 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
   const [error, setError] = useState<string | null>(null);
   // IMPORT-STALE-01: the apply was refused because the preview is old or the shop moved since.
   const [outdated, setOutdated] = useState<OutdatedPreview | null>(null);
+  // NEW-TEMPLATE-PRICE — the price proposals ticked for THIS preview, and the confirmation step before registering.
+  const [chosen, setChosen] = useState<{ jobId: number; ids: number[] }>({ jobId: 0, ids: [] });
+  const [confirming, setConfirming] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   async function run(task: () => Promise<UnitImportJob>) {
     setWorking(true);
     setError(null);
     setOutdated(null);
+    setConfirming(false);
     try {
       setJob(await task());
     } catch (e: unknown) {
@@ -269,6 +355,32 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
   const registered = job?.summary.applied?.units ?? 0;
   const rows = job?.rows ?? [];
   const unmarked = job?.summary.imei_on_unmarked_products ?? 0;
+  const review = job?.summary.price_review ?? [];
+  const canUpdatePrices = Boolean(job?.can_update_prices);
+  const chosenIds = job && canUpdatePrices && chosen.jobId === job.id ? chosen.ids : [];
+  const updates: (UnitImportPriceUpdate & { name: string; from: string; has_price: boolean })[] = review
+    .filter((entry) => chosenIds.includes(entry.variant_id) && !entry.conflict && entry.proposed_price !== null)
+    .map((entry) => ({
+      variant_id: entry.variant_id, price: entry.proposed_price as string, confirm: true,
+      name: entry.name, from: entry.current_price, has_price: entry.has_price,
+    }));
+  const priceChanges = job?.summary.applied?.price_updates ?? [];
+
+  function toggle(variantId: number, on: boolean) {
+    if (!job) return;
+    const ids = chosen.jobId === job.id ? chosen.ids : [];
+    setChosen({ jobId: job.id, ids: on ? [...ids, variantId] : ids.filter((id) => id !== variantId) });
+    setConfirming(false);
+  }
+
+  function register(currentJob: UnitImportJob) {
+    if (updates.length && !confirming) {
+      setConfirming(true);
+      return;
+    }
+    const confirmed = updates.map(({ variant_id, price, confirm }) => ({ variant_id, price, confirm }));
+    run(() => applyUnitImport(currentJob.id, confirmed));
+  }
 
   return (
     <div className="space-y-6">
@@ -393,6 +505,15 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
             Se registraron {plural(registered, "equipo", "equipos")} y quedaron en el Kardex.{" "}
             <Link className="font-semibold underline" href="/admin/inventory/units">Ver los equipos</Link>
           </div>
+          {priceChanges.length ? (
+            <p role="note" aria-label="Precios actualizados" className="text-sm text-foreground">
+              Se actualizó el precio de {plural(priceChanges.length, "variante", "variantes")}:{" "}
+              {priceChanges.map((change) => {
+                const name = review.find((entry) => entry.variant_id === change.variant_id)?.name ?? `#${change.variant_id}`;
+                return `${name} (${soles(change.old_price)} → ${soles(change.new_price)})`;
+              }).join(" · ")}
+            </p>
+          ) : null}
           {job.options?.line === "used" ? (
             <p role="note" aria-label="Después de cargar seminuevos" className="text-sm text-muted">
               Los seminuevos entran pendientes de inspección y sin publicar. Inspecciónalos, súbeles fotos y
@@ -420,7 +541,7 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
                 type="button"
                 className={internalPrimaryButtonClass}
                 disabled={working || Boolean(outdated)}
-                onClick={() => run(() => applyUnitImport(job.id))}
+                onClick={() => register(job)}
               >
                 Registrar {plural(job.counts.create, "equipo", "equipos")}
               </button>
@@ -435,6 +556,47 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
           ) : null}
           {!job.counts.error && job.counts.create > 0 && job.summary.simulation ? (
             <Simulation simulation={job.summary.simulation} />
+          ) : null}
+          {review.length ? (
+            <PriceReview
+              review={review}
+              canUpdate={canUpdatePrices}
+              chosen={chosenIds}
+              disabled={working || Boolean(job.counts.error)}
+              onToggle={toggle}
+            />
+          ) : null}
+          {confirming && updates.length ? (
+            <section
+              role="group"
+              aria-labelledby="unit-import-confirm-prices"
+              className="mb-4 space-y-3 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning"
+            >
+              <h3 id="unit-import-confirm-prices" className="font-semibold">
+                Confirma el cambio de precio de {plural(updates.length, "variante", "variantes")}
+              </h3>
+              <ul className="list-disc space-y-0.5 pl-5">
+                {updates.map((update) => (
+                  <li key={update.variant_id}>
+                    {update.name}: {update.has_price ? soles(update.from) : "sin precio"} → {soles(update.price)}
+                  </li>
+                ))}
+              </ul>
+              <p>
+                Cambia el precio de la variante para todos sus equipos, en caja y en la web. Se registra con los
+                equipos: entra todo o nada.
+              </p>
+              <div className="flex flex-wrap gap-3">
+                <button type="button" className={internalPrimaryButtonClass} disabled={working}
+                  onClick={() => register(job)}>
+                  Confirmar: registrar y actualizar precios
+                </button>
+                <button type="button" className={internalButtonClass} disabled={working}
+                  onClick={() => setConfirming(false)}>
+                  Volver
+                </button>
+              </div>
+            </section>
           ) : null}
           {unmarked > 0 ? (
             <p
