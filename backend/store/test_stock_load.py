@@ -820,8 +820,10 @@ class SyntheticStockLoadTest(LoadShop, SaleShop, TestCase):
             holds.hold(product=self.used128, branch=self.branch, session_key='carrito-sim',
                        unit_public_id=str(web_used.public_id))
         used_units.set_inspection(web_used, decision='approved', actor=self.inspector)
-        UnitPhoto.objects.create(company=self.company, unit=web_used, image_url='/api/storefront/images/9001',
-                                 width=10, height=10)
+        # UNIT-PHOTO-02: a REAL photo — attested as this device, its file an own verified photo.
+        from store.used_unit_test_support import real_photo
+
+        real_photo(web_used, self.inspector)
         published = self.loader_api.post(f'/api/admin/inventory/units/{web_used.pk}/publication/',
                                           {'published': True}, format='json')
         self.assertEqual(published.status_code, 200, published.content)

@@ -1349,10 +1349,11 @@ def company_used_warranty_days(company_id) -> int | None:
 
 def public_unit(unit, product, option_labels: dict, *, default_warranty_days=None) -> dict:
     """ONE used device as the shop shows it. An allowlist: nothing else leaves."""
-    photos = [
-        {'url': photo.image_url, 'alt_text': photo.alt_text, 'width': photo.width, 'height': photo.height}
-        for photo in unit.photos.all()
-    ]
+    from . import unit_media
+
+    # UNIT-PHOTO-02 — only the PUBLIC photos of THIS device (attested, own and verified), the primary first; each
+    # says which side it shows («Frontal», «Defecto: …»). Never a generic picture.
+    photos = [unit_media.public_payload(photo) for photo in unit_media.public_photos(unit)]
     grade = unit.cosmetic_grade
     return {
         'id': str(unit.public_id),
@@ -1734,9 +1735,10 @@ def public_model(model, branch) -> dict:
     if used_products and branch is not None:
         by_product = {product.pk: (product, labels) for product, _sel, labels in used_products}
         default_warranty = company_used_warranty_days(model.company_id)
+        from . import unit_media
         for unit in (
             offered_units([p for p, _s, _l in used_products], branch)
-            .select_related('cosmetic_grade').prefetch_related('photos')
+            .select_related('cosmetic_grade').prefetch_related(unit_media.public_photos_prefetch())
             .order_by('sale_price', 'received_at', 'pk')
         ):
             product, labels = by_product[unit.product_id]

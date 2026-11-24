@@ -37,13 +37,14 @@ from rest_framework.test import APIClient
 
 from store.test_pos_reconcile import _web_login
 from store.tests import Ip1PosBase, _p2d_member, _p3_company
+from store.used_unit_test_support import real_photo
 
 UNITS = '/api/admin/inventory/units/'
-PHOTO_URL = '/api/storefront/images/9001'
 
 
 def photo(unit):
-    return UnitPhoto.objects.create(company_id=unit.company_id, unit=unit, image_url=PHOTO_URL, width=10, height=10)
+    """UNIT-PHOTO-02: a REAL photo (attested, own and verified) — what the web counts."""
+    return real_photo(unit)
 
 
 def make_ready(unit, actor=None, price='1999.00'):
@@ -443,7 +444,7 @@ class TillTest(UsedBase):
 
     def test_a_returned_device_is_inspected_again(self):
         used_units.set_inspection(self.unit, decision='approved')
-        UnitPhoto.objects.create(company=self.company, unit=self.unit, image_url=PHOTO_URL)
+        photo(self.unit)
         used_units.set_publication(self.unit, published=True)
         self.sell([self.line(self.unit)])
         returned = units.return_unit(self.unit, reason='Cliente lo devolvió')
@@ -774,9 +775,11 @@ class MigrationTest(TestCase):
                    .values_list('serial_number', 'inspection_status', 'published_online')),
             [(serial, 'pending', False) for _p, serial, _s, _price in rows])
         # Nothing historical is offered: the priced, available one is pending and unpublished.
-        from store.models import Branch as LiveBranch, CompanyRole as Role
-        live = LiveBranch.objects.get(pk=branch.pk)
-        self.assertEqual(list(device_catalog.offered_units(Product.objects.filter(pk=used.pk), live)), [])
+        from store.models import CompanyRole as Role
+        # UNIT-PHOTO-02: the live photo rule reads columns this node's state has not yet (0192), so the web rule is
+        # read here without it: no device of the company is both approved and published, hence none is offered.
+        self.assertFalse(StockUnit.objects.filter(company_id=company.pk, inspection_status='approved',
+                                                  published_online=True).exists())
         self.assertIn('inventory.units.inspect', Role.objects.get(pk=admin.pk).capabilities)
         self.assertNotIn('inventory.units.inspect', Role.objects.get(pk=clerk.pk).capabilities)
 

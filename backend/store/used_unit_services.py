@@ -8,6 +8,7 @@ inspection (or received as a trade-in) is not stock for sale online before it is
     WHERE A DEVICE OF THE USED LINE MAY BE SOLD
 
         online   AVAILABLE · its own price > 0 · inspection APPROVED · published (`published_online`) · ≥ 1 real photo
+                 (UNIT-PHOTO-02: attested as THIS device and its file an own photo, verified — `unit_media`)
                  — plus what every device needs already (dispatch branch, variant and model published).
         at the till   inspection APPROVED (and its own price, as before). Publication is not asked: the buyer holds
                  the device in the shop.
@@ -40,8 +41,9 @@ NOT_READY = 'not_ready'
 NOT_IN_STOCK = 'not_in_stock'
 #: The 409 of every internal path that would sell a used device without an approved inspection.
 NOT_INSPECTED = 'unit_not_inspected'
-#: USED-READY-01 — the minimum of REAL photos of the device itself. UNIT-PHOTO-02 will tighten what counts as real
-#: (provenance, attestation) in `real_photos` / `real_photos_q`, the only two places that read photos for this rule.
+#: USED-READY-01 — the minimum of REAL photos of the device itself. UNIT-PHOTO-02: a photo is real only when it is
+#: PUBLIC (`unit_media.public_photos_q`: attested as THIS device, its file an own photo of the company, verified).
+#: `real_photos` / `real_photos_q` are the only two places that read photos for this rule.
 MIN_REAL_PHOTOS = 1
 #: The device is still the shop's: it may be inspected, published or unpublished.
 IN_HAND = (StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED, StockUnit.Status.IN_TRANSIT)
@@ -68,6 +70,8 @@ REASON_TEXT = {
     'not_inspected': 'su inspección está pendiente',
     'inspection_rejected': 'su inspección fue rechazada',
     'no_photo': 'no tiene fotos reales del equipo',
+    # UNIT-PHOTO-02 — it has photos, but nobody confirmed that any of them is of THIS device.
+    'photo_not_attested': 'ninguna de sus fotos está confirmada como de este equipo exacto',
 }
 
 
@@ -76,16 +80,24 @@ def is_used(unit) -> bool:
 
 
 def real_photos_q() -> Exists:
-    """As a filter: the device has its minimum of real photos. Today: one `UnitPhoto` (UNIT-PHOTO-02 tightens it)."""
-    return Exists(UnitPhoto.objects.filter(unit_id=OuterRef('pk')))
+    """As a filter: the device has its minimum of real photos — one PUBLIC `UnitPhoto` (`unit_media`)."""
+    from .unit_media import public_photos_q
+
+    return Exists(UnitPhoto.objects.filter(unit_id=OuterRef('pk')).filter(public_photos_q()))
 
 
 def real_photos(unit) -> int:
     """How many real photos of THIS device count for the rule (the same as `real_photos_q`)."""
+    from .unit_media import public_photos
+
+    return len(public_photos(unit))
+
+
+def _has_any_photo(unit) -> bool:
     cache = getattr(unit, '_prefetched_objects_cache', {})
     if 'photos' in cache:
-        return len(cache['photos'])
-    return unit.photos.count()
+        return bool(cache['photos'])
+    return UnitPhoto.objects.filter(unit_id=unit.pk).exists()
 
 
 def web_ready_q() -> Q:
@@ -121,14 +133,16 @@ def web_problems(unit) -> list[str]:
     if not unit.published_online:
         problems.append('unit_not_published')
     if real_photos(unit) < MIN_REAL_PHOTOS:
-        problems.append('no_photo')
+        # UNIT-PHOTO-02: a clear reason — none at all, or none confirmed as THIS device.
+        problems.append('photo_not_attested' if _has_any_photo(unit) else 'no_photo')
     return problems
 
 
 def used_unit_publish_blockers(unit) -> list[str]:
     """
     THE mandatory controls before a used device is published: in the shop's hands, its own price > 0, an approved
-    inspection and its minimum of real photos. Every code, in that order. The one function UNIT-PHOTO-02 tightens.
+    inspection and its minimum of real photos — UNIT-PHOTO-02: attested and verified (`no_photo` without any photo,
+    `photo_not_attested` with photos nobody confirmed). Every code, in that order.
     """
     problems = [] if unit.status in IN_HAND else [NOT_IN_STOCK]
     return problems + [code for code in web_problems(unit) if code != 'unit_not_published']

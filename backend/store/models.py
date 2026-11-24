@@ -12183,6 +12183,28 @@ class UnitPhoto(models.Model):
     private evidence store: these are meant to be seen by anybody.
     """
 
+    # UNIT-PHOTO-02 — which side of THIS device the photo shows. `defect` carries `defect_note` (what is seen).
+    VIEW_MAIN = 'main'
+    VIEW_FRONT = 'front'
+    VIEW_BACK = 'back'
+    VIEW_LEFT = 'left'
+    VIEW_RIGHT = 'right'
+    VIEW_TOP = 'top'
+    VIEW_BOTTOM = 'bottom'
+    VIEW_DEFECT = 'defect'
+    VIEW_OTHER = 'other'
+    VIEW_CHOICES = [
+        (VIEW_MAIN, 'Principal'),
+        (VIEW_FRONT, 'Frontal'),
+        (VIEW_BACK, 'Posterior'),
+        (VIEW_LEFT, 'Lateral izquierdo'),
+        (VIEW_RIGHT, 'Lateral derecho'),
+        (VIEW_TOP, 'Borde superior'),
+        (VIEW_BOTTOM, 'Borde inferior'),
+        (VIEW_DEFECT, 'Defecto'),
+        (VIEW_OTHER, 'Otra'),
+    ]
+
     company = models.ForeignKey(Company, on_delete=models.CASCADE, related_name='+')
     unit = models.ForeignKey('store.StockUnit', on_delete=models.CASCADE, related_name='photos')
     image_url = models.CharField(max_length=255, validators=[validate_asset_url])
@@ -12190,6 +12212,17 @@ class UnitPhoto(models.Model):
     width = models.PositiveIntegerField(default=0)
     height = models.PositiveIntegerField(default=0)
     sort_order = models.PositiveIntegerField(default=0)
+    view = models.CharField(max_length=8, choices=VIEW_CHOICES, default=VIEW_OTHER, db_default=VIEW_OTHER)
+    #: What a `defect` photo shows («Rayón en la esquina superior»). Read by the buyer. Empty on any other view.
+    defect_note = models.CharField(max_length=160, blank=True, default='', db_default='')
+    #: The photo a card, a cart line and an order line show first. At most one per device (constraint below).
+    is_primary = models.BooleanField(default=False, db_default=False)
+    #: «Confirmo que esta foto es de este equipo exacto»: who said it and when. Both empty = not attested, and an
+    #: unattested photo is never public (`unit_media.public_photos_q`). A replaced file clears it.
+    attested_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    attested_at = models.DateTimeField(null=True, blank=True)
     uploaded_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
     )
@@ -12198,6 +12231,10 @@ class UnitPhoto(models.Model):
     class Meta:
         ordering = ['sort_order', 'pk']
         indexes = [models.Index(fields=['company', 'unit'])]
+        constraints = [
+            models.UniqueConstraint(fields=['unit'], condition=models.Q(is_primary=True),
+                                    name='unit_photo_one_primary_per_unit'),
+        ]
 
     def save(self, *args, **kwargs):
         if self.unit.company_id != self.company_id:

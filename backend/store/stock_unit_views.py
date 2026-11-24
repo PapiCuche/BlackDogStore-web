@@ -22,6 +22,7 @@ somebody who holds it.
 """
 from __future__ import annotations
 
+from django.core.exceptions import ValidationError
 from django.db import OperationalError, transaction
 from django.db.models import Count, Q, Sum
 from rest_framework import permissions, status
@@ -41,7 +42,7 @@ from .inventory_views import (
     _LEGACY_INVENTORY_VIEW_ROLES, _branch_context, _company_context, _paginate,
     _scoped_product, may_view_costs,
 )
-from .models import BranchStock, Product, StockMovement, StockUnit, Supplier, UnitPhoto
+from .models import BranchStock, Product, StockMovement, StockUnit, Supplier
 from .tenancy import (
     BranchAccessError, NoBranchError, company_fulfillment_branch, resolve_branch_for_user, visible_branches,
 )
@@ -285,7 +286,7 @@ class StockUnitListView(APIView):
 
         rows = (
             rows.select_related('product', 'product__product_model', 'branch', 'cosmetic_grade', 'supplier')
-            .prefetch_related('photos')
+            .prefetch_related(unit_media.photos_prefetch())
             .order_by('-received_at', '-pk')
         )
         page, meta = _paginate(rows, request)
@@ -516,7 +517,8 @@ class _UnitMixin:
         return unit, None
 
     def answer(self, request, unit) -> Response:
-        fresh = StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade', 'supplier').get(pk=unit.pk)
+        fresh = (StockUnit.objects.select_related('product', 'branch', 'cosmetic_grade', 'supplier')
+                 .prefetch_related(unit_media.photos_prefetch()).get(pk=unit.pk))
         return Response(unit_payload(fresh, include_cost=may_view_costs(request),
                                      include_supplier=may_see_suppliers(request)))
 
@@ -714,8 +716,31 @@ class StockUnitMoveVariantView(_UnitMixin, APIView):
                          **label_batches.answer(getattr(moved, 'label_batch', None))})
 
 
+def _photo_refusal(exc) -> Response:
+    if isinstance(exc, unit_media.UnitMediaError):
+        return Response(exc.body(), status=exc.status)
+    if isinstance(exc, ValidationError):          # `storefront_media.claim`: the file went away meanwhile
+        return Response({'detail': 'Esa imagen ya no existe. Súbela de nuevo.', 'field': 'file'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    return Response({'detail': str(exc), 'field': 'file'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+_PHOTO_ERRORS = (unit_media.UnitMediaError, storefront_media.StorefrontImageError, ProductMediaError, ValidationError)
+
+
+def _body(request) -> dict:
+    return request.data if hasattr(request.data, 'get') else {}
+
+
 class StockUnitPhotoListView(_UnitMixin, APIView):
-    """POST …/units/<id>/photos/ — multipart `file` (+ `alt_text`). DC2."""
+    """
+    POST …/units/<id>/photos/ — multipart `file` + `view` (main · front · back · left · right · top · bottom · defect ·
+    other) + `defect_note` (required for `defect`) + `alt_text`. DC2 · UNIT-PHOTO-02.
+
+    `inventory.adjust`, a used device in a branch the caller reaches (another company's: 404; a new device: 409
+    `not_used_line`). Stored as the shop's own photo, NOT attested: it is not public until somebody with
+    `inventory.units.inspect` confirms it (`…/attestation/`). The first photo is the primary. Audited.
+    """
 
     def post(self, request, pk):
         unit, error = self.resolve(request, pk)
@@ -724,25 +749,109 @@ class StockUnitPhotoListView(_UnitMixin, APIView):
         uploaded = request.FILES.get('file')
         if uploaded is None:
             return Response({'detail': 'Adjunta una imagen.', 'field': 'file'}, status=status.HTTP_400_BAD_REQUEST)
+        data = _body(request)
         try:
             unit_media.add_photo(unit=unit, actor=request.user, uploaded=uploaded,
-                                 alt_text=request.data.get('alt_text') or '', request=request)
-        except (unit_media.UnitMediaError, storefront_media.StorefrontImageError, ProductMediaError) as exc:
-            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+                                 alt_text=data.get('alt_text') or '', view=data.get('view'),
+                                 defect_note=data.get('defect_note') or '', request=request)
+        except _PHOTO_ERRORS as exc:
+            return _photo_refusal(exc)
         return self.answer(request, unit)
 
 
 class StockUnitPhotoDetailView(_UnitMixin, APIView):
-    """DELETE …/units/<id>/photos/<photo_id>/"""
+    """
+    PATCH  …/units/<id>/photos/<photo_id>/  {view, defect_note, alt_text, is_primary: true} — UNIT-PHOTO-02.
+    DELETE …/units/<id>/photos/<photo_id>/  — the next photo becomes the primary when it was.
+
+    `inventory.adjust`; a photo of another device or company is a 404. Audited.
+    """
+
+    def patch(self, request, pk, photo_id):
+        unit, error = self.resolve(request, pk)
+        if error:
+            return error
+        data = _body(request)
+        try:
+            unit_media.update_photo(unit=unit, photo_id=photo_id, actor=request.user, view=data.get('view'),
+                                    defect_note=data.get('defect_note'), alt_text=data.get('alt_text'),
+                                    is_primary=data.get('is_primary'), request=request)
+        except _PHOTO_ERRORS as exc:
+            return _photo_refusal(exc)
+        return self.answer(request, unit)
 
     def delete(self, request, pk, photo_id):
         unit, error = self.resolve(request, pk)
         if error:
             return error
-        photo = UnitPhoto.objects.filter(unit=unit, company_id=unit.company_id, pk=photo_id).first()
-        if photo is None:
+        try:
+            unit_media.remove_photo(unit=unit, photo_id=photo_id, actor=request.user, request=request)
+        except _PHOTO_ERRORS as exc:
+            return _photo_refusal(exc)
+        return self.answer(request, unit)
+
+
+class StockUnitPhotoReplaceView(_UnitMixin, APIView):
+    """
+    POST …/units/<id>/photos/<photo_id>/replace/ — multipart `file`. UNIT-PHOTO-02.
+
+    A new file in the SAME place (order, primary, side). It is not the file somebody confirmed: its attestation is
+    cleared, so it leaves the shop until confirmed again. `inventory.adjust`. Audited.
+    """
+
+    def post(self, request, pk, photo_id):
+        unit, error = self.resolve(request, pk)
+        if error:
+            return error
+        uploaded = request.FILES.get('file')
+        if uploaded is None:
+            return Response({'detail': 'Adjunta una imagen.', 'field': 'file'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            unit_media.replace_photo(unit=unit, photo_id=photo_id, actor=request.user, uploaded=uploaded,
+                                     request=request)
+        except _PHOTO_ERRORS as exc:
+            return _photo_refusal(exc)
+        return self.answer(request, unit)
+
+
+class StockUnitPhotoOrderView(_UnitMixin, APIView):
+    """POST …/units/<id>/photos/order/  {order: [photo ids]} — every photo once. `inventory.adjust`. Audited."""
+
+    def post(self, request, pk):
+        unit, error = self.resolve(request, pk)
+        if error:
+            return error
+        try:
+            unit_media.reorder(unit=unit, order=_body(request).get('order'), actor=request.user, request=request)
+        except _PHOTO_ERRORS as exc:
+            return _photo_refusal(exc)
+        return self.answer(request, unit)
+
+
+class StockUnitPhotoAttestationView(_UnitMixin, APIView):
+    """
+    POST …/units/<id>/photos/<photo_id>/attestation/  {attested: true|false} — UNIT-PHOTO-02.
+
+    «Confirmo que esta foto es de este equipo exacto». `inventory.units.inspect` — the person who inspects the device
+    has it in hand and can say the photo is of it (not who uploads photos, `inventory.adjust`) — in a branch the
+    caller reaches; another company's device is a 404. Attesting verifies the file as the shop's own photo; both are
+    audited with the company. `false` withdraws it and the photo leaves the shop at once.
+    """
+
+    def post(self, request, pk, photo_id):
+        company, error = _company_context(request, CAP_UNITS_INSPECT, _LEGACY_INSPECT_ROLES)
+        if error:
+            return error
+        unit = StockUnit.objects.filter(
+            company=company, pk=pk, branch__in=visible_branches(request.user, company),
+        ).select_related('product', 'branch').first()
+        if unit is None:
             return Response({'detail': NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
-        unit_media.remove_photo(photo=photo, actor=request.user, request=request)
+        try:
+            unit_media.attest(unit=unit, photo_id=photo_id, attested=_body(request).get('attested'),
+                              actor=request.user, request=request)
+        except _PHOTO_ERRORS as exc:
+            return _photo_refusal(exc)
         return self.answer(request, unit)
 
 

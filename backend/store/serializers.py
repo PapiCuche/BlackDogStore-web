@@ -155,10 +155,58 @@ def prime_variant_galleries(context, products) -> dict:
     cache = context.setdefault('_variant_galleries', {})
     wanted = {product.pk: product for product in products
               if isinstance(product, Product) and product.product_model_id and product.pk not in cache}
+    # UNIT-PHOTO-02 — a USED variant is sold device by device: the shop shows a public photo of THAT device (the cart
+    # and the order line put it in place, `unit_line_picture`), never the variant's catalogue picture nor its colour's
+    # finish. Its public picture here is pending.
+    for pk in [pk for pk, product in wanted.items() if product.condition_line == Product.CONDITION_USED]:
+        cache[pk] = {'gallery': [], 'source': '', 'image_url': '', 'image_pending': True, 'image_is_demo': False}
+        del wanted[pk]
     if wanted:
         found = device_catalog.variant_galleries(list(wanted.values()))
         for pk in wanted:
             cache[pk] = found.get(pk)
+    return cache
+
+
+def unit_line_picture(photo: dict | None) -> dict:
+    """
+    UNIT-PHOTO-02 — the picture of a cart or an order line of a USED device: the public primary photo of THAT device,
+    or none («Sin fotos de este equipo» — `image_scope: 'unit'`). Never its catalogue picture nor its colour's finish.
+    """
+    return {'image_url': photo['url'] if photo else '', 'images': [], 'image_pending': False, 'image_is_demo': False,
+            'image_scope': 'unit'}
+
+
+def prime_order_unit_photos(context, orders) -> dict:
+    """
+    UNIT-PHOTO-02 — `(order id, product id)` → the public primary photo of each device of that order's used line
+    (None when the device has none), read once for every order of the response. The devices are the ones identified
+    for the sale (`OrderUnit`) and the ones set aside for it (`StockUnit.order`).
+    """
+    from . import unit_media
+    from .models import OrderUnit, StockUnit
+
+    cache = context.setdefault('_order_unit_photos', {})
+    done = cache.setdefault('_orders', set())
+    fresh = [order for order in orders if order is not None and order.pk not in done]
+    done.update(order.pk for order in fresh)
+    # Only orders with a used line read anything (their prefetched `items`, as the serialiser reads them).
+    wanted = {order.pk for order in fresh
+              if any(item.product.condition_line == Product.CONDITION_USED for item in order.items.all())}
+    if not wanted:
+        return cache
+    devices: dict[tuple[int, int], list[int]] = {}
+    for order_id, product_id, unit_id in [
+        *OrderUnit.objects.filter(order_id__in=wanted).order_by('pk').values_list('order_id', 'product_id', 'unit_id'),
+        *StockUnit.objects.filter(order_id__in=wanted, product__condition_line=Product.CONDITION_USED)
+        .order_by('pk').values_list('order_id', 'product_id', 'pk'),
+    ]:
+        seen = devices.setdefault((order_id, product_id), [])
+        if unit_id not in seen:
+            seen.append(unit_id)
+    photos = unit_media.primary_photos([pk for ids in devices.values() for pk in ids])
+    for key, ids in devices.items():
+        cache[key] = [photos.get(pk) for pk in ids]
     return cache
 
 
@@ -175,6 +223,7 @@ class OrdersPrimingListSerializer(serializers.ListSerializer):
 
         rows = list(data.all() if isinstance(data, BaseManager) else data)
         prime_variant_galleries(self.context, order_line_products(rows))
+        prime_order_unit_photos(self.context, rows)
         return super().to_representation(rows)
 
 
@@ -349,6 +398,12 @@ class OrderItemSerializer(serializers.ModelSerializer):
             data = super().to_representation(instance)
             if instance.supply_origin == OrderItem.SUPPLY_SUPPLIER:
                 data['lead_time_days'] = instance.lead_time_days
+            elif instance.product.condition_line == Product.CONDITION_USED:
+                # UNIT-PHOTO-02 — the line shows the device it sold, never a generic picture.
+                photos = prime_order_unit_photos(self.context, [instance.order]).get(
+                    (instance.order_id, instance.product_id), [])
+                first = next((photo for photo in photos if photo), None)
+                data['product'] = {**data['product'], **unit_line_picture(first)}
             return data
         # Closed BEFORE the product is serialised, not after: the whole public
         # payload (gallery, rating, stock) is not built just to be thrown away.
@@ -397,6 +452,7 @@ class OrderSerializer(serializers.ModelSerializer):
     def to_representation(self, instance):
         # Review of #408: every line's picture in one batch (a list of orders primed them all already).
         prime_variant_galleries(self.context, order_line_products([instance]))
+        prime_order_unit_photos(self.context, [instance])
         return super().to_representation(instance)
 
 
@@ -469,6 +525,16 @@ class CartItemSerializer(serializers.ModelSerializer):
                     'imei_hint': device_catalog.mask_imei(unit.imei),
                     'held_until': unit.hold_until.isoformat() if unit.hold_until else None,
                 } for unit in held]
+                if product.condition_line == Product.CONDITION_USED:
+                    # UNIT-PHOTO-02 — each held device with ITS public primary photo (or null), and the line's
+                    # picture is the first of them: never the variant's catalogue picture or its colour's finish.
+                    from . import unit_media
+
+                    photos = unit_media.primary_photos([unit.pk for unit in held])
+                    for row, unit in zip(data['units'], held):
+                        row['photo'] = photos.get(unit.pk)
+                    first = next((photos[unit.pk] for unit in held if unit.pk in photos), None)
+                    data['product'] = {**data['product'], **unit_line_picture(first)}
                 data['quantity'] = len(held)
                 data['line_total'] = str(sum((unit.hold_price for unit in held), Decimal('0.00')))
             else:

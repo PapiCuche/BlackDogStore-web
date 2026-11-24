@@ -49,7 +49,7 @@ from decimal import Decimal
 
 from django.db import connection
 
-from . import cost_services, inventory_services, label_batches, product_publication
+from . import cost_services, inventory_services, label_batches, product_publication, unit_media
 from . import stock_unit_services as units_service
 from .inventory_services import InventoryError
 from .models import AdminAuditLog, BranchStock, Product, ProductBarcode, StockMovement, Supplier
@@ -868,7 +868,7 @@ def follow_up(company, record: dict) -> dict:
         u.pk: u for u in StockUnit.objects.filter(
             company=company, pk__in=[pk for ids in unit_ids.values() for pk in ids])
         # INV-UNIT-CORRECT-01: a voided device is no longer part of what this reception left to complete.
-        .exclude(status=StockUnit.Status.VOIDED).prefetch_related('photos')
+        .exclude(status=StockUnit.Status.VOIDED).prefetch_related(unit_media.photos_prefetch())
     }
     branch = Branch.objects.filter(company=company, pk=record.get('branch_id')).first()
     dispatch = company_fulfillment_branch(company)
@@ -907,7 +907,7 @@ def follow_up(company, record: dict) -> dict:
                 # publication, a real photo. In this order, each code once.
                 lacking = {code for u in mine if u.status == StockUnit.Status.AVAILABLE
                            for code in used_unit_services.web_problems(u)}
-                reasons += [_USED_REASON[code] for code in _USED_REASON if code in lacking]
+                reasons += list(dict.fromkeys(_USED_REASON[code] for code in _USED_REASON if code in lacking))
             if not offered and not reasons:
                 reasons.append('not_available')        # sold or set aside since it was received
         out[line['index']] = {
@@ -917,7 +917,8 @@ def follow_up(company, record: dict) -> dict:
             'units_unpriced': info['units_unpriced'],
             'units_without_battery': sum(1 for u in mine if u.battery_health is None) if used else 0,
             'units_without_grade': sum(1 for u in mine if u.cosmetic_grade_id is None) if used else 0,
-            'units_without_photos': sum(1 for u in mine if not u.photos.all()) if used else 0,
+            # UNIT-PHOTO-02 — without a REAL photo: none, or none confirmed as THIS device.
+            'units_without_photos': sum(1 for u in mine if not unit_media.public_photos(u)) if used else 0,
             'storage_branch': None if branch is None else {'id': branch.pk, 'name': branch.name},
             'dispatch_branch': None if dispatch is None else {'id': dispatch.pk, 'name': dispatch.name},
             'in_dispatch_branch': info['in_dispatch_branch'],
@@ -939,6 +940,8 @@ _USED_REASON = {
     'inspection_rejected': 'inspection_rejected',
     'unit_not_published': 'units_unpublished',
     'no_photo': 'no_unit_photos',
+    # UNIT-PHOTO-02 — photos nobody confirmed as THIS device are not real photos yet: the same line code.
+    'photo_not_attested': 'no_unit_photos',
 }
 
 
