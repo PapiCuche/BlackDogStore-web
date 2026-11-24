@@ -852,6 +852,8 @@ VOID_REASONS = {
     'wrong_branch': 'Sucursal equivocada',
     'duplicate': 'Ingreso duplicado',
     'not_arrived': 'El equipo no llegó',
+    # INV-LOAD-02 — every device of a load annulled whole (`unit_import_batch.void_job`).
+    'bad_import': 'Carga por archivo anulada',
 }
 NOT_CORRECTABLE = 'unit_not_correctable'
 _ENTRY_TYPES = (StockMovement.PURCHASE_ENTRY, StockMovement.INITIAL_STOCK, StockMovement.MANUAL_ENTRY)

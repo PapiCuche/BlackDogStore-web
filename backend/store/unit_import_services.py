@@ -79,7 +79,9 @@ _ALIASES = {
     'capacity': ('capacidad', 'almacenamiento'),
     'colour': ('color', 'colour'),
     'sim': ('sim', 'tipo de sim'),
-    'region': ('region',),
+    # INV-LOAD-02 — the stock templates head it «Versión (región / país de venta)»: only that heading, so a generic
+    # «Versión» of an older file stays unread.
+    'region': ('region', 'version region pais de venta', 'version region'),
     'line': ('linea', 'linea nuevo seminuevo', 'linea nuevo o seminuevo'),
     'grade': ('estado estetico', 'estado cosmetico', 'grado estetico'),
     'battery': ('bateria', 'bateria porcentaje', 'salud de bateria', 'salud de la bateria'),
@@ -89,7 +91,8 @@ _ALIASES = {
     # unread (as before), so a file that loaded yesterday does not start failing — nor a footer row come alive.
     'supplier': ('proveedor', 'proveedor nombre o ruc', 'ruc del proveedor', 'ruc proveedor'),
     'received_on': ('fecha de ingreso', 'fecha ingreso', 'fecha de entrada'),
-    'notes': ('notas internas', 'nota interna'),
+    # INV-LOAD-02 — «Observaciones (notas internas)» of the stock templates; a bare «Observaciones» stays unread.
+    'notes': ('notas internas', 'nota interna', 'observaciones notas internas'),
     'public_notes': ('detalles para el comprador', 'detalles comprador', 'notas publicas'),
     # USED-READY-01. NO column inspects or publishes: every device enters pending and unpublished.
     'warranty_days': ('garantia dias', 'garantia', 'garantia en dias', 'dias de garantia'),
@@ -242,11 +245,222 @@ def template_bytes(branches=()) -> bytes:
 
 
 # ---------------------------------------------------------------------------
+# INV-LOAD-02 — the two stock templates: new devices and used ones
+# ---------------------------------------------------------------------------
+#
+# Built from THIS module's column registry (`_ALIASES`): every header below is read by `_columns` as the field next to
+# it, and every field the importer reads is either in the template of its line or in `NOT_IN_STOCK_TEMPLATES` with
+# the reason. `test_stock_load` holds the three to each other, so a column the importer would silently ignore cannot
+# enter a template, nor a new importer column stay out of one unnoticed.
+#
+# THE LINE IS THE TEMPLATE'S. Its data sheet is named after it («Equipos nuevos» / «Equipos seminuevos»): a row is
+# looked up among the variants of that line only, and a row of the other line is an error of the row.
+
+LINE_NEW, LINE_USED = Product.CONDITION_NEW, Product.CONDITION_USED
+LINE_LABELS = {LINE_NEW: 'equipos nuevos', LINE_USED: 'seminuevos'}
+_LINE_WORD = {LINE_NEW: 'Nuevo', LINE_USED: 'Seminuevo'}
+
+_STOCK_BASE = [
+    ('Sucursal', 'branch'), ('Modelo', 'model'), ('Capacidad', 'capacity'), ('Color', 'colour'), ('SIM', 'sim'),
+    ('Versión (región / país de venta)', 'region'), ('IMEI 1', 'imei'), ('IMEI 2', 'imei2'), ('Serie', 'serial_number'),
+    ('Proveedor', 'supplier'), ('Costo', 'cost'),
+]
+_STOCK_TAIL = [('Fecha de ingreso', 'received_on'), ('Observaciones (notas internas)', 'notes')]
+_STOCK_USED = [
+    ('Precio de venta', 'sale_price'), ('Estado estético', 'grade'), ('Salud de batería (%)', 'battery'),
+    ('Estado funcional', 'functional_state'), ('Defectos', 'defects'), ('Accesorios', 'accessories'),
+    ('Garantía (días)', 'warranty_days'), ('Detalles para el comprador', 'public_notes'),
+]
+STOCK_TEMPLATES = {
+    LINE_NEW: {'filename': 'stock-equipos-nuevos.xlsx', 'sheet': 'Equipos nuevos',
+               'title': 'Stock de equipos nuevos', 'columns': [*_STOCK_BASE, *_STOCK_TAIL]},
+    LINE_USED: {'filename': 'stock-seminuevos.xlsx', 'sheet': 'Equipos seminuevos',
+                'title': 'Stock de seminuevos', 'columns': [*_STOCK_BASE, *_STOCK_USED, *_STOCK_TAIL]},
+}
+#: The columns only the used template carries. A file of the NEW template that brings one is refused whole: what it
+#: says would otherwise be ignored on every row («ignorado en un equipo nuevo»). A new device sells at its variant's
+#: price, so «Precio de venta» is one of them.
+USED_TEMPLATE_FIELDS = frozenset(field for _header, field in _STOCK_USED)
+#: What the importer reads that neither stock template carries, and why.
+NOT_IN_STOCK_TEMPLATES = {
+    'code': 'El equipo se identifica por «Modelo» y sus opciones, no por un código de producto.',
+    'name': '«Modelo» es el modelo del catálogo, nunca el nombre de un producto.',
+    'condition': 'La condición es la de la línea de la variante (nuevo o usado): no se escribe.',
+    'reason': 'El motivo o documento de ingreso se indica una vez, al subir el archivo.',
+    'line': 'La línea la fija la plantilla.',
+}
+#: Sheet name (folded) -> the line it loads.
+_TEMPLATE_SHEETS = {normalize_header(spec['sheet']): line for line, spec in STOCK_TEMPLATES.items()}
+
+#: A Luhn-valid synthetic IMEI for the example row (never a real device's). The row is skipped by its «Serie».
+_EXAMPLE_IMEI = '352819069999990'
+
+
+def clean_line_option(value) -> str:
+    """The line a caller asked for (`new` / `used`), or '' for none. Anything else is refused."""
+    value = str(value or '').strip()
+    if value and value not in STOCK_TEMPLATES:
+        raise UnitImportError('La línea debe ser «new» (equipos nuevos) o «used» (seminuevos).')
+    return value
+
+
+def _stock_notes(line) -> dict:
+    """field -> the note on its header in the stock template of `line`."""
+    variant = 'NUEVA' if line == LINE_NEW else 'SEMINUEVA'
+    return {
+        'branch': 'Obligatoria (o elige una sucursal al subir el archivo): su nombre tal como aparece en el sistema.',
+        'model': (f'Obligatorio: el modelo del catálogo (Catálogo › Modelos), por ejemplo «iPhone 16 Pro». Con las '
+                  f'columnas siguientes dice de qué variante {variant} es el equipo. La variante debe existir.'),
+        'capacity': 'La capacidad de la variante, si el modelo la lleva (por ejemplo «256 GB»).',
+        'colour': 'El color de la variante, tal como está en el catálogo.',
+        'sim': 'La opción de SIM de la variante, si el modelo la lleva (por ejemplo «eSIM»). Vacía si no.',
+        'region': ('La versión de la variante: la región o el país de venta del equipo (por ejemplo «USA»), si el '
+                   'modelo la distingue. Vacía si no.'),
+        'imei': ('15 dígitos, sin espacios. Obligatorio si la variante está marcada «lleva IMEI». No se repite en '
+                 'ningún equipo de la empresa.'),
+        'imei2': 'Opcional: el segundo IMEI de un equipo con dos líneas. Distinto del primero.',
+        'serial_number': ('El número de serie del fabricante. Opcional si la fila trae un IMEI válido y la variante '
+                          '«lleva IMEI»; obligatorio en los demás. No se repite dentro de la misma variante.'),
+        'supplier': ('Opcional: quien te vendió el equipo, con su nombre o su RUC tal como está en Proveedores. '
+                     'Sólo puede llenarla quien ve proveedores.'),
+        'cost': ('Opcional: lo que costó ESTE equipo, sin IGV ni símbolo de moneda (1234.50). Sólo puede llenarla '
+                 'quien ve costos; si no, déjala vacía.'),
+        'received_on': ('Opcional: el día en que el equipo entró a la tienda (AAAA-MM-DD o DD/MM/AAAA). Vacía = hoy. '
+                        'No puede ser futura ni anterior al año 2000.'),
+        'notes': (f'Opcional: notas internas, sólo para el personal (ubicación, observaciones). Hasta '
+                  f'{stock_unit_services.MAX_NOTES} caracteres.'),
+        'sale_price': ('El precio de ESTE equipo en la tienda, mayor que cero. Sin precio no se vende en línea ni en '
+                       'caja. Sólo lo fija quien administra productos.'),
+        'grade': 'Opcional: uno de los estados de la escala de la empresa (por ejemplo «Excelente»).',
+        'battery': 'Opcional: la salud de la batería MEDIDA, de 0 a 100. Vacía = «no informado».',
+        'functional_state': 'Opcional: «Sin fallas» o «Con fallas» (entonces llena «Defectos»).',
+        'defects': 'Opcional: lo que no funciona o está dañado. Lo lee el comprador.',
+        'accessories': 'Opcional: lo que trae (caja, cargador, cable…). Lo lee el comprador.',
+        'warranty_days': ('Opcional: los días de garantía de ESTE equipo. Vacía = la política de garantía de la '
+                          'empresa; 0 = sin garantía. Sólo la fija quien administra productos.'),
+        'public_notes': 'Opcional: lo que el comprador lee del equipo (rayones, detalles). Hasta 500 caracteres.',
+    }
+
+
+def _stock_example(line, branches) -> dict:
+    """The example row: skipped at upload by its «Serie» (`EXAMPLE_SERIAL_PREFIX`), and it says so twice."""
+    row = {'branch': (list(branches) or ['Tienda principal'])[0], 'model': 'iPhone 16', 'capacity': '128 GB',
+           'colour': 'Negro', 'imei': _EXAMPLE_IMEI, 'serial_number': f'{EXAMPLE_SERIAL_PREFIX}-BORRA-ESTA-FILA',
+           'cost': 2500, 'received_on': '2026-01-15',
+           'notes': 'FILA DE EJEMPLO: no se carga. Escribe tus equipos desde la fila 3.'}
+    if line == LINE_USED:
+        row.update(colour='Azul', sale_price=1999, grade='Excelente', battery=88, functional_state='Sin fallas',
+                   accessories='Caja y cable', warranty_days=90, public_notes='Rayón leve en el marco.')
+    return row
+
+
+def _stock_help(line) -> list[list[str]]:
+    """The «Instrucciones» sheet: read-only, never read by the upload (`_pick_sheet` skips it)."""
+    spec = STOCK_TEMPLATES[line]
+    other = STOCK_TEMPLATES[LINE_USED if line == LINE_NEW else LINE_NEW]['title']
+    notes = _stock_notes(line)
+    lines = [
+        [spec['title']],
+        [],
+        ['UNA FILA = UN EQUIPO FÍSICO. Dos teléfonos iguales son dos filas, cada uno con su IMEI o su serie.'],
+        [f'Esta plantilla carga sólo {LINE_LABELS[line]}. Para los otros usa «{other}».'],
+        ['La fila 2 es un EJEMPLO: no se carga aunque la dejes. Escribe tus equipos desde la fila 3.'],
+        [f'No cambies los encabezados ni el nombre de la hoja «{spec["sheet"]}»: el sistema los lee para saber qué '
+         f'es cada columna y qué línea carga.'],
+        ['El tipo de ingreso (inventario inicial o compra) y el motivo se eligen al subir el archivo.'],
+        ['Subir el archivo sólo PREVISUALIZA: nada se registra hasta que confirmes, y entra todo el archivo o nada.'],
+        [],
+        ['Columna', 'Qué escribir'],
+        *[[header, notes[field]] for header, field in spec['columns']],
+    ]
+    if line == LINE_NEW:
+        lines += [[], ['¿Y el precio?', 'Un equipo nuevo se vende al precio de su variante (Catálogo › Modelos): '
+                                        'esta plantilla no lleva «Precio de venta».']]
+    else:
+        lines += [
+            [],
+            ['DESPUÉS DE CARGAR (no son columnas: la carga nunca los cambia)'],
+            ['Estado de inspección', 'Todo seminuevo entra «Pendiente de inspección». Quien tiene el permiso de '
+                                     'inspeccionar lo aprueba o lo rechaza en la ficha del equipo. Sin inspección '
+                                     'aprobada no se vende ni en caja ni en la web.'],
+            ['Fotografías de la unidad', 'Se suben en la ficha del equipo (Inventario › Equipos). La web exige al '
+                                         'menos una foto real del equipo.'],
+            ['Estado de publicación', 'Todo seminuevo entra SIN PUBLICAR. Se publica en su ficha cuando tiene precio, '
+                                      'inspección aprobada y al menos una foto.'],
+        ]
+    return lines
+
+
+def stock_template_bytes(line, branches=(), grades=()) -> bytes:
+    """
+    INV-LOAD-02 — «Stock de equipos nuevos» or «Stock de seminuevos»: the data sheet (its name fixes the line) with a
+    note on each header, ONE example row that the upload skips, the lists that are cheap to offer, and a read-only
+    «Instrucciones» sheet. `branches`: the names THIS person may load into; `grades`: the company's cosmetic scale.
+    """
+    from openpyxl.styles import Font
+    from openpyxl.utils import get_column_letter
+
+    from .import_exports import add_cell_list, cell_list, header_notes, number_columns, text_columns
+
+    spec = STOCK_TEMPLATES[line]
+    fields = [field for _header, field in spec['columns']]
+    notes = _stock_notes(line)
+
+    workbook = _workbook()
+    sheet = workbook.active
+    sheet.title = spec['sheet']
+    _header_row(sheet, [header for header, _field in spec['columns']])
+    header_notes(sheet, {header: notes[field] for header, field in spec['columns']})
+    example = _stock_example(line, branches)
+    grey = Font(italic=True, color='6B7280')
+    for index, field in enumerate(fields, start=1):
+        sheet.cell(row=2, column=index, value=example.get(field)).font = grey
+    sheet.freeze_panes = 'A2'
+    widths = {'branch': 22, 'model': 26, 'region': 30, 'imei': 19, 'imei2': 19, 'serial_number': 28,
+              'supplier': 26, 'notes': 40, 'defects': 32, 'accessories': 28, 'public_notes': 40,
+              'received_on': 16, 'functional_state': 16, 'grade': 16, 'battery': 18, 'warranty_days': 16,
+              'sale_price': 16}
+    _autosize(sheet, [widths.get(field, 14) for field in fields])
+
+    def column(field):
+        return get_column_letter(fields.index(field) + 1)
+
+    text_columns(sheet, [column(f) for f in ('imei', 'imei2', 'serial_number', 'supplier')])
+    number_columns(sheet, [column(f) for f in ('cost', 'sale_price', 'battery', 'warranty_days') if f in fields])
+    add_cell_list(sheet, column('branch'), cell_list(branches))
+    if line == LINE_USED:
+        add_cell_list(sheet, column('functional_state'), cell_list(['Sin fallas', 'Con fallas']))
+        add_cell_list(sheet, column('grade'), cell_list(grades))
+
+    help_sheet = workbook.create_sheet(HELP_SHEET)
+    for row in _stock_help(line):
+        help_sheet.append(row)
+    help_sheet['A1'].font = Font(bold=True, size=13)
+    help_sheet.column_dimensions['A'].width = 34
+    help_sheet.column_dimensions['B'].width = 110
+    help_sheet.protection.sheet = True          # read-only: it informs, it is never filled
+
+    out = io.BytesIO()
+    workbook.save(out)
+    return out.getvalue()
+
+
+def template_line_of(sheet_name) -> str:
+    """The line a stock template's data sheet fixes, or '' for any other sheet."""
+    return _TEMPLATE_SHEETS.get(normalize_header(sheet_name), '')
+
+
+# ---------------------------------------------------------------------------
 # Preview
 # ---------------------------------------------------------------------------
 
-def _columns(headers) -> dict[str, int]:
-    """field -> column index, from the header row. Refuses a file that is not this template."""
+def _columns(headers, *, template_line: str = '') -> dict[str, int]:
+    """
+    field -> column index, from the header row. Refuses a file that is not this template.
+
+    `template_line` (INV-LOAD-02): the file is a stock template of that line. Its «Modelo» is the catalogue model only
+    (never a product name), and the NEW template refuses a used-only column instead of ignoring it on every row.
+    """
     folded = [normalize_header(header) for header in headers]
     columns = {}
     for field, aliases in _ALIASES.items():
@@ -254,11 +468,24 @@ def _columns(headers) -> dict[str, int]:
             if key in aliases:
                 columns[field] = index
                 break
+    if template_line:
+        if 'name' in columns and columns['name'] == columns.get('model'):
+            del columns['name']
+        if 'model' not in columns and 'code' not in columns and 'name' not in columns:
+            raise UnitImportError('No se encontró la columna «Modelo». Descarga la plantilla y úsala tal cual.')
+        if template_line == LINE_NEW:
+            extra = [str(headers[columns[field]]) for field in _ALIASES
+                     if field in USED_TEMPLATE_FIELDS and field in columns]
+            if extra:
+                raise UnitImportError(
+                    f'La plantilla de equipos nuevos no lleva la columna «{extra[0]}»: es de seminuevos. Quítala, '
+                    f'o carga esos equipos con la plantilla «{STOCK_TEMPLATES[LINE_USED]["title"]}».'
+                )
     if 'serial_number' not in columns:
         raise UnitImportError(
             'No se encontró la columna «Número de serie». Descarga la plantilla de equipos y úsala tal cual.'
         )
-    if 'code' not in columns and 'name' not in columns:
+    if 'code' not in columns and 'name' not in columns and not (template_line and 'model' in columns):
         raise UnitImportError('No se encontró la columna «Código» ni «Producto».')
     # An older file that heads the product name «Modelo» maps it to both: the
     # name is tried first, as it always was.
@@ -441,6 +668,27 @@ def simulate(company, staged: list[dict], *, entry_kind: str) -> dict:
     }
 
 
+def shelves_now(company, pairs) -> dict[tuple, dict]:
+    """
+    INV-LOAD-02 — (branch_id, product_id) -> {'units': available devices, 'stock': `BranchStock.quantity`}, as the
+    database says NOW (inside the caller's transaction). Reads only.
+    """
+    pairs = set(pairs)
+    branch_ids = {branch for branch, _ in pairs}
+    product_ids = {product for _, product in pairs}
+    found = {pair: {'units': 0, 'stock': 0} for pair in pairs}
+    for row in BranchStock.objects.filter(branch__company=company, branch_id__in=branch_ids,
+                                          product_id__in=product_ids).values('branch_id', 'product_id', 'quantity'):
+        pair = (row['branch_id'], row['product_id'])
+        if pair in found:
+            found[pair]['stock'] = row['quantity']
+    for pair in StockUnit.objects.filter(company=company, status=StockUnit.Status.AVAILABLE, branch_id__in=branch_ids,
+                                         product_id__in=product_ids).values_list('branch_id', 'product_id'):
+        if pair in found:
+            found[pair]['units'] += 1
+    return found
+
+
 def _opening_problem(branch, product) -> str:
     # INV-OPENING-01 — the same rule as «Recibir mercadería» (lazy import: receipt_services imports this module's peers).
     from .receipt_services import opening_problem
@@ -454,7 +702,7 @@ SUPPLIERS_FORBIDDEN = ('No tienes permiso para ver proveedores: deja vacía la c
 @transaction.atomic
 def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                   default_branch=None, default_reason: str = '', entry_kind=None,
-                  suppliers_allowed: bool = False) -> BulkImportJob:
+                  suppliers_allowed: bool = False, line=None) -> BulkImportJob:
     """
     Stage a workbook of devices. Writes NO unit and NO movement.
 
@@ -464,8 +712,12 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
 
     `suppliers_allowed` (D-F-3, INV-LOAD-01 review): whether this caller may read who sold a device. Without it a filled
     «Proveedor» is a row error with one sentence whatever it says, so a RUC is never turned into a name.
+
+    `line` (INV-LOAD-02): the line the caller says the file loads (`new` / `used`). A stock template says it by its
+    sheet; the two must agree. With a line, every row is looked up among the variants of that line only.
     """
     entry_kind = _entry_kind(entry_kind)
+    line = clean_line_option(line)
     data = xlsx_reader.check_upload(upload, filename=filename)
     workbook, _notes = xlsx_reader.load_workbook(data)
     sheet_name = _pick_sheet(workbook)
@@ -479,7 +731,14 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         )
     except xlsx_reader.XlsxError:
         raise UnitImportError(f'Se cargan hasta {MAX_UNITS} equipos por archivo. Divide el archivo.') from None
-    columns = _columns(headers)
+    template_line = template_line_of(sheet_name)
+    if line and template_line and line != template_line:
+        raise UnitImportError(
+            f'Este archivo es la plantilla de {LINE_LABELS[template_line]} y elegiste cargar {LINE_LABELS[line]}. '
+            f'Sube la plantilla que corresponde.'
+        )
+    line = line or template_line
+    columns = _columns(headers, template_line=template_line)
 
     reachable = set(reachable_branch_ids)
     branches = {
@@ -525,7 +784,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         mapping_snapshot={'sheet_name': sheet_name, 'mapping': columns,
                           'headers': [str(header) for header in headers]},
         options_snapshot={'default_branch': getattr(fallback, 'pk', None), 'default_reason': default_reason,
-                          'entry_kind': entry_kind},
+                          'entry_kind': entry_kind, 'line': line},
         created_by=actor,
     )
 
@@ -570,16 +829,31 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         data = {'name': fields['name'] or fields['code']}
 
         # -- which product ----------------------------------------------------
-        product_id, match_error, _matched_by, match_warnings = index.match(
-            code=fields['code'], name=fields['name'],
-        )
+        if template_line and not (fields['code'] or fields['name']):
+            # INV-LOAD-02 — a stock template names the model and its options, never a product.
+            product_id, match_error, match_warnings = None, None, []
+            if not fields['model']:
+                match_error = 'Indica el «Modelo» del equipo.'
+        else:
+            product_id, match_error, _matched_by, match_warnings = index.match(
+                code=fields['code'], name=fields['name'],
+            )
+        line_text, errors_line = fields['line'], ''
+        if line:
+            # INV-LOAD-02 — the line of the template (or of the screen) decides; a «Línea» cell may only agree.
+            try:
+                if device_catalog.clean_line(fields['line'], default=line) != line:
+                    errors_line = f'Este archivo carga {LINE_LABELS[line]}: la fila dice «{fields["line"][:20]}».'
+            except device_catalog.CatalogError as exc:
+                errors_line = str(exc)
+            line_text = _LINE_WORD[line]
         # DC2 — no product by code or name, and the row names a model: the
         # variant of that model with these options in that line.
         if (product_id is None or match_error) and fields['model']:
             try:
                 notes = []
                 spec = device_catalog.resolve_variant_spec(
-                    company, model_name=fields['model'], line_text=fields['line'],
+                    company, model_name=fields['model'], line_text=line_text,
                     labels=[fields['capacity'], fields['colour'], fields['sim'], fields['region']],
                     cache=catalog_cache, notes=notes,
                 )
@@ -596,6 +870,8 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                     product_id, match_error, match_warnings = variant.pk, None, list(notes)
         warnings.extend(match_warnings)
         product = products.get(product_id)
+        if errors_line:
+            errors.append(errors_line)
         if match_error:
             errors.append(match_error)
         elif product is None:
@@ -605,6 +881,11 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                 f'«{product.name}» no se controla por número de serie. Actívalo en Inventario › Equipos '
                 f'antes de cargar sus equipos.'
             )
+            product = None
+        elif line and product.condition_line != line:
+            # INV-LOAD-02 — a code or a name that points at a variant of the OTHER line.
+            word = _LINE_WORD.get(product.condition_line, product.condition_line)
+            errors.append(f'«{product.name}» es de la línea «{word}»: este archivo carga {LINE_LABELS[line]}.')
             product = None
         if product is not None:
             data.update(product_id=product.pk, name=product.name)
@@ -971,11 +1252,17 @@ def apply_units(*, job, actor, request=None):
     label_failed = sum(batch is label_batches.FAILED
                        for batch in label_batches.create_for_import_job(job, received_units, actor=actor))
 
+    # INV-LOAD-02 — which devices this load created (the batch annulment acts on exactly these, never on a guess) and
+    # what each shelf it touched holds right after it (the «after» of the before/after report).
+    after = shelves_now(job.company, {(key[0], key[1]) for key in groups})
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
     job.applied_at = timezone.now()
     job.summary = {**(job.summary or {}), 'applied': {
         'units': registered, 'movements': movements, 'imei_on_unmarked_products': unmarked,
+        'unit_ids': sorted(unit.pk for unit in received_units),
+        'shelves': [{'branch_id': branch_id, 'product_id': product_id, **counts}
+                    for (branch_id, product_id), counts in sorted(after.items())],
         # Only when something failed, so the answer of a repeated apply can say so too.
         **({'label_failed': label_failed} if label_failed else {})}}
     job.save(update_fields=['status', 'applied_by', 'applied_at', 'summary'])

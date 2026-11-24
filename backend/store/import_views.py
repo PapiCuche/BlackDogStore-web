@@ -600,16 +600,31 @@ class AdminProductImagesImportRulesView(APIView):
 # =============================================================================
 
 class AdminUnitImportTemplateView(APIView):
+    """
+    GET — the device template. `?line=new|used` (INV-LOAD-02): «Stock de equipos nuevos» / «Stock de seminuevos»;
+    without it, the combined template every older screen and file still uses.
+    """
+
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         company, error = _context(request, CAP_STOCK)
         if error:
             return error
+        try:
+            line = unit_import_services.clean_line_option(request.query_params.get('line'))
+        except unit_import_services.UnitImportError as exc:
+            return _error(exc)
         # The branches THIS person can load into: the list never names another.
         branches = list(
             visible_branches(request.user, company).filter(is_active=True).order_by('name').values_list('name', flat=True)
         )
+        if line:
+            from .models import CosmeticGrade
+
+            grades = CosmeticGrade.objects.filter(company=company, is_active=True).values_list('label', flat=True)
+            spec = unit_import_services.STOCK_TEMPLATES[line]
+            return _xlsx(unit_import_services.stock_template_bytes(line, branches, list(grades)), spec['filename'])
         return _xlsx(unit_import_services.template_bytes(branches), unit_import_services.TEMPLATE_FILENAME)
 
 
@@ -655,6 +670,8 @@ class AdminUnitImportPreviewView(APIView):
                 entry_kind=request.data.get('entry_kind') or None,
                 # D-F-3 — who may not read suppliers may not have a RUC turned into a name either.
                 suppliers_allowed=may_see_suppliers(request),
+                # INV-LOAD-02 — the line the screen loads; a stock template says its own, and the two must agree.
+                line=request.data.get('line') or None,
             )
         except (xlsx_reader.XlsxError, unit_import_services.UnitImportError) as exc:
             return _error(exc)
@@ -691,6 +708,84 @@ class AdminUnitImportApplyView(APIView):
             'label_batches': batches,
             'label_error': bool(failed) or label_batches.has_error(batches),
         })
+
+
+def _applied_units_job(request, pk):
+    """(company, job, error): a units job of the caller's company, within the branches they reach (404 otherwise)."""
+    company, error = _context(request, CAP_STOCK)
+    if error:
+        return None, None, error
+    job = BulkImportJob.objects.filter(company=company, pk=pk, import_type=BulkImportJob.UNITS).first()
+    if job is None or not _job_within_reach(request.user, company, job):
+        return None, None, Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+    return company, job, None
+
+
+def _batch_refusal(exc) -> Response:
+    body = {'detail': str(exc)}
+    if exc.code:
+        body['code'] = exc.code
+    if exc.field:
+        body['field'] = exc.field
+    if exc.blocking:
+        body['blocking'] = exc.blocking
+    return Response(body, status=exc.status)
+
+
+class AdminUnitImportVoidView(APIView):
+    """
+    INV-LOAD-02 — POST …/units/import/<id>/void/  {reason}
+
+    Annuls every device of an applied load (`unit_import_batch.void_job`): all of them or none, 409
+    `batch_not_voidable` naming each device that moved. `inventory.adjust` within every branch of the load, as the
+    apply; another company's load is a 404. A second call answers `changed: false`.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
+    http_method_names = ['post', 'options']
+
+    @answers_busy
+    def post(self, request, pk):
+        _company, job, error = _applied_units_job(request, pk)
+        if error:
+            return error
+        from . import unit_import_batch
+
+        reason = request.data.get('reason') if isinstance(request.data, dict) else ''
+        try:
+            job, changed = unit_import_batch.void_job(job, reason=reason, actor=request.user, request=request)
+        except unit_import_batch.BatchError as exc:
+            return _batch_refusal(exc)
+        return Response({**_job_payload(job), 'changed': changed, 'voided': (job.summary or {}).get('voided')})
+
+
+class AdminUnitImportReportView(APIView):
+    """
+    INV-LOAD-02 — GET …/units/import/<id>/report/?as=csv|xlsx — the before/after of an applied load, per branch ×
+    product. Counts only: no cost, serial or IMEI. (`as`, not `format`: DRF reads `format` itself.)
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, pk):
+        _company, job, error = _applied_units_job(request, pk)
+        if error:
+            return error
+        from . import unit_import_batch
+
+        kind = (request.query_params.get('as') or 'csv').strip().lower()
+        if kind not in ('csv', 'xlsx'):
+            return _error('El informe se descarga como «csv» o «xlsx».')
+        try:
+            if kind == 'xlsx':
+                return _xlsx(unit_import_batch.report_xlsx(job), unit_import_batch.report_filename(job, 'xlsx'))
+            body = unit_import_batch.report_csv(job)
+        except unit_import_batch.BatchError as exc:
+            return _batch_refusal(exc)
+        response = HttpResponse(body, content_type='text/csv; charset=utf-8')
+        response['Content-Disposition'] = f'attachment; filename="{unit_import_batch.report_filename(job, "csv")}"'
+        return response
 
 
 # =============================================================================
@@ -735,6 +830,7 @@ class AdminStockImportApplyView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminImportThrottle]
 
+    @answers_busy       # INV-LOAD-02: the quantity file meets the same shelves as every other entry
     def post(self, request, pk):
         company, error = _context(request, CAP_STOCK)
         if error:

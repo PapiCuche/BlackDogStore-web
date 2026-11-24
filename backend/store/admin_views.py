@@ -72,6 +72,7 @@ _MAX_PAGE_SIZE = 100
 CAP_PRODUCTS_VIEW = 'products.view'
 CAP_PRODUCTS_MANAGE = 'products.manage'
 from . import label_batches
+from .db_busy import answers_busy
 from . import order_fulfillment_services as fulfillment
 from . import order_shortfall
 from . import receipt_coverage
@@ -1121,6 +1122,7 @@ class AdminProductInventoryAdjustView(APIView):
     permission_classes = [permissions.IsAuthenticated]
     throttle_classes = [AdminInventoryAdjustThrottle]
 
+    @answers_busy       # INV-LOAD-02: a deadlock with another entry on the same shelf is 409 `busy`, never a 500
     def post(self, request, pk):
         company, error = _company_context(
             request, CAP_INVENTORY_ADJUST, _LEGACY_ADJUST_INVENTORY_ROLES,
