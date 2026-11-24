@@ -366,13 +366,12 @@ COST_UNSEEN_TEXT = ('Esta oferta tiene un costo pactado que no puedes ver, así 
                     'revise.')
 COST_UNSEEN_ROW_TEXT = ('La oferta tiene un costo pactado que no puedes ver: no se comprueba si este precio lo cubre. '
                         'Al aplicar tendrás que confirmarlo.')
-#: The audit lines of a confirmation, with the actor, the offer, the price, the cost and the reason. The cost lives
-#: ONLY in the audit row: the offer's history hides the first line (it names a comparison) and the `agreed_cost`
-#: key from who cannot see costs, and so does the audit log (`supplier_views.AdminOfferHistoryView`,
-#: `admin_views.AdminAuditLogListView`).
-BELOW_COST_AUDIT = 'supplier_offer_below_cost_confirmed'
-COST_UNSEEN_AUDIT = 'supplier_offer_cost_unseen_confirmed'
-MARGIN_AUDITS = (BELOW_COST_AUDIT, COST_UNSEEN_AUDIT)
+#: A confirmed exception travels INSIDE the offer's own audit row (`supplier_offer_created` / `_updated`), under
+#: this key: the verdict, the reason, the price and the cost written (the row's actor is who confirmed). Never a
+#: row of its own — a row hidden from some readers would leave a gap in the audit ids (second review of #402).
+#: Readers without `costs.view` get the row without this key (`audit_metadata_without_cost`), in the offer's
+#: history and in the audit log alike, whatever the verdict.
+MARGIN_AUDIT_KEY = 'margin_exception'
 #: Owner, 2026-11-23: an exception is confirmed AND explained. The codebase's reason lengths (5 to 500).
 MARGIN_REASON_MIN, MARGIN_REASON_MAX = 5, 500
 MARGIN_REASON_REQUIRED = 'margin_reason_required'
@@ -381,10 +380,10 @@ MARGIN_REASON_TEXT = (f'Escribe el motivo de este precio ({MARGIN_REASON_MIN} a 
 
 
 def audit_metadata_without_cost(metadata):
-    """An audit row's metadata for a reader without `costs.view`: the cost a margin confirmation keeps, dropped."""
-    if not isinstance(metadata, dict) or 'agreed_cost' not in metadata:
+    """An audit row's metadata for a reader without `costs.view`: the margin exception (with its cost), dropped."""
+    if not isinstance(metadata, dict) or MARGIN_AUDIT_KEY not in metadata:
         return metadata
-    return {key: value for key, value in metadata.items() if key != 'agreed_cost'}
+    return {key: value for key, value in metadata.items() if key != MARGIN_AUDIT_KEY}
 
 
 def clean_margin_reason(value) -> str:
@@ -427,15 +426,16 @@ def margin_check(values: dict, *, current=None, may_view_costs: bool) -> str | N
 
 
 def _guard_margin(values, *, current, may_view_costs, confirm_below_cost, reason='',
-                  margin_judged=False) -> tuple[str | None, str]:
+                  margin_judged=None) -> tuple[str | None, str]:
     """
     Refuses an unconfirmed exception (409) and a confirmed one without a reason (400 `margin_reason_required`);
     returns the verdict and the reason, to audit once written. SECURE BY DEFAULT (review of #402): every write
-    is judged unless `margin_judged` — only the weekly file's apply says so, having judged and confirmed the whole
-    job under its locks (`supplier_offer_import._margin_rows`).
+    is judged unless `margin_judged` — only the weekly file's apply passes it, having judged and confirmed the whole
+    job under its locks (`supplier_offer_import._margin_rows`): `{}` for a row without an exception, else
+    `{'verdict', 'reason', **what to audit}`.
     """
-    if margin_judged:
-        return None, ''
+    if margin_judged is not None:
+        return margin_judged.get('verdict'), margin_judged.get('reason', '')
     verdict = margin_check(values, current=current, may_view_costs=may_view_costs)
     if verdict is None:
         return None, ''
@@ -452,17 +452,16 @@ def _guard_margin(values, *, current, may_view_costs, confirm_below_cost, reason
                       extra={'commercial_price': str(price), 'agreed_cost': str(cost)})
 
 
-def audit_margin(verdict, offer, *, reason, actor=None, request=None, **metadata) -> None:
-    """
-    A confirmed price below the cost (or over a cost the person cannot see): who (the row's actor), which offer,
-    the price and the cost written, and why. The cost stays in this row (see `MARGIN_AUDITS`).
-    """
+def _margin_metadata(verdict, offer, reason, extra=None) -> dict:
+    """`{MARGIN_AUDIT_KEY: …}` for the offer's audit row when an exception was confirmed; else nothing."""
     if verdict is None:
-        return
-    _audit(BELOW_COST_AUDIT if verdict == BELOW_COST else COST_UNSEEN_AUDIT, company=offer.company, actor=actor,
-           target_type='supplier_offer', target_id=offer.pk, request=request, reason=reason,
-           commercial_price=str(offer.commercial_price),
-           agreed_cost=str(offer.agreed_cost) if offer.agreed_cost is not None else None, **metadata)
+        return {}
+    return {MARGIN_AUDIT_KEY: {
+        'verdict': 'below_cost' if verdict == BELOW_COST else 'cost_unseen', 'reason': reason,
+        'commercial_price': str(offer.commercial_price),
+        'agreed_cost': str(offer.agreed_cost) if offer.agreed_cost is not None else None,
+        **(extra or {'source': 'panel'}),
+    }}
 
 
 def _offer_snapshot(offer) -> dict:
@@ -486,7 +485,7 @@ def _is_duplicate(exc) -> bool:
 
 
 def create_offer(*, company, actor=None, request=None, may_view_costs: bool = False,
-                 confirm_below_cost: bool = False, below_cost_reason: str = '', margin_judged: bool = False,
+                 confirm_below_cost: bool = False, below_cost_reason: str = '', margin_judged: dict | None = None,
                  **fields) -> SupplierOffer:
     fields.setdefault('supplier_id', None)
     fields.setdefault('product_id', None)
@@ -502,13 +501,13 @@ def create_offer(*, company, actor=None, request=None, may_view_costs: bool = Fa
             raise
         raise SupplyError(_DUPLICATE, field='valid_from', code='duplicate') from None
     _audit('supplier_offer_created', company=company, actor=actor, target_type='supplier_offer',
-           target_id=offer.pk, request=request, **_offer_snapshot(offer))
-    audit_margin(verdict, offer, reason=reason, actor=actor, request=request, source='panel')
+           target_id=offer.pk, request=request, **_offer_snapshot(offer),
+           **_margin_metadata(verdict, offer, reason, (margin_judged or {}).get('audit')))
     return offer
 
 
 def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = False,
-                 confirm_below_cost: bool = False, below_cost_reason: str = '', margin_judged: bool = False,
+                 confirm_below_cost: bool = False, below_cost_reason: str = '', margin_judged: dict | None = None,
                  **fields) -> SupplierOffer:
     """The margin is judged here unless `margin_judged` (see `_guard_margin`)."""
     fields = {k: v for k, v in fields.items() if k not in ('supplier_id', 'product_id')}
@@ -534,8 +533,8 @@ def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = Fals
         if 'agreed_cost' in values:
             changed.append('agreed_cost')
         _audit('supplier_offer_updated', company=locked.company, actor=actor, target_type='supplier_offer',
-               target_id=locked.pk, request=request, changed=sorted(set(changed)), **_offer_snapshot(locked))
-        audit_margin(verdict, locked, reason=reason, actor=actor, request=request, source='panel')
+               target_id=locked.pk, request=request, changed=sorted(set(changed)), **_offer_snapshot(locked),
+               **_margin_metadata(verdict, locked, reason, (margin_judged or {}).get('audit')))
     offer.refresh_from_db()
     return offer
 

@@ -311,10 +311,9 @@ class AdminOfferHistoryView(APIView):
         if offer is None:
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         rows = AdminAuditLog.objects.filter(company=company, target_type='supplier_offer', target_id=str(offer.pk))
+        # SUPPLY-GUARDS-01: every row, for every reader (no gap to count); a margin exception's details only to
+        # `costs.view` — it names the cost and whether the price is below it.
         sees_costs = user_may_view_costs(request.user, company)
-        if not sees_costs:
-            # SUPPLY-GUARDS-01: «sold below its cost» says something about the cost.
-            rows = rows.exclude(action=supply_services.BELOW_COST_AUDIT)
         rows = rows.select_related('actor').order_by('-created_at', '-pk')[:200]
         return Response({'results': [{
             'action': row.action, 'at': row.created_at.isoformat(),

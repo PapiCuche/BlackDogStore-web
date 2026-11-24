@@ -166,9 +166,10 @@ an offer with a cost warns and asks the same way (409
 `cost_unseen_confirmation_required`, no amounts), whatever the price. A
 confirmation needs a reason too (`below_cost_reason`; 400
 `margin_reason_required` without one). The preview stores no sentence about the
-margin: `job_payload` writes it for each reader. Audited per offer with the
-actor, the price, the cost and the reason — the cost returned only to `costs.view`
-(`supply_services.MARGIN_AUDITS`). A row of an INACTIVE supplier
+margin: `job_payload` writes it for each reader. Audited inside each offer's own
+`supplier_offer_created`/`_updated` row (actor, price, cost, reason, job, row),
+its details returned only to `costs.view` (`supply_services.MARGIN_AUDIT_KEY`).
+A row of an INACTIVE supplier
 warns: the offer is recorded and sells nothing until the supplier is back on.
 
 LOCK ORDER: the job row; then a transaction advisory lock per (company,
@@ -1930,13 +1931,9 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                 # `margin_judged`: the job's margin was judged and confirmed above (`_margin_rows`), under the locks.
                 offer = supply_services.create_offer(company=job.company, actor=actor, request=request,
                                                      may_view_costs=with_cost, supplier_id=data.get('supplier_id'),
-                                                     product_id=data.get('product_id'), margin_judged=True,
+                                                     product_id=data.get('product_id'),
+                                                     margin_judged=_judged(margins, row, margin_reason, job),
                                                      **fields)
-                if row.row_number in margins:
-                    offer.refresh_from_db()
-                    supply_services.audit_margin(margins[row.row_number]['verdict'], offer, reason=margin_reason,
-                                                 actor=actor, request=request, source='import', job_id=job.pk,
-                                                 row_number=row.row_number)
                 created += 1
                 confirmed_count += _register_declaration(
                     offer, job=job, row=row, declared=declared, committed_at=0, sold_pair=sold_pair,
@@ -1976,12 +1973,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                           'previous_valid_until': offer.valid_until.isoformat(),
                                           'valid_until': data.get('valid_until')})
                 supply_services.update_offer(offer, actor=actor, request=request, may_view_costs=with_cost,
-                                             margin_judged=True, **fields)
-                if row.row_number in margins:
-                    offer.refresh_from_db()
-                    supply_services.audit_margin(margins[row.row_number]['verdict'], offer, reason=margin_reason,
-                                                 actor=actor, request=request, source='import', job_id=job.pk,
-                                                 row_number=row.row_number)
+                                             margin_judged=_judged(margins, row, margin_reason, job), **fields)
                 quantity_after = {'confirmed': offer.confirmed_quantity, 'committed': offer.committed_quantity,
                                   'available': _available(offer)}
                 if quantity_after != quantity_before:
@@ -2101,6 +2093,14 @@ def _margin_rows(writing, offers, *, with_cost: bool, sees_costs: bool, keep_pri
             'agreed_cost': str(values.get('agreed_cost', getattr(current, 'agreed_cost', ''))),
         }
     return verdicts
+
+
+def _judged(margins, row, reason, job) -> dict:
+    """`margin_judged` for the row's write: the confirmed exception (folded into the offer's audit row), or none."""
+    if row.row_number not in margins:
+        return {}
+    return {'verdict': margins[row.row_number]['verdict'], 'reason': reason,
+            'audit': {'source': 'import', 'job_id': job.pk, 'row_number': row.row_number}}
 
 
 def _refuse_margins(margins: dict) -> None:

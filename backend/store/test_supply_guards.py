@@ -34,6 +34,18 @@ D = Decimal
 WHY = 'Liquidación de modelo anterior'
 
 
+def exception_rows(**filters):
+    """The audit rows of offers that carry a margin exception (second review of #402: never a row of its own)."""
+    return AdminAuditLog.objects.filter(target_type='supplier_offer', metadata__has_key='margin_exception',
+                                        **filters)
+
+
+def exception_of(offer_pk, action):
+    row = AdminAuditLog.objects.filter(target_type='supplier_offer', target_id=str(offer_pk),
+                                       action=action).order_by('-pk').first()
+    return row, row.metadata['margin_exception']
+
+
 class GuardShop(SupplyShop):
     """The shop of DC3 (offer: cost 70, price 110), a manager without `costs.view` and API clients."""
 
@@ -140,11 +152,12 @@ class BelowCostPanelTest(GuardShop, TestCase):
         self.assertEqual(res.status_code, 201, res.content)
         made = SupplierOffer.objects.get(pk=res.json()['id'])
         self.assertEqual((made.commercial_price, made.agreed_cost), (D('100.00'), D('120.00')))
-        audit = AdminAuditLog.objects.get(company=self.company, action='supplier_offer_below_cost_confirmed',
-                                          target_type='supplier_offer', target_id=str(made.pk))
-        self.assertEqual(audit.actor, self.staff)
-        self.assertEqual((audit.metadata['commercial_price'], audit.metadata['agreed_cost'], audit.metadata['reason']),
-                         ('100.00', '120.00', WHY))
+        audit, exception = exception_of(made.pk, 'supplier_offer_created')
+        self.assertEqual((audit.actor, audit.company), (self.staff, self.company))
+        self.assertEqual(exception, {'verdict': 'below_cost', 'reason': WHY, 'commercial_price': '100.00',
+                                     'agreed_cost': '120.00', 'source': 'panel'})
+        # Second review of #402: inside the offer's own audit row — no extra row, so no gap in the ids.
+        self.assertEqual(AdminAuditLog.objects.filter(target_type='supplier_offer', target_id=str(made.pk)).count(), 1)
 
     def test_a_confirmation_without_a_reason_writes_nothing(self):
         count = SupplierOffer.objects.count()
@@ -162,13 +175,13 @@ class BelowCostPanelTest(GuardShop, TestCase):
         assert_no_amount(self, res.json(), '70')
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.commercial_price, D('110.00'))
-        self.assertFalse(AdminAuditLog.objects.filter(action__in=supply.MARGIN_AUDITS).exists())
+        self.assertFalse(exception_rows().exists())
 
     def test_a_price_at_or_above_the_cost_or_without_cost_is_saved_as_always(self):
         self.assertEqual(self.new_offer(self.api, agreed_cost='100.00').status_code, 201)
         SupplierOffer.objects.exclude(pk=self.offer.pk).delete()
         self.assertEqual(self.new_offer(self.api, agreed_cost=None).status_code, 201)
-        self.assertFalse(AdminAuditLog.objects.filter(action='supplier_offer_below_cost_confirmed').exists())
+        self.assertFalse(exception_rows().exists())
 
     def test_edit_below_cost_by_price_or_by_cost_asks(self):
         url = f'/api/admin/supplier-offers/{self.offer.pk}/'
@@ -184,9 +197,10 @@ class BelowCostPanelTest(GuardShop, TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.commercial_price, D('60.00'))
-        audit = AdminAuditLog.objects.get(action='supplier_offer_below_cost_confirmed', target_id=str(self.offer.pk))
-        self.assertEqual((audit.actor, audit.metadata['commercial_price'], audit.metadata['agreed_cost'],
-                          audit.metadata['reason']), (self.staff, '60.00', '70.00', WHY))
+        audit, exception = exception_of(self.offer.pk, 'supplier_offer_updated')
+        self.assertEqual(audit.actor, self.staff)
+        self.assertEqual((exception['verdict'], exception['commercial_price'], exception['agreed_cost'],
+                          exception['reason']), ('below_cost', '60.00', '70.00', WHY))
 
     def test_the_editor_resending_what_the_offer_holds_does_not_ask_again(self):
         # An offer already below its cost (confirmed before, or older than this guard): saving its quantity with
@@ -214,10 +228,10 @@ class BelowCostPanelTest(GuardShop, TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         self.assertNotIn('agreed_cost', res.json())
         assert_no_amount(self, res.json(), '70')
-        audit = AdminAuditLog.objects.get(action='supplier_offer_cost_unseen_confirmed', target_id=str(self.offer.pk))
+        audit, exception = exception_of(self.offer.pk, 'supplier_offer_updated')
         # The cost lives in the audit row (owner, 2026-11-23), never in what this person is answered.
-        self.assertEqual((audit.actor, audit.metadata['agreed_cost'], audit.metadata['reason']),
-                         (self.seller, '70.00', WHY))
+        self.assertEqual((audit.actor, exception['verdict'], exception['agreed_cost'], exception['reason']),
+                         (self.seller, 'cost_unseen', '70.00', WHY))
         # Nothing else asks: the same price again, another field, or an offer without a cost.
         self.assertEqual(self.blind.patch(url, {'commercial_price': '60.00', 'lead_time_days': 6},
                                           format='json').status_code, 200)
@@ -235,13 +249,15 @@ class BelowCostPanelTest(GuardShop, TestCase):
                                                 'below_cost_reason': WHY}, format='json').status_code, 200)
         history = f'{url}history/'
         seen = self.api.get(history).json()['results']
-        self.assertIn('supplier_offer_below_cost_confirmed', [row['action'] for row in seen])
-        self.assertIn('70.00', [row['metadata'].get('agreed_cost') for row in seen])
+        verdicts = [row['metadata']['margin_exception']['verdict'] for row in seen
+                    if 'margin_exception' in row['metadata']]
+        self.assertEqual(verdicts, ['cost_unseen', 'below_cost'])
+        self.assertIn('70.00', [row['metadata']['margin_exception']['agreed_cost'] for row in seen
+                                if 'margin_exception' in row['metadata']])
         hidden = self.blind.get(history).json()['results']
-        self.assertNotIn('supplier_offer_below_cost_confirmed', [row['action'] for row in hidden])
-        unseen = [row for row in hidden if row['action'] == 'supplier_offer_cost_unseen_confirmed']
-        self.assertEqual(unseen[0]['metadata']['reason'], WHY)
-        self.assertNotIn('agreed_cost', unseen[0]['metadata'])
+        # The same rows, in the same order: nothing to count. Only the exception's details are gone.
+        self.assertEqual([(row['action'], row['at']) for row in hidden], [(row['action'], row['at']) for row in seen])
+        self.assertFalse(any('margin_exception' in row['metadata'] for row in hidden))
         assert_no_amount(self, hidden, '70')
 
     def test_the_audit_log_returns_the_cost_only_to_costs_view(self):
@@ -251,24 +267,23 @@ class BelowCostPanelTest(GuardShop, TestCase):
         self.blind.patch(url, {'commercial_price': '65.00', 'confirm_below_cost': True, 'below_cost_reason': WHY},
                          format='json')
         auditor, _ = _p2d_member(self.company, 'sg_auditor_sin_costos', ['company.view', 'memberships.view'])
-        # Review of #402: the row ITSELF says «below the cost»; with the offer's visible price it bounds the cost.
-        # Absent for who cannot see costs — like the offer's history.
-        rows = self.as_(auditor).get('/api/admin/audit-logs/?action=supplier_offer').json()['results']
-        self.assertNotIn('supplier_offer_below_cost_confirmed', [row['action'] for row in rows])
-        unseen = [row for row in rows if row['action'] == 'supplier_offer_cost_unseen_confirmed']
-        self.assertEqual(len(unseen), 1, rows)
-        self.assertEqual(unseen[0]['metadata']['reason'], WHY)
-        self.assertNotIn('agreed_cost', unseen[0]['metadata'])
-        assert_no_amount(self, rows, '70')
         owner, _ = _p2d_member(self.company, 'sg_auditor_con_costos',
                                ['company.view', 'memberships.view', 'costs.view'])
-        rows = self.as_(owner).get('/api/admin/audit-logs/?action=below_cost').json()['results']
-        self.assertEqual(len(rows), 1, rows)
-        self.assertEqual((rows[0]['metadata']['agreed_cost'], rows[0]['metadata']['commercial_price']),
-                         ('70.00', '60.00'))
+        query = '/api/admin/audit-logs/?target_type=supplier_offer'
+        blind = self.as_(auditor).get(query).json()['results']
+        full = self.as_(owner).get(query).json()['results']
+        # Second review of #402: the SAME rows (ids) for both — no hidden row, no gap in the ids to read.
+        self.assertEqual([row['id'] for row in blind], [row['id'] for row in full])
+        self.assertFalse(any('margin_exception' in row['metadata'] for row in blind), blind)
+        assert_no_amount(self, blind, '70')
+        exceptions = [row['metadata']['margin_exception'] for row in full if 'margin_exception' in row['metadata']]
+        self.assertEqual([(e['verdict'], e['commercial_price'], e['agreed_cost']) for e in exceptions],
+                         [('cost_unseen', '65.00', '70.00'), ('below_cost', '60.00', '70.00')])
+        # No action of its own: nothing to search for either.
+        self.assertEqual(self.as_(owner).get('/api/admin/audit-logs/?action=below_cost').json()['results'], [])
 
-    def test_the_audit_log_hides_the_below_cost_line_per_company(self):
-        # A reader of two companies: sees the line where they hold `costs.view`, not where they do not.
+    def test_the_audit_log_hides_the_exception_per_company(self):
+        # A reader of two companies: sees the exception where they hold `costs.view`, not where they do not.
         self.api.patch(f'/api/admin/supplier-offers/{self.offer.pk}/',
                        {'commercial_price': '60.00', 'confirm_below_cost': True, 'below_cost_reason': WHY},
                        format='json')
@@ -285,8 +300,10 @@ class BelowCostPanelTest(GuardShop, TestCase):
                                            branch_access_mode=Membership.ACCESS_MODE_ALL)
         _assign(second, _role(other.company, 'Rol lector sin costos', ['company.view', 'memberships.view'],
                               slug='rol-lector-sin-costos'))
-        rows = self.as_(reader).get('/api/admin/audit-logs/?action=below_cost').json()['results']
-        self.assertEqual([row['target_id'] for row in rows], [str(self.offer.pk)], rows)
+        rows = self.as_(reader).get('/api/admin/audit-logs/?action=supplier_offer_updated').json()['results']
+        self.assertEqual(sorted(row['target_id'] for row in rows), sorted([str(self.offer.pk), str(other.offer.pk)]))
+        with_details = [row['target_id'] for row in rows if 'margin_exception' in row['metadata']]
+        self.assertEqual(with_details, [str(self.offer.pk)], rows)
 
     def test_the_service_checks_the_margin_by_default(self):
         # Review of #402: no caller gets a below-cost offer by forgetting the flag (`registration_services` did).
@@ -360,10 +377,11 @@ class ImportGuardTest(GuardShop, TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         made = SupplierOffer.objects.get()
         self.assertEqual((made.commercial_price, made.agreed_cost), (D('100.00'), D('120.00')))
-        audit = AdminAuditLog.objects.get(action='supplier_offer_below_cost_confirmed', target_id=str(made.pk))
-        self.assertEqual((audit.actor, audit.metadata['commercial_price'], audit.metadata['agreed_cost'],
-                          audit.metadata['reason'], audit.metadata['job_id']),
-                         (self.staff, '100.00', '120.00', WHY, body['id']))
+        audit, exception = exception_of(made.pk, 'supplier_offer_created')
+        self.assertEqual(audit.actor, self.staff)
+        self.assertEqual(exception, {'verdict': 'below_cost', 'reason': WHY, 'commercial_price': '100.00',
+                                     'agreed_cost': '120.00', 'source': 'import', 'job_id': body['id'],
+                                     'row_number': row['row_number']})
 
     def test_an_update_below_the_existing_cost_asks_on_top_of_the_price_decision(self):
         body = self.preview([self.row(**{'Precio comercial': '60'})])
@@ -472,7 +490,7 @@ class RegistrationBelowCostTest(RegistrationFixture):
                          ('supplier', 'below_cost_use_offers_panel', 'offer.commercial_price'), res)
         self.assertIn('Ofertas', res['detail'])
         self.assertEqual(self.counts(), before)
-        self.assertFalse(AdminAuditLog.objects.filter(action__in=supply.MARGIN_AUDITS).exists())
+        self.assertFalse(exception_rows().exists())
 
     def test_at_or_above_the_cost_it_registers_as_before(self):
         body = self.on_order(offer=self.offer(agreed_cost='4199.00', commercial_price='4199.00'))
