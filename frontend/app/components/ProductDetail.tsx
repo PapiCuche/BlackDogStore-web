@@ -9,6 +9,7 @@ import { API_BASE } from "../lib/api";
 import { fetchWithAuth } from "../lib/auth";
 import { emitCartChange } from "../lib/cart";
 import { CartError, SOLD_OUT_LABEL, addProductToCart, onOrderLabel, overStockOffer, type OnOrder } from "../lib/catalog-models";
+import { photoLabel } from "../lib/model-configurator";
 import { formatMoney } from "../lib/format";
 import { v3ModelPath, v3VariantPath } from "../lib/structured-data";
 import { ImagePending } from "./ImagePending";
@@ -30,7 +31,7 @@ type Product = {
   inventory: number;
   image_url?: string;
   /** La galería que la tienda subió. `image_url` es su principal. */
-  images?: { url: string; alt_text: string; is_primary: boolean; width: number; height: number }[];
+  images?: { url: string; alt_text: string; is_primary: boolean; width: number; height: number; is_demo?: boolean }[];
   average_rating?: number | null;
   review_count?: number;
   category?: Category;
@@ -45,6 +46,8 @@ type Product = {
    * else its colour's verified finish); none → «Imagen pendiente», never another colour's photo. Absent otherwise.
    */
   image_pending?: boolean;
+  /** Review of #408: the picture is a demo resource — shown and said («Imagen referencial»). */
+  image_is_demo?: boolean;
 };
 
 /**
@@ -105,16 +108,18 @@ function StarPicker({ rating, onChange, labelledBy }: { rating: number; onChange
 export default function ProductDetail({ product }: { product: Product }) {
   const [quantity, setQuantity] = useState(1);
   // La galería que la tienda subió; sin ella, la dirección de siempre.
-  const gallery = product.images?.length
+  const gallery: NonNullable<Product["images"]> = product.images?.length
     ? product.images
     : product.image_url
-      ? [{ url: product.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }]
+      ? [{ url: product.image_url, alt_text: "", is_primary: true, width: 0, height: 0, is_demo: product.image_is_demo }]
       : [];
   const [selected, setSelected] = useState(() => Math.max(0, gallery.findIndex((image) => image.is_primary)));
   const shown = gallery[selected] ?? gallery[0] ?? null;
   // IMG-GATE-01: a device variant without a picture the shop may show is «Imagen pendiente», as on its model page.
   const pending = !shown && (product.image_pending === true || Boolean(product.product_model));
   const optionsHref = modelPageHref(product);
+  // Review of #408: a demo resource or a picture the shop did not upload is said, as on the model page.
+  const shownLabel = shown ? photoLabel(shown.url, "catalog", Boolean(shown.is_demo)) : null;
   const [status, setStatus] = useState<string | null>(null);
   const [statusType, setStatusType] = useState<"success" | "error">("success");
   const [loading, setLoading] = useState(false);
@@ -273,6 +278,11 @@ export default function ProductDetail({ product }: { product: Product }) {
                   // PERF-LCP: la foto principal es el LCP de la ficha.
                   fetchPriority="high"
                 />
+                {shownLabel ? (
+                  <span data-testid="product-image-label" className="absolute bottom-3 left-3 rounded-full border border-bd-border bg-background/90 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted">
+                    {shownLabel}
+                  </span>
+                ) : null}
               </div>
             ) : pending ? (
               <div className="relative aspect-[4/3] min-h-80 text-muted lg:min-h-[520px]">

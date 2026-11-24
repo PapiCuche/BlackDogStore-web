@@ -7,7 +7,7 @@ import { ProductCard } from '@/app/components/ProductCard';
 import ProductDetail, { modelPageHref } from '@/app/components/ProductDetail';
 import * as internal from '@/app/admin/lib/internal-api';
 import * as admin from '@/app/lib/admin';
-import { productCanonicalPath, productJsonLd } from '@/app/lib/structured-data';
+import { productCanonicalPath, productJsonLd, productPictures } from '@/app/lib/structured-data';
 
 /**
  * IMG-GATE-01 — a device variant shows on the shop only pictures whose licence was verified.
@@ -233,5 +233,50 @@ describe('panel: salud de las imágenes (IMG-HEALTH)', () => {
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Revisar ahora' })); });
     expect(screen.getByRole('alert')).toHaveTextContent('Sin conexión.');
     expect(screen.getByRole('button', { name: 'Revisar ahora' })).toBeEnabled();
+  });
+});
+
+
+describe('revisión del #408: recursos demostrativos y datos estructurados', () => {
+  const MANAGED = '/api/storefront/images/' + 'b'.repeat(32);
+  const DEMO = '/api/storefront/images/' + 'c'.repeat(32);
+  const VARIANT = {
+    id: 3, slug: 'tx-128-azul', name: 'Teléfono X 128 GB Azul', price: '3100.00', inventory: 2,
+    product_model: 'telefono-x', condition_line: 'new' as const,
+  };
+
+  it('la ficha rotula «Imagen referencial» una foto demostrativa', async () => {
+    await act(async () => {
+      render(<ProductDetail product={{ ...VARIANT, image_url: DEMO, image_is_demo: true, image_pending: false,
+        images: [{ url: DEMO, alt_text: '', is_primary: true, width: 1, height: 1, is_demo: true }] }} />);
+    });
+    expect(screen.getByTestId('product-image-label')).toHaveTextContent('Imagen referencial');
+  });
+
+  it('la ficha no rotula una foto propia verificada', async () => {
+    await act(async () => {
+      render(<ProductDetail product={{ ...VARIANT, image_url: MANAGED, image_pending: false,
+        images: [{ url: MANAGED, alt_text: '', is_primary: true, width: 1, height: 1, is_demo: false }] }} />);
+    });
+    expect(screen.queryByTestId('product-image-label')).toBeNull();
+  });
+
+  it('la tarjeta rotula «Imagen referencial» una foto demostrativa', () => {
+    render(<ProductCard {...VARIANT} image_url={DEMO} image_is_demo />);
+    expect(screen.getByTestId('product-card-image-label')).toHaveTextContent('Imagen referencial');
+  });
+
+  it('JSON-LD y Open Graph sólo publican fotos propias no demostrativas', () => {
+    const product = {
+      ...VARIANT, image_url: DEMO, image_is_demo: true,
+      images: [{ url: DEMO, is_demo: true }, { url: MANAGED, is_demo: false }, { url: 'https://cdn.example.com/x.png' }],
+    };
+    expect(productPictures(product, 'https://tienda.example')).toEqual([`https://tienda.example${MANAGED}`]);
+    const data = productJsonLd(product, 'https://tienda.example');
+    expect(data.image).toEqual([`https://tienda.example${MANAGED}`]);
+    // A variant's address is its place on its model's page, as its canonical.
+    expect(data.url).toBe('https://tienda.example/modelo/telefono-x?variante=tx-128-azul');
+    expect(productJsonLd({ ...VARIANT, product_model: null }, 'https://tienda.example').url)
+      .toBe('https://tienda.example/product/tx-128-azul');
   });
 });

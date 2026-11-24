@@ -531,3 +531,202 @@ class ImageHealthTest(GateBase):
         self.assertIn('rows', res.json())
         nobody, _ = _p2d_member(self.company, 'salud-nadie', ['company.view'])
         self.assertIn(_client(nobody).get(f'/api/admin/catalog/image-health/{self.q}').status_code, (403, 404))
+
+
+# ---------------------------------------------------------------------------
+# Review of #408
+# ---------------------------------------------------------------------------
+
+PICTURE_TABLES = ('store_productimage', 'store_modelfinishimage', 'store_storefrontimage', 'store_productmodel',
+                  'store_productvariantoption')
+
+
+class OrderListBatchTest(GateBase):
+    """Review #1: a buyer's order list reads every line's picture in ONE batch (no query per line)."""
+
+    def orders(self, count, lines):
+        products = [self.new128, self.new256, self.new128blue]
+        made = []
+        for _ in range(count):
+            order = Order.objects.create(company=self.company, fulfillment_branch=self.branch,
+                                         customer_email='x@example.com', total=Decimal('1.00'))
+            for product in products[:lines]:
+                OrderItem.objects.create(order=order, product=product, quantity=1, price=product.price)
+            made.append(order.pk)
+        # What the order views prefetch (`OrderViewSet`, `V1CustomerOrderViewSet`).
+        return Order.objects.filter(pk__in=made).order_by('pk').prefetch_related(
+            'items__product', 'items__product__images', 'items__product__product_model')
+
+    def serialise(self, serializer_class, queryset):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        with CaptureQueriesContext(connection) as captured:
+            data = serializer_class(queryset, many=True).data
+        # The picture's tables only: a line's other costs (its rating, its offer) are the product payload's own.
+        pictures = [q for q in captured.captured_queries
+                    if any(f'"{table}"' in q['sql'] for table in PICTURE_TABLES)]
+        return data, len(pictures)
+
+    def test_web_and_v1_order_lists_read_the_pictures_once(self):
+        from store.v1_customer_serializers import V1CustomerOrderSerializer
+
+        self.published(self.black)
+        self.own(self.new128blue)
+        Product.objects.filter(pk=self.new256.pk).update(is_published_online=False)     # a closed line
+        for serializer_class in (OrderSerializer, V1CustomerOrderSerializer):
+            with self.subTest(serializer_class.__name__):
+                with mock.patch('store.device_catalog.variant_galleries',
+                                wraps=device_catalog.variant_galleries) as batch, \
+                        mock.patch('store.device_catalog.variant_picture') as single:
+                    data, _ = self.serialise(serializer_class, self.orders(3, 3))
+                self.assertEqual(batch.call_count, 1)
+                single.assert_not_called()
+                text = str(data)
+                self.assertNotIn(ProductImage.objects.get(product=self.new128blue).image_url, text)
+
+    def test_more_orders_and_lines_cost_no_more_picture_queries(self):
+        from store.v1_customer_serializers import V1CustomerOrderSerializer
+
+        self.published(self.black)
+        Product.objects.filter(pk=self.new256.pk).update(is_published_online=False)
+        for serializer_class in (OrderSerializer, V1CustomerOrderSerializer):
+            with self.subTest(serializer_class.__name__):
+                _, one_line = self.serialise(serializer_class, self.orders(2, 1))
+                _, three_lines = self.serialise(serializer_class, self.orders(4, 3))
+                self.assertEqual(three_lines, one_line)
+                self.assertGreater(one_line, 0)
+
+    def test_one_order_alone_reads_its_lines_once(self):
+        with mock.patch('store.device_catalog.variant_galleries', wraps=device_catalog.variant_galleries) as batch:
+            OrderSerializer(self.orders(1, 3).get()).data
+        self.assertEqual(batch.call_count, 1)
+
+
+class ColourlessCoverGateTest(GateBase):
+    """Review #2: the cover a colourless model's variant falls back on passes the same licence gate."""
+
+    def setUp(self):
+        super().setUp()
+        self.plain = device_catalog.create_model(company=self.company, name='Cargador Z')
+        product = self.variant('Cargador Z 20 W', 'cz-20', '90.00', [self.gb128])
+        Product.objects.filter(pk=product.pk).update(product_model=self.plain)
+        self.charger = Product.objects.get(pk=product.pk)
+
+    def cover(self, address):
+        ProductModel.objects.filter(pk=self.plain.pk).update(image_url=address)
+
+    def test_an_external_or_unverified_cover_is_pending(self):
+        for address in (EXTERNAL, self.stored().url):
+            with self.subTest(address):
+                self.cover(address)
+                self.assertEqual(device_catalog.variant_picture(self.charger), ('', True, False))
+
+    def test_a_verified_cover_is_shown_with_its_real_demo_flag(self):
+        from django.utils import timezone
+
+        stored = self.stored()
+        StorefrontImage.objects.filter(pk=stored.pk).update(source_kind=StorefrontImage.SOURCE_DEMO,
+                                                            license='Demostración', license_verified_at=timezone.now())
+        self.cover(stored.url)
+        self.assertEqual(device_catalog.variant_picture(self.charger), (stored.url, False, True))
+
+    def test_another_companys_verified_cover_is_pending(self):
+        from django.utils import timezone
+
+        foreign = self.stored(company=_p3_company('portada-otra', 'Otra'))
+        StorefrontImage.objects.filter(pk=foreign.pk).update(license_verified_at=timezone.now())
+        self.cover(foreign.url)
+        self.assertEqual(device_catalog.variant_picture(self.charger), ('', True, False))
+
+
+class DemoFlagInProductImagesTest(GateBase):
+    """Review #3: each picture of a variant on `/api/products/` says whether it is a demo resource."""
+
+    def test_the_images_carry_is_demo(self):
+        own = self.own(self.new128blue)
+        self.verify_own(own, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})
+        row = self.product_api(self.new128blue)
+        self.assertEqual([(image['url'], image['is_demo']) for image in row['images']], [(own.image_url, True)])
+        finish = self.published(self.black)
+        row = self.product_api(self.new128)
+        self.assertEqual([(image['url'], image['is_demo']) for image in row['images']], [(finish['url'], False)])
+
+
+class ImageHealthStorageTest(GateBase):
+    """Review #4: one storage client per report, and no storage checks above the configured number of files."""
+
+    def test_the_storage_is_built_once(self):
+        from store import evidence_storage, image_health
+
+        self.own(self.new128blue)
+        self.own(self.new128, raw=jpeg())
+        with mock.patch('store.evidence_storage.get_storage', wraps=evidence_storage.get_storage) as built:
+            data = image_health.report(self.company)
+        self.assertEqual(built.call_count, 1)
+        self.assertTrue(data['summary']['storage_checked'])
+
+    def test_above_the_cap_the_storage_is_not_asked(self):
+        from store import image_health
+
+        self.own(self.new128blue)
+        with self.settings(IMAGE_HEALTH_MAX_STORAGE_CHECKS=0), \
+                mock.patch('store.evidence_storage.get_storage') as built:
+            data = image_health.report(self.company)
+        built.assert_not_called()
+        self.assertFalse(data['summary']['storage_checked'])
+        self.assertEqual(self.issues_of(data, 'broken_file'), [])
+
+    @staticmethod
+    def issues_of(data, issue):
+        return [row for row in data['rows'] if row['issue'] == issue]
+
+    def test_the_endpoint_is_throttled(self):
+        from store.device_catalog_views import AdminCatalogImageHealthView
+        from store.throttles import AdminProductsThrottle
+
+        self.assertIn(AdminProductsThrottle, AdminCatalogImageHealthView.throttle_classes)
+
+
+class PublicationImageRuleTest(GateBase):
+    """Review #6: with «require a picture to publish», a variant has one only if the shop may show it."""
+
+    def setUp(self):
+        super().setUp()
+        from store.models import CompanySettings
+
+        CompanySettings.objects.update_or_create(company=self.company, defaults={'publication_requires_image': True})
+
+    def test_an_unverified_own_picture_is_not_a_picture_to_publish(self):
+        from store import product_publication
+
+        own = self.own(self.new128blue)
+        product = Product.objects.get(pk=self.new128blue.pk)
+        self.assertIn('no_image', product_publication.publication_problems(product))
+        self.verify_own(own)
+        self.assertNotIn('no_image', product_publication.publication_problems(product))
+
+    def test_ready_to_publish_leaves_out_a_variant_without_a_public_picture(self):
+        from store import product_publication
+
+        from store.models import Category
+
+        category = Category.objects.create(company=self.company, name='Teléfonos', slug='telefonos-gate')
+        Product.objects.filter(pk__in=[self.new128.pk, self.new128blue.pk]).update(is_published_online=False,
+                                                                                    category=category)
+        self.published(self.black)                  # new128 (black) has a public picture
+        self.own(self.new128blue)                   # unverified: none
+        ready = set(product_publication.ready_to_publish(Product.objects.filter(company=self.company), self.company)
+                    .values_list('pk', flat=True))
+        self.assertIn(self.new128.pk, ready)
+        self.assertNotIn(self.new128blue.pk, ready)
+
+    def test_the_admin_list_reads_the_pictures_once(self):
+        with mock.patch('store.device_catalog.variant_galleries', wraps=device_catalog.variant_galleries) as batch:
+            res = self.api.get(f'/api/admin/products/{self.q}')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(batch.call_count, 1)
+        body = res.json()
+        rows = body['results'] if isinstance(body, dict) else body
+        problems = {row['id']: row['publication_problems'] for row in rows}
+        self.assertIn('no_image', problems[self.new128blue.pk])

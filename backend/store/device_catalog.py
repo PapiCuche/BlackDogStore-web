@@ -1433,7 +1433,8 @@ def variant_galleries(products) -> dict[int, dict]:
       2. else its own single address (`Product.image_url`, from before galleries) when it is a verified file;
       3. else the verified pictures of its colour's finish (model + its option of the company's colour dimension,
          D-PRC-8), described by the model and the colour when they have no text of their own;
-      4. else the model's cover, only on a COLOURLESS model (no variant of it has a colour option at all);
+      4. else the model's cover, only on a COLOURLESS model (no variant of it has a colour option at all), and only
+         when it too is a verified file of the company (review of #408);
       5. else nothing: `image_pending`, which the shop draws as the neutral «Imagen pendiente».
 
     `source` says which of them ('own', 'finish', 'cover'; '' when pending).
@@ -1476,7 +1477,8 @@ def variant_galleries(products) -> dict[int, dict]:
     # Licence and demo flag of every candidate file — own, own address and finish — in one query.
     states = shop_states(
         [row['image_url'] for rows in own.values() for row in rows] + [p.image_url for p in products]
-        + [row.image_url for rows in finishes.values() for row in rows],
+        + [row.image_url for rows in finishes.values() for row in rows]
+        + [cover for _name, cover in models.values() if cover],
         {p.company_id for p in products})
 
     def public(product, address):
@@ -1516,10 +1518,12 @@ def variant_galleries(products) -> dict[int, dict]:
             .values_list('product__product_model_id', flat=True).distinct())
         for product in plain:
             cover = models.get(product.product_model_id, ('', ''))[1]
-            if cover and product.product_model_id not in with_colour:
-                # D-PRC-8: a COLOURLESS model: its cover is not another colour's photo.
+            # D-PRC-8: a COLOURLESS model: its cover is not another colour's photo. Review of #408: and it passes the
+            # same licence gate (a managed file of the company, verified; its real demo flag).
+            found = public(product, cover) if cover and product.product_model_id not in with_colour else None
+            if found:
                 out[product.pk] = ('cover', [{'url': cover, 'alt_text': '', 'is_primary': True, 'width': 0,
-                                              'height': 0, 'is_demo': False}])
+                                              'height': 0, 'is_demo': found[1]}])
     result = {}
     for product_id, (source, gallery) in out.items():
         primary = next((image for image in gallery if image['is_primary']), gallery[0] if gallery else None)

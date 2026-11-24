@@ -27,6 +27,7 @@ from .models import (
     VariantAttribute, VariantOption,
 )
 from .tenancy import company_fulfillment_branch, company_storefront_products, resolve_storefront_company
+from .throttles import AdminProductsThrottle
 
 _NOT_FOUND = {'detail': 'No encontrado.'}
 
@@ -572,6 +573,8 @@ class AdminCatalogImageHealthView(APIView):
     """
 
     permission_classes = [permissions.IsAuthenticated]
+    # Review of #408: it asks the storage for each file; the admin catalogue's read rate is its limit.
+    throttle_classes = [AdminProductsThrottle]
 
     def get(self, request):
         from . import image_health

@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { SOLD_OUT_LABEL } from "../lib/catalog-models";
+import { REFERENCE_IMAGE_LABEL } from "../lib/model-configurator";
 import { formatMoney } from "../lib/format";
 import { ImagePending } from "./ImagePending";
 import { ProductImage } from "./ProductImage";
@@ -20,6 +21,8 @@ type ProductCardProps = {
   on_order?: { lead_time_days: number; price: string } | null;
   /** IMG-GATE-01: a device variant with no picture the shop may show draws «Imagen pendiente», as its model page. */
   image_pending?: boolean;
+  /** Review of #408: a demo resource is shown and said («Imagen referencial»). */
+  image_is_demo?: boolean;
 };
 
 function StockBadge({ inventory, onOrder }: { inventory?: number; onOrder?: boolean }) {
@@ -65,6 +68,7 @@ export function ProductCard({
   review_count,
   on_order,
   image_pending,
+  image_is_demo,
 }: ProductCardProps) {
   const onOrder = Boolean(on_order);
   const outOfStock = inventory !== undefined && inventory === 0 && !onOrder;
@@ -93,6 +97,12 @@ export function ProductCard({
           </div>
         )}
 
+
+        {image_url && image_is_demo ? (
+          <span data-testid="product-card-image-label" className="absolute bottom-3 left-3 rounded-full border border-bd-border bg-background/90 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-widest text-muted">
+            {REFERENCE_IMAGE_LABEL}
+          </span>
+        ) : null}
 
         {/* Stock badge overlay */}
         <div className="absolute left-3 top-3">

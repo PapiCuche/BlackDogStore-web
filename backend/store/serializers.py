@@ -143,6 +143,49 @@ def serializer_siblings(serializer) -> list:
     return []
 
 
+def prime_variant_galleries(context, products) -> dict:
+    """
+    Reads, in ONE batch, the public gallery of every device variant among `products` that the response's context
+    does not hold yet (`device_catalog.variant_galleries`), and keeps it there. Returns the context's cache. Called
+    by whoever has the whole response's products in hand — a list of orders, one order, a cart — so that each line
+    finds its picture already read (review of #408: no query per line).
+    """
+    from . import device_catalog
+
+    cache = context.setdefault('_variant_galleries', {})
+    wanted = {product.pk: product for product in products
+              if isinstance(product, Product) and product.product_model_id and product.pk not in cache}
+    if wanted:
+        found = device_catalog.variant_galleries(list(wanted.values()))
+        for pk in wanted:
+            cache[pk] = found.get(pk)
+    return cache
+
+
+def order_line_products(orders) -> list:
+    """The products of every line of `orders` (their prefetched `items`, as the serialiser reads them)."""
+    return [item.product for order in orders for item in order.items.all()]
+
+
+class OrdersPrimingListSerializer(serializers.ListSerializer):
+    """A list of orders: the pictures of every line of every order are read once, before any order is serialised."""
+
+    def to_representation(self, data):
+        from django.db.models.manager import BaseManager
+
+        rows = list(data.all() if isinstance(data, BaseManager) else data)
+        prime_variant_galleries(self.context, order_line_products(rows))
+        return super().to_representation(rows)
+
+
+def gated_image_url(context, product) -> str:
+    """The picture the shop may show of `product`: a device variant's gated one, else its own address."""
+    if not product.product_model_id:
+        return product.image_url
+    found = prime_variant_galleries(context, [product]).get(product.pk)
+    return found['image_url'] if found else ''
+
+
 def public_variant_gallery(serializer, product) -> dict | None:
     """
     IMG-GATE-01 — what the shop shows of a DEVICE VARIANT (`device_catalog.variant_galleries`), read ONCE for every
@@ -151,14 +194,9 @@ def public_variant_gallery(serializer, product) -> dict | None:
     """
     if product is None or not product.product_model_id:
         return None
-    from . import device_catalog
-
     cache = serializer.context.setdefault('_variant_galleries', {})
     if product.pk not in cache:
-        wanted = {item.pk: item for item in serializer_siblings(serializer)
-                  if isinstance(item, Product) and item.product_model_id and item.pk not in cache}
-        wanted.setdefault(product.pk, product)
-        cache.update(device_catalog.variant_galleries(list(wanted.values())))
+        prime_variant_galleries(serializer.context, [product, *serializer_siblings(serializer)])
     return cache.get(product.pk)
 
 
@@ -205,7 +243,9 @@ class ProductSerializer(serializers.ModelSerializer):
             from .device_catalog import PUBLIC_IMAGE_KEYS
 
             data['image_url'] = gated['image_url']
-            data['images'] = [{key: image[key] for key in PUBLIC_IMAGE_KEYS} for image in gated['gallery']]
+            # Review of #408: each picture says whether it is a demo resource («Imagen referencial» on the page).
+            data['images'] = [{**{key: image[key] for key in PUBLIC_IMAGE_KEYS}, 'is_demo': image['is_demo']}
+                              for image in gated['gallery']]
             data['image_pending'] = gated['image_pending']
             data['image_is_demo'] = gated['image_is_demo']
         return data
@@ -217,6 +257,8 @@ class ProductSerializer(serializers.ModelSerializer):
     def get_images(self, obj):
         # `image_url` sigue siendo la principal; esto es la galería completa.
         # `.all()` usa el prefetch de las vistas de catálogo.
+        if obj.product_model_id:
+            return []       # IMG-GATE-01: a device variant's gallery is the gated one (`to_representation`)
         from .product_media import public_payload
         return [public_payload(image) for image in obj.images.all()]
 
@@ -264,7 +306,7 @@ class CouponSerializer(serializers.ModelSerializer):
         fields = ['code', 'discount_percent']
 
 
-def closed_product_payload(product) -> dict:
+def closed_product_payload(product, context=None) -> dict:
     """
     What the PUBLIC may still read of a product that is no longer sold online.
 
@@ -275,12 +317,9 @@ def closed_product_payload(product) -> dict:
     Built by hand, not by trimming the full payload: a field added to the
     public product tomorrow must not reach these lines by default.
     """
-    image_url = product.image_url
-    if product.product_model_id:
-        # IMG-GATE-01: a device variant's picture is the gated one, closed or not.
-        from .device_catalog import variant_picture
-
-        image_url = variant_picture(product)[0]
+    # IMG-GATE-01: a device variant's picture is the gated one, closed or not — read from the response's batch when
+    # the caller passes its context (`prime_variant_galleries`).
+    image_url = gated_image_url({} if context is None else context, product)
     return {'id': product.pk, 'name': product.name, 'image_url': image_url}
 
 
@@ -318,7 +357,7 @@ class OrderItemSerializer(serializers.ModelSerializer):
         fields = self.fields
         return {
             'id': instance.pk,
-            'product': closed_product_payload(instance.product),
+            'product': closed_product_payload(instance.product, self.context),
             'quantity': fields['quantity'].to_representation(instance.quantity),
             'price': fields['price'].to_representation(instance.price),
         }
@@ -348,11 +387,17 @@ class OrderSerializer(serializers.ModelSerializer):
             'delivery',
         ]
         read_only_fields = fields
+        list_serializer_class = OrdersPrimingListSerializer
 
     def get_delivery(self, obj):
         from .delivery_services import buyer_payload_for
 
         return buyer_payload_for(obj)
+
+    def to_representation(self, instance):
+        # Review of #408: every line's picture in one batch (a list of orders primed them all already).
+        prime_variant_galleries(self.context, order_line_products([instance]))
+        return super().to_representation(instance)
 
 
 class CartItemSerializer(serializers.ModelSerializer):
@@ -385,6 +430,9 @@ class CartItemSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         product = instance.product
+        # Every line's picture in one batch, open and closed lines alike (review of #408).
+        prime_variant_galleries(self.context, [product, *(getattr(row, 'product', None)
+                                                          for row in serializer_siblings(self))])
         if product.is_sold_online:
             data = super().to_representation(instance)
             data['available'] = True
@@ -429,7 +477,7 @@ class CartItemSerializer(serializers.ModelSerializer):
         return {
             'id': instance.pk,
             'session_key': instance.session_key,
-            'product': closed_product_payload(product),
+            'product': closed_product_payload(product, self.context),
             'quantity': instance.quantity,
             'added_at': self.fields['added_at'].to_representation(instance.added_at),
             'available': False,
@@ -647,7 +695,13 @@ class AdminProductSerializer(serializers.ModelSerializer):
         asked = self.root.__dict__.setdefault('_publication_requires_image', {})
         if obj.company_id not in asked:
             asked[obj.company_id] = requires_image(obj.company_id)
-        return publication_problems(obj, require_image=asked[obj.company_id])
+        public_picture = None
+        if asked[obj.company_id] and obj.product_model_id:
+            # Review of #408: a device variant «has a picture» only if the shop may show one — read once for the
+            # whole list (`public_variant_gallery`).
+            gated = public_variant_gallery(self, obj)
+            public_picture = bool(gated and not gated['image_pending'])
+        return publication_problems(obj, require_image=asked[obj.company_id], public_picture=public_picture)
 
 
 class AdminProductDetailSerializer(AdminProductSerializer):

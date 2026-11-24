@@ -523,13 +523,16 @@ class CartPictureTest(FinishApiBase):
         self.assertEqual(self.gallery_primary(self.new128blue), '')
 
     def test_a_colourless_model_shows_its_cover(self):
+        # Review of #408: the cover passes the same licence gate as any picture of a variant.
+        cover = self.stored()
+        verify_files(cover.url)
         plain = device_catalog.create_model(company=self.company, name='Cargador Z')
-        ProductModel.objects.filter(pk=plain.pk).update(image_url='/api/storefront/images/' + 'f' * 32)
+        ProductModel.objects.filter(pk=plain.pk).update(image_url=cover.url)
         product = self.variant('Cargador Z 20 W', 'cz-20', '90.00', [self.gb128])
         Product.objects.filter(pk=product.pk).update(product_model=plain)
         product.refresh_from_db()
         line = self.line(product)
-        self.assertEqual((line['image_url'], line['image_pending']), ('/api/storefront/images/' + 'f' * 32, False))
+        self.assertEqual((line['image_url'], line['image_pending']), (cover.url, False))
 
     def test_an_on_order_line_shows_its_finish_too(self):
         from store import supply_services as supply
@@ -1056,6 +1059,7 @@ class ColourDimensionTest(FinishApiBase):
         self.public = _client(host=self.host)
         self.new128blue = self.variant('Teléfono X 128 GB Azul', 'tx-128-azul', '3100.00', [self.gb128, self.blue])
         self.cover = self.stored()
+        verify_files(self.cover.url)       # review of #408: a cover is shown on a variant only once verified
         ProductModel.objects.filter(pk=self.model.pk).update(image_url=self.cover.url)
 
     def variants(self, model=None):
@@ -1116,6 +1120,7 @@ class CoverOnlyForAColourlessModelTest(FinishApiBase):
         super().setUp()
         self.public = _client(host=self.host)
         self.cover = self.stored()
+        verify_files(self.cover.url)       # review of #408: a cover is shown on a variant only once verified
 
     def gallery_of(self, model, product):
         res = self.public.get(f'/api/catalog/models/{model.slug}/')

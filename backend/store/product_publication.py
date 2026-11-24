@@ -98,7 +98,8 @@ def requires_image(company) -> bool:
     return CompanySettings.objects.filter(company_id=company_id, publication_requires_image=True).exists()
 
 
-def publication_problems(product, *, has_gallery=None, require_image=None, draft_pending=None) -> list[str]:
+def publication_problems(product, *, has_gallery=None, require_image=None, draft_pending=None,
+                         public_picture=None) -> list[str]:
     """
     The codes of what `product` lacks to be published in bulk. Empty = ready.
 
@@ -113,11 +114,23 @@ def publication_problems(product, *, has_gallery=None, require_image=None, draft
     `draft_pending` (A1b-2) is read from the row (`is_pending_draft`) unless the
     caller says otherwise: `enable_variant_for_sale` passes False, because it
     is the step that ends that state and asks about everything else.
+
+    IMG-GATE-01 (review of #408): a DEVICE VARIANT has a picture only if the shop may show one
+    (`device_catalog.variant_galleries`: its own verified pictures, its colour's verified finish…), not merely
+    because it has an address. `public_picture` is that answer from a caller that read it in a batch; asked here
+    otherwise (only when the company requires a picture).
     """
     if require_image is None:
         require_image = requires_image(product.company_id)
-    has_image = bool(product.image_url)
-    if require_image and not has_image:
+    if require_image and product.product_model_id:
+        if public_picture is None:
+            from .device_catalog import variant_picture
+
+            public_picture = not variant_picture(product)[1]
+        has_image = bool(public_picture)
+    else:
+        has_image = bool(product.image_url)
+    if require_image and not has_image and not product.product_model_id:
         if has_gallery is None:
             has_gallery = getattr(product, 'has_gallery', None)
         if has_gallery is None:
@@ -164,7 +177,18 @@ def ready_to_publish(queryset, company):
     if requires_image(company):
         ready = ready.filter(
             ~Q(image_url='') | Exists(ProductImage.objects.filter(product_id=OuterRef('pk')))
+            | Q(product_model__isnull=False)
         )
+        # IMG-GATE-01 (review of #408): a device variant is ready only with a picture the shop may show — read in
+        # one batch for every candidate variant.
+        from .device_catalog import variant_galleries
+
+        candidates = list(ready.filter(product_model__isnull=False))
+        galleries = variant_galleries(candidates)
+        pending = [product.pk for product in candidates
+                   if galleries.get(product.pk, {'image_pending': True})['image_pending']]
+        if pending:
+            ready = ready.exclude(pk__in=pending)
     return ready
 
 

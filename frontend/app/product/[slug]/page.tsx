@@ -7,7 +7,7 @@ import { readPublicProduct } from "../../lib/catalog-models-server";
 import { markdownToPlainText } from "../../lib/markdown-lite";
 import { siteOrigin } from "../../lib/site-origin";
 import { canonical } from "../../lib/canonical";
-import { breadcrumbJsonLd, productCanonicalPath, productJsonLd } from "../../lib/structured-data";
+import { breadcrumbJsonLd, productCanonicalPath, productJsonLd, productPictures } from "../../lib/structured-data";
 
 /**
  * The page of one product.
@@ -39,6 +39,7 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // pages as the same business.
   // CATALOG-RICH-DESC-01: search engines and link previews get the text, never the Markdown marks.
   const summary = markdownToPlainText(product.description, 160);
+  const share = productPictures(product, await siteOrigin())[0];
   return {
     title: product.name,
     description: summary || `Compra ${product.name} en nuestra tienda.`,
@@ -48,7 +49,8 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
     openGraph: {
       title: product.name,
       description: summary || undefined,
-      ...(product.image_url ? { images: [{ url: product.image_url }] } : {}),
+      // Review of #408: only the shop's own, non-demo picture (as the JSON-LD), absolute.
+      ...(share ? { images: [{ url: share }] } : {}),
     },
   };
 }

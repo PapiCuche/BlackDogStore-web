@@ -23,7 +23,8 @@ comerciales en masa sin sustitutos preparados»). One row per problem, five clas
 
 The catalogue's slots: a model's cover, a product's address (unless it is its gallery's primary, the same file), a
 product's gallery and a finish. A fixed number of queries whatever the size of the catalogue, plus one storage
-check per distinct managed file (skippable).
+check per distinct managed file through ONE storage client (skippable; skipped above
+`IMAGE_HEALTH_MAX_STORAGE_CHECKS` files, default 2000, and the summary says so).
 """
 from __future__ import annotations
 
@@ -43,6 +44,13 @@ COLUMNS = ('issue', 'slot', 'object_id', 'object_name', 'model_id', 'model_name'
            'detail', 'admin_url')
 #: How many rows the admin API returns (the counts are always the whole catalogue's; the command has no cap).
 MAX_ROWS = 500
+
+def max_storage_checks() -> int:
+    """Above this many distinct managed files the report does not ask the storage (default 2000)."""
+    from django.conf import settings
+
+    return int(getattr(settings, 'IMAGE_HEALTH_MAX_STORAGE_CHECKS', 2000))
+
 
 SLOT_COVER, SLOT_PRODUCT, SLOT_GALLERY, SLOT_FINISH, SLOT_MODEL = (
     'model_cover', 'product_image', 'product_gallery', 'finish', 'model')
@@ -119,6 +127,16 @@ def report(company, *, check_storage: bool = True) -> dict:
              StorefrontImage.objects.filter(company=company, public_id__in=ids)
              .values_list('public_id', 'storage_key', 'source_kind', 'license_verified_at')} if ids else {}
     present: dict[str, bool | None] = {}
+    # Review of #408: one storage client for the whole report, and no storage checks at all above the configured
+    # number of distinct files (`IMAGE_HEALTH_MAX_STORAGE_CHECKS`; the summary then says the storage was not checked).
+    if check_storage and len(files) > max_storage_checks():
+        check_storage = False
+    storage = None
+    if check_storage and files:
+        try:
+            storage = evidence_storage.get_storage()
+        except evidence_storage.EvidenceStorageError:
+            storage = None
 
     def row(issue, ref_or_slot, *, object_id=None, object_name='', model_id=None, colour='', host='', public_id='',
             detail=''):
@@ -152,7 +170,7 @@ def report(company, *, check_storage: bool = True) -> dict:
         key, kind, verified_at = found
         if check_storage:
             if public_id not in present:
-                present[public_id] = evidence_storage.exists(key)
+                present[public_id] = evidence_storage.exists(key, storage) if storage is not None else None
             if present[public_id] is not True:
                 rows.append(row(BROKEN, ref, public_id=public_id,
                                 detail='missing_object' if present[public_id] is False else 'storage_error'))
