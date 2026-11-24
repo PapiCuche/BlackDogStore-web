@@ -16,6 +16,11 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - `docs/carga-stock-real.md`: cómo exportar lo ya cargado antes de llenar, qué pasa con el IMEI de un equipo dado de
   baja y cómo correr la simulación y su ejecutor portátil.
 
+## 2026-11-24 — Release R13 desplegada en prod-02 (`f47bd477`)
+
+**Deployed**
+- Olas 1 a 3 del plan comercial y guardas de reversión, con las migraciones `0187`–`0192`. Backup previo `db-20261124-140538`.
+
 ## 2026-11-25 — Release R13 preparada (`f47bd477`)
 
 **Fixed**

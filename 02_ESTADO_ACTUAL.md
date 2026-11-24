@@ -18,6 +18,14 @@ Auditoría de los importadores desplegados en la R13 y simulación completa de l
 - **Hallazgos:** un equipo dado de baja conserva su IMEI (sólo «Anulado» lo libera). La exportación de equipos sale
   en el formato combinado, no en el de las plantillas de stock, y con el IMEI completo.
 
+## 2026-11-24 — RELEASE R13 `f47bd477` DESPLEGADA en prod-02
+
+Desplegada con el GO exacto del propietario entre las 14:05 y las 14:07 (Lima). El esquema pasa a `0192_unit_photo_provenance`, en 31 s de migración y sin esperas.
+
+Los datos históricos quedan idénticos y todas las comprobaciones posteriores salieron en verde. El único seminuevo sigue en stock, pero deja la web hasta que alguien lo inspeccione y lo publique. Caddy, el CRM y el crontab no se tocaron.
+
+Pendiente, cada paso con su GO: el cron `expire_sales_quotes`, la publicación del seminuevo y la carga del stock real. El detalle está en `docs/NEXT_ACTION.md`.
+
 ## 2026-11-25 — RELEASE R13 `f47bd477` preparada y ensayada (sin desplegar)
 
 La release incluye las olas 1 a 3 del plan comercial más las guardas de reversión (#417), con las migraciones `0187`–`0192`.
