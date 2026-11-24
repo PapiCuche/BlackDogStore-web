@@ -519,6 +519,10 @@ def _device_back(order, order_return, branch, unit, condition, actor, request, c
         status=StockUnit.Status.AVAILABLE, sold_at=None, order=None, updated_at=now)
     back = StockUnit.objects.get(pk=current_unit.pk)
     unit_identification.released_by_return(back, order.pk, actor=actor, request=request)
+    # USED-READY-01 — a used device the customer brought back is inspected again before it is sold again.
+    from . import used_unit_services
+
+    used_unit_services.require_reinspection(back.pk, why='customer_return', actor=actor, request=request)
     try:
         if condition == OrderReturnLine.CONDITION_REVIEW:
             units.reserve(back, reason=f'En revisión por devolución del pedido #{order.pk}', actor=actor,

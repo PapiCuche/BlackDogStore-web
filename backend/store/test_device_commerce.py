@@ -35,6 +35,7 @@ from store.models import (
 )
 from store.test_stock_units import imei
 from store.tests import _p2d_member, _p3_company, _prod
+from store.used_unit_test_support import approve, approve_all, ready_used  # noqa: F401
 
 D = Decimal
 IMEIS = [imei(f'35693803564{n:03d}') for n in range(40)]
@@ -314,8 +315,8 @@ class PublicModelApiTest(DeviceShop, TestCase):
         self.build()
         self.receive(self.new128, 2, cost='2500.00')
         self.used, self.unpriced, self.measured = self.receive(self.used128, 3, cost='1200.00')
-        units.update_unit(self.used, sale_price='1999.00', cosmetic_grade=self.grade.pk, public_notes='Caja')
-        units.update_unit(self.measured, sale_price='2199.00', battery_health=91)
+        ready_used(self.used, sale_price='1999.00', cosmetic_grade=self.grade.pk, public_notes='Caja')
+        ready_used(self.measured, sale_price='2199.00', battery_health=91)
         self.public = _client(host=self.host)
 
     def detail(self):
@@ -359,7 +360,10 @@ class PublicModelApiTest(DeviceShop, TestCase):
         for forbidden in ('"cost"', 'supplier', 'proveedor', 'serial', '"pk"'):
             self.assertNotIn(forbidden, text)
         self.assertEqual(set(card), {'id', 'product_id', 'options', 'battery_health', 'cosmetic_grade', 'price',
-                                     'photos', 'notes', 'imei_hint'})
+                                     'photos', 'notes', 'imei_hint',
+                                     # USED-READY-01 — what the shop states about THIS device.
+                                     'warranty_days', 'warranty_source', 'functional_state',
+                                     'functional_state_label', 'defects', 'accessories'})
 
     def test_another_storefront_sees_nothing_of_it(self):
         _p3_company('dc2-vecina', 'Vecina')
@@ -398,7 +402,8 @@ class PublicModelApiTest(DeviceShop, TestCase):
             width=10, height=10)
         UnitPhoto.objects.create(company=self.company, unit=self.used, image_url=stored.url, width=10, height=10)
         card = {c['id']: c for c in self.detail().json()['used_units']}[str(self.used.public_id)]
-        self.assertEqual(card['photos'][0]['url'], stored.url)
+        # USED-READY-01: the fixture's device already had the photo the web requires; this one is added after it.
+        self.assertEqual(card['photos'][-1]['url'], stored.url)
         other = _p3_company('dc2-foto', 'Foto')
         with self.assertRaises(ValueError):
             UnitPhoto.objects.create(company=other, unit=self.used, image_url=stored.url)
@@ -416,8 +421,8 @@ class HoldTest(DeviceShop, TestCase):
         self.old, self.young = self.receive(self.new128, 2, cost='2500.00')
         StockUnit.objects.filter(pk=self.old.pk).update(received_at=timezone.now() - timedelta(days=30))
         self.used_a, self.used_b = self.receive(self.used128, 2)
-        units.update_unit(self.used_a, sale_price='1999.00')
-        units.update_unit(self.used_b, sale_price='1500.00')
+        ready_used(self.used_a, sale_price='1999.00')
+        ready_used(self.used_b, sale_price='1500.00')
         self.public = _client(host=self.host)
 
     def add(self, product, session='carrito-a', unit=None, client=None):
@@ -541,8 +546,8 @@ class SaleShop(DeviceShop):
         StockUnit.objects.filter(pk=self.old.pk).update(received_at=timezone.now() - timedelta(days=30), cost=D('2400'))
         StockUnit.objects.filter(pk=self.young.pk).update(cost=D('2600'))
         self.used_a, self.used_b = self.receive(self.used128, 2)
-        units.update_unit(self.used_a, sale_price='1999.00', cost='1100.00')
-        units.update_unit(self.used_b, sale_price='1500.00', cost='900.00')
+        ready_used(self.used_a, sale_price='1999.00', cost='1100.00')
+        ready_used(self.used_b, sale_price='1500.00', cost='900.00')
 
     def checkout(self, session='carrito-a'):
         items = list(CartItem.objects.filter(session_key=session).select_related('product'))
@@ -622,7 +627,7 @@ class ExactUnitSaleTest(SaleShop, TestCase):
     def test_a_price_changed_since_the_cart_is_told_before_anything_is_created(self):
         holds.hold(product=self.used128, branch=self.branch, session_key='carrito-a',
                    unit_public_id=str(self.used_a.public_id))
-        units.update_unit(self.used_a, sale_price='2100.00')
+        ready_used(self.used_a, sale_price='2100.00')
         with self.assertRaises(checkout.CheckoutError) as caught:
             self.checkout()
         self.assertEqual(caught.exception.code, 'cart_changed')
@@ -719,7 +724,7 @@ class TwoBuyersOneDeviceTest(TransactionTestCase):
         shop = DeviceShop()
         shop.build('dc2-carrera')
         unit, = shop.receive(shop.used128)
-        units.update_unit(unit, sale_price='1000.00')
+        ready_used(unit, sale_price='1000.00')
         barrier, outcomes = Barrier(2), []
 
         def buy(session):
@@ -754,6 +759,8 @@ class ExcelColumnsTest(DeviceShop, TestCase):
                     'Estado estético', 'Batería %', 'Precio de venta',
                     # INV-LOAD-01
                     'Proveedor', 'Fecha de ingreso', 'Notas internas', 'Detalles para el comprador']
+    #: USED-READY-01 — optional, last; a file without them is read as before.
+    TEMPLATE_HEADERS = [*UNIT_HEADERS, 'Garantía (días)', 'Estado funcional', 'Defectos', 'Accesorios']
 
     def setUp(self):
         self.build()
@@ -773,7 +780,7 @@ class ExcelColumnsTest(DeviceShop, TestCase):
         import openpyxl
         from store import import_exports, unit_import_services
         sheet = openpyxl.load_workbook(_io.BytesIO(unit_import_services.template_bytes())).active
-        self.assertEqual([c.value for c in sheet[1]], self.UNIT_HEADERS)
+        self.assertEqual([c.value for c in sheet[1]], self.TEMPLATE_HEADERS)
         sheet = openpyxl.load_workbook(_io.BytesIO(import_exports.product_template_bytes(self.company))).active
         self.assertEqual([c.value for c in sheet[1]][-6:], ['Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea'])
 
@@ -1264,8 +1271,8 @@ class ReviewEdgesTest(DeviceShop, TestCase):
         self.build()
         self.new_a, self.new_b = self.receive(self.new128, 2)
         self.used_a, self.used_b = self.receive(self.used128, 2)
-        units.update_unit(self.used_a, sale_price='1999.00')
-        units.update_unit(self.used_b, sale_price='1500.00')
+        ready_used(self.used_a, sale_price='1999.00')
+        ready_used(self.used_b, sale_price='1500.00')
         self.public = _client(host=self.host)
 
     def test_removing_a_device_that_is_being_sold_answers_and_does_not_fail(self):
@@ -1361,7 +1368,7 @@ class FairShareTest(DeviceShop, TestCase):
     def test_buyers_of_three_used_devices_are_not_blocked_by_each_other(self):
         a, b, c = self.receive(self.used128, 3)
         for unit, price in ((a, '1999.00'), (b, '1500.00'), (c, '1200.00')):
-            units.update_unit(unit, sale_price=price)
+            ready_used(unit, sale_price=price)
         self.assertEqual(self.add('carro-a', '203.0.113.7', self.used128, a).status_code, 200)
         res = self.add('carro-b', '198.51.100.4', self.used128, b)
         self.assertEqual(res.status_code, 200, res.content)
@@ -1378,7 +1385,7 @@ class FairShareTest(DeviceShop, TestCase):
             self.receive(product, 3)
         used = self.receive(self.used128, 3)
         for unit in used:
-            units.update_unit(unit, sale_price='1000.00')
+            ready_used(unit, sale_price='1000.00')
         # 9 web-available devices: the company's web carts hold at most max(3, 9 × 50 %) = 4.
         tries = [
             self.add('c1', '198.51.100.1', self.new128), self.add('c2', '198.51.100.2', self.new256),

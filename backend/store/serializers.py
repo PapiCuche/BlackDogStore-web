@@ -1775,6 +1775,8 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             'timezone', 'currency',
             # policies
             'warranty_policy_text', 'warranty_policy_url', 'terms_url', 'privacy_url',
+            # USED-READY-01 — default warranty days of a used device (null: the policy text only).
+            'used_warranty_days',
             # notifications
             'order_notification_email',
             # CLIENT-SEC-01 — reviewing orders. Both off as created; changing
@@ -1803,6 +1805,13 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
     def get_whatsapp_link(self, obj):
         from .company_settings import build_whatsapp_link
         return build_whatsapp_link(obj.whatsapp_number)
+
+    def to_internal_value(self, data):
+        # USED-READY-01 — the settings form sends every field as text: an empty «Garantía de seminuevos» is «none».
+        if hasattr(data, 'get') and isinstance(data.get('used_warranty_days'), str) \
+                and not data.get('used_warranty_days').strip():
+            data = {**data, 'used_warranty_days': None}
+        return super().to_internal_value(data)
 
     def validate(self, attrs):
         """The three hold times are checked together: the ceiling depends on the cart's."""

@@ -99,6 +99,11 @@ const POLICIES: FieldProps[] = [
     hint: "Texto plano. Aparece en los emails y PDFs de tus pedidos.",
   }),
   FIELD("Garantía (URL)", "warranty_policy_url", { type: "url" }),
+  // USED-READY-01 — what a used device carries when its own record says nothing. Empty: only the policy text above.
+  FIELD("Garantía de seminuevos (días)", "used_warranty_days", {
+    placeholder: "Sin número: se muestra la política",
+    hint: "Días de garantía de un equipo seminuevo cuando su ficha no indica los suyos. Vacío: la tienda muestra sólo la política de garantía; 0: sin garantía.",
+  }),
   FIELD("Términos y condiciones (URL)", "terms_url", { type: "url" }),
   FIELD("Privacidad (URL)", "privacy_url", { type: "url" }),
 ];
