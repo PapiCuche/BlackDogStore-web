@@ -9,8 +9,8 @@ import { reply } from './support/device-commerce-fixtures';
 
 /**
  * SUPPLY-GUARDS-01 — una oferta de un proveedor inactivo no se ve «Vigente»; un precio por debajo del costo (o
- * sobre un costo que la persona no ve) se confirma antes de guardarse o aplicarse; el panel nunca muestra un costo
- * que el servidor no mandó.
+ * sobre un costo que la persona no ve) se confirma CON un motivo antes de guardarse o aplicarse; el panel nunca
+ * muestra un costo que el servidor no mandó.
  */
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
@@ -118,9 +118,16 @@ describe('precio por debajo del costo: el formulario', () => {
     expect(ask).toHaveTextContent('por debajo del costo pactado');
     expect(writes).toHaveLength(1);
     expect(writes[0].body).not.toHaveProperty('confirm_below_cost');
-    await act(async () => { fireEvent.click(within(ask).getByRole('button', { name: 'Guardar de todas formas' })); });
+    const save = within(ask).getByRole('button', { name: 'Guardar de todas formas' });
+    // Owner, 2026-11-23: never without a reason (at least 5 characters).
+    expect(save).toBeDisabled();
+    fireEvent.change(within(ask).getByLabelText('Motivo del precio'), { target: { value: 'abc' } });
+    expect(save).toBeDisabled();
+    fireEvent.change(within(ask).getByLabelText('Motivo del precio'), { target: { value: 'Liquidación de stock' } });
+    await act(async () => { fireEvent.click(save); });
     expect(writes).toHaveLength(2);
-    expect(writes[1]).toMatchObject({ method: 'PATCH', path: '/admin/supplier-offers/31/', body: { commercial_price: '3500.00', confirm_below_cost: true } });
+    expect(writes[1]).toMatchObject({ method: 'PATCH', path: '/admin/supplier-offers/31/',
+      body: { commercial_price: '3500.00', confirm_below_cost: true, below_cost_reason: 'Liquidación de stock' } });
   });
 
   it('sin costos: el aviso genérico del servidor, sin importes, y la misma confirmación', async () => {
@@ -132,8 +139,9 @@ describe('precio por debajo del costo: el formulario', () => {
     const ask = within(form).getByTestId('offer-margin-confirm');
     expect(ask).toHaveTextContent('costo pactado que no puedes ver');
     expect(ask).not.toHaveTextContent(/4[.,]?000/);
+    fireEvent.change(within(ask).getByLabelText('Motivo del precio'), { target: { value: 'Promoción acordada' } });
     await act(async () => { fireEvent.click(within(ask).getByRole('button', { name: 'Guardar de todas formas' })); });
-    expect(writes[1].body).toMatchObject({ confirm_below_cost: true });
+    expect(writes[1].body).toMatchObject({ confirm_below_cost: true, below_cost_reason: 'Promoción acordada' });
   });
 
   it('cambiar el precio otra vez retira la confirmación pendiente', async () => {
@@ -166,8 +174,10 @@ describe('precio por debajo del costo: el Excel', () => {
     const applyButton = within(shown).getByRole('button', { name: 'Aplicar cambios' });
     expect(applyButton).toBeDisabled();
     fireEvent.click(within(group).getByRole('checkbox', { name: /Confirmo aplicar/ }));
+    expect(applyButton).toBeDisabled();
+    fireEvent.change(within(group).getByLabelText('Motivo de los precios bajo el costo'), { target: { value: 'Liquidación' } });
     await act(async () => { fireEvent.click(applyButton); });
-    expect(applied()[0].body).toEqual({ confirm_below_cost: true });
+    expect(applied()[0].body).toEqual({ confirm_below_cost: true, below_cost_reason: 'Liquidación' });
   });
 
   it('sin costos: filas sin importes de costo y la misma confirmación', async () => {
@@ -179,8 +189,10 @@ describe('precio por debajo del costo: el Excel', () => {
     const applyButton = within(shown).getByRole('button', { name: 'Aplicar cambios' });
     expect(applyButton).toBeDisabled();
     fireEvent.click(within(group).getByRole('checkbox', { name: /Confirmo aplicar/ }));
+    expect(applyButton).toBeDisabled();
+    fireEvent.change(within(group).getByLabelText('Motivo de los precios bajo el costo'), { target: { value: 'Precio de la campaña' } });
     await act(async () => { fireEvent.click(applyButton); });
-    expect(applied()[0].body).toEqual({ confirm_below_cost: true });
+    expect(applied()[0].body).toEqual({ confirm_below_cost: true, below_cost_reason: 'Precio de la campaña' });
   });
 
   it('si el servidor lo descubre al aplicar (409), muestra las filas y no deja aplicar sin confirmar', async () => {
@@ -205,9 +217,9 @@ describe('precio por debajo del costo: el Excel', () => {
 
   it('el cliente de la API manda la confirmación sólo cuando se pide', async () => {
     send.mockImplementation(async () => reply({ status: 'applied', created: 0, updated: 0, unchanged: 0 }));
-    await applyWeeklyImport(61, null, null, { confirmBelowCost: true });
-    await applyWeeklyImport(61, null, null, {});
+    await applyWeeklyImport(61, null, null, { confirmBelowCost: true, belowCostReason: '  Liquidación  ' });
+    await applyWeeklyImport(61, null, null, { belowCostReason: 'sin confirmar no viaja' });
     const bodies = send.mock.calls.map(([, init]) => JSON.parse(String((init as RequestInit).body)));
-    expect(bodies).toEqual([{ confirm_below_cost: true }, {}]);
+    expect(bodies).toEqual([{ confirm_below_cost: true, below_cost_reason: 'Liquidación' }, {}]);
   });
 });

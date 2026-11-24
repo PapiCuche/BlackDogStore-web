@@ -305,7 +305,8 @@ export function previewWeeklyImport(
  * 409 `quantity_decision_required` unless `quantityDecisions` names each offer; the same rows under a later message
  * date, 409 `same_rows_new_date` unless `confirmNewDeclaration` with a `newDeclarationNote`. SUPPLY-GUARDS-01: a
  * price below the cost, 409 `below_cost_confirmation_required` (without `costs.view`, a price change over a cost
- * the person cannot see: 409 `cost_unseen_confirmation_required`) unless `confirmBelowCost`.
+ * the person cannot see: 409 `cost_unseen_confirmation_required`) unless `confirmBelowCost` with a
+ * `belowCostReason` (400 `margin_reason_required` without one).
  */
 export function applyWeeklyImport(
   id: number, decision: PriceDecision | null, companyId?: number | null,
@@ -316,6 +317,8 @@ export function applyWeeklyImport(
     confirmNewDeclaration?: boolean; newDeclarationNote?: string;
     snapshot?: { allMessagesIncluded: boolean; deactivations: number };
     confirmBelowCost?: boolean;
+    /** Owner, 2026-11-23: required with `confirmBelowCost` (5 to 500 characters); audited. */
+    belowCostReason?: string;
   } = {},
 ): Promise<WeeklyImportResult> {
   const body: Record<string, boolean | number | string | Record<string, string>> = decision === "accept" ? { accept_price_changes: true } : decision === "keep" ? { keep_prices: true } : {};
@@ -329,7 +332,10 @@ export function applyWeeklyImport(
     body.confirm_new_declaration = true;
     body.new_declaration_note = (options.newDeclarationNote ?? "").trim();
   }
-  if (options.confirmBelowCost) body.confirm_below_cost = true;
+  if (options.confirmBelowCost) {
+    body.confirm_below_cost = true;
+    body.below_cost_reason = (options.belowCostReason ?? "").trim();
+  }
   if (options.snapshot) {
     // INV-SNAPSHOT-01: both marks, and the exact count the person confirmed.
     body.all_messages_included = options.snapshot.allMessagesIncluded;

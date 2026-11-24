@@ -20,7 +20,8 @@
  *
  * SUPPLY-GUARDS-01: a price below the agreed cost (or, without `costs.view`, a
  * price change over a cost the person cannot see) is saved or applied only
- * after the person confirms what the server said. The screen never computes the
+ * after the person confirms what the server said AND gives a reason (owner,
+ * 2026-11-23; audited). The screen never computes the
  * comparison itself: it shows only what the server sent to this person.
  */
 
@@ -30,6 +31,7 @@ import { fetchAdminProducts, type AdminProduct } from "@/app/lib/admin";
 import {
   CatalogApiError,
   MARGIN_CONFIRMATION_CODES,
+  MARGIN_REASON_MAX,
   SUPPLIER_OFFER_ACTION_LABELS,
   SUPPLIER_OFFER_STATE_LABELS,
   createSupplierOffer,
@@ -39,6 +41,7 @@ import {
   fetchSuppliers,
   supplierOfferExportUrl,
   supplierOfferTemplateUrl,
+  marginReasonReady,
   updateSupplierOffer,
   type SupplierOffer,
   type SupplierOfferHistoryEntry,
@@ -231,6 +234,7 @@ function OfferForm({
   const [saving, setSaving] = useState(false);
   // SUPPLY-GUARDS-01: what the server asked to confirm, for THIS draft (any edit of the form withdraws it).
   const [marginAsk, setMarginAsk] = useState<{ message: string; draft: OfferDraft } | null>(null);
+  const [marginReason, setMarginReason] = useState("");
   const pendingMargin = marginAsk && marginAsk.draft === draft ? marginAsk.message : null;
 
   function submit(event: React.FormEvent) {
@@ -258,7 +262,7 @@ function OfferForm({
       lead_time_days: Number(draft.lead_time_days),
       ...(showCost ? { agreed_cost: draft.agreed_cost.trim() === "" ? null : draft.agreed_cost.trim() } : {}),
       ...(offer ? { is_active: draft.is_active } : { product_id: draft.product!.id }),
-      ...(confirmBelowCost ? { confirm_below_cost: true } : {}),
+      ...(confirmBelowCost ? { confirm_below_cost: true, below_cost_reason: marginReason.trim() } : {}),
     };
     setSaving(true);
     setFields({});
@@ -367,9 +371,14 @@ function OfferForm({
       {pendingMargin ? (
         <div data-testid="offer-margin-confirm" className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm md:col-span-2">
           <p role="alert" className="text-foreground">{pendingMargin}</p>
+          <label className="mt-2 block text-xs text-muted">
+            Motivo (obligatorio, queda en la auditoría)
+            <input value={marginReason} maxLength={MARGIN_REASON_MAX} onChange={(e) => setMarginReason(e.target.value)}
+              aria-label="Motivo del precio" className={`mt-1 ${internalInputClass}`} />
+          </label>
           <div className="mt-2 flex flex-wrap justify-end gap-2">
             <button type="button" className={internalButtonClass} onClick={() => setMarginAsk(null)} disabled={saving}>Revisar el precio</button>
-            <button type="button" className={internalPrimaryButtonClass} onClick={() => void save(true)} disabled={saving}>Guardar de todas formas</button>
+            <button type="button" className={internalPrimaryButtonClass} onClick={() => void save(true)} disabled={saving || !marginReasonReady(marginReason)}>Guardar de todas formas</button>
           </div>
         </div>
       ) : null}
@@ -734,6 +743,7 @@ function ImportSection({
   // SUPPLY-GUARDS-01: rows below their cost (or over a cost this person cannot see), and the person's confirmation.
   const [marginRefused, setMarginRefused] = useState<{ rows: MarginReviewRow[]; withCost: boolean } | null>(null);
   const [confirmMargin, setConfirmMargin] = useState(false);
+  const [marginReason, setMarginReason] = useState("");
   const [confirmNewDeclaration, setConfirmNewDeclaration] = useState(false);
   const [newDeclarationNote, setNewDeclarationNote] = useState("");
   const dateProblem = messageDateProblem(messageDate);
@@ -771,6 +781,7 @@ function ImportSection({
     setSameRows(null);
     setMarginRefused(null);
     setConfirmMargin(false);
+    setMarginReason("");
     setConfirmNewDeclaration(false);
     setNewDeclarationNote("");
     setMapping(null);
@@ -815,6 +826,7 @@ function ImportSection({
         newDeclarationNote: sameRows ? newDeclarationNote : undefined,
         snapshot: preview.snapshot ? { allMessagesIncluded: allIncluded, deactivations: preview.snapshot.deactivate_count } : undefined,
         confirmBelowCost: margin.rows.length > 0 && confirmMargin,
+        belowCostReason: margin.rows.length > 0 && confirmMargin ? marginReason : undefined,
       }));
       setPreview(null);
       setFile(null);
@@ -890,7 +902,7 @@ function ImportSection({
     || (reactivationRows.length > 0 && !confirmReactivate)
     || clearedRows.some((row) => !row.data.offer_id || !quantityDecisions[row.data.offer_id])
     || (Boolean(sameRows) && !(confirmNewDeclaration && newDeclarationNote.trim()))
-    || (margin.rows.length > 0 && !confirmMargin);
+    || (margin.rows.length > 0 && !(confirmMargin && marginReasonReady(marginReason)));
 
   return (
     <Panel
@@ -1242,6 +1254,13 @@ function ImportSection({
                 <input type="checkbox" checked={confirmMargin} onChange={(e) => setConfirmMargin(e.target.checked)} />
                 {margin.withCost ? "Confirmo aplicar estos precios por debajo del costo" : "Confirmo aplicar estos precios sin ver el costo"}
               </label>
+              {confirmMargin ? (
+                <label className="mt-2 block text-xs text-muted">
+                  Motivo (obligatorio, queda en la auditoría)
+                  <input value={marginReason} maxLength={MARGIN_REASON_MAX} onChange={(e) => setMarginReason(e.target.value)}
+                    aria-label="Motivo de los precios bajo el costo" className={`mt-1 ${internalInputClass}`} />
+                </label>
+              ) : null}
             </fieldset>
           ) : null}
           {preview.snapshot ? (

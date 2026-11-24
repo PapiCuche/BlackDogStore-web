@@ -3215,6 +3215,15 @@ export const MARGIN_CONFIRMATION_CODES: readonly string[] = [
   "below_cost_confirmation_required", "cost_unseen_confirmation_required",
 ];
 
+/** Owner, 2026-11-23: the confirmation goes with a reason, 5 to 500 characters (`below_cost_reason`). */
+export const MARGIN_REASON_MIN = 5;
+export const MARGIN_REASON_MAX = 500;
+
+export function marginReasonReady(reason: string): boolean {
+  const text = reason.trim().replace(/\s+/g, " ");
+  return text.length >= MARGIN_REASON_MIN && text.length <= MARGIN_REASON_MAX;
+}
+
 export type SupplierOffer = {
   id: number;
   supplier_id: number;
@@ -3252,8 +3261,10 @@ export type SupplierOfferWrite = Partial<{
   valid_until: string;
   lead_time_days: number;
   is_active: boolean;
-  /** SUPPLY-GUARDS-01: the person confirmed a price below the cost (or over a cost they cannot see). */
+  /** SUPPLY-GUARDS-01: the person confirmed a price below the cost (or over a cost they cannot see)… */
   confirm_below_cost: boolean;
+  /** …and said why (required with the confirmation; audited). */
+  below_cost_reason: string;
 }>;
 
 export type SupplierOfferHistoryEntry = {
