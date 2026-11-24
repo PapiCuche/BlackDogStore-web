@@ -216,9 +216,10 @@ test.describe("dos cargas, cada una con su plantilla de una hoja", () => {
     sembrarProductos();
     await signIn(page);
     await page.goto("/admin/inventory/units", { waitUntil: "networkidle" });
-    // La carga de equipos tiene su entrada en el menú, con su nombre, dentro de «Más herramientas» (NAV-UX-01).
+    // La carga de equipos tiene su entrada en el menú, con su nombre, dentro de «Stock y equipos» (NAV-SALES-01), que
+    // ya está abierto en la pantalla de equipos.
     const menu = page.getByRole("navigation", { name: "Módulos del control interno" });
-    await menu.getByRole("button", { name: "Opciones de Más herramientas" }).click();
+    await expect(menu.getByRole("button", { name: "Opciones de Stock y equipos" })).toHaveAttribute("aria-expanded", "true");
     await menu.getByRole("link", { name: "Carga de equipos" }).click();
     await expect(page).toHaveURL(/\/admin\/inventory\/units\/import/);
 
