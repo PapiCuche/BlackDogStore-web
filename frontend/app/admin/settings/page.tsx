@@ -31,6 +31,7 @@ import { OrderReviewSettings } from "../components/OrderReviewSettings";
 import { PublicationSettings } from "../components/PublicationSettings";
 import { DeviceHoldSettings } from "../components/DeviceHoldSettings";
 import { PosCancelSettings } from "../components/PosCancelSettings";
+import { SupplierPricingSettings, showsSupplierPricing } from "../components/SupplierPricingSettings";
 import { CarrierSettings } from "../components/CarrierSettings";
 import { InventoryAISettings } from "../components/InventoryAISettings";
 import {
@@ -541,6 +542,25 @@ function SettingsContent({ user, ctx }: { user: InternalContext["user"]; ctx: In
                     />
                   </DashboardSection>
                 </div>
+                {/* SUPPLY-MARGIN-01 — the margin of the suggested price of a supplier
+                    offer. The server sends its two keys only to `costs.view`, so
+                    without them there is no section at all. Its own save. */}
+                {showsSupplierPricing(config.settings) ? (
+                  <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">
+                    <DashboardSection
+                      title="Precio sugerido de ofertas de proveedor"
+                      description="El margen sobre el costo pactado con el que se propone un precio. Sólo una propuesta: nunca cambia un precio."
+                    >
+                      <SupplierPricingSettings
+                        companyId={companyId}
+                        margin={config.settings.supplier_margin_percent ?? null}
+                        roundTo={config.settings.supplier_price_round_to ?? null}
+                        canEdit={Boolean(config.can_manage_supplier_pricing) && companyWide}
+                        onSaved={setConfig}
+                      />
+                    </DashboardSection>
+                  </div>
+                ) : null}
                 {/* DELIVERY-01 — the company's carriers. Their own endpoint and
                     their own save: nothing of the form above travels with them. */}
                 <div className="rounded-xl border border-bd-border bg-surface p-5 sm:p-6">

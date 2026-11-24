@@ -4167,6 +4167,21 @@ class CompanySettings(models.Model):
         default=7, db_default=7,
         validators=[MinValueValidator(RETURN_SIMPLE_DAYS_MIN), MaxValueValidator(RETURN_SIMPLE_DAYS_MAX)],
     )
+    # SUPPLY-MARGIN-01 (owner): «Precio sugerido: costo más margen configurable por empresa, presentado sólo como
+    # propuesta revisable. No cambiar automáticamente los precios publicados.» The company's margin over a
+    # supplier offer's agreed cost, and the step its suggestion is rounded UP to (`supplier_pricing`). NULL margin:
+    # no suggestion anywhere. NULL step: to the cent. Read and changed only with `costs.view` (a suggestion
+    # reveals the cost); changing them also takes `settings.manage`. Nothing ever writes a price from them.
+    SUPPLIER_MARGIN_MIN, SUPPLIER_MARGIN_MAX = Decimal('0'), Decimal('500')
+    SUPPLIER_ROUND_TO_MIN, SUPPLIER_ROUND_TO_MAX = 1, 100000
+    supplier_margin_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, null=True, blank=True,
+        validators=[MinValueValidator(SUPPLIER_MARGIN_MIN), MaxValueValidator(SUPPLIER_MARGIN_MAX)],
+    )
+    supplier_price_round_to = models.PositiveIntegerField(
+        null=True, blank=True,
+        validators=[MinValueValidator(SUPPLIER_ROUND_TO_MIN), MaxValueValidator(SUPPLIER_ROUND_TO_MAX)],
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -4174,6 +4189,18 @@ class CompanySettings(models.Model):
     class Meta:
         verbose_name = 'company settings'
         verbose_name_plural = 'company settings'
+        constraints = [
+            # SUPPLY-MARGIN-01: the API's bounds, again in the database (NULL passes: no margin, no step).
+            models.CheckConstraint(
+                condition=models.Q(supplier_margin_percent__gte=Decimal('0'),
+                                   supplier_margin_percent__lte=Decimal('500')),
+                name='companysettings_supplier_margin_0_500',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(supplier_price_round_to__gte=1, supplier_price_round_to__lte=100000),
+                name='companysettings_supplier_round_to_positive',
+            ),
+        ]
 
     def __str__(self):
         return f"Settings({self.company.name})"
