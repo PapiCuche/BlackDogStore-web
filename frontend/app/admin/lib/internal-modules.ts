@@ -192,6 +192,42 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    // NAV-SALES-01: the till, opened on its «Vender equipo por modelo» block. Not a screen of its own: the POS
+    // reads `?panel=equipo`, opens the block and puts the caret in the model search. Same authority as the till.
+    id: "sales.pos.device",
+    group: "sales",
+    label: "Venta rápida de equipo",
+    description: "La caja, abierta en el bloque de equipos: modelo, capacidad, color y SIM/región.",
+    href: "/admin/sales/pos?panel=equipo",
+    requiredCapabilities: ["sales.pos.use"],
+    status: "implemented",
+  },
+  {
+    // NAV-SALES-01: the orders list filtered to what was sold on order and already asked of the supplier. Same
+    // authority as the orders list, because it IS the orders list.
+    id: "sales.on_order",
+    group: "sales",
+    label: "Bajo pedido",
+    description: "Pedidos vendidos bajo pedido que esperan al proveedor.",
+    href: "/admin/orders?supply=pending",
+    requiredCapabilities: ["sales.orders.view"],
+    legacyRoles: STAFF_ROLES,
+    status: "implemented",
+  },
+  {
+    // NAV-SALES-01: the paid sales with no electronic receipt recorded (NOTE-NOT-SUBSTITUTE), the orders list
+    // filtered. The receipts themselves are issued and reprinted from each order; there is no list of them yet
+    // (`sales.invoicing`, partial).
+    id: "sales.receipts_pending",
+    group: "sales",
+    label: "Ventas sin comprobante",
+    description: "Ventas pagadas sin comprobante electrónico registrado en el sistema.",
+    href: "/admin/orders?receipt=pending",
+    requiredCapabilities: ["sales.orders.view"],
+    legacyRoles: STAFF_ROLES,
+    status: "implemented",
+  },
+  {
     id: "sales.notes",
     group: "sales",
     label: "Notas de venta",
@@ -203,7 +239,8 @@ export const INTERNAL_MODULES: InternalModule[] = [
   },
   {
     // SALES-QUOTE-01: offers with price and validity. They never charge or move stock; converting one is a
-    // till sale (`sales.pos.use`, checked inside the screen and by the server).
+    // till sale (`sales.pos.use`, checked inside the screen and by the server). NAV-SALES-01 gave it its
+    // destination in Ventas; with its page, `href` and capability it now appears there.
     id: "sales.quotes",
     group: "sales",
     label: "Cotizaciones",
@@ -382,6 +419,18 @@ export const INTERNAL_MODULES: InternalModule[] = [
     status: "implemented",
   },
   {
+    // NAV-SALES-01 — «Colores»: the company's colours are the options of its colour attribute, with their swatch,
+    // in the «Atributos y opciones» section of Modelos. The page opens there with `?seccion=colores`
+    // (`lib/models-sections.ts`). Same authority as Modelos: `products.view` to look, `products.manage` to change.
+    id: "products.colors",
+    group: "products",
+    label: "Colores",
+    description: "Colores de la empresa con su muestra, y los demás atributos que distinguen a las variantes.",
+    href: "/admin/products/models?seccion=colores",
+    requiredCapabilities: ["products.view"],
+    status: "implemented",
+  },
+  {
     // DEVICE-COMMERCE-01 · DC3: quién abastece lo que se vende bajo pedido.
     // Ver con `products.view`; cambiar, `products.manage`. Lo pendiente de
     // liquidar, sólo con `costs.view` (la pantalla lo decide).
@@ -399,6 +448,17 @@ export const INTERNAL_MODULES: InternalModule[] = [
     label: "Ofertas de proveedores",
     description: "Precio, cantidad confirmada, vigencia y plazo de entrega de cada oferta; carga semanal desde Excel.",
     href: "/admin/products/suppliers/offers",
+    requiredCapabilities: ["products.view"],
+    status: "implemented",
+  },
+  {
+    // NAV-SALES-01: «Actualizar lista de proveedor», the weekly list. Its page asks `products.view` to read how a
+    // list is interpreted; saving offers needs `products.manage`, checked inside and again by the server.
+    id: "products.supplier_list",
+    group: "products",
+    label: "Lista semanal",
+    description: "Pegar o subir la lista semanal de un proveedor y convertirla en ofertas.",
+    href: "/admin/products/suppliers/offers/update-list",
     requiredCapabilities: ["products.view"],
     status: "implemented",
   },
@@ -936,24 +996,68 @@ type Destination = {
 
 const m = (id: string, label?: string, caption?: string): DestinationMember => ({ id, label, caption });
 
+// The key is the SIDEBAR section a destination is drawn in, which need not be its members' registry group: «Más
+// herramientas» carries `products.import`, and Compras › Proveedores carries `sales.availability`. Each module is a
+// member of one destination at most (a test checks it), so it is drawn once.
 const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
-  products: [
+  // NAV-SALES-01 — by task: the till, the orders, the documents. «Cotizaciones» has its screen (SALES-QUOTE-01);
+  // «Parte de pago» has no entry while the function is not approved.
+  sales: [
+    { id: "nav.sales.summary", label: "Resumen comercial", members: [m("sales.summary")] },
     {
-      id: "nav.catalog",
-      label: "Productos y variantes",
-      members: [
-        m("products.list", "Productos"),
-        m("products.models"),
-        m("products.register", "Registrar artículo"),
-        m("products.publication"),
-        m("products.categories"),
-        m("products.images"),
-      ],
+      id: "nav.sales.till",
+      label: "Caja",
+      // A work screen with a scanner in hand: no tab bar above it. The quick device sale is the same screen.
+      noTabs: true,
+      members: [m("sales.pos", "Punto de venta"), m("sales.pos.device")],
     },
+    {
+      id: "nav.sales.orders",
+      label: "Pedidos y bajo pedido",
+      members: [m("sales.orders", "Pedidos"), m("sales.on_order"), m("sales.cancellations", "Cancelaciones")],
+    },
+    { id: "nav.sales.quotes", label: "Cotizaciones", members: [m("sales.quotes")] },
+    {
+      id: "nav.sales.documents",
+      label: "Documentos",
+      members: [m("sales.notes"), m("sales.receipts_pending")],
+    },
+    { id: "nav.sales.promotions", label: "Promociones", members: [m("sales.promotions")] },
+    { id: "nav.sales.commissions", label: "Comisiones", members: [m("sales.commissions")] },
+  ],
+  // NAV-SALES-01 — Proveedores left Catálogo: whom the company buys from sits with what it owes them (Finanzas).
+  // The directory is the destination's own page; the weekly list, the offers and what can be sold on order are its
+  // options. Disponibilidad keeps the till's permission, so a seller finds it here with nothing else of suppliers.
+  purchases: [
     {
       id: "nav.suppliers",
       label: "Proveedores",
-      members: [m("products.suppliers", "Directorio"), m("products.supplier_offers", "Ofertas y listas")],
+      members: [
+        m("products.suppliers", "Directorio"),
+        m("products.supplier_list"),
+        m("products.supplier_offers", "Ofertas"),
+        m("sales.availability", "Disponibilidad"),
+      ],
+    },
+    { id: "nav.finance", label: "Finanzas", members: [m("finance.obligations")] },
+  ],
+  products: [
+    {
+      // NAV-SALES-01 — the owner's order: Modelos · Variantes · Colores · Fotografías. A variant of a model is a
+      // product, so «Variantes» is the products list; «Fotografías» is where the photos the shop did not take are
+      // found and replaced (each colour's gallery is edited in its model). Registering, publishing and the
+      // categories follow, once each.
+      id: "nav.catalog",
+      label: "Productos",
+      members: [
+        m("products.models", "Modelos"),
+        m("products.list", "Variantes"),
+        m("products.colors"),
+        m("products.images", "Fotografías"),
+        m("products.register", "Registrar artículo", "Registro y tienda"),
+        m("products.publication", undefined, "Registro y tienda"),
+        m("products.categories", undefined, "Registro y tienda"),
+      ],
     },
   ],
   inventory: [
@@ -962,11 +1066,16 @@ const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
     {
       id: "nav.stock",
       label: "Stock y equipos",
+      // NAV-SALES-01 — the owner's order: Equipos nuevos · Equipos seminuevos · Carga de stock · Kardex. The stock
+      // and device loads came out of «Más herramientas»; Kardex out of «Movimientos».
       members: [
         m("inventory.stock", "Resumen"),
         m("inventory.availability", "Existencias"),
         m("inventory.serial"),
         m("inventory.used"),
+        m("inventory.import"),
+        m("inventory.units.import"),
+        m("inventory.movements", "Kardex"),
       ],
     },
     { id: "nav.counts", label: "Recuentos", members: [m("inventory.counts")] },
@@ -975,11 +1084,7 @@ const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
       label: "Etiquetas",
       members: [m("inventory.labels", "Vista previa y PDF"), m("inventory.labels.settings", "Configuración")],
     },
-    {
-      id: "nav.movements",
-      label: "Movimientos",
-      members: [m("inventory.movements", "Kardex"), m("inventory.transfers")],
-    },
+    { id: "nav.transfers", label: "Transferencias", members: [m("inventory.transfers")] },
     {
       id: "nav.tools",
       label: "Más herramientas",
@@ -988,8 +1093,6 @@ const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
         m("inventory.tools"),
         m("inventory.bulk", "Gestión masiva", "Cargas y exportaciones"),
         m("products.import", "Carga de productos", "Cargas y exportaciones"),
-        m("inventory.import", undefined, "Cargas y exportaciones"),
-        m("inventory.units.import", undefined, "Cargas y exportaciones"),
         m("inventory.costs", undefined, "Análisis"),
         m("inventory.reports", undefined, "Análisis"),
         m("inventory.replenishment", undefined, "Análisis"),
@@ -1040,18 +1143,21 @@ function sidebarItemFor(destination: Destination, ctx: ModuleAccessContext): Sid
  */
 export function sidebarSections(ctx: ModuleAccessContext): SidebarSection[] {
   const reachable = navigableModules(ctx);
+  const claimed = new Set(sidebarClaimedModuleIds());
   return MODULE_GROUPS.flatMap((group) => {
-    const destinations = SIDEBAR_DESTINATIONS[group.id];
+    const destinations = SIDEBAR_DESTINATIONS[group.id] ?? [];
     const label = SIDEBAR_SECTION_LABELS[group.id] ?? group.label;
     if (group.id === "dashboard") return [];
-    const items: SidebarItem[] = destinations
-      ? destinations.flatMap((d) => {
-          const item = sidebarItemFor(d, ctx);
-          return item ? [item] : [];
-        })
-      : reachable
-          .filter((x) => x.group === group.id)
-          .map((x) => ({ id: x.id, label: x.label, href: x.href!, children: [], tabs: false }));
+    const grouped: SidebarItem[] = destinations.flatMap((d) => {
+      const item = sidebarItemFor(d, ctx);
+      return item ? [item] : [];
+    });
+    // What no destination claims keeps one link of its own in its registry group: a screen added later never
+    // disappears from the menu for want of a destination, and a claimed one is never drawn twice.
+    const loose: SidebarItem[] = reachable
+      .filter((x) => x.group === group.id && !claimed.has(x.id))
+      .map((x) => ({ id: x.id, label: x.label, href: x.href!, children: [], tabs: false }));
+    const items = [...grouped, ...loose];
     // `Más herramientas` carries products.import, which belongs to the catalogue
     // group in the registry: the inventory section may therefore be the only
     // place a catalogue-only caller finds it.
