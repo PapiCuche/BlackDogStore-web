@@ -365,8 +365,9 @@ class PublicPhotosTest(PhotoShop):
                          (primary.image_url, 'unit'))
         self.assertEqual(line['units'][0]['photo']['url'], primary.image_url)
         self.assertNotIn(generic.url, json.dumps(line))
-        # Its photo withdrawn while held: nothing — never the generic picture.
-        unit_media.attest(unit=self.unit, photo_id=primary.pk, attested=False, actor=self.inspector)
+        # Its photo no longer public while still held (the service would also release the hold — `WebHoldReleaseTest`;
+        # here the row changes directly): nothing — never the generic picture.
+        UnitPhoto.objects.filter(pk=primary.pk).update(attested_at=None)
         [line] = self.cart(public)
         self.assertEqual((line['product']['image_url'], line['product']['image_scope']), ('', 'unit'))
         self.assertIsNone(line['units'][0]['photo'])
@@ -433,3 +434,160 @@ class MigrationTest(TestCase):
         self.assertEqual(list(UnitPhoto.objects.filter(is_primary=True).order_by('unit_id')
                               .values_list('pk', flat=True)), [rows[1].pk, rows[2].pk])
         self.assertFalse(UnitPhoto.objects.filter(attested_at__isnull=False).exists())
+
+
+# ---------------------------------------------------------------------------
+# Review of UNIT-PHOTO-02
+# ---------------------------------------------------------------------------
+
+class WebHoldReleaseTest(PhotoShop):
+    """A cart's hold goes back to the shelf when a photo change leaves the device without a real photo."""
+
+    def hold(self):
+        from store import unit_hold_services as holds
+
+        holds.hold(product=self.used128, branch=self.branch, session_key='carro-revision',
+                   unit_public_id=str(self.unit.public_id))
+        self.assertEqual(StockUnit.objects.get(pk=self.unit.pk).status, 'reserved')
+
+    def uploaded_and_attested(self):
+        self.add(view='front')
+        [photo] = self.photos()
+        self.assertEqual(self.attest(photo.pk).status_code, 200)
+        used_units.set_publication(self.unit, published=True, actor=self.staff)
+        return photo
+
+    def assert_released(self, action):
+        self.assertEqual(StockUnit.objects.get(pk=self.unit.pk).status, 'available')
+        log = AdminAuditLog.objects.filter(action=action, company=self.company).order_by('-pk').first()
+        self.assertTrue(log.metadata['released_web_hold'], log.metadata)
+
+    def test_withdrawing_the_last_attestation_releases_the_hold(self):
+        photo = self.uploaded_and_attested()
+        self.hold()
+        self.assertEqual(self.attest(photo.pk, attested=False).status_code, 200)
+        self.assert_released('unit_photo_attestation_withdrawn')
+
+    def test_replacing_the_last_real_photo_releases_the_hold(self):
+        photo = self.uploaded_and_attested()
+        self.hold()
+        res = _client(self.staff).post(f'{UNITS}{self.unit.pk}/photos/{photo.pk}/replace/', {'file': upload()},
+                                       format='multipart')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assert_released('unit_photo_replaced')
+
+    def test_deleting_the_last_real_photo_releases_the_hold_and_another_real_photo_keeps_it(self):
+        photo = self.uploaded_and_attested()
+        second = real_photo(self.unit, self.inspector)
+        self.hold()
+        _client(self.staff).delete(f'{UNITS}{self.unit.pk}/photos/{second.pk}/')
+        self.assertEqual(StockUnit.objects.get(pk=self.unit.pk).status, 'reserved')
+        log = AdminAuditLog.objects.filter(action='unit_photo_removed', company=self.company).order_by('-pk').first()
+        self.assertFalse(log.metadata['released_web_hold'])
+        _client(self.staff).delete(f'{UNITS}{self.unit.pk}/photos/{photo.pk}/')
+        self.assert_released('unit_photo_removed')
+
+
+class AttestationRulesTest(PhotoShop):
+    def test_changing_the_side_of_an_attested_photo_clears_its_attestation(self):
+        self.add(view='front')
+        [photo] = self.photos()
+        self.attest(photo.pk)
+        res = _client(self.staff).patch(f'{UNITS}{self.unit.pk}/photos/{photo.pk}/',
+                                        {'view': 'defect', 'defect_note': 'Golpe'}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        [row] = res.json()['photos']
+        self.assertEqual((row['attested'], row['public']), (False, False))
+        stored = StorefrontImage.objects.get(public_id=storefront_media.managed_public_id(photo.image_url))
+        self.assertIsNone(stored.license_verified_at)
+        log = AdminAuditLog.objects.get(action='unit_photo_updated', company=self.company)
+        self.assertTrue(log.metadata['attestation_cleared'])
+        # The alternative text alone does not clear it.
+        self.attest(photo.pk)
+        _client(self.staff).patch(f'{UNITS}{self.unit.pk}/photos/{photo.pk}/', {'alt_text': 'Golpe'}, format='json')
+        self.assertIsNotNone(UnitPhoto.objects.get(pk=photo.pk).attested_at)
+
+    def test_a_file_shown_somewhere_else_is_not_attested(self):
+        self.add(view='front')
+        [photo] = self.photos()
+        type(self.used128).objects.filter(pk=self.used128.pk).update(image_url=photo.image_url)
+        res = self.attest(photo.pk)
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'shared_file'))
+        self.assertIsNone(UnitPhoto.objects.get(pk=photo.pk).attested_at)
+
+    def test_an_address_the_shop_can_never_publish_is_not_attested(self):
+        self.add(view='front')
+        [photo] = self.photos()
+        UnitPhoto.objects.filter(pk=photo.pk).update(image_url=f'https://cdn.example.com{photo.image_url}')
+        res = self.attest(photo.pk)
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'not_publishable'))
+        self.assertIsNone(UnitPhoto.objects.get(pk=photo.pk).attested_at)
+
+
+class PublicPathsReviewTest(PhotoShop):
+    def test_the_admin_publication_check_is_not_the_shops_used_rule(self):
+        from store import product_publication
+        from store.models import CompanySettings, Product
+
+        CompanySettings.objects.update_or_create(company=self.company, defaults={'publication_requires_image': True})
+        verified = storefront_media.store(company=self.company, actor=self.staff, raw=png_with_transparency(),
+                                          provenance={'source_kind': 'own_photo'})
+        StorefrontImage.objects.filter(pk=verified.pk).update(license_verified_at=timezone.now())
+        Product.objects.filter(pk=self.used128.pk).update(image_url=verified.url)
+        product = Product.objects.get(pk=self.used128.pk)
+        expected = product_publication.publication_problems(product)
+        self.assertNotIn('no_image', expected)
+        body = _client(self.staff).get(f'/api/admin/products/?company={self.company.pk}').json()
+        rows = {row['id']: row for row in (body['results'] if isinstance(body, dict) else body)}
+        self.assertEqual(rows[self.used128.pk]['publication_problems'], expected)
+
+    def test_the_app_order_line_shows_the_sold_devices_photo(self):
+        from store.v1_customer_serializers import V1CustomerOrderSerializer
+
+        self.ready()
+        order = Order.objects.create(company=self.company, fulfillment_branch=self.branch,
+                                     customer_email='x@example.com', total=Decimal('1999.00'))
+        OrderItem.objects.create(order=order, product=self.used128, quantity=1, price=Decimal('1999.00'))
+        StockUnit.objects.filter(pk=self.unit.pk).update(order=order)
+        primary = UnitPhoto.objects.get(unit=self.unit, is_primary=True)
+        self.assertEqual(V1CustomerOrderSerializer(order).data['items'][0]['image_url'], primary.image_url)
+        many = V1CustomerOrderSerializer(Order.objects.filter(pk=order.pk), many=True).data
+        self.assertEqual(many[0]['items'][0]['image_url'], primary.image_url)
+        UnitPhoto.objects.filter(unit=self.unit).update(attested_at=None)
+        self.assertEqual(V1CustomerOrderSerializer(order).data['items'][0]['image_url'], '')
+
+    def test_a_cart_reads_its_devices_photos_once_whatever_its_lines(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from store import unit_hold_services as holds
+
+        self.ready()
+        other = self.variant('Teléfono X 256 GB Azul usado', 'tx-256-azul-usado', '1.00', [self.gb256, self.blue],
+                             line='used')
+        [second] = self.receive(other)
+        units.update_unit(second, sale_price='1500.00')
+        used_units.set_inspection(second, decision='approved', actor=self.inspector)
+        real_photo(second, self.inspector)
+        used_units.set_publication(second, published=True, actor=self.staff)
+        public = _client(host=self.host)
+
+        def photo_queries():
+            with CaptureQueriesContext(connection) as captured:
+                res = public.get('/api/cart/?session_key=carro-lote')
+            self.assertEqual(res.status_code, 200)
+            return sum(1 for q in captured.captured_queries if '"store_unitphoto"' in q['sql'])
+
+        holds.hold(product=self.used128, branch=self.branch, session_key='carro-lote',
+                   unit_public_id=str(self.unit.public_id))
+        public.post('/api/cart/add/', {'session_key': 'carro-lote', 'product': self.used128.pk,
+                                       'unit': str(self.unit.public_id)}, format='json')
+        one = photo_queries()
+        public.post('/api/cart/add/', {'session_key': 'carro-lote', 'product': other.pk,
+                                       'unit': str(second.public_id)}, format='json')
+        body = public.get('/api/cart/?session_key=carro-lote').json()
+        rows = body['results'] if isinstance(body, dict) else body
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row['units'][0]['photo'] for row in rows))
+        self.assertEqual(photo_queries(), one)
+        self.assertEqual(one, 1)

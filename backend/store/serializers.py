@@ -155,12 +155,6 @@ def prime_variant_galleries(context, products) -> dict:
     cache = context.setdefault('_variant_galleries', {})
     wanted = {product.pk: product for product in products
               if isinstance(product, Product) and product.product_model_id and product.pk not in cache}
-    # UNIT-PHOTO-02 — a USED variant is sold device by device: the shop shows a public photo of THAT device (the cart
-    # and the order line put it in place, `unit_line_picture`), never the variant's catalogue picture nor its colour's
-    # finish. Its public picture here is pending.
-    for pk in [pk for pk, product in wanted.items() if product.condition_line == Product.CONDITION_USED]:
-        cache[pk] = {'gallery': [], 'source': '', 'image_url': '', 'image_pending': True, 'image_is_demo': False}
-        del wanted[pk]
     if wanted:
         found = device_catalog.variant_galleries(list(wanted.values()))
         for pk in wanted:
@@ -227,26 +221,65 @@ class OrdersPrimingListSerializer(serializers.ListSerializer):
         return super().to_representation(rows)
 
 
+#: UNIT-PHOTO-02 — what the SHOP shows of a USED variant: nothing of its own. It is sold device by device, and the only
+#: picture of a used device is a public photo of THAT device (the cart and the order lines put it in place,
+#: `unit_line_picture`) — never the variant's catalogue picture nor its colour's finish.
+USED_VARIANT_PENDING = {'gallery': [], 'source': '', 'image_url': '', 'image_pending': True, 'image_is_demo': False}
+
+
+def _for_shop(product, found):
+    if product.condition_line == Product.CONDITION_USED:
+        return dict(USED_VARIANT_PENDING)
+    return found
+
+
 def gated_image_url(context, product) -> str:
-    """The picture the shop may show of `product`: a device variant's gated one, else its own address."""
+    """The picture the shop may show of `product`: a device variant's gated one (none of a used one), else its own."""
     if not product.product_model_id:
         return product.image_url
-    found = prime_variant_galleries(context, [product]).get(product.pk)
+    found = _for_shop(product, prime_variant_galleries(context, [product]).get(product.pk))
     return found['image_url'] if found else ''
 
 
-def public_variant_gallery(serializer, product) -> dict | None:
+def public_variant_gallery(serializer, product, *, for_shop: bool = True) -> dict | None:
     """
     IMG-GATE-01 — what the shop shows of a DEVICE VARIANT (`device_catalog.variant_galleries`), read ONCE for every
     product being serialised in the same response (kept in the context: one batch for a list, a cart or a page).
     None for a product without a model: its pictures are unchanged.
+
+    `for_shop` (UNIT-PHOTO-02): a used variant shows nothing of its own on the shop (`USED_VARIANT_PENDING`). The
+    panel's publication check passes False: whether the variant HAS a public picture is the catalogue's rule
+    (`product_publication`), not the shop's used-device rule.
     """
     if product is None or not product.product_model_id:
         return None
     cache = serializer.context.setdefault('_variant_galleries', {})
     if product.pk not in cache:
         prime_variant_galleries(serializer.context, [product, *serializer_siblings(serializer)])
-    return cache.get(product.pk)
+    found = cache.get(product.pk)
+    return _for_shop(product, found) if for_shop else found
+
+
+def order_line_unit_photo(context, item) -> dict | None:
+    """UNIT-PHOTO-02 — the public primary photo of the first device of a used order line (batched per response)."""
+    photos = prime_order_unit_photos(context, [item.order]).get((item.order_id, item.product_id), [])
+    return next((photo for photo in photos if photo), None)
+
+
+def cart_unit_photos(serializer, instance) -> dict[int, dict]:
+    """
+    UNIT-PHOTO-02 — device id → its public primary photo, for every device THIS cart holds, read ONCE for the whole
+    cart (every line of the response): one query whatever the number of lines.
+    """
+    from . import unit_hold_services, unit_media
+
+    cache = serializer.context.setdefault('_cart_unit_photos', {})
+    key = (instance.session_key, instance.product.company_id)
+    if key not in cache:
+        ids = list(unit_hold_services.held_units(instance.session_key, instance.product.company)
+                   .filter(product__condition_line=Product.CONDITION_USED).values_list('pk', flat=True))
+        cache[key] = unit_media.primary_photos(ids)
+    return cache[key]
 
 
 class ProductSerializer(serializers.ModelSerializer):
@@ -400,10 +433,8 @@ class OrderItemSerializer(serializers.ModelSerializer):
                 data['lead_time_days'] = instance.lead_time_days
             elif instance.product.condition_line == Product.CONDITION_USED:
                 # UNIT-PHOTO-02 — the line shows the device it sold, never a generic picture.
-                photos = prime_order_unit_photos(self.context, [instance.order]).get(
-                    (instance.order_id, instance.product_id), [])
-                first = next((photo for photo in photos if photo), None)
-                data['product'] = {**data['product'], **unit_line_picture(first)}
+                data['product'] = {**data['product'], **unit_line_picture(order_line_unit_photo(self.context,
+                                                                                                instance))}
             return data
         # Closed BEFORE the product is serialised, not after: the whole public
         # payload (gallery, rating, stock) is not built just to be thrown away.
@@ -528,9 +559,7 @@ class CartItemSerializer(serializers.ModelSerializer):
                 if product.condition_line == Product.CONDITION_USED:
                     # UNIT-PHOTO-02 — each held device with ITS public primary photo (or null), and the line's
                     # picture is the first of them: never the variant's catalogue picture or its colour's finish.
-                    from . import unit_media
-
-                    photos = unit_media.primary_photos([unit.pk for unit in held])
+                    photos = cart_unit_photos(self, instance)
                     for row, unit in zip(data['units'], held):
                         row['photo'] = photos.get(unit.pk)
                     first = next((photos[unit.pk] for unit in held if unit.pk in photos), None)
@@ -764,8 +793,8 @@ class AdminProductSerializer(serializers.ModelSerializer):
         public_picture = None
         if asked[obj.company_id] and obj.product_model_id:
             # Review of #408: a device variant «has a picture» only if the shop may show one — read once for the
-            # whole list (`public_variant_gallery`).
-            gated = public_variant_gallery(self, obj)
+            # whole list (`public_variant_gallery`). The catalogue's rule, not the shop's used-device one.
+            gated = public_variant_gallery(self, obj, for_shop=False)
             public_picture = bool(gated and not gated['image_pending'])
         return publication_problems(obj, require_image=asked[obj.company_id], public_picture=public_picture)
 

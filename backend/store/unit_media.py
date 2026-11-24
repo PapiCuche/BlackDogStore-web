@@ -20,8 +20,11 @@ device. So a photo counts (for the web, for publishing, for a cart or an order l
 not the one somebody confirmed: its attestation and its verification start empty.
 
 ONE WRITE AT A TIME PER DEVICE. Every write locks the device's row before it reads its photos, so two people working
-at once neither break the order nor leave two primaries (the partial unique index would refuse it anyway). Only the
-device is locked, as before (DC2): nothing here takes a shelf row.
+at once neither break the order nor leave two primaries (the partial unique index would refuse it anyway). In the
+module's one lock order (`used_unit_services._locked_used`): the shelf row first, the device second — a write that
+leaves the device without a real photo (withdrawing an attestation, replacing or deleting its last real photo,
+changing the side of an attested photo) gives a cart's hold of it back to the shelf (`release_withdrawn`), which
+writes a Kardex line on that shelf.
 
 The company always comes from the caller's resolved device; a photo of another device or company answers like a
 missing one. Background removal is NOT here (the owner approves a tool first).
@@ -255,7 +258,35 @@ def _photo_id(value) -> int:
 # ---------------------------------------------------------------------------
 
 def _locked(unit) -> StockUnit:
-    return StockUnit.objects.select_for_update().get(pk=unit.pk, company_id=unit.company_id)
+    """The shelf row first, the device second (the module's one lock order)."""
+    from .inventory_services import _locked_branch_stocks
+
+    plain = StockUnit.objects.select_related('branch', 'product').get(pk=unit.pk, company_id=unit.company_id)
+    _locked_branch_stocks(plain.branch, [plain.product])
+    return StockUnit.objects.select_for_update().get(pk=unit.pk)
+
+
+def _release_if_not_ready(locked) -> bool:
+    """
+    The device no longer has a real photo: a cart's hold of it goes back to the shelf at once (the buyer is told at
+    checkout; a checked-out order's device is left to its payment). True when it released.
+    """
+    from . import unit_hold_services
+    from .used_unit_services import MIN_REAL_PHOTOS, real_photos
+
+    if real_photos(StockUnit.objects.get(pk=locked.pk)) >= MIN_REAL_PHOTOS:
+        return False
+    return unit_hold_services.release_withdrawn(locked)
+
+
+def _withdraw_verification(photo, *, actor, audit) -> None:
+    """The photo is no longer confirmed: its attestation and its file's verification go together."""
+    from .finish_media import apply_provenance
+
+    stored = _stored(photo)
+    if stored is not None:
+        apply_provenance(stored, actor=actor, license_verified=False, audit=audit)
+    photo.attested_by, photo.attested_at = None, None
 
 
 def _current(locked, photo_id) -> UnitPhoto:
@@ -344,9 +375,19 @@ def update_photo(*, unit, photo_id, actor, view=None, defect_note=None, alt_text
         if alt != photo.alt_text:
             changed['alt_text'] = {'old': photo.alt_text, 'new': alt}
             photo.alt_text = alt
+    # Review: what the buyer is told the photo shows (its side, the defect) is part of what was confirmed. Changing
+    # it on a confirmed photo withdraws the confirmation: an inspector confirms it again.
+    cleared = bool(photo.attested_at is not None and ({'view', 'defect_note'} & set(changed)))
+    if cleared:
+        def audit(action, **metadata):
+            _audit(action=action, unit=locked, actor=actor, request=request, photo_id=photo.pk, **metadata)
+
+        _withdraw_verification(photo, actor=actor, audit=audit)
     if changed:
-        photo.save(update_fields=['view', 'defect_note', 'alt_text'])
-        _audit(action='unit_photo_updated', unit=locked, actor=actor, request=request, photo_id=photo.pk, **changed)
+        photo.save(update_fields=['view', 'defect_note', 'alt_text', 'attested_by', 'attested_at'])
+        released = cleared and _release_if_not_ready(locked)
+        _audit(action='unit_photo_updated', unit=locked, actor=actor, request=request, photo_id=photo.pk,
+               attestation_cleared=cleared, released_web_hold=bool(released), **changed)
 
     if is_primary is True and not photo.is_primary:
         previous = UnitPhoto.objects.filter(unit=locked, is_primary=True).values_list('pk', flat=True).first()
@@ -404,9 +445,10 @@ def replace_photo(*, unit, photo_id, actor, uploaded, request=None) -> UnitPhoto
             photo.uploaded_by = actor
             photo.attested_by, photo.attested_at = None, None
             photo.save(update_fields=['image_url', 'width', 'height', 'uploaded_by', 'attested_by', 'attested_at'])
+            released = was_attested and _release_if_not_ready(locked)
             _audit(action='unit_photo_replaced', unit=locked, actor=actor, request=request, photo_id=photo.pk,
                    previous_address=previous_address, address=stored.url, was_attested=was_attested,
-                   is_primary=photo.is_primary, sort_order=photo.sort_order)
+                   is_primary=photo.is_primary, sort_order=photo.sort_order, released_web_hold=bool(released))
             storefront_media.release([previous_address], company=locked.company, actor=actor, request=request,
                                      reason='replaced')
             return photo
@@ -430,8 +472,10 @@ def remove_photo(*, actor, unit=None, photo=None, photo_id=None, request=None) -
         if successor is not None:
             successor.is_primary = True
             successor.save(update_fields=['is_primary'])
+    released = _release_if_not_ready(locked)
     _audit(action='unit_photo_removed', unit=locked, actor=actor, request=request, photo_id=number,
-           address=address, was_primary=was_primary, new_primary_id=successor.pk if successor else None)
+           address=address, was_primary=was_primary, new_primary_id=successor.pk if successor else None,
+           released_web_hold=bool(released))
     storefront_media.release([address], company=locked.company, actor=actor, request=request)
 
 
@@ -452,9 +496,18 @@ def attest(*, unit, photo_id, attested, actor, request=None) -> UnitPhoto:
     locked = _locked(unit)
     photo = _current(locked, photo_id)
     stored = _stored(photo)
+    if attested and not str(photo.image_url or '').startswith(ADDRESS_PREFIX):
+        # Review: `public_photos_q` only publishes a relative address of this shop's pipeline; confirming any other
+        # would verify a file the shop can never show for this photo.
+        raise UnitMediaError('Esta foto no está guardada como una imagen de la tienda: súbela de nuevo para '
+                             'confirmarla.', field='file', code='not_publishable', status=409)
     if attested and stored is None:
         raise UnitMediaError('Esta foto no tiene un archivo subido por la tienda: súbela de nuevo para confirmarla.',
                              field='file', code='no_file', status=409)
+    if attested and storefront_media.reference_count(stored.public_id) > 1:
+        # Review: the attestation verifies the FILE; a file shown somewhere else too would be verified there as well.
+        raise UnitMediaError('Ese archivo también se muestra en otro lugar de la tienda: sube una foto propia de este '
+                             'equipo para confirmarla.', field='file', code='shared_file', status=409)
 
     def audit(action, **metadata):
         _audit(action=action, unit=locked, actor=actor, request=request, photo_id=photo.pk, **metadata)
@@ -472,7 +525,8 @@ def attest(*, unit, photo_id, attested, actor, request=None) -> UnitPhoto:
     if photo.attested_at is not None:
         photo.attested_by, photo.attested_at = None, None
         photo.save(update_fields=['attested_by', 'attested_at'])
-        audit('unit_photo_attestation_withdrawn', view=photo.view)
+        released = _release_if_not_ready(locked)
+        audit('unit_photo_attestation_withdrawn', view=photo.view, released_web_hold=bool(released))
     return photo
 
 
