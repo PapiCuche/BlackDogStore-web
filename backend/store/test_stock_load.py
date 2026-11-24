@@ -499,6 +499,13 @@ class BatchVoidTest(LoadShop, TestCase):
                                entry_kind='purchase')
         self.assertEqual(payload['counts']['error'], 0, payload['rows'])
 
+    def test_the_answers_never_carry_the_list_of_devices(self):
+        # The list backs the annulment; the screen needs counts only (a history of fifty loads would carry thousands).
+        self.assertNotIn('unit_ids', self.job['summary']['applied'])
+        listed = self.loader_api.get('/api/admin/imports/', {'type': 'units'}).json()['results']
+        self.assertNotIn('unit_ids', str(listed))
+        self.assertIn('unit_ids', BulkImportJob.objects.get(pk=self.job['id']).summary['applied'])
+
     def test_a_second_call_changes_nothing(self):
         self.void()
         movements = StockMovement.objects.count()

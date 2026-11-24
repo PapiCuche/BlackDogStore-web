@@ -190,6 +190,17 @@ def _suggestion(workbook, granted) -> dict:
     }
 
 
+def _public_summary(summary):
+    """
+    INV-LOAD-02 — the summary without `applied.unit_ids`: the list backs the annulment of a load on the server; the
+    screen reads counts, and a history of fifty loads would otherwise carry thousands of ids.
+    """
+    if not isinstance(summary, dict) or not isinstance(summary.get('applied'), dict) or (
+            'unit_ids' not in summary['applied']):
+        return summary
+    return {**summary, 'applied': {k: v for k, v in summary['applied'].items() if k != 'unit_ids'}}
+
+
 def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS, include_cost=False):
     payload = {
         'id': job.pk,
@@ -205,7 +216,7 @@ def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS, include_cost=False)
             'update': job.rows_update, 'no_change': job.rows_no_change,
             'skip': job.rows_skip, 'error': job.rows_error,
         },
-        'summary': job.summary,
+        'summary': _public_summary(job.summary),
         'created_at': job.created_at,
         'applied_at': job.applied_at,
         'created_by': getattr(job.created_by, 'username', ''),
