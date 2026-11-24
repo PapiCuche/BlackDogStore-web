@@ -3467,6 +3467,95 @@ export function fetchSupplierOffers(
   ).then(listOf);
 }
 
+/** SUPPLY-WEEKLY-01 — what a row changed against the supplier's previous list. */
+export type SupplierWeeklyDelta =
+  | "nuevo" | "precio_cambio" | "cantidad_cambio" | "retirado" | "no_mencionado" | "sin_cambio" | "inactivo";
+
+export const SUPPLIER_WEEKLY_DELTAS: SupplierWeeklyDelta[] = [
+  "nuevo", "precio_cambio", "cantidad_cambio", "retirado", "no_mencionado", "sin_cambio", "inactivo",
+];
+
+export const SUPPLIER_WEEKLY_DELTA_LABELS: Record<SupplierWeeklyDelta, string> = {
+  nuevo: "Nuevo",
+  precio_cambio: "Precio cambió",
+  cantidad_cambio: "Cantidad cambió",
+  retirado: "Retirado",
+  no_mencionado: "No mencionado",
+  sin_cambio: "Sin cambio",
+  // Switched off or ended before the previous week, and not in its list: a state, not a change of this week.
+  inactivo: "Inactivo",
+};
+
+/** A supplier's list as the week (or the previous one) declared it. */
+export type SupplierWeeklyDeclaration = {
+  message_date: string;
+  job_id: number;
+  commercial_price: string | null;
+  declared_quantity: number | null;
+};
+
+/**
+ * SUPPLY-WEEKLY-01 — one supplier × variant of the week. `agreed_cost` comes only to `costs.view` (absent
+ * otherwise, never a zero). `own_stock` is the shop's shelf in the caller's branches: never the supplier's.
+ */
+export type SupplierWeeklyRow = {
+  supplier_id: number;
+  supplier_name: string;
+  supplier_active: boolean;
+  product_id: number;
+  product_name: string;
+  offer_id: number;
+  model: string | null;
+  capacity: string | null;
+  color: string | null;
+  sim: string | null;
+  region: string | null;
+  condition_line: string;
+  commercial_price: string;
+  variant_price: string;
+  agreed_cost?: string | null;
+  confirmed_quantity: number | null;
+  committed_quantity: number;
+  remaining: number | null;
+  lead_time_days: number;
+  valid_from: string;
+  valid_until: string;
+  state: SupplierOfferState;
+  own_stock: number;
+  message_date: string | null;
+  /** As applied: a new price the person kept out (`keep_prices`) leaves `listed_price` at the price that stayed. */
+  listed_price: string | null;
+  price_kept: boolean;
+  declared_quantity: number | null;
+  previous: SupplierWeeklyDeclaration | null;
+  delta: SupplierWeeklyDelta;
+  changes: ("price" | "quantity")[];
+};
+
+export type SupplierWeekly = {
+  week: string;
+  week_start: string;
+  week_end: string;
+  previous_week_start: string;
+  today: string;
+  with_cost: boolean;
+  counts: Record<SupplierWeeklyDelta, number>;
+  total: number;
+  truncated: boolean;
+  results: SupplierWeeklyRow[];
+};
+
+/** SUPPLY-WEEKLY-01 — `GET /admin/supplier-offers/weekly/` (`products.view`). `week`: «2026-W48» or a day. */
+export function fetchSupplierWeekly(
+  params: { supplier?: number | ""; week?: string } = {},
+  companyId?: number | null,
+): Promise<SupplierWeekly> {
+  return catalogCall<SupplierWeekly>(
+    withQuery("/admin/supplier-offers/weekly/", { supplier: params.supplier, week: params.week }, companyId),
+    {}, "No se pudo cargar la semana de ofertas.",
+  );
+}
+
 export function createSupplierOffer(body: SupplierOfferWrite, companyId?: number | null): Promise<SupplierOffer> {
   return catalogCall(withQuery("/admin/supplier-offers/", {}, companyId), jsonInit("POST", body), "No se pudo crear la oferta.");
 }

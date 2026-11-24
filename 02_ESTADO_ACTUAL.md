@@ -16,6 +16,18 @@ Eliminar, archivar y desactivar variantes sin perder datos. Rama `feat/variant-s
 - **Revisión de #407:** archivar también se niega con stock por cantidad en traslado; un equipo no se mueve a una variante archivada (sí a una sólo desactivada); la carga de stock por Excel la rechaza al previsualizar y al aplicar (bajo el candado del producto); la recepción y «Llegó el equipo» deciden sobre la fila bloqueada; la propuesta de catálogo la muestra «archivada» y la cuenta.
 - **Panel:** en el editor del modelo, Desactivar/Activar, Archivar/Desarchivar y Eliminar (con `products.delete`), con diálogo que lee `deletion-check`.
 
+## 2026-11-24 — SUPPLY-WEEKLY-01 · semana de listas de proveedor, ofertas no mencionadas y combinación válida sin variante (rama, sin desplegar)
+
+Rama `feat/supply-weekly-01` sobre #402 (ya en `master`), PR abierto, **sin fusionar ni desplegar**, **sin migraciones**.
+
+- **Semana:** `GET /api/admin/supplier-offers/weekly/?supplier=&week=AAAA-Wnn|AAAA-MM-DD` (`products.view`). Una fila por proveedor × variante: modelo y opción de cada rol (capacidad, color, SIM, región), precio de la oferta, precio de la variante, confirmadas y quedan, plazo, vigencia, estado y **stock propio en su columna** (sucursales del usuario; nunca se suma lo del proveedor). Costo pactado sólo con `costs.view`. Cambio contra la lista anterior (hasta 28 días): nuevo, precio cambió, cantidad cambió, retirado, no mencionado, sin cambio; se lee de las listas APLICADAS por fecha del mensaje, no de ediciones a mano. Número fijo de consultas (probado).
+- **Panel:** pestaña «Semana» en Productos › Proveedores › Ofertas, con filtros por proveedor, semana, cambio y texto; tarjetas en el teléfono.
+- **Lista parcial:** la vista previa trae `unmentioned` (ofertas vigentes de los proveedores del archivo que no menciona). Sólo informativo: no desactiva nada (ADR §8.4).
+- **Excel:** una fila cuyo modelo y opciones son una combinación completa de la paleta sin variante ya no da el error genérico: `error_code = combinacion_valida_sin_variante` con `variant_proposal`; la vista previa ofrece «Crear variante» (borrador pendiente, confirmado) y vuelve a previsualizar.
+- **BLOCKED (migración):** el precio sugerido (costo + margen configurable por empresa) necesita una columna nueva en la configuración de la empresa: no hay un campo JSON reutilizable. Se dejó fuera hasta tener turno de migración (0187/0188 en curso).
+- **Revisión de #405:** «retirado» sólo si el par estaba en la lista anterior o se desactivó/venció desde la semana anterior; lo apagado antes es «inactivo» (estado, no cambio). Los cambios usan los valores APLICADOS (precio o cantidad mantenidos no cuentan). La fila muestra la oferta que escribió la lista de la semana. Semana fuera de 2000–2100 → 400. Una fila con claves en desacuerdo menciona sus variantes; un trabajo aplicado ya no devuelve `unmentioned`. Las dos pestañas quedan montadas (la vista previa no se pierde); Inicio/Fin en las pestañas.
+- **Pruebas:** `test_supply_weekly` (22) y suites de ofertas/guardas/catálogo relacionadas; Jest `supply-weekly` (11).
+
 ## 2026-11-24 — USED-READY-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0187`
 
 Un seminuevo es un equipo con su inspección, su publicación, sus fotos reales y su garantía. Sólo en la rama `feat/used-ready-01`.

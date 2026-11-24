@@ -25,7 +25,7 @@
  * comparison itself: it shows only what the server sent to this person.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "react";
 
 import { fetchAdminProducts, type AdminProduct } from "@/app/lib/admin";
 import {
@@ -34,6 +34,7 @@ import {
   MARGIN_REASON_MAX,
   SUPPLIER_OFFER_ACTION_LABELS,
   SUPPLIER_OFFER_STATE_LABELS,
+  createModelVariant,
   createSupplierOffer,
   deactivateSupplierOffer,
   fetchSupplierOfferHistory,
@@ -69,11 +70,13 @@ import {
   type PriceChangeRow,
   type PriceDecision,
   type SupplierImportChange,
+  type VariantProposal,
   type WeeklyImportPreview,
   type WeeklyImportResult,
   type WeeklyImportRow,
 } from "../lib/supplier-import-api";
 import { OutdatedPreviewNotice, outdatedPreview, type OutdatedPreview } from "./ImportWizard";
+import { SupplierWeeklyPanel } from "./SupplierWeeklyPanel";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatDateTime, formatSoles } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 
@@ -745,6 +748,8 @@ function ImportSection({
   const [confirmReapply, setConfirmReapply] = useState(false);
   const [mapping, setMapping] = useState<Mapping | null>(null);
   const [mapNote, setMapNote] = useState<string | null>(null);
+  // SUPPLY-WEEKLY-01: the row whose «Crear variante» is being confirmed (one at a time).
+  const [creatingRow, setCreatingRow] = useState<number | null>(null);
   // INV-SWITCH-01: asked per import; the server decides whether AI may be used.
   const [useAi, setUseAi] = useState(false);
   // IMPORT-STALE-01: the apply was refused because the preview is older than the server allows.
@@ -802,6 +807,7 @@ function ImportSection({
     setConfirmNewDeclaration(false);
     setNewDeclarationNote("");
     setMapping(null);
+    setCreatingRow(null);
     try {
       setAllIncluded(false);
       setConfirmOff(false);
@@ -901,6 +907,26 @@ function ImportSection({
       setBusy(false);
       return;
     }
+    setBusy(false);
+    await runPreview();
+  }
+
+  /**
+   * SUPPLY-WEEKLY-01 — «Crear variante» for a row that is a valid combination without a variant: the same pending
+   * draft as the text assistant (hidden, 0.00, no stock), confirmed first; then the file is previewed again.
+   */
+  async function createVariant(proposal: VariantProposal) {
+    setBusy(true);
+    setError(null);
+    try {
+      await createModelVariant(proposal.model_id, { condition_line: proposal.condition_line, option_ids: proposal.option_ids }, companyId);
+    } catch (err) {
+      setError(variantWriteError(err));
+      setBusy(false);
+      return;
+    }
+    setCreatingRow(null);
+    setMapNote(`Variante «${proposal.model_name} ${proposal.labels.join(" · ")}» creada como borrador pendiente: oculta, sin precio ni stock; no se vende hasta habilitarla en la paleta del modelo. Se volvió a previsualizar el archivo.`);
     setBusy(false);
     await runPreview();
   }
@@ -1091,6 +1117,28 @@ function ImportSection({
                         {row.data.map_supplier_code ? (
                           <span className="block">Se recordará el código del proveedor «{row.data.map_supplier_code}».</span>
                         ) : null}
+                        {canManage && row.data.variant_proposal ? (
+                          creatingRow === row.row_number ? (
+                            <div className="mt-2 space-y-2 rounded-lg border border-bd-border p-2" role="group" aria-label={`Crear variante de la fila ${row.row_number}`}>
+                              <p className="text-xs text-foreground">
+                                Se creará «{row.data.variant_proposal.model_name} {row.data.variant_proposal.labels.join(" · ")}» como borrador:
+                                oculta, a 0,00, sin stock ni movimientos y sin publicar. No se vende hasta habilitarla en la paleta del modelo.
+                              </p>
+                              <span className="inline-flex flex-wrap gap-2">
+                                <button type="button" className={internalPrimaryButtonClass} disabled={busy}
+                                  onClick={() => void createVariant(row.data.variant_proposal!)}>
+                                  Confirmar: crear borrador
+                                </button>
+                                <button type="button" className={internalButtonClass} disabled={busy} onClick={() => setCreatingRow(null)}>Cancelar</button>
+                              </span>
+                            </div>
+                          ) : (
+                            <button type="button" className={`mt-1 ${internalButtonClass}`} disabled={busy}
+                              aria-label={`Crear variante de la fila ${row.row_number}`} onClick={() => setCreatingRow(row.row_number)}>
+                              Crear variante
+                            </button>
+                          )
+                        ) : null}
                         {canManage && mappable && !choosing ? (
                           <button
                             type="button"
@@ -1125,6 +1173,29 @@ function ImportSection({
           ) : (
             <p className="text-sm text-muted">Ninguna fila cambia algo.</p>
           )}
+          {preview.unmentioned?.length ? (
+            <section data-testid="unmentioned-offers" aria-label="Ofertas vigentes que la lista no menciona"
+              className="rounded-lg border border-bd-border bg-background p-3 text-sm">
+              <h3 className="text-xs font-semibold text-foreground">
+                Ofertas vigentes que la lista no menciona ({preview.unmentioned_count ?? preview.unmentioned.length})
+              </h3>
+              <p className="mt-1 text-xs text-muted">
+                Sólo informativo: una lista parcial no desactiva nada. Si el proveedor ya no las tiene, desactívalas a mano
+                o carga su lista completa.
+              </p>
+              <ul className="mt-2 list-disc space-y-0.5 pl-5 text-xs text-foreground">
+                {preview.unmentioned.map((offer) => (
+                  <li key={offer.offer_id}>
+                    {offer.supplier_name} · {offer.product_name} · {formatSoles(offer.commercial_price)}
+                    {offer.available === null ? " · sin confirmar" : ` · quedan ${offer.available}`} · vence el {dayText(offer.valid_until)}
+                  </li>
+                ))}
+              </ul>
+              {(preview.unmentioned_count ?? 0) > preview.unmentioned.length ? (
+                <p className="mt-1 text-xs text-muted">y {(preview.unmentioned_count ?? 0) - preview.unmentioned.length} más.</p>
+              ) : null}
+            </section>
+          ) : null}
           {priceRows.length && preview.rows_error === 0 ? (
             <fieldset className="rounded-lg border border-warning-border bg-warning-surface p-3 text-sm" aria-label="Precios comerciales que cambian">
               <legend className="px-1 text-xs font-semibold text-warning">El archivo cambia lo que paga el cliente</legend>
@@ -1347,6 +1418,19 @@ function ImportSection({
   );
 }
 
+/** A refused «Crear variante», in its own words (the text assistant's rule). */
+function variantWriteError(error: unknown): string {
+  if (error instanceof CatalogApiError) {
+    if (error.status === 403) return "No tienes permiso para crear variantes (hace falta gestionar productos).";
+    if (error.status === 404) return "El modelo o una de sus opciones ya no existe en esta empresa. Vuelve a previsualizar el archivo.";
+    if (error.status === 409 || error.code === "duplicate") return error.message || "Esa variante ya existe: vuelve a previsualizar el archivo.";
+    if (error.status === 429) return "Demasiados cambios seguidos. Espera un momento y vuelve a intentarlo.";
+    return error.message || "No se pudo crear la variante.";
+  }
+  if (error instanceof TypeError) return "No se pudo conectar con el servidor. Revisa tu conexión y vuelve a intentarlo.";
+  return "No se pudo crear la variante.";
+}
+
 type MarginRefusal = { rows: MarginReviewRow[]; withCost: boolean; decision: PriceDecision | null };
 
 /**
@@ -1375,26 +1459,82 @@ function marginReview(
 /** INV-TEXT-04: the official offer importer, for the WhatsApp draft to hand its workbook over. */
 export const SupplierOfferImport = ImportSection;
 
+type ManagerTab = "offers" | "week";
+
+const MANAGER_TABS: { id: ManagerTab; label: string }[] = [
+  { id: "offers", label: "Ofertas" },
+  { id: "week", label: "Semana" },
+];
+
 export function SupplierOffersManager({
   canManage, canSeeCosts, companyId,
 }: { canManage: boolean; canSeeCosts: boolean; companyId: number | null }) {
   const [suppliers, setSuppliers] = useState<SupplierRow[]>([]);
   const [reloadKey, setReloadKey] = useState(0);
+  // SUPPLY-WEEKLY-01: «Semana» — the week's lists against the previous ones, with the shop's own stock apart.
+  const [tab, setTab] = useState<ManagerTab>("offers");
+  // Both panels stay mounted once opened (review of #405): an Excel preview and its decisions survive a tab switch.
+  const [weekOpened, setWeekOpened] = useState(false);
+  const tabRefs = useRef<Partial<Record<ManagerTab, HTMLButtonElement | null>>>({});
 
   useEffect(() => {
     fetchSuppliers({}, companyId).then((page) => setSuppliers(page.results), () => { /* the list still works without names */ });
   }, [companyId]);
 
+  function choose(next: ManagerTab) {
+    setTab(next);
+    if (next === "week") setWeekOpened(true);
+  }
+
+  function onTabKey(event: KeyboardEvent<HTMLButtonElement>) {
+    const index = MANAGER_TABS.findIndex((item) => item.id === tab);
+    const last = MANAGER_TABS.length - 1;
+    const target = { ArrowRight: (index + 1) % MANAGER_TABS.length, ArrowLeft: (index + last) % MANAGER_TABS.length, Home: 0, End: last }[event.key];
+    if (target === undefined) return;
+    event.preventDefault();
+    const next = MANAGER_TABS[target].id;
+    choose(next);
+    tabRefs.current[next]?.focus();
+  }
+
   return (
     <div className="space-y-6">
-      <OffersSection
-        canManage={canManage}
-        canSeeCosts={canSeeCosts}
-        companyId={companyId}
-        suppliers={suppliers}
-        reloadKey={reloadKey}
-      />
-      <ImportSection canManage={canManage} companyId={companyId} suppliers={suppliers} onApplied={() => setReloadKey((key) => key + 1)} />
+      <div role="tablist" aria-label="Vistas de ofertas" className="flex flex-wrap gap-2">
+        {MANAGER_TABS.map((item) => (
+          <button
+            key={item.id}
+            ref={(node) => { tabRefs.current[item.id] = node; }}
+            id={`supplier-offers-tab-${item.id}`}
+            type="button"
+            role="tab"
+            aria-selected={tab === item.id}
+            aria-controls={`supplier-offers-panel-${item.id}`}
+            tabIndex={tab === item.id ? 0 : -1}
+            onClick={() => choose(item.id)}
+            onKeyDown={onTabKey}
+            className={`min-h-[44px] rounded-lg border px-4 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+              tab === item.id ? "border-foreground/40 bg-foreground/[0.06] text-foreground" : "border-bd-border text-muted hover:text-foreground"
+            }`}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+      <div id="supplier-offers-panel-offers" role="tabpanel" aria-labelledby="supplier-offers-tab-offers" className="space-y-6"
+        hidden={tab !== "offers"}>
+        <OffersSection
+          canManage={canManage}
+          canSeeCosts={canSeeCosts}
+          companyId={companyId}
+          suppliers={suppliers}
+          reloadKey={reloadKey}
+        />
+        <ImportSection canManage={canManage} companyId={companyId} suppliers={suppliers} onApplied={() => setReloadKey((key) => key + 1)} />
+      </div>
+      <div id="supplier-offers-panel-week" role="tabpanel" aria-labelledby="supplier-offers-tab-week" hidden={tab !== "week"}>
+        {/* Mounted the first time it is opened: the page does not ask for the week until somebody looks at it. */}
+        {weekOpened ? <SupplierWeeklyPanel companyId={companyId} suppliers={suppliers} /> : null}
+      </div>
     </div>
   );
 }

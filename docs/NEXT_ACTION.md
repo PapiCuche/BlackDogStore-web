@@ -36,6 +36,50 @@ Regla nueva en `AGENTS.md` §10. Todo cambio productivo se hace con el GO exacto
 - Decisiones por confirmar con el propietario: las imágenes de la galería bloquean la eliminación (no se borran con la variante); los códigos de barras sí se borran con ella (quedan en la auditoría); un carrito con la variante bloquea; desarchivar la deja inactiva; eliminar/archivar sólo para variantes (producto con modelo).
 - Despliegue: la migración no cambia SQL de las FK (Django aplica `on_delete`); añade 3 columnas, 1 CHECK y la capacidad `products.delete`. Con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`.
 
+## PLAN MAESTRO COMERCIAL 2026 — Ola 1 cerrada en `master` (sin desplegar)
+
+El plan, la auditoría y el orden de los PR están en `docs/plan-maestro-comercial-2026.md`. **Nada de esto está en producción**: desplegarlo requiere ensayo y un GO propio.
+
+**Ola 1, fusionada** (cada PR con revisión independiente, sus correcciones y CI verde sobre el SHA exacto):
+
+| PR | Merge | Qué resuelve | Migración |
+|---|---|---|---|
+| #400 POS-ORDER-ARRIVAL-01 | `1ce08caa` | «Llegó el equipo» ofrece primero el pedido pagado pendiente de esa variante. Si se ingresa como stock habiendo un pedido esperando, devuelve 409 salvo confirmación con motivo (auditada). El candado sobre las líneas evita una carrera entre dos cajas. | no |
+| #401 INV-LOAD-01 | `ca719bde` | Inventario inicial por tandas, sin compras ficticias. La carga y «Registrar equipo» aceptan proveedor, fecha real de ingreso y notas. La vista previa simula el stock antes y después y avisa de una serie repetida en otra variante. Bloqueos en un orden único; un bloqueo cruzado responde 409 «busy». | no |
+| #402 SUPPLY-GUARDS-01 | `b47c2da1` | Las ofertas de proveedores inactivos dejan de verse vigentes. Un precio por debajo del costo exige confirmación y motivo, auditados dentro del registro de la oferta; quien no ve costos no puede deducirlo. «Registrar artículo» rechaza ofertas por debajo del costo. | no |
+| #403 USED-READY-01 | `40be4fe7` | Seminuevos con inspección, publicación explícita, garantía (la de la empresa o la de la unidad), estado funcional, defectos y accesorios. La web sólo ofrece una unidad inspeccionada, publicada, con precio y al menos una foto. La caja, la entrega de pedidos y el cobro rechazan una unidad sin inspección aprobada. | `0187_used_unit_readiness` |
+
+**Efecto de #403 al desplegar:** todos los seminuevos actuales quedan sin publicar y con la inspección pendiente. No se pueden vender en caja ni en la web hasta que alguien los inspeccione, y en la web, además, los publique con al menos una foto. El ensayo de la release debe contar:
+- las unidades que quedan sin vender;
+- las visibles hoy en la web;
+- los pedidos pagados con un seminuevo pendiente de entrega;
+- las reservas web en curso.
+
+**En curso (ola 2 y adelantos de la ola 3):**
+- #404 NAV-SALES-01 — FUSIONADO `aaffd0ea`: menú por tareas (Productos, Proveedores, Inventario, Ventas).
+- #405 SUPPLY-WEEKLY-01 — FUSIONADO `337d771e`: panel semanal de proveedores, con diferencias y ofertas no mencionadas.
+- VARIANT-SAFE-01 (`0188`): archivar y eliminar variantes de forma segura; las FK pasan a PROTECT.
+- SALES-QUOTE-01: cotizaciones (su migración se numera al fusionar).
+- Pasada completa de Playwright sobre `master`.
+
+**Pendiente:**
+- SUPPLY-MARGIN-01 (`0189`): precio sugerido con el margen de la empresa.
+- INV-LOAD-02: conciliación, anulación por lote y comprobación del stock. Incluye mapear «busy» en la entrada de stock por cantidad.
+- Plantillas Excel de nuevos y seminuevos.
+- UNIT-PHOTO-02, IMG-GATE-01 e IMG-HEALTH-01.
+- TRADE-IN-QUOTE-00.
+- CATALOG-ADMIN-UX-B.
+- Release ensayada.
+
+**Deuda anotada:**
+- Un seminuevo rechazado entre el checkout y el pago puede cobrarse y exige devolver el dinero a mano. Habría que comprobarlo al crear la sesión de pago.
+- La prueba `test_pos_unit_price …ficha_and_the_price_without_cost` falla a veces: un código de etiqueta aleatorio puede contener «1500».
+
+**Decisiones del propietario abiertas en esta ola:**
+1. Caja: ¿«Es del pedido #N» también para pedidos de otra sucursal (el equipo se registra en la sucursal del pedido), o sólo los de la misma sucursal?
+2. Seminuevos: aprobar la inspección queda sólo para quien administra la empresa. Publicar y fijar la garantía por unidad exige el permiso de precios. «Funciona al 100 %» pasa a ser «Sin fallas declaradas».
+3. Proveedores: quien no ve costos debe confirmar cualquier cambio de precio en una oferta con costo, para que no pueda deducirlo.
+
 ## FASES 1.1 Y 1.2 — código de la Fase 1.2 en producción con `16189e4`; todo lo demás preparado y ensayado, SIN EJECUTAR
 
 Runbook: `backups/release-f12/RUNBOOK-16189e4-prod02.md`.

@@ -17,6 +17,14 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - El admin de Django ya no borra productos.
 - Una variante archivada nunca recibe stock: ni por traslado pendiente, ni moviendo un equipo, ni por la carga de stock, la recepción o la caja.
 
+## 2026-11-24 — SUPPLY-WEEKLY-01: la semana de las listas de proveedor
+
+**Added**
+- `GET /api/admin/supplier-offers/weekly/`: una fila por proveedor × variante con opciones por rol, oferta, stock propio aparte y el cambio contra la lista anterior (nuevo, precio cambió, cantidad cambió, retirado, no mencionado, sin cambio).
+- Pestaña «Semana» en Ofertas de proveedores.
+- La vista previa de una lista parcial nombra las ofertas vigentes que no menciona, sólo como información.
+- Una fila del Excel que es una combinación válida sin variante lo dice (`combinacion_valida_sin_variante`) y ofrece «Crear variante».
+
 ## 2026-11-24 — USED-READY-01: un seminuevo se vende como ESE equipo (rama, sin desplegar)
 
 **Added**
