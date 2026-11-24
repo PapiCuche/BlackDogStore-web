@@ -383,6 +383,12 @@ export type CompanySettingsPayload = {
   web_on_order_over_stock?: boolean;
   /** Cierre financiero: días en que una venta POS se anula sin superior (0–365, 7 al crear). */
   pos_cancel_simple_days?: number;
+  /**
+   * SUPPLY-MARGIN-01 — present ONLY for `costs.view`: the margin (0–500 %) over a supplier offer's cost and the
+   * step its suggested price is rounded up to (whole units). Null: no suggestion / to the cent.
+   */
+  supplier_margin_percent?: string | null;
+  supplier_price_round_to?: number | null;
   updated_at: string;
 };
 
@@ -413,6 +419,8 @@ export type CompanyConfiguration = {
    * (`company.manage` AND `settings.manage`). Decided by the server.
    */
   can_manage_order_review?: boolean;
+  /** SUPPLY-MARGIN-01: `company.manage` + `settings.manage` + `costs.view`. Decided by the server. */
+  can_manage_supplier_pricing?: boolean;
 };
 
 export async function fetchCompanyConfiguration(
@@ -3481,6 +3489,11 @@ export type SupplierOffer = {
   updated_at: string;
   /** Present ONLY for `costs.view`. Absent is «you may not see it», not zero. */
   agreed_cost?: string | null;
+  /**
+   * SUPPLY-MARGIN-01, ONLY for `costs.view`: the saved cost plus the company's margin, as the server computed it;
+   * null = no cost or no margin. A proposal to read: never sent back, never written by itself.
+   */
+  suggested_price?: string | null;
 };
 
 export type SupplierOfferWrite = Partial<{
@@ -3661,6 +3674,8 @@ export type SupplierWeeklyRow = {
   commercial_price: string;
   variant_price: string;
   agreed_cost?: string | null;
+  /** SUPPLY-MARGIN-01, ONLY for `costs.view`: cost + the company's margin (null: no cost or no margin). */
+  suggested_price?: string | null;
   confirmed_quantity: number | null;
   committed_quantity: number;
   remaining: number | null;

@@ -1920,6 +1920,10 @@ def _printed_on_paper(instance, field, value):
     return value
 
 
+#: SUPPLY-MARGIN-01 — the settings of the suggested price (`supplier_pricing`): only for `costs.view`.
+SUPPLIER_PRICING_FIELDS = ('supplier_margin_percent', 'supplier_price_round_to')
+
+
 class CompanySettingsSerializer(serializers.ModelSerializer):
     """
     Read/write serializer for a company's own configuration.
@@ -1984,11 +1988,22 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
             # POST-DELIVERY-RETURN (owner, 2026-10-19, D5) — days after delivery
             # a return is registered without a superior. `settings.manage` too.
             'return_simple_days',
+            # SUPPLY-MARGIN-01 — the margin and rounding step of the suggested price of a supplier offer. Only
+            # with `costs.view` (see `to_representation` and the view); changing them takes `settings.manage`.
+            *SUPPLIER_PRICING_FIELDS,
             'updated_at',
         ]
         read_only_fields = [
             'company_name', 'company_slug', 'whatsapp_link', 'currency', 'updated_at',
         ]
+
+    def to_representation(self, instance):
+        """SUPPLY-MARGIN-01: the margin keys are ABSENT unless the context says the reader sees costs."""
+        data = super().to_representation(instance)
+        if not self.context.get('with_cost'):
+            for field in SUPPLIER_PRICING_FIELDS:
+                data.pop(field, None)
+        return data
 
     def get_whatsapp_link(self, obj):
         from .company_settings import build_whatsapp_link
@@ -1999,6 +2014,10 @@ class CompanySettingsSerializer(serializers.ModelSerializer):
         if hasattr(data, 'get') and isinstance(data.get('used_warranty_days'), str) \
                 and not data.get('used_warranty_days').strip():
             data = {**data, 'used_warranty_days': None}
+        # SUPPLY-MARGIN-01 — an empty margin or step is «none», like the warranty days above.
+        for field in SUPPLIER_PRICING_FIELDS:
+            if hasattr(data, 'get') and isinstance(data.get(field), str) and not data.get(field).strip():
+                data = {**data, field: None}
         return super().to_internal_value(data)
 
     def validate(self, attrs):

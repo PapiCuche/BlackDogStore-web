@@ -231,15 +231,19 @@ test.describe("dos cargas, cada una con su plantilla de una hoja", () => {
     expect(nombre).toBe("carga-masiva-equipos.xlsx");
     const forma = mirar(archivo);
     expect(forma.sheets).toEqual(["Equipos"]);
-    // DEVICE-COMMERCE-01 (DC2) grew the template with the model and used-device columns.
-    expect(forma.headers).toEqual(["Código", "Producto", "Sucursal", "Número de serie", "IMEI", "IMEI 2", "Condición", "Costo", "Motivo / referencia", "Modelo", "Capacidad", "Color", "SIM", "Región", "Línea", "Estado estético", "Batería %", "Precio de venta"]);
+    // DEVICE-COMMERCE-01 (DC2) grew the template with the model and used-device columns; INV-LOAD-01 with supplier,
+    // entry date and notes; USED-READY-01 with the used device's warranty, functional state, defects and accessories.
+    expect(forma.headers).toEqual(["Código", "Producto", "Sucursal", "Número de serie", "IMEI", "IMEI 2", "Condición", "Costo", "Motivo / referencia", "Modelo", "Capacidad", "Color", "SIM", "Región", "Línea", "Estado estético", "Batería %", "Precio de venta", "Proveedor", "Fecha de ingreso", "Notas internas", "Detalles para el comprador", "Garantía (días)", "Estado funcional", "Defectos", "Accesorios"]);
     expect(forma.max_row).toBe(1);
     expect(forma.freeze).toBe("A2");
     expect(forma.lists["G2:G501"]).toBe('"Nuevo,Caja abierta,Reacondicionado,Usado"');
-    expect(forma.notes).toBe(18); // one note per header
-    expect(forma.text_columns).toEqual(["A", "D", "E", "F"]);
+    expect(forma.notes).toBe(26); // one note per header
+    expect(forma.text_columns).toEqual(["A", "D", "E", "F", "S"]); // S = «Proveedor»: a RUC keeps its digits
     const sucursal = opciones(forma.lists["C2:C501"])[0];
     expect(sucursal, "la plantilla lista las sucursales de quien carga").toBeTruthy();
+
+    // INV-LOAD-02: the screen never guesses the line of the file. These products are of the new line.
+    await page.getByRole("radio", { name: "Nuevos", exact: true }).check();
 
     // La plantilla tal como se descarga no registra nada. Se espera a que la pantalla diga
     // qué encontró —cero equipos— y sólo entonces se mira que no ofrezca registrar.
@@ -286,6 +290,7 @@ test.describe("dos cargas, cada una con su plantilla de una hoja", () => {
 
     // Un IMEI bajo un producto no marcado «lleva IMEI»: se avisa arriba y en la fila, y se guarda.
     await page.goto("/admin/inventory/units/import", { waitUntil: "networkidle" });
+    await page.getByRole("radio", { name: "Nuevos", exact: true }).check();
     const conImei = `POR${RUN}B`.toUpperCase();
     const suImei = imei(24);
     await page.getByLabel("Archivo de equipos (.xlsx)").setInputFiles(

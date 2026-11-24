@@ -26,7 +26,7 @@ from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import cost_services, supply_services
+from . import cost_services, supplier_pricing, supply_services
 from .db_busy import answers_busy
 from .admin_views import (
     CAP_INVENTORY_ADJUST, CAP_ORDERS_MANAGE, CAP_ORDERS_VIEW, CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW,
@@ -88,7 +88,16 @@ def offer_state(offer, on=None) -> str:
     return 'active'
 
 
-def offer_payload(offer, *, with_cost: bool) -> dict:
+_UNREAD = object()
+
+
+def offer_payload(offer, *, with_cost: bool, pricing=_UNREAD) -> dict:
+    """
+    One offer for the panel. With `costs.view` (`with_cost`): its agreed cost and SUPPLY-MARGIN-01's
+    `suggested_price` (cost + the company's margin; None without either) — `pricing` is the company's settings
+    row when the caller already read it (`supplier_pricing.company_rules`, once per list), else it is read here.
+    Without `costs.view` neither key exists.
+    """
     data = {
         'id': offer.pk, 'supplier_id': offer.supplier_id, 'supplier_name': offer.supplier.name,
         'product_id': offer.product_id, 'product_name': offer.product.name, 'product_slug': offer.product.slug,
@@ -107,6 +116,9 @@ def offer_payload(offer, *, with_cost: bool) -> dict:
     }
     if with_cost:
         data['agreed_cost'] = str(offer.agreed_cost) if offer.agreed_cost is not None else None
+        if pricing is _UNREAD:
+            pricing = supplier_pricing.company_rules(offer.company_id)
+        data['suggested_price'] = supplier_pricing.suggest(offer.agreed_cost, pricing)
     return data
 
 
@@ -218,7 +230,9 @@ class AdminOfferListView(APIView):
             qs = qs.filter(is_active=True, supplier__is_active=False)
         page, meta = _paginate(qs.order_by('-valid_until', 'pk'), request)
         with_cost = user_may_view_costs(request.user, company)
-        return Response({**meta, 'results': [offer_payload(row, with_cost=with_cost) for row in page]})
+        pricing = supplier_pricing.company_rules(company.pk) if with_cost else None
+        return Response({**meta, 'results': [offer_payload(row, with_cost=with_cost, pricing=pricing)
+                                             for row in page]})
 
     def post(self, request):
         company, error = _manage(request)
