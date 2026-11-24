@@ -895,3 +895,10 @@ class QuoteArchivedVariantTest(QuoteBase):
         res = self.convert(quote['id'])
         self.assertEqual((res.status_code, res.json()['code']), (409, 'product_inactive'))
         self.assertIn('Cable USB-C', res.json()['detail'])
+
+    def test_a_quoted_variant_cannot_be_deleted(self):
+        from store import variant_lifecycle
+
+        self.create()
+        codes = {row['code'] for row in variant_lifecycle.blockers(self.cable)}
+        self.assertIn('sales_quote_items', codes)
