@@ -5,6 +5,9 @@ trasladar equipos entre sucursales. Está escrita para quien atiende la tienda o
 
 Los nombres entre «comillas» son los que ves en pantalla: botones, menús y campos.
 
+Para cargar de una vez el **stock real** de la tienda (equipos nuevos y seminuevos que ya tienes), sigue
+[carga-stock-real.md](carga-stock-real.md): las dos plantillas, el ensayo, la comprobación y cómo anular una carga.
+
 Todo lo de inventario está en el menú **Inventario**:
 
 - «Centro de operaciones»
@@ -124,7 +127,9 @@ Entra a «Más herramientas» → «Gestión masiva». Hay tres cargas y cada un
 
 Para la «Carga de equipos»:
 
-1. Pulsa «Descargar plantilla» y llénala. Usa siempre la plantilla del sistema.
+1. Descarga la plantilla y llénala. Usa siempre una plantilla del sistema: «Stock de equipos nuevos» o «Stock de
+   seminuevos» (cada una carga sólo su línea; ver [carga-stock-real.md](carga-stock-real.md)) o «Descargar
+   plantilla», la combinada de siempre.
 2. Elige el archivo en «Archivo de equipos (.xlsx)».
 3. Si las filas no dicen la sucursal, elígela en «Sucursal para las filas sin sucursal».
 4. Elige el «Tipo de ingreso» y escribe el «Motivo para las filas sin motivo» (por ejemplo, el número de guía).
@@ -132,6 +137,10 @@ Para la «Carga de equipos»:
 6. Lee «Lo que pasará con cada fila». Si hay errores, pulsa «Descargar errores (CSV)», corrige el Excel y súbelo
    otra vez.
 7. Cuando todo esté bien, pulsa «Registrar … equipos».
+8. Descarga «Antes y después» y guárdalo con el archivo. Si la carga fue un error, «Anular esta carga» la deshace
+   entera mientras ningún equipo se haya movido ([carga-stock-real.md](carga-stock-real.md) §9).
+9. «Conciliación de equipos» → «Comprobar ahora» confirma que el stock de cada producto es igual a sus equipos
+   disponibles.
 
 ## 6. Inventario inicial o compra
 
