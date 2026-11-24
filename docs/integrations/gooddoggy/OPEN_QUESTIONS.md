@@ -1,0 +1,4 @@
+# GD-001 — Preguntas abiertas
+Resuelto definitivamente: inventario maestro BlackDogStore; CRM lector. No reabrir como fase de escritura.
+Bloqueantes de implementación: 1) mecanismo S2S y emisión/validación de vínculo cliente; 2) alcance de empresas/sucursales y mapeo IDs/SKU, códigos sin duplicados; 3) fuente real de catálogo de servicios y disponibilidad de repuestos; 4) política comercial de seminuevos y ofertas por unidad, URLs y datos visibles; 5) definición de promoción aplicable, moneda, impuestos, vigencias; 6) contrato de cursor, retención, snapshot consistente y versionado; 7) cuotas, SLA, DLQ, destino HTTPS y firma con equipo CRM; 8) verificar raíz de rutas, permisos, efectos de GET y baseline CI/PostgreSQL. No enviar secretos por documentación.
+Criterio de cierre: acuerdo de ambos equipos, OpenAPI validado, matriz de pruebas aprobada y PR revisado. No merge sin GO.
