@@ -157,11 +157,14 @@ describe('«Colores» abre la sección de atributos de Modelos', () => {
     });
   });
 
-  it('cuando llegan los modelos, la página va a «Atributos y opciones» y el foco queda en la sección', async () => {
-    render(<CatalogModelsManager canManage companyId={null} goTo={{ anchor: 'atributos', request: 1 }} />);
+  it('cuando llegan los modelos, la página va a «Atributos y opciones», el foco queda en la sección y avisa', async () => {
+    const onArrived = jest.fn();
+    render(<CatalogModelsManager canManage companyId={null} goTo={{ anchor: 'atributos', request: 1 }} onArrived={onArrived} />);
     const panel = document.getElementById('atributos')!;
     await waitFor(() => expect(panel).toHaveFocus());
     expect(scrolled.mock.contexts).toContain(panel);
+    // La página quita `?seccion=colores` de la dirección: el segundo clic en «Colores» es otra petición.
+    expect(onArrived).toHaveBeenCalledTimes(1);
   });
 
   it('una petición nueva vuelve a llevar allí; sin petición no se mueve nada', async () => {

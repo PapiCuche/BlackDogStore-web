@@ -52,7 +52,8 @@ import { PosModeSwitch, type PosMode } from "./PosModeSwitch";
 import { PosServiceIntake } from "./PosServiceIntake";
 import { PosDevicePicker } from "./PosDevicePicker";
 import { AddressQuery } from "../../components/AddressQuery";
-import { wantsDevicePanel } from "../../lib/pos-panel";
+import { readDevicePanel } from "../../lib/pos-panel";
+import { useMenuRequest } from "../../lib/use-menu-request";
 import { PosOnOrderBadge, PosOnOrderOffer, PosProductHit, PosSupplyReason, leadTimeText, onOrderLineLabel } from "./PosOnOrder";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AdminShell } from "../../components/AdminShell";
@@ -129,24 +130,26 @@ function cashSuggestions(total: number): number[] {
 
 const FIELD = internalInputClass;
 
-function PosContent({ ctx, deviceRequest }: { ctx: InternalContext; deviceRequest: number }) {
+function PosContent({ ctx, deviceRequest, deviceWanted, onDeviceHandled }: {
+  ctx: InternalContext;
+  /** NAV-SALES-01: requests counted by the page, which outlives this component (a company switch remounts it). */
+  deviceRequest: number;
+  deviceWanted: boolean;
+  onDeviceHandled: () => void;
+}) {
   const companyId = ctx.selectedCompanyId;
   const serviceSlug = ctx.dashboard?.company?.slug ?? null;
   const capabilities = ctx.dashboard?.access.capabilities ?? [];
   // POS-SVC-01. Switching leaves the basket as it was: a service is not a sale.
   const [mode, setMode] = useState<PosMode>("products");
   // NAV-SALES-01 — «Venta rápida de equipo» (`?panel=equipo`): back to selling, and the device block opens with the
-  // caret in the model search. Wanted until the block says it took the focus; the basket is left as it was.
-  const [deviceWanted, setDeviceWanted] = useState(false);
-  const [seenDeviceRequest, setSeenDeviceRequest] = useState(0);
-  if (deviceRequest !== seenDeviceRequest) {
-    setSeenDeviceRequest(deviceRequest);
-    if (deviceRequest > 0) {
-      setDeviceWanted(true);
-      setMode("products");
-    }
+  // caret in the model search. The page keeps the request until the block says it took the focus, so a remount
+  // finds it handled; the basket is left as it was. A pending request switches to selling once.
+  const [modeFor, setModeFor] = useState(0);
+  if (deviceWanted && deviceRequest !== modeFor) {
+    setModeFor(deviceRequest);
+    setMode("products");
   }
-  const deviceFocusHandled = useCallback(() => setDeviceWanted(false), []);
 
   const [context, setContext] = useState<PosContext | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1167,7 +1170,7 @@ function PosContent({ ctx, deviceRequest }: { ctx: InternalContext; deviceReques
                 notifyStockChanged();
               }}
               focusRequested={deviceWanted}
-              onFocusHandled={deviceFocusHandled}
+              onFocusHandled={onDeviceHandled}
             />
           </div>
 
@@ -1771,15 +1774,22 @@ function PosContent({ ctx, deviceRequest }: { ctx: InternalContext; deviceReques
 
 export default function PosPage() {
   // NAV-SALES-01: the menu opens the till with `?panel=equipo`, also while it is already open (same route, the page
-  // stays mounted). Each arrival at that address is one request to open the device block.
-  const [deviceRequest, setDeviceRequest] = useState(0);
-  const onQuery = useCallback((query: string) => {
-    if (wantsDevicePanel(query)) setDeviceRequest((count) => count + 1);
-  }, []);
+  // stays mounted). Each arrival at that address is one request; once handled the parameter leaves the address, so
+  // the same entry clicked again is a new one.
+  const device = useMenuRequest(readDevicePanel, "/admin/sales/pos");
   return (
     <>
-      <AddressQuery onChange={onQuery} />
-      <InternalControlGuard>{(ctx) => <PosContent ctx={ctx} deviceRequest={deviceRequest} />}</InternalControlGuard>
+      <AddressQuery onChange={device.onQuery} />
+      <InternalControlGuard>
+        {(ctx) => (
+          <PosContent
+            ctx={ctx}
+            deviceRequest={device.request}
+            deviceWanted={device.pending !== null}
+            onDeviceHandled={device.done}
+          />
+        )}
+      </InternalControlGuard>
     </>
   );
 }

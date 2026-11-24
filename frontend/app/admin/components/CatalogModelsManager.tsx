@@ -747,7 +747,7 @@ function LineLabelsSection({ canManage, companyId }: { canManage: boolean; compa
   );
 }
 
-export function CatalogModelsManager({ canManage, companyId, goTo = null }: {
+export function CatalogModelsManager({ canManage, companyId, goTo = null, onArrived }: {
   canManage: boolean;
   companyId: number | null;
   /**
@@ -755,10 +755,16 @@ export function CatalogModelsManager({ canManage, companyId, goTo = null }: {
    * models table has arrived. A new `request` goes there again (the menu entry clicked with the page already open).
    */
   goTo?: { anchor: string; request: number } | null;
+  /** Called once the section has the focus: the page then takes `?seccion=` out of the address. */
+  onArrived?: () => void;
 }) {
   // «#atributos» from a model's page: the panels move down once the models table arrives, so the page goes
   // there after that (review: scrolling on mount ended above the panel).
   const scrolled = useRef(false);
+  const arrived = useRef(onArrived);
+  useEffect(() => {
+    arrived.current = onArrived;
+  });
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const anchor = goTo?.anchor ?? null;
   const request = goTo?.request ?? 0;
@@ -770,6 +776,7 @@ export function CatalogModelsManager({ canManage, companyId, goTo = null }: {
       target.scrollIntoView?.({ block: "start" });
       if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
       target.focus({ preventScroll: true });
+      arrived.current?.();
     });
     return () => cancelAnimationFrame(frame);
   }, [anchor, request, modelsLoaded]);
