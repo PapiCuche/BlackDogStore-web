@@ -14,7 +14,7 @@ from collections import Counter
 from django.core.management.base import BaseCommand
 from django.db import transaction
 
-from store.models import AdminAuditLog, PrintJob
+from store.models import AdminAuditLog, Company, PrintJob
 
 LIVE = (PrintJob.Status.PENDING, PrintJob.Status.PRINTING)
 REASON = 'Cancelado antes de volver a una versión sin cotizaciones.'
@@ -33,9 +33,9 @@ class Command(BaseCommand):
             self.stdout.write(f'Tickets de cotización sin terminar: {count} (simulación; usa --apply para cancelarlos)')
             return
         with transaction.atomic():
-            locked = list(jobs.select_for_update().select_related('company'))
+            # Only the job rows are locked (no join under FOR UPDATE); their companies are read afterwards.
+            locked = list(jobs.select_for_update().order_by('pk'))
             by_company = Counter()
-            companies = {}
             for job in locked:
                 job.status = PrintJob.Status.CANCELLED
                 job.claim_token = ''
@@ -43,7 +43,7 @@ class Command(BaseCommand):
                 job.last_error = REASON
                 job.save(update_fields=['status', 'claim_token', 'lease_expires_at', 'last_error', 'updated_at'])
                 by_company[job.company_id] += 1
-                companies[job.company_id] = job.company
+            companies = Company.objects.in_bulk(list(by_company))
             for company_id, cancelled in by_company.items():
                 AdminAuditLog.log(actor=None, action='sales_quote_print_jobs_cancelled_before_rollback',
                                   target_type='company', target_id=company_id,
