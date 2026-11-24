@@ -3,12 +3,6 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-24 — NEW-TEMPLATE-PRICE (sin fusionar)
-
-**Added**
-- «Precio de venta» opcional en «Stock de equipos nuevos»: aviso por fila y propuesta por variante en la vista previa;
-  el precio de la variante sólo cambia con `products.manage` y confirmación al registrar, auditado con la carga.
-
 ## 2026-11-24 — Post-R13 en `master` (`bf6a3307`, sin desplegar)
 
 **Fixed**
