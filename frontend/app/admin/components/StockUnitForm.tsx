@@ -57,11 +57,16 @@ const ENTRY_TYPES: { value: UnitEntryKind; label: string }[] = [
 /** The supplier pages read for the picker (25 each): past it the form says the list is partial. */
 const SUPPLIER_PAGES = 4;
 
-/** Today in the browser's calendar, AAAA-MM-DD: the latest entry date the picker offers (the server checks again). */
+/**
+ * INV-LOAD-01 review — «today» as the SERVER counts it (`TIME_ZONE = America/Lima`): a browser ahead of Lima must not
+ * offer a day the server will refuse as future. AAAA-MM-DD; the server checks again.
+ */
+const SERVER_TIME_ZONE = "America/Lima";
+
 function todayIso(): string {
-  const now = new Date();
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: SERVER_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(new Date());
 }
 
 /** An input with its label and, when the server points at it, its error. */

@@ -291,6 +291,20 @@ def opening_problem(branch, product) -> str:
     return ''
 
 
+def lock_shelves(shelves) -> None:
+    """
+    INV-LOAD-01 review — hold every `(branch, product)` shelf an OPENING is about to write, creating the rows that do not
+    exist yet (a missing row cannot be locked), in the module-wide `(branch_id, product_id)` order. `opening_problem`
+    is then asked under these locks: a sale, a hold or a write-off cannot commit between the check and the entry.
+    """
+    by_branch: dict = {}
+    for branch, product in shelves:
+        by_branch.setdefault(branch.pk, (branch, {}))[1][product.pk] = product
+    for branch_id in sorted(by_branch):
+        branch, products = by_branch[branch_id]
+        inventory_services._locked_branch_stocks(branch, list(products.values()))
+
+
 def normalise(body, *, may_view_costs: bool, may_set_prices: bool = False) -> dict:
     """The body as the rest of the module reads it, or a `ReceiptError`. Touches no database."""
     if not isinstance(body, dict) or hasattr(body, 'getlist'):
@@ -699,6 +713,9 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
 
     Returns `(record, trail)` — the record is ids and counts, never an identifier or an amount.
     """
+    if normalised.get('entry_kind') == ENTRY_OPENING:
+        # INV-LOAD-01 review — the shelves first, so the opening check below is decided under their locks.
+        lock_shelves((resolved.branch, product) for product in resolved.products.values())
     verdicts = check(company, resolved, normalised)
     if not all(v['status'] == 'ok' for v in verdicts):
         raise ReceiptInvalid(preview(company, resolved, normalised))

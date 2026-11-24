@@ -18,6 +18,7 @@ import datetime
 import io
 
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import TransactionTestCase
 from django.utils import timezone
 from openpyxl import Workbook, load_workbook
 
@@ -440,3 +441,216 @@ class NotesLengthTest(UnitsBase):
     def test_three_hundred_characters_fit(self):
         [unit] = self.receive(self.row('LEN-0002', IMEIS[51], notes='y' * 300))
         self.assertEqual(len(unit.notes), 300)
+
+
+# ---------------------------------------------------------------------------
+# Review of #401 — the opening is decided under the shelf lock
+# ---------------------------------------------------------------------------
+
+class _Recorder:
+    """Wraps a function and writes its name into a shared sequence each time it runs."""
+
+    def __init__(self, sequence, name, function):
+        self.sequence, self.name, self.function = sequence, name, function
+
+    def __call__(self, *args, **kwargs):
+        self.sequence.append(self.name)
+        return self.function(*args, **kwargs)
+
+
+def _record(sequence):
+    """Patches for the shelf lock and the opening check, both recorded in `sequence`."""
+    from unittest import mock
+
+    return (
+        mock.patch.object(inventory, '_locked_branch_stocks',
+                          _Recorder(sequence, 'lock', inventory._locked_branch_stocks)),
+        mock.patch.object(receipt_services, 'opening_problem',
+                          _Recorder(sequence, 'check', receipt_services.opening_problem)),
+    )
+
+
+class OpeningUnderTheLockTest(LoadBase):
+    def assert_checked_after_the_lock(self, sequence):
+        self.assertIn('check', sequence, sequence)
+        last_check = len(sequence) - 1 - sequence[::-1].index('check')
+        self.assertIn('lock', sequence[:last_check], sequence)
+
+    def test_the_import_apply_checks_the_opening_after_locking_every_shelf(self):
+        payload = self.upload([self.phone_cells('LCK-0001'), self.laptop_cells('LCK-0002')], entry_kind='opening')
+        sequence = []
+        lock, check = _record(sequence)
+        with lock, check:
+            self.apply(payload)
+        self.assert_checked_after_the_lock(sequence)
+        # Both shelves were locked before the first write: one lock call per branch, before any check.
+        self.assertEqual(sequence[0], 'lock', sequence)
+
+    def test_the_register_view_locks_a_shelf_that_has_no_row_yet(self):
+        from store.models import Product
+
+        fresh = Product.objects.create(company=self.company, name='Portátil sin estante', slug='portatil-sin-estante',
+                                       price='100.00', is_serialized=True)
+        self.assertFalse(BranchStock.objects.filter(branch=self.branch_a, product=fresh).exists())
+        sequence = []
+        lock, check = _record(sequence)
+        with lock, check:
+            res = self.api.post('/api/admin/inventory/units/', {
+                'product_id': fresh.pk, 'branch': self.branch_a.pk, 'reason': 'Conteo',
+                'entry_kind': 'opening', 'units': [{'serial_number': 'LCK-0101'}]}, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assert_checked_after_the_lock(sequence)
+
+    def test_receive_units_takes_the_shelf_before_the_identifiers(self):
+        from unittest import mock
+
+        sequence = []
+        with mock.patch.object(inventory, '_locked_branch_stocks',
+                               _Recorder(sequence, 'shelf', inventory._locked_branch_stocks)), \
+                mock.patch.object(units, '_lock_identifiers',
+                                  _Recorder(sequence, 'identifiers', units._lock_identifiers)):
+            self.receive(self.row('LCK-0201', IMEIS[52]))
+        self.assertEqual(sequence[:2], ['shelf', 'identifiers'], sequence)
+
+    def test_a_deadlock_in_the_register_view_is_a_409(self):
+        from unittest import mock
+
+        from django.db import OperationalError
+
+        class Deadlock(Exception):
+            pgcode = '40P01'
+
+        error = OperationalError('deadlock detected')
+        error.__cause__ = Deadlock()
+        with mock.patch.object(units, 'receive_units', side_effect=error):
+            res = self.api.post('/api/admin/inventory/units/', {
+                'product_id': self.laptop.pk, 'branch': self.branch_a.pk, 'reason': 'Conteo',
+                'units': [{'serial_number': 'LCK-0301'}]}, format='json')
+        self.assertEqual(res.status_code, 409, res.content)
+
+
+class OpeningReceiptUnderTheLockTest(ReceiptBase):
+    def test_confirm_checks_the_opening_after_locking_the_shelves(self):
+        from store.tests import _prod
+
+        adapter = _prod(self.company, 'Adaptador 30W', 'adaptador-candado', price='79.00', inventory=0)
+        sequence = []
+        lock, check = _record(sequence)
+        with lock, check:
+            self.confirm(self.costed, self.body(self.qty(adapter, 2), entry_kind='opening'), expect=201)
+        self.assertIn('check', sequence, sequence)
+        last_check = len(sequence) - 1 - sequence[::-1].index('check')
+        self.assertIn('lock', sequence[:last_check], sequence)
+
+
+class OpeningRaceTest(TransactionTestCase):
+    """A write-off commits while an opening import waits for the shelf: the import sees it and refuses."""
+
+    def test_an_exit_committed_while_the_opening_waits_closes_it(self):
+        import threading
+        import time
+
+        from django.contrib.auth import get_user_model
+        from django.db import connection, transaction
+
+        from store.models import Branch, Company, Product
+
+        company = Company.objects.create(name='Carrera', legal_name='Carrera SAC', tax_id='20922222222',
+                                         slug='apertura-carrera')
+        branch = company.branches.first() or Branch.objects.create(company=company, name='Centro')
+        actor = get_user_model().objects.create_user(username='carga_carrera', password='Pass123!')
+        laptop = Product.objects.create(company=company, name='Portátil Carrera', slug='portatil-carrera',
+                                        price='100.00', is_serialized=True)
+        units.receive_units(branch=branch, product=laptop, units=[{'serial_number': 'RACE-0001'}], actor=actor,
+                            reason='Inventario inicial', movement_type=StockMovement.INITIAL_STOCK)
+        job = unit_import.preview_units(
+            company=company, actor=actor, filename='equipos.xlsx', reachable_branch_ids=[branch.pk],
+            upload=book([{'Producto': laptop.name, 'Sucursal': branch.name, 'Número de serie': 'RACE-0002',
+                          'Motivo / referencia': 'Conteo'}],
+                        headers=['Producto', 'Sucursal', 'Número de serie', 'Motivo / referencia']),
+            entry_kind='opening')
+        self.assertEqual(job.rows_error, 0, list(job.rows.values_list('errors', flat=True)))
+
+        locked, outcome = threading.Event(), []
+
+        def write_off_meanwhile():
+            try:
+                with transaction.atomic():
+                    inventory._locked_branch_stocks(branch, [laptop])
+                    locked.set()
+                    time.sleep(1.5)
+                    units.write_off(StockUnit.objects.get(serial_number='RACE-0001'), reason='Golpe', actor=actor)
+            finally:
+                connection.close()
+
+        def apply_opening():
+            try:
+                locked.wait(timeout=5)
+                unit_import.apply_units(job=job, actor=actor)
+                outcome.append('applied')
+            except unit_import.UnitImportError:
+                outcome.append('refused')
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=write_off_meanwhile), threading.Thread(target=apply_opening)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=30)
+
+        self.assertEqual(outcome, ['refused'])
+        self.assertEqual(StockMovement.objects.filter(product=laptop, movement_type=StockMovement.INITIAL_STOCK)
+                         .count(), 1)
+
+
+# ---------------------------------------------------------------------------
+# Review of #401 — who may name a supplier, and which headers are read
+# ---------------------------------------------------------------------------
+
+class SupplierAuthorityTest(LoadBase):
+    def blind_client(self):
+        """Moves stock, but neither sees suppliers (`products.view`) nor costs (`costs.view`)."""
+        from rest_framework.test import APIClient
+
+        from store.tests import _p2d_member
+
+        user, _ = _p2d_member(self.company, 'carga_sin_proveedores',
+                              ['company.view', 'inventory.view', 'inventory.adjust'])
+        client = APIClient()
+        client.force_authenticate(user=user)
+        return client
+
+    def test_the_import_refuses_the_column_and_never_names_the_supplier(self):
+        payload = self.upload([self.phone_cells('AUT-0001', Proveedor='20123456789')], client=self.blind_client())
+        self.assertEqual(payload['counts']['error'], 1)
+        row = payload['rows'][0]
+        self.assertNotIn('supplier', row['data'])
+        self.assertNotIn('Importadora Andina', str(payload))
+        self.assertIn('Proveedor', ' '.join(row['errors']))
+
+    def test_the_register_view_refuses_a_supplier_before_looking_it_up(self):
+        client = self.blind_client()
+        for supplier in (self.supplier.pk, self.foreign_supplier.pk, 999999):
+            res = client.post('/api/admin/inventory/units/', {
+                'product_id': self.laptop.pk, 'branch': self.branch_a.pk, 'reason': 'Compra',
+                'supplier': supplier, 'units': [{'serial_number': f'AUT-01{supplier % 100:02d}'}]}, format='json')
+            self.assertEqual(res.status_code, 403, res.content)
+            self.assertEqual(res.json().get('field'), 'supplier')
+        self.assertFalse(StockUnit.objects.filter(product=self.laptop).exists())
+
+
+class OldHeadersTest(LoadBase):
+    def test_generic_date_and_notes_columns_are_not_read(self):
+        headers = ['Código', 'Sucursal', 'Número de serie', 'IMEI', 'Motivo / referencia', 'Fecha', 'Observaciones',
+                   'Notas']
+        rows = [self.phone_cells('OLD-0001', Fecha='mañana', Observaciones='x' * 400, Notas='y' * 400),
+                {'Observaciones': 'Total: 1 equipo'}]                                  # a footer row
+        response = self.api.post(PREVIEW_URL, {'file': book(rows, headers=headers)}, format='multipart')
+        self.assertEqual(response.status_code, 201, response.content)
+        payload = response.json()
+        self.assertEqual((payload['counts']['create'], payload['counts']['error'], payload['counts']['skip']),
+                         (1, 0, 1), payload['rows'])
+        data = self.row_of(payload, 2)['data']
+        self.assertNotIn('received_on', data)
+        self.assertNotIn('notes', data)

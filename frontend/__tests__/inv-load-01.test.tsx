@@ -196,3 +196,14 @@ test('a purchase with no date sends neither entry kind nor date: the server defa
   expect(body).not.toHaveProperty('received_on');
   expect(body).not.toHaveProperty('supplier');
 });
+
+test('the latest entry date offered is today in Lima, not in the browser', () => {
+  // 03:00 UTC on the 24th is still 22:00 of the 23rd in Lima (UTC-5): a browser in Madrid must not offer the 24th.
+  jest.useFakeTimers({ now: new Date('2026-11-24T03:00:00Z'), doNotFake: ['queueMicrotask', 'nextTick'] });
+  try {
+    mountForm();
+    expect(screen.getByLabelText(/^Fecha de ingreso/)).toHaveAttribute('max', '2026-11-23');
+  } finally {
+    jest.useRealTimers();
+  }
+});

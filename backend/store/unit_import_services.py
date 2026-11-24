@@ -83,10 +83,12 @@ _ALIASES = {
     'battery': ('bateria', 'bateria porcentaje', 'salud de bateria', 'salud de la bateria'),
     'sale_price': ('precio de venta', 'precio venta'),
     # INV-LOAD-01.
+    # Only headers that name THESE columns: a generic «Fecha», «Notas» or «Observaciones» of an older file stays
+    # unread (as before), so a file that loaded yesterday does not start failing — nor a footer row come alive.
     'supplier': ('proveedor', 'proveedor nombre o ruc', 'ruc del proveedor', 'ruc proveedor'),
-    'received_on': ('fecha de ingreso', 'fecha ingreso', 'fecha de entrada', 'fecha de compra', 'fecha'),
-    'notes': ('notas internas', 'nota interna', 'notas', 'observaciones'),
-    'public_notes': ('detalles para el comprador', 'detalles comprador', 'detalles del equipo', 'notas publicas'),
+    'received_on': ('fecha de ingreso', 'fecha ingreso', 'fecha de entrada'),
+    'notes': ('notas internas', 'nota interna'),
+    'public_notes': ('detalles para el comprador', 'detalles comprador', 'notas publicas'),
 }
 #: A header that says HOW MANY refuses the file: «Cantidad», «Cantidad inicial»,
 #: «Stock inicial - Almacén 1», «Nº de unidades». What counts stock is decided in
@@ -427,15 +429,23 @@ def _opening_problem(branch, product) -> str:
     return opening_problem(branch, product)
 
 
+SUPPLIERS_FORBIDDEN = ('No tienes permiso para ver proveedores: deja vacía la columna «Proveedor» (lo completa quien '
+                       'los administra).')
+
+
 @transaction.atomic
 def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
-                  default_branch=None, default_reason: str = '', entry_kind=None) -> BulkImportJob:
+                  default_branch=None, default_reason: str = '', entry_kind=None,
+                  suppliers_allowed: bool = False) -> BulkImportJob:
     """
     Stage a workbook of devices. Writes NO unit and NO movement.
 
     `reachable_branch_ids` are the branches this caller may write to. A row for
     any other branch of the company is an error on that row; a branch of another
     company is not found at all, because the lookup starts from this company.
+
+    `suppliers_allowed` (D-F-3, INV-LOAD-01 review): whether this caller may read who sold a device. Without it a filled
+    «Proveedor» is a row error with one sentence whatever it says, so a RUC is never turned into a name.
     """
     entry_kind = _entry_kind(entry_kind)
     data = xlsx_reader.check_upload(upload, filename=filename)
@@ -643,7 +653,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             public_notes = ''
 
         # INV-LOAD-01 — who sold it and when it entered.
-        if fields['supplier']:
+        if fields['supplier'] and not suppliers_allowed:
+            errors.append(SUPPLIERS_FORBIDDEN)
+        elif fields['supplier']:
             supplier, problem = suppliers.find(fields['supplier'])
             if problem:
                 errors.append(problem)
@@ -876,7 +888,13 @@ def apply_units(*, job, actor, request=None):
     opening = (job.options_snapshot or {}).get('entry_kind') == ENTRY_OPENING
     movement_type = StockMovement.INITIAL_STOCK if opening else StockMovement.PURCHASE_ENTRY
     if opening:
-        for branch_id, product_id in {(key[0], key[1]) for key in groups}:
+        # INV-LOAD-01 review — every shelf of the file is locked BEFORE the check (rows created where missing), so a
+        # sale, a hold or a write-off cannot commit between the check and the INITIAL_STOCK lines.
+        from .receipt_services import lock_shelves
+
+        shelves = sorted({(key[0], key[1]) for key in groups})
+        lock_shelves((branches[branch_id], products[product_id]) for branch_id, product_id in shelves)
+        for branch_id, product_id in shelves:
             problem = _opening_problem(branches[branch_id], products[product_id])
             if problem:
                 raise UnitImportError(f'No se cargó ningún equipo: el estante cambió desde la previsualización. {problem}')

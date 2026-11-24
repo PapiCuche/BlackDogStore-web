@@ -22,14 +22,14 @@ somebody who holds it.
 """
 from __future__ import annotations
 
-from django.db import transaction
+from django.db import OperationalError, transaction
 from django.db.models import Count, Q, Sum
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import availability_views as availability
-from . import cost_services, label_batches
+from . import cost_services, inventory_services, label_batches
 from . import stock_unit_services as units
 from . import storefront_media, unit_media
 from .product_media import ProductMediaError
@@ -149,10 +149,16 @@ def _refusal(exc) -> Response:
 ENTRY_KINDS = ('purchase', 'opening')
 
 
-def _entry_of(company, data) -> tuple[dict, Response | None]:
+SUPPLIERS_FORBIDDEN = 'suppliers_forbidden'
+
+
+def _entry_of(company, data, request) -> tuple[dict, Response | None]:
     """
     INV-LOAD-01 — `entry_kind` («purchase» by default, or «opening»), the optional `supplier` (an id of THIS company:
     another company's answers 404, like one that does not exist) and the optional `received_on` (a date, never future).
+
+    D-F-3 — naming a supplier needs what reading one needs (`may_see_suppliers`), asked BEFORE any lookup: otherwise the
+    answer (404 or not) would say which ids exist.
     """
     kind = data.get('entry_kind') or 'purchase'
     if kind not in ENTRY_KINDS:
@@ -160,6 +166,9 @@ def _entry_of(company, data) -> tuple[dict, Response | None]:
                             status=status.HTTP_400_BAD_REQUEST)
     supplier = None
     wanted = data.get('supplier')
+    if wanted not in (None, '') and not may_see_suppliers(request):
+        return {}, Response({'detail': 'No tienes permiso para indicar el proveedor: registra el equipo sin él.',
+                             'field': 'supplier', 'code': SUPPLIERS_FORBIDDEN}, status=status.HTTP_403_FORBIDDEN)
     if wanted not in (None, ''):
         if isinstance(wanted, bool) or not str(wanted).isdigit() or int(wanted) > 2_147_483_647:
             return {}, Response({'detail': 'Proveedor no válido.', 'field': 'supplier'},
@@ -325,15 +334,15 @@ class StockUnitListView(APIView):
             )
         # INV-LOAD-01 — what the entry IS (a purchase, as before, or the stock the shop already had), who sold it and
         # the day it came in. The same rules as «Recibir mercadería» and the device file.
-        entry, refused = _entry_of(company, data)
+        entry, refused = _entry_of(company, data, request)
         if refused is not None:
             return refused
         try:
             with transaction.atomic():
                 if entry['opening']:
-                    # The shelf first (the writer's lock order): a sale or a purchase cannot slip in between the
-                    # check and the entry.
-                    list(BranchStock.objects.select_for_update().filter(branch=branch, product=product))
+                    # The shelf first (the module's lock order, and `receive_units`' own): a sale or a hold cannot
+                    # slip in between the check and the entry. The row is created when the shelf never had one.
+                    inventory_services._locked_branch_stocks(branch, [product])
                     from .receipt_services import OPENING_HAS_HISTORY, opening_problem
 
                     problem = opening_problem(branch, product)
@@ -348,6 +357,14 @@ class StockUnitListView(APIView):
                 )
         except InventoryError as exc:
             return _refusal(exc)
+        except OperationalError as exc:
+            # A backstop: two entries waiting on each other's locks. Nothing was written; the person tries again.
+            from .receipt_services import is_busy
+
+            if not is_busy(exc):
+                raise
+            return Response({'detail': 'Otra operación estaba usando este stock. Vuelve a intentarlo.',
+                             'code': 'busy'}, status=status.HTTP_409_CONFLICT)
 
         # LABEL-A — the labels of what just entered; the screen says «Etiquetas listas para imprimir».
         batch = label_batches.create_for_movement(created.movement, units=created, actor=request.user)

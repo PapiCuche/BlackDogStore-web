@@ -645,11 +645,15 @@ class AdminUnitImportPreviewView(APIView):
                 return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
         try:
+            from .stock_unit_views import may_see_suppliers
+
             job = unit_import_services.preview_units(
                 company=company, actor=request.user, upload=upload, filename=upload.name,
                 reachable_branch_ids=reachable, default_branch=default_branch,
                 default_reason=request.data.get('reason') or '',
                 entry_kind=request.data.get('entry_kind') or None,
+                # D-F-3 — who may not read suppliers may not have a RUC turned into a name either.
+                suppliers_allowed=may_see_suppliers(request),
             )
         except (xlsx_reader.XlsxError, unit_import_services.UnitImportError) as exc:
             return _error(exc)

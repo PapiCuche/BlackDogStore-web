@@ -29,7 +29,7 @@ from django.db import IntegrityError, connection, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from . import device_identity, money_input
+from . import device_identity, inventory_services, money_input
 from .inventory_services import (
     InsufficientStockError, InvalidMovementError, InventoryError, create_stock_movement,
 )
@@ -607,6 +607,9 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
             prepared.append((index, _clean_row(product, row), None))
         except StockUnitError as exc:
             prepared.append((index, None, exc))
+    # LOCK ORDER (module docstring): the shelf first, the identifiers second. INV-LOAD-01 review — the shelf used to be
+    # taken only by the writer, after the identifiers, the inverse of a caller that holds the shelf to decide an opening.
+    inventory_services._locked_branch_stocks(branch, [product])
     _lock_identifiers(branch.company_id, product.pk, [c for _, c, _ in prepared if c is not None])
 
     cleaned_rows, seen_serials, seen_imeis = [], set(), set()
