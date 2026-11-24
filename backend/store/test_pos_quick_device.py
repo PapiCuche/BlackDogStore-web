@@ -195,11 +195,13 @@ class ConfigurationsTest(QuickShop, TestCase):
     def test_what_each_caller_may_do_is_said_before_the_form_opens(self):
         seller = _api(self.seller).get(self.config_url()).json()
         self.assertEqual(seller['can'], {'receive': False, 'create_variant': False, 'set_price': False,
-                                         'view_costs': False, 'choose_supplier': False, 'open_suppliers': False})
+                                         'view_costs': False, 'choose_supplier': False, 'open_suppliers': False,
+                                         'receive_on_order': False})
         self.assertNotIn('suppliers', seller)
         receiver = _api(self.receiver).get(self.config_url()).json()
         self.assertEqual(receiver['can'], {'receive': True, 'create_variant': False, 'set_price': False,
-                                           'view_costs': False, 'choose_supplier': True, 'open_suppliers': True})
+                                           'view_costs': False, 'choose_supplier': True, 'open_suppliers': True,
+                                           'receive_on_order': False})
         self.assertEqual(receiver['suppliers'], [{'id': self.supplier.pk, 'name': 'Mayorista Q'}])
         manager = _api(self.manager).get(self.config_url()).json()
         self.assertTrue(all(manager['can'].values()))

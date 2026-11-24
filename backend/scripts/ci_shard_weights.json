@@ -48,6 +48,7 @@
   "store.test_payment_audit2.EveryChangeWaitsForACheckoutThatIsWritingTest",
   "store.test_payment_change_guard.AtTheSameInstantTest",
   "store.test_payment_hardening.SeveralRunsAtOnceTest",
+  "store.test_pos_order_arrival.GuardRaceTest",
   "store.test_pos_quick_device.SameImeiRaceTest",
   "store.test_pos_reconcile_race.SaleAgainstNotChargedTest",
   "store.test_product_codes.TwoCreationsAtOnceTest",

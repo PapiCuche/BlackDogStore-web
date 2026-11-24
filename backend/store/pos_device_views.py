@@ -45,7 +45,8 @@ def _configurations(request, company, branch, pk) -> Response:
     model = ProductModel.objects.filter(company=company, pk=pk).first()
     if model is None:
         return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
-    return Response(quick.configurations(company, model, branch, quick.authority_for(request.user, company)))
+    return Response(quick.configurations(company, model, branch, quick.authority_for(request.user, company),
+                                         actor=request.user))
 
 
 def _receive(request, company, branch) -> Response:
