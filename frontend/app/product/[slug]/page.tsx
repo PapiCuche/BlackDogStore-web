@@ -7,7 +7,7 @@ import { readPublicProduct } from "../../lib/catalog-models-server";
 import { markdownToPlainText } from "../../lib/markdown-lite";
 import { siteOrigin } from "../../lib/site-origin";
 import { canonical } from "../../lib/canonical";
-import { breadcrumbJsonLd, productJsonLd } from "../../lib/structured-data";
+import { breadcrumbJsonLd, productCanonicalPath, productJsonLd, productPictures } from "../../lib/structured-data";
 
 /**
  * The page of one product.
@@ -39,15 +39,18 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   // pages as the same business.
   // CATALOG-RICH-DESC-01: search engines and link previews get the text, never the Markdown marks.
   const summary = markdownToPlainText(product.description, 160);
+  const share = productPictures(product, await siteOrigin())[0];
   return {
     title: product.name,
     description: summary || `Compra ${product.name} en nuestra tienda.`,
-    // SEO-01: one address per product («?…» variants are the same page).
-    alternates: await canonical(`/product/${encodeURIComponent(slug)}`),
+    // SEO-01: one address per product («?…» variants are the same page). IMG-GATE-01: a device variant's is its
+    // place on its model's page.
+    alternates: await canonical(productCanonicalPath(product)),
     openGraph: {
       title: product.name,
       description: summary || undefined,
-      ...(product.image_url ? { images: [{ url: product.image_url }] } : {}),
+      // Review of #408: only the shop's own, non-demo picture (as the JSON-LD), absolute.
+      ...(share ? { images: [{ url: share }] } : {}),
     },
   };
 }

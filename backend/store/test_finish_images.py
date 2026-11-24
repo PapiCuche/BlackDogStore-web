@@ -9,8 +9,8 @@ What is fixed here:
     and a finish image cannot be uploaded without saying it (licence text unless it is the shop's own photo);
   * the reference sweep counts a finish image like any other slot: a picture only a finish shows is never deleted;
   * the admin API is the product gallery's: `products.view` reads, `products.manage` writes, another company 404;
-  * the public model page shows each variant its own pictures, else its colour's, else nothing and
-    `image_pending` — never another colour's photo and never the model's cover;
+  * the public model page shows each variant its own pictures (IMG-GATE-01: verified ones), else its colour's, else
+    nothing and `image_pending` — never another colour's photo and never the model's cover;
   * the F4 report counts finishes without pictures and uploads whose licence is unknown or unverified.
 """
 import atexit
@@ -143,6 +143,14 @@ class FinishImageSweepTest(FinishShop):
 OWN = {'source_kind': 'own_photo'}
 SUPPLIER = {'source_kind': 'supplier_authorized', 'license': 'Autorización escrita del distribuidor, 2026-11',
             'source_url': 'https://distribuidor.example/kit-prensa', 'attribution': 'Distribuidor S.A.'}
+
+
+def verify_files(*addresses, kind=StorefrontImage.SOURCE_OWN_PHOTO):
+    """IMG-GATE-01: a variant's own pictures are on the shop only once their file's licence is verified."""
+    from django.utils import timezone
+
+    ids = [storefront_media.managed_public_id(address) for address in addresses]
+    StorefrontImage.objects.filter(public_id__in=ids).update(source_kind=kind, license_verified_at=timezone.now())
 
 
 class FinishApiBase(FinishShop):
@@ -414,11 +422,15 @@ class CartPictureTest(FinishApiBase):
         primary = next((image for image in gallery if image['is_primary']), gallery[0] if gallery else None)
         return primary['url'] if primary else ''
 
-    def own_gallery(self, product, count=2):
+    def own_gallery(self, product, count=2, verified=True):
+        """The variant's own pictures — verified by default (IMG-GATE-01: unverified ones are not on the shop)."""
         from store import product_media
 
-        return [product_media.add_image(product=product, actor=self.staff, uploaded=SimpleUploadedFile(
+        images = [product_media.add_image(product=product, actor=self.staff, uploaded=SimpleUploadedFile(
             f'propia-{n}.png', png_with_transparency(), content_type='image/png')) for n in range(count)]
+        if verified:
+            verify_files(*(image.image_url for image in images))
+        return images
 
     def make_own_primary(self, image):
         from store.models import ProductImage
@@ -476,9 +488,20 @@ class CartPictureTest(FinishApiBase):
 
     def test_its_own_picture_comes_first(self):
         self.published(self.blue)
-        Product.objects.filter(pk=self.new128blue.pk).update(image_url='/api/storefront/images/' + 'd' * 32)
+        own = self.stored()
+        verify_files(own.url)                      # IMG-GATE-01: only a verified file of its own
+        Product.objects.filter(pk=self.new128blue.pk).update(image_url=own.url)
         line = self.line(Product.objects.get(pk=self.new128blue.pk))
-        self.assertEqual((line['image_url'], line['image_pending']), ('/api/storefront/images/' + 'd' * 32, False))
+        self.assertEqual((line['image_url'], line['image_pending']), (own.url, False))
+
+    def test_an_unverified_own_picture_gives_way_to_its_colours_finish(self):
+        # IMG-GATE-01: an own picture whose licence nobody verified is not on the shop (nor an external address).
+        finish = self.published(self.blue)
+        for address in (self.stored().url, 'https://cdn.example.com/propia.png'):
+            with self.subTest(address):
+                Product.objects.filter(pk=self.new128blue.pk).update(image_url=address)
+                line = self.line(Product.objects.get(pk=self.new128blue.pk))
+                self.assertEqual((line['image_url'], line['image_pending']), (finish['url'], False))
 
     def test_a_demo_finish_is_shown_and_said_like_on_the_model_page(self):
         demo = self.published(self.blue, {'source_kind': 'demo', 'license': 'Recurso de demostración interno'})
@@ -500,13 +523,16 @@ class CartPictureTest(FinishApiBase):
         self.assertEqual(self.gallery_primary(self.new128blue), '')
 
     def test_a_colourless_model_shows_its_cover(self):
+        # Review of #408: the cover passes the same licence gate as any picture of a variant.
+        cover = self.stored()
+        verify_files(cover.url)
         plain = device_catalog.create_model(company=self.company, name='Cargador Z')
-        ProductModel.objects.filter(pk=plain.pk).update(image_url='/api/storefront/images/' + 'f' * 32)
+        ProductModel.objects.filter(pk=plain.pk).update(image_url=cover.url)
         product = self.variant('Cargador Z 20 W', 'cz-20', '90.00', [self.gb128])
         Product.objects.filter(pk=product.pk).update(product_model=plain)
         product.refresh_from_db()
         line = self.line(product)
-        self.assertEqual((line['image_url'], line['image_pending']), ('/api/storefront/images/' + 'f' * 32, False))
+        self.assertEqual((line['image_url'], line['image_pending']), (cover.url, False))
 
     def test_an_on_order_line_shows_its_finish_too(self):
         from store import supply_services as supply
@@ -560,7 +586,8 @@ class CartPictureTest(FinishApiBase):
         for product in (self.new128, self.new256, self.new128blue):
             self.receive(product)
             self.add(product)
-        with mock.patch('store.device_catalog.variant_pictures', wraps=device_catalog.variant_pictures) as batch:
+        # IMG-GATE-01: the nested product reads every line's gallery in ONE batch (`variant_galleries`).
+        with mock.patch('store.device_catalog.variant_galleries', wraps=device_catalog.variant_galleries) as batch:
             self.cart()
         self.assertEqual(batch.call_count, 1)
         self.assertEqual(sorted(p.pk for p in batch.call_args.args[0]),
@@ -737,17 +764,24 @@ class PublicFinishGalleryTest(FinishApiBase):
         self.published(self.black)
         own = product_media.add_image(product=self.new128, actor=self.staff, uploaded=SimpleUploadedFile(
             'propia.png', png_with_transparency(), content_type='image/png'))
+        verify_files(own.image_url)                # IMG-GATE-01: once its licence is verified
         rows = self.variants()
         self.assertEqual([image['url'] for image in rows[self.new128.pk]['gallery']], [own.image_url])
         self.assertNotEqual(rows[self.new256.pk]['gallery'][0]['url'], own.image_url)
 
     def test_a_variants_own_single_address_is_its_own_picture(self):
-        # A variant whose own address was written before galleries (no ProductImage) keeps showing it.
+        # A variant whose own address was written before galleries (no ProductImage) keeps showing it — IMG-GATE-01:
+        # when it is a file of the shop whose licence was verified. An external address is never shown.
         from store.models import Product
+        black = self.published(self.black)
         Product.objects.filter(pk=self.new256.pk).update(image_url='https://cdn.example.com/propia-256.png')
-        self.published(self.black)
         row = self.variants()[self.new256.pk]
-        self.assertEqual([image['url'] for image in row['gallery']], ['https://cdn.example.com/propia-256.png'])
+        self.assertEqual([image['url'] for image in row['gallery']], [black['url']])
+        own = self.stored()
+        verify_files(own.url)
+        Product.objects.filter(pk=self.new256.pk).update(image_url=own.url)
+        row = self.variants()[self.new256.pk]
+        self.assertEqual([image['url'] for image in row['gallery']], [own.url])
 
     def test_the_finish_map_is_an_allowlist_with_only_the_demo_flag(self):
         self.published(self.black, SUPPLIER)
@@ -791,7 +825,7 @@ class PublicFinishLicenceTest(FinishApiBase):
     publicarse.» A finish picture is on the shop only when its `StorefrontImage` — of the SAME company, behind a managed
     address — has its licence verified (`license_verified_at`), whatever its source kind; a verified demo is shown and
     still said. Until then it stays in the panel, marked `public: false`, and the finish is `image_pending` on the shop.
-    A variant's OWN pictures are not gated (they are audited, not hidden)."""
+    IMG-GATE-01: a variant's OWN pictures follow the same rule (`test_img_gate`)."""
 
     def setUp(self):
         super().setUp()
@@ -879,12 +913,15 @@ class PublicFinishLicenceTest(FinishApiBase):
         self.assert_hidden({'url': image.image_url})
         self.assertIs(self.panel_image({'id': image.pk})['public'], False)
 
-    def test_a_variants_own_pictures_are_not_gated(self):
+    def test_a_variants_own_pictures_are_gated_too(self):
+        # IMG-GATE-01 (was «not gated» until then): unverified, a variant's own picture is not on the shop.
         from store import product_media
 
         own = product_media.add_image(product=self.new128blue, actor=self.staff, uploaded=SimpleUploadedFile(
             'propia.png', png_with_transparency(), content_type='image/png'))
         self.assertIsNone(StorefrontImage.objects.get(public_id=own.image_url.rsplit('/', 1)[-1]).license_verified_at)
+        self.assert_hidden({'url': own.image_url})
+        verify_files(own.image_url)
         self.assertEqual([i['url'] for i in self.blue_row()['gallery']], [own.image_url])
         self.assertEqual(device_catalog.variant_picture(self.new128blue)[0], own.image_url)
 
@@ -1022,6 +1059,7 @@ class ColourDimensionTest(FinishApiBase):
         self.public = _client(host=self.host)
         self.new128blue = self.variant('Teléfono X 128 GB Azul', 'tx-128-azul', '3100.00', [self.gb128, self.blue])
         self.cover = self.stored()
+        verify_files(self.cover.url)       # review of #408: a cover is shown on a variant only once verified
         ProductModel.objects.filter(pk=self.model.pk).update(image_url=self.cover.url)
 
     def variants(self, model=None):
@@ -1082,6 +1120,7 @@ class CoverOnlyForAColourlessModelTest(FinishApiBase):
         super().setUp()
         self.public = _client(host=self.host)
         self.cover = self.stored()
+        verify_files(self.cover.url)       # review of #408: a cover is shown on a variant only once verified
 
     def gallery_of(self, model, product):
         res = self.public.get(f'/api/catalog/models/{model.slug}/')

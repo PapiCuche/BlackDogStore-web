@@ -167,7 +167,7 @@ def is_public(stored: StorefrontImage | None, company_id) -> bool:
     return stored is not None and stored.company_id == company_id and stored.license_verified_at is not None
 
 
-def _source_payload(stored: StorefrontImage | None) -> dict:
+def source_payload(stored: StorefrontImage | None) -> dict:
     if stored is None:
         return {'kind': StorefrontImage.SOURCE_UNKNOWN, 'kind_label': 'Sin registrar', 'url': '', 'license': '',
                 'attribution': '', 'is_demo': False, 'license_verified': False, 'license_verified_at': None,
@@ -206,7 +206,7 @@ def payload(image: ModelFinishImage, stored: StorefrontImage | None = None) -> d
         'sort_order': image.sort_order,
         'width': image.width,
         'height': image.height,
-        'source': _source_payload(stored),
+        'source': source_payload(stored),
         # Owner, 2026-11-23: on the shop only once its licence is verified («No visible en la tienda…» otherwise).
         'public': is_public(stored, image.company_id),
     }
@@ -500,6 +500,38 @@ def replace_image(*, model, image_id, actor, uploaded, provenance, request=None)
         raise
 
 
+def apply_provenance(stored: StorefrontImage, *, actor, provenance=None, license_verified=None, audit) -> None:
+    """
+    The provenance and licence check of ONE file (`stored`, already locked by the caller, of the caller's company).
+    Shared by every slot that publishes a picture once verified: a finish (`update_image`) and, since IMG-GATE-01, a
+    device variant's own gallery (`product_media.update_image`). The licence is the FILE's: verifying it in one slot
+    verifies it wherever that file is shown.
+
+    `provenance` is a partial dict of `PROVENANCE_FIELDS`, merged with the current one and validated whole; any change
+    clears the licence check (it has to be verified again). `license_verified` True records who and when; it needs a
+    known source first. `audit(action, **metadata)` records each change against the caller's slot.
+    """
+    if provenance:
+        current = {field: getattr(stored, field) for field in PROVENANCE_FIELDS}
+        origin = clean_provenance({**current, **provenance})
+        if origin != current:
+            for field, value in origin.items():
+                setattr(stored, field, value)
+            stored.license_verified_by, stored.license_verified_at = None, None
+            stored.save(update_fields=[*PROVENANCE_FIELDS, 'license_verified_by', 'license_verified_at'])
+            audit('storefront_image_provenance_changed', public_id=stored.public_id, old=current, new=origin)
+    if license_verified is True and stored.license_verified_at is None:
+        if stored.source_kind not in UPLOAD_SOURCE_KINDS:
+            raise FinishMediaError('Registra primero de dónde sale la imagen.', field='source_kind')
+        stored.license_verified_by, stored.license_verified_at = actor, timezone.now()
+        stored.save(update_fields=['license_verified_by', 'license_verified_at'])
+        audit('storefront_image_license_verified', public_id=stored.public_id, source_kind=stored.source_kind)
+    elif license_verified is False and stored.license_verified_at is not None:
+        stored.license_verified_by, stored.license_verified_at = None, None
+        stored.save(update_fields=['license_verified_by', 'license_verified_at'])
+        audit('storefront_image_license_unverified', public_id=stored.public_id)
+
+
 @transaction.atomic
 def update_image(*, image, actor, alt_text=None, is_primary=None, license_verified=None, provenance=None,
                  view=None, request=None) -> ModelFinishImage:
@@ -539,32 +571,14 @@ def update_image(*, image, actor, alt_text=None, is_primary=None, license_verifi
                color_option_id=image.color_option_id, previous_image_id=previous.pk if previous else None)
 
     if provenance or license_verified is not None:
+        def audit(action, **metadata):
+            _audit(action=action, model=row, actor=actor, request=request, image_id=image.pk, **metadata)
+
         stored = (StorefrontImage.objects.select_for_update()
                   .filter(public_id=storefront_media.managed_public_id(image.image_url), company=row.company).first())
         if stored is None:
             raise FinishImageGone()
-        if provenance:
-            current = {field: getattr(stored, field) for field in PROVENANCE_FIELDS}
-            origin = clean_provenance({**current, **provenance})
-            if origin != current:
-                for field, value in origin.items():
-                    setattr(stored, field, value)
-                stored.license_verified_by, stored.license_verified_at = None, None
-                stored.save(update_fields=[*PROVENANCE_FIELDS, 'license_verified_by', 'license_verified_at'])
-                _audit(action='storefront_image_provenance_changed', model=row, actor=actor, request=request,
-                       image_id=image.pk, public_id=stored.public_id, old=current, new=origin)
-        if license_verified is True and stored.license_verified_at is None:
-            if stored.source_kind not in UPLOAD_SOURCE_KINDS:
-                raise FinishMediaError('Registra primero de dónde sale la imagen.', field='source_kind')
-            stored.license_verified_by, stored.license_verified_at = actor, timezone.now()
-            stored.save(update_fields=['license_verified_by', 'license_verified_at'])
-            _audit(action='storefront_image_license_verified', model=row, actor=actor, request=request,
-                   image_id=image.pk, public_id=stored.public_id, source_kind=stored.source_kind)
-        elif license_verified is False and stored.license_verified_at is not None:
-            stored.license_verified_by, stored.license_verified_at = None, None
-            stored.save(update_fields=['license_verified_by', 'license_verified_at'])
-            _audit(action='storefront_image_license_unverified', model=row, actor=actor, request=request,
-                   image_id=image.pk, public_id=stored.public_id)
+        apply_provenance(stored, actor=actor, provenance=provenance, license_verified=license_verified, audit=audit)
     return image
 
 

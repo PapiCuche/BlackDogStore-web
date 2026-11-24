@@ -208,7 +208,8 @@ class OrderViewSet(viewsets.ReadOnlyModelViewSet):
         would now expose every tenant's orders to any staff user.
         """
         return storefront_orders(self.request, self.request.user).select_related('delivery_record').prefetch_related(
-            'items__product', 'items__product__images',
+            # IMG-GATE-01: the model of each line's product, read once (its published slug is on the line).
+            'items__product', 'items__product__images', 'items__product__product_model',
         )
 
 

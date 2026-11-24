@@ -203,7 +203,7 @@ from .device_catalog_views import (
     AdminAttributeDetailView, AdminAttributeListView, AdminAttributeOptionsView, AdminCatalogReadinessView,
     AdminCatalogSettingsView,
     AdminGradeDetailView, AdminGradeListView, AdminGradeSeedView, AdminModelBulkVisibilityView, AdminModelDetailView, AdminModelListView,
-    AdminAccessoryCandidatesView, AdminCatalogImageSourcesView, AdminModelAccessoriesView,
+    AdminAccessoryCandidatesView, AdminCatalogImageHealthView, AdminCatalogImageSourcesView, AdminModelAccessoriesView,
     AdminModelPaletteView, AdminModelVariantCreateView, AdminOptionDetailView, AdminPaletteSuggestionsView,
     AdminProductEnableSaleView,
     AdminProductVariantView, PublicModelDetailView, PublicModelListView,
@@ -396,6 +396,8 @@ urlpatterns = [
          name='admin-catalog-model-finish-image'),
     path('admin/catalog/image-sources/', AdminCatalogImageSourcesView.as_view(),
          name='admin-catalog-image-sources'),
+    path('admin/catalog/image-health/', AdminCatalogImageHealthView.as_view(),
+         name='admin-catalog-image-health'),
     # A1b-2: a variant born from the palette matrix, and its one commercial transition.
     path('admin/catalog/models/<int:pk>/variants/', AdminModelVariantCreateView.as_view(),
          name='admin-catalog-model-variants'),

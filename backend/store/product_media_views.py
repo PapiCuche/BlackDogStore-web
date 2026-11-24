@@ -4,6 +4,8 @@ PRODUCT-MEDIA — la galería de un producto, desde el panel.
     GET    /api/admin/products/<id>/images/            la galería        products.view
     POST   /api/admin/products/<id>/images/            sube una imagen   products.manage
     PATCH  /api/admin/products/<id>/images/<image>/    texto / principal products.manage
+                                                       / procedencia /
+                                                       license_verified
     DELETE /api/admin/products/<id>/images/<image>/    la quita          products.manage
     POST   /api/admin/products/<id>/images/order/      reordena          products.manage
 
@@ -17,7 +19,7 @@ from rest_framework.parsers import FormParser, JSONParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import product_media, storefront_media
+from . import finish_media, product_media, storefront_media
 from .admin_views import (
     CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_MANAGE_CATALOG_ROLES,
     _LEGACY_VIEW_CATALOG_ROLES, _company_context,
@@ -57,7 +59,7 @@ class _ProductGalleryView(APIView):
 
     @staticmethod
     def listing(product):
-        return {'results': [product_media.payload(image) for image in product_media.gallery(product)]}
+        return {'results': product_media.payloads(product)}
 
 
 class AdminProductImageListView(_ProductGalleryView):
@@ -103,21 +105,35 @@ class AdminProductImageDetailView(_ProductGalleryView):
         image, error = self.image(request, pk, image_id)
         if error:
             return error
-        is_primary = request.data.get('is_primary')
-        if is_primary is not None and not isinstance(is_primary, bool):
-            return _bad('`is_primary` debe ser verdadero o falso.')
+        flags = {}
+        for name in ('is_primary', 'license_verified'):
+            value = request.data.get(name)
+            if value is not None and not isinstance(value, bool):
+                return Response({'detail': f'`{name}` debe ser verdadero o falso.', 'field': name},
+                                status=status.HTTP_400_BAD_REQUEST)
+            flags[name] = value
         alt_text = request.data.get('alt_text')
         if alt_text is not None and not isinstance(alt_text, str):
             return _bad('El texto alternativo debe ser texto.')
+        # IMG-GATE-01: the provenance of the file, as the finish images take it (each field a text, all optional).
+        provenance = {}
+        for field in finish_media.PROVENANCE_FIELDS:
+            if field in request.data:
+                if not isinstance(request.data[field], str):
+                    return Response({'detail': 'La procedencia se escribe como texto.', 'field': field},
+                                    status=status.HTTP_400_BAD_REQUEST)
+                provenance[field] = request.data[field]
         try:
             image = product_media.update_image(
-                image=image, actor=request.user, alt_text=alt_text, is_primary=is_primary,
-                request=request,
+                image=image, actor=request.user, alt_text=alt_text, provenance=provenance,
+                request=request, **flags,
             )
         except product_media.ProductImageGone:
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         except product_media.ProductMediaError as exc:
             return _bad(exc)
+        except finish_media.FinishMediaError as exc:
+            return Response(exc.body(), status=status.HTTP_400_BAD_REQUEST)
         return Response(product_media.payload(image))
 
     def delete(self, request, pk, image_id):

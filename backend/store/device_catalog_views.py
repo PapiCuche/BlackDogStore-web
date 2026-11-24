@@ -27,6 +27,7 @@ from .models import (
     VariantAttribute, VariantOption,
 )
 from .tenancy import company_fulfillment_branch, company_storefront_products, resolve_storefront_company
+from .throttles import AdminProductsThrottle
 
 _NOT_FOUND = {'detail': 'No encontrado.'}
 
@@ -567,6 +568,32 @@ class AdminCatalogImageSourcesView(APIView):
             # CATALOG-REFERENCE-01 · PR C: finishes without pictures and uploads without a checked licence.
             'licensing': catalog_image_sources.licensing(company),
         })
+
+
+class AdminCatalogImageHealthView(APIView):
+    """
+    GET /api/admin/catalog/image-health/   IMG-HEALTH (IMG-GATE-01): broken managed files, external hotlinks by host,
+                                           pictures shown without a verified licence, a file on two colours of one
+                                           model and new variants on sale with «Imagen pendiente»
+
+    Read-only, `products.view`, the caller's company only. It asks the storage whether each file is still there, so
+    the panel calls it on demand («Revisar ahora»), not on every visit. At most `image_health.MAX_ROWS` rows (the
+    counts are the whole catalogue's); every row: `manage.py report_image_health`. It never deletes anything.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    # Review of #408: it asks the storage for each file; the admin catalogue's read rate is its limit.
+    throttle_classes = [AdminProductsThrottle]
+
+    def get(self, request):
+        from . import image_health
+
+        company, error = _view(request)
+        if error:
+            return error
+        data = image_health.report(company)
+        return Response({'summary': data['summary'], 'rows': data['rows'][:image_health.MAX_ROWS],
+                         'count': len(data['rows']), 'truncated': len(data['rows']) > image_health.MAX_ROWS})
 
 
 class AdminAttributeOptionsView(APIView):
