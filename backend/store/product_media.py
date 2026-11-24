@@ -30,6 +30,9 @@ from .models import AdminAuditLog, Product, ProductImage
 
 ALT_TEXT_MAX = 160
 
+#: «Not read yet»: `payload` reads the file itself (None is a valid answer: no managed file).
+_UNREAD = object()
+
 
 class ProductMediaError(Exception):
     """Un rechazo que quien edita el producto puede leer y corregir."""
@@ -56,8 +59,21 @@ def gallery(product):
     return ProductImage.objects.filter(product=product, company_id=product.company_id)
 
 
-def payload(image: ProductImage) -> dict:
-    """Lo que ve el panel. Nunca la clave del objeto en el almacenamiento."""
+def payload(image: ProductImage, stored=_UNREAD, *, requires_license=None) -> dict:
+    """
+    Lo que ve el panel. Nunca la clave del objeto en el almacenamiento.
+
+    IMG-GATE-01: también de dónde sale el archivo y si su licencia está verificada (`source`, la misma forma que las
+    imágenes de un acabado) y si la tienda la muestra (`public`). La de una VARIANTE de un modelo
+    (`requires_license`) sólo se muestra con la licencia verificada; la de un producto sin modelo, como hasta ahora.
+    `stored` y `requires_license` los pasa quien lista varias, para leerlos una vez (`payloads`).
+    """
+    from .finish_media import is_public, source_payload, stored_of
+
+    if stored is _UNREAD:
+        stored = stored_of([image]).get(storefront_media.managed_public_id(image.image_url))
+    if requires_license is None:
+        requires_license = Product.objects.filter(pk=image.product_id, product_model__isnull=False).exists()
     return {
         'id': image.pk,
         'url': image.image_url,
@@ -66,7 +82,21 @@ def payload(image: ProductImage) -> dict:
         'sort_order': image.sort_order,
         'width': image.width,
         'height': image.height,
+        'source': source_payload(stored),
+        'requires_license': requires_license,
+        'public': is_public(stored, image.company_id) if requires_license else True,
     }
+
+
+def payloads(product, images=None) -> list[dict]:
+    """`payload` of every picture of `product`'s gallery (or of `images`), in two queries whatever their number."""
+    from .finish_media import stored_of
+
+    images = list(gallery(product) if images is None else images)
+    stored = stored_of(images)
+    gated = product.product_model_id is not None
+    return [payload(image, stored.get(storefront_media.managed_public_id(image.image_url)), requires_license=gated)
+            for image in images]
 
 
 def public_payload(image: ProductImage) -> dict:
@@ -178,9 +208,28 @@ def add_image(*, product, actor, uploaded, alt_text='', request=None) -> Product
 
 
 @transaction.atomic
-def update_image(*, image, actor, alt_text=None, is_primary=None, request=None) -> ProductImage:
+def update_image(*, image, actor, alt_text=None, is_primary=None, provenance=None, license_verified=None,
+                 request=None) -> ProductImage:
+    """
+    Texto alternativo y principal; desde IMG-GATE-01 también la procedencia del archivo y la verificación de su
+    licencia, con la MISMA regla que las imágenes de un acabado (`finish_media.apply_provenance`): un origen
+    conocido antes de verificar, y cambiar la procedencia quita la verificación. Una dirección que no es un archivo
+    subido por la empresa (una URL externa) no tiene licencia que verificar: responde como una imagen que no está.
+    """
     row = _locked(image.product)
     image = _current(row, image)
+    if provenance or license_verified is not None:
+        from .finish_media import apply_provenance
+
+        stored = (storefront_media.StorefrontImage.objects.select_for_update()
+                  .filter(public_id=storefront_media.managed_public_id(image.image_url), company=row.company).first())
+        if stored is None:
+            raise ProductImageGone('Esa imagen no es un archivo subido por la tienda: no tiene licencia que verificar.')
+
+        def audit(action, **metadata):
+            _audit(action=action, product=row, actor=actor, request=request, image_id=image.pk, **metadata)
+
+        apply_provenance(stored, actor=actor, provenance=provenance, license_verified=license_verified, audit=audit)
 
     if is_primary is False and image.is_primary:
         raise ProductMediaError('Para cambiar la imagen principal, elige otra como principal.')

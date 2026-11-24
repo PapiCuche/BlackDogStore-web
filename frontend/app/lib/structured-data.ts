@@ -64,10 +64,14 @@ export type ProductForJsonLd = {
   inventory: number;
   description?: string;
   image_url?: string;
-  images?: { url: string }[];
+  /** Review of #408: whether a picture is a demo resource (a device variant's, from the server). */
+  images?: { url: string; is_demo?: boolean }[];
+  image_is_demo?: boolean;
   on_order?: { price?: string } | null;
   /** DC2: a used variant sells device by device, at each device's own price — it gets no product-level Offer. */
   condition_line?: string;
+  /** DC2: the published model this product is one option of (its slug), or null. */
+  product_model?: string | null;
 };
 
 /**
@@ -75,10 +79,26 @@ export type ProductForJsonLd = {
  * BackOrder, at the «bajo pedido» price the page shows (review of SEO-02); otherwise OutOfStock. No price (0 or
  * unreadable) → no Offer at all, never an invented one. A used variant gets no Offer: each device has its own price.
  */
+/**
+ * Review of #408 — the pictures a product is PUBLISHED with (JSON-LD `image`, Open Graph): only the shop's own uploads
+ * (`isManagedStorefrontImage`) that are not demo resources, absolute and without repeats, as `variantPictures` does
+ * for a model's variants. A picture the page labels «Imagen referencial» does not show this product.
+ */
+export function productPictures(product: Pick<ProductForJsonLd, "image_url" | "images" | "image_is_demo">, origin: string | null): string[] {
+  const pictures: { url?: string; is_demo?: boolean }[] = [
+    { url: product.image_url, is_demo: product.image_is_demo }, ...(product.images ?? []),
+  ];
+  const urls = pictures
+    .filter((picture) => picture.url && !picture.is_demo && isManagedStorefrontImage(picture.url))
+    .map((picture) => absoluteUrl(picture.url, origin))
+    .filter(Boolean);
+  return [...new Set(urls)];
+}
+
 export function productJsonLd(product: ProductForJsonLd, origin: string | null, summary = ""): Json {
-  const url = origin ? `${origin}/product/${encodeURIComponent(product.slug)}` : undefined;
-  const images = [product.image_url, ...(product.images ?? []).map((image) => image.url)]
-    .map((image) => absoluteUrl(image, origin)).filter(Boolean);
+  // IMG-GATE-01 (review of #408): a device variant's address is its canonical one, its place on its model's page.
+  const url = origin ? `${origin}${productCanonicalPath(product)}` : undefined;
+  const images = productPictures(product, origin);
   const backOrder = product.inventory <= 0 && Boolean(product.on_order);
   const availability = product.inventory > 0 ? IN_STOCK : backOrder ? BACK_ORDER : OUT_OF_STOCK;
   return compact({
@@ -86,7 +106,7 @@ export function productJsonLd(product: ProductForJsonLd, origin: string | null, 
     "@type": "Product",
     name: product.name,
     description: summary || undefined,
-    image: [...new Set(images)],
+    image: images,
     url,
     offers: product.condition_line !== "used"
       ? offerJsonLd(backOrder ? product.on_order?.price : product.price, availability, url) : undefined,
@@ -116,6 +136,21 @@ export function v3ModelPath(slug: string): string {
  */
 export function v3VariantPath(modelSlug: string, variantSlug: string): string {
   return `${v3ModelPath(modelSlug)}?variante=${encodeURIComponent(variantSlug)}`;
+}
+
+/**
+ * IMG-GATE-01 — the canonical address of a product page. A DEVICE VARIANT (a product whose model is published) is one
+ * option of its model's page: a new one canonicalises to `/modelo/<model>?variante=<variant>` (the address the model's
+ * `ProductGroup` gives it), a used one to the model's page (its devices are sold one by one there). Any other
+ * product: its own page.
+ */
+export function productCanonicalPath(product: { slug: string; product_model?: string | null; condition_line?: string }): string {
+  if (product.product_model) {
+    return product.condition_line === "used"
+      ? v3ModelPath(product.product_model)
+      : v3VariantPath(product.product_model, product.slug);
+  }
+  return `/product/${encodeURIComponent(product.slug)}`;
 }
 
 /** V4-SEO — the address of a model's V4 page (`/v4/modelo/<slug>`). */

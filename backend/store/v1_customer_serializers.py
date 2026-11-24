@@ -22,7 +22,10 @@ the model, or to the legacy serializer, does not add it to this response.
 from rest_framework import serializers
 
 from .models import Order, OrderItem
-from .serializers import DeliveryMethodLabelField, closed_product_payload
+from .serializers import (
+    DeliveryMethodLabelField, OrdersPrimingListSerializer, closed_product_payload, gated_image_url,
+    order_line_products, prime_variant_galleries,
+)
 
 
 class V1CustomerOrderItemSerializer(serializers.ModelSerializer):
@@ -55,10 +58,14 @@ class V1CustomerOrderItemSerializer(serializers.ModelSerializer):
         data = super().to_representation(instance)
         product = instance.product
         if not product.is_sold_online:
-            closed = closed_product_payload(product)
+            closed = closed_product_payload(product, self.context)
             data['product_name'] = closed['name']
             data['product_slug'] = ''
             data['image_url'] = closed['image_url']
+        elif product.product_model_id:
+            # IMG-GATE-01: a device variant's picture is the gated one (never an unverified or external picture),
+            # from the response's batch (the order or the list of orders primed it).
+            data['image_url'] = gated_image_url(self.context, product)
         return data
 
 
@@ -99,11 +106,17 @@ class V1CustomerOrderSerializer(serializers.ModelSerializer):
             'delivery',
         ]
         read_only_fields = fields
+        # Review of #408: the pictures of every line of every order, read once.
+        list_serializer_class = OrdersPrimingListSerializer
 
     def get_delivery(self, obj):
         from .delivery_services import buyer_payload_for
 
         return buyer_payload_for(obj)
+
+    def to_representation(self, instance):
+        prime_variant_galleries(self.context, order_line_products([instance]))
+        return super().to_representation(instance)
 
     # ── What is deliberately ABSENT, and why ────────────────────────────────
     #

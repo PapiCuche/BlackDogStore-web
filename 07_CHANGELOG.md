@@ -17,6 +17,26 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Los colores de un modelo van primero en su paleta; los demás de la empresa, aparte.
 - `PUT /api/admin/products/<pk>/variant/` acepta `expected_model_id`, `expected_condition_line` y `expected_option_ids`: si la variante cambió, 409 `stale` y nada se escribe.
 
+## 2026-11-24 — IMG-GATE-01: la foto propia de una variante necesita licencia verificada (PR abierto, sin fusionar)
+
+**Changed**
+- Una variante de equipo muestra en la tienda su foto propia sólo si es un archivo de la empresa con la licencia verificada; si no, la foto verificada del acabado de su color, o «Imagen pendiente». Una URL externa nunca se muestra en una variante. Vale para la página del modelo, el catálogo, `/product/<variante>`, JSON-LD, Open Graph, carrito, checkout, pedidos y la API v1.
+- `/product/<variante>` declara como canónica `/modelo/<modelo>?variante=<variante>` y su enlace «Ver todas las opciones» abre esa variante.
+- Los productos sin modelo no cambian (decisión del propietario pendiente; IMG-HEALTH los lista).
+- Revisión del #408:
+  - la portada de un modelo sin colores pasa por la misma licencia;
+  - JSON-LD y Open Graph sólo publican fotos propias no demostrativas;
+  - el sitemap no lista variantes en `/product/`;
+  - «exigir imagen para publicar» usa la regla de fotos públicas;
+  - pedidos y carrito leen las fotos en una sola consulta.
+
+**Added**
+- Galería de producto en el panel: origen, licencia verificada, «Registrar procedencia», «Verificar licencia» y el aviso «No visible en la tienda hasta verificar la licencia» en variantes.
+- `manage.py report_image_health --company <slug>` y «Salud de las imágenes» (`GET /api/admin/catalog/image-health/`): informe de sólo lectura, nunca borra.
+
+**Deploy**
+- Sin migraciones. Las variantes con sólo fotos propias sin verificar o externas pasan a «Imagen pendiente»: contarlas en el ensayo con `report_image_health`.
+
 ## 2026-11-24 — INV-LOAD-02: cargar el stock real con dos plantillas, comprobarlo y anular una carga (rama, sin desplegar)
 
 **Added**

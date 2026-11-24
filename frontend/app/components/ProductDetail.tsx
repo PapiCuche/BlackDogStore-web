@@ -9,7 +9,10 @@ import { API_BASE } from "../lib/api";
 import { fetchWithAuth } from "../lib/auth";
 import { emitCartChange } from "../lib/cart";
 import { CartError, SOLD_OUT_LABEL, addProductToCart, onOrderLabel, overStockOffer, type OnOrder } from "../lib/catalog-models";
+import { photoLabel } from "../lib/model-configurator";
 import { formatMoney } from "../lib/format";
+import { v3ModelPath, v3VariantPath } from "../lib/structured-data";
+import { ImagePending } from "./ImagePending";
 import { OnOrderOfferPrompt, OverStockOnOrderOption } from "./OnOrderOffer";
 import { ProductCard } from "./ProductCard";
 import { RichText } from "./RichText";
@@ -28,7 +31,7 @@ type Product = {
   inventory: number;
   image_url?: string;
   /** La galería que la tienda subió. `image_url` es su principal. */
-  images?: { url: string; alt_text: string; is_primary: boolean; width: number; height: number }[];
+  images?: { url: string; alt_text: string; is_primary: boolean; width: number; height: number; is_demo?: boolean }[];
   average_rating?: number | null;
   review_count?: number;
   category?: Category;
@@ -38,7 +41,26 @@ type Product = {
   sells_by_unit?: boolean;
   /** DC3: sold «bajo pedido» when the shelf is empty; null when no offer covers it. */
   on_order?: OnOrder | null;
+  /**
+   * IMG-GATE-01 — a device variant only: the server sends just the pictures the shop may show (its own verified ones,
+   * else its colour's verified finish); none → «Imagen pendiente», never another colour's photo. Absent otherwise.
+   */
+  image_pending?: boolean;
+  /** Review of #408: the picture is a demo resource — shown and said («Imagen referencial»). */
+  image_is_demo?: boolean;
 };
+
+/**
+ * IMG-GATE-01 — where a device variant's options live: a NEW variant opens chosen on its model's page
+ * (`/modelo/<model>?variante=<variant>`); a used one, on the page's used line. Null for a product without a
+ * published model.
+ */
+export function modelPageHref(product: Pick<Product, "slug" | "product_model" | "condition_line">): string | null {
+  if (!product.product_model) return null;
+  return product.condition_line === "used"
+    ? `${v3ModelPath(product.product_model)}?line=used`
+    : v3VariantPath(product.product_model, product.slug);
+}
 
 type Review = {
   id: number;
@@ -86,13 +108,18 @@ function StarPicker({ rating, onChange, labelledBy }: { rating: number; onChange
 export default function ProductDetail({ product }: { product: Product }) {
   const [quantity, setQuantity] = useState(1);
   // La galería que la tienda subió; sin ella, la dirección de siempre.
-  const gallery = product.images?.length
+  const gallery: NonNullable<Product["images"]> = product.images?.length
     ? product.images
     : product.image_url
-      ? [{ url: product.image_url, alt_text: "", is_primary: true, width: 0, height: 0 }]
+      ? [{ url: product.image_url, alt_text: "", is_primary: true, width: 0, height: 0, is_demo: product.image_is_demo }]
       : [];
   const [selected, setSelected] = useState(() => Math.max(0, gallery.findIndex((image) => image.is_primary)));
   const shown = gallery[selected] ?? gallery[0] ?? null;
+  // IMG-GATE-01: a device variant without a picture the shop may show is «Imagen pendiente», as on its model page.
+  const pending = !shown && (product.image_pending === true || Boolean(product.product_model));
+  const optionsHref = modelPageHref(product);
+  // Review of #408: a demo resource or a picture the shop did not upload is said, as on the model page.
+  const shownLabel = shown ? photoLabel(shown.url, "catalog", Boolean(shown.is_demo)) : null;
   const [status, setStatus] = useState<string | null>(null);
   const [statusType, setStatusType] = useState<"success" | "error">("success");
   const [loading, setLoading] = useState(false);
@@ -251,6 +278,15 @@ export default function ProductDetail({ product }: { product: Product }) {
                   // PERF-LCP: la foto principal es el LCP de la ficha.
                   fetchPriority="high"
                 />
+                {shownLabel ? (
+                  <span data-testid="product-image-label" className="absolute bottom-3 left-3 rounded-full border border-bd-border bg-background/90 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted">
+                    {shownLabel}
+                  </span>
+                ) : null}
+              </div>
+            ) : pending ? (
+              <div className="relative aspect-[4/3] min-h-80 text-muted lg:min-h-[520px]">
+                <ImagePending />
               </div>
             ) : (
               <div className="flex aspect-[4/3] min-h-80 items-center justify-center lg:min-h-[520px]">
@@ -309,9 +345,9 @@ export default function ProductDetail({ product }: { product: Product }) {
               <p className="mt-6 text-sm leading-7 text-muted sm:text-base">Consulta el detalle, precio y disponibilidad de este producto.</p>
             )}
 
-            {product.product_model ? (
+            {optionsHref ? (
               <Link
-                href={`/modelo/${product.product_model}${product.condition_line === "used" ? "?line=used" : ""}`}
+                href={optionsHref}
                 className="mt-4 inline-flex w-fit items-center gap-1 text-sm font-bold text-foreground underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
               >
                 Ver todas las opciones

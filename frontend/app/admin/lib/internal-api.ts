@@ -2819,6 +2819,64 @@ export function fetchImageSources(
   }));
 }
 
+/** IMG-HEALTH (IMG-GATE-01) — the five classes of problem `report_image_health` finds. */
+export type ImageHealthIssue =
+  | "broken_file" | "external_hotlink" | "unverified_public" | "shared_across_colours" | "variant_without_photo";
+
+export type ImageHealthRow = {
+  issue: ImageHealthIssue;
+  slot: string;
+  object_id: number;
+  object_name: string;
+  model_id: number | null;
+  model_name: string;
+  colour: string;
+  host: string;
+  public_id: string;
+  detail: string;
+  admin_url: string;
+};
+
+export type ImageHealthReport = {
+  summary: Record<ImageHealthIssue, number> & {
+    external_hosts: { host: string; images: number }[];
+    variants_hidden_by_gate: number;
+    storage_checked: boolean;
+  };
+  rows: ImageHealthRow[];
+  count: number;
+  truncated: boolean;
+};
+
+export const IMAGE_HEALTH_ISSUES: ImageHealthIssue[] = [
+  "broken_file", "external_hotlink", "unverified_public", "shared_across_colours", "variant_without_photo",
+];
+
+/**
+ * IMG-HEALTH — `GET /admin/catalog/image-health/` (`products.view`), read-only: the caller's company only. It asks
+ * the storage for each file, so the panel calls it on demand. At most 500 rows; the counts are the whole catalogue's.
+ */
+export function fetchImageHealth(companyId?: number | null): Promise<ImageHealthReport> {
+  return catalogCall<Partial<ImageHealthReport>>(
+    `/admin/catalog/image-health/${companyQuery(companyId)}`, {}, "No se pudo revisar la salud de las imágenes.",
+  ).then((data) => {
+    const raw = (data?.summary ?? {}) as Partial<ImageHealthReport["summary"]>;
+    const summary = Object.fromEntries(IMAGE_HEALTH_ISSUES.map((issue) => [issue, reportCount(raw[issue])])) as
+      Record<ImageHealthIssue, number>;
+    return {
+      summary: {
+        ...summary,
+        external_hosts: Array.isArray(raw.external_hosts) ? raw.external_hosts : [],
+        variants_hidden_by_gate: reportCount(raw.variants_hidden_by_gate),
+        storage_checked: raw.storage_checked !== false,
+      },
+      rows: Array.isArray(data?.rows) ? data.rows : [],
+      count: reportCount(data?.count),
+      truncated: data?.truncated === true,
+    };
+  });
+}
+
 /**
  * B1-SIMREG — `PUT …/palette/ {"add_option_ids": [...]}`: ADDS options to the palette under the model's lock and never
  * removes one, so an option added from another screen between a read and this write is kept (no lost update).

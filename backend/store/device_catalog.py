@@ -1495,93 +1495,145 @@ def resolved_swatch(option, model_swatch_hex='', model_swatch_is_approximate=Fal
     return shown, bool(shown and option.swatch_is_approximate)
 
 
-def variant_pictures(products) -> dict[int, tuple[str, bool, bool]]:
-    """
-    The picture each NEW variant opens on, by `public_model`'s rule, for a surface that shows a few lines (the cart and,
-    reading the same cart, the checkout): product id → `(address, pending, is_demo)`.
+#: The keys of one picture of a product's public gallery (`product_media.public_payload`): what `images` carries.
+PUBLIC_IMAGE_KEYS = ('url', 'alt_text', 'is_primary', 'width', 'height')
 
-    Owner, 2026-11-23: the PRIMARY photo of the chosen colour, the one the model page opens on (the configurator's
-    `gallery.findIndex(image => image.is_primary)`, else the first). Its own gallery's primary, else its first → else
-    its own address → else the primary of its colour's finish (model + its option of the company's colour dimension,
-    D-PRC-8) among the PUBLIC pictures (`finish_media.shop_states`: licence verified, a file of the same company), else
-    the first of them → else the model's cover only on a COLOURLESS model → else `('', True, False)`: the pending
-    marker. Never another colour's photo and never the cover of a model with colours. `is_demo` as on the page: a demo
-    resource is shown and said («Imagen referencial»). A bounded number of queries whatever the number of products
-    (review of #377); `test_finish_images.CartPictureTest` keeps it equal to the picture the page opens on.
+
+def variant_galleries(products) -> dict[int, dict]:
     """
-    from .finish_media import colour_attribute_ids, shop_states
+    IMG-GATE-01 — the PUBLIC gallery of each DEVICE VARIANT (a product with a model), for every surface of the shop:
+    the model page (`public_model`), the product API, the cart and the checkout that reads it, the buyer's orders
+    and the mobile API. Product id → `{'gallery', 'image_url', 'image_pending', 'image_is_demo'}`. A product without
+    a model has no entry: its pictures are unchanged (it has no finish to fall back on; IMG-HEALTH reports them).
+
+    Owner, 2026-11-23: «Las nuevas fotografías requieren procedencia y autorización comprobables antes de publicarse.»
+    A picture is public only when its file is a managed upload of the product's company whose licence was verified
+    (`finish_media.shop_states`) — a variant's own pictures too, since IMG-GATE-01; an external (hotlinked) address
+    has no verifiable licence and is never shown. In order:
+
+      1. its own gallery's verified pictures (gallery order; the primary is the one marked, else the first);
+      2. else its own single address (`Product.image_url`, from before galleries) when it is a verified file;
+      3. else the verified pictures of its colour's finish (model + its option of the company's colour dimension,
+         D-PRC-8), described by the model and the colour when they have no text of their own;
+      4. else the model's cover, only on a COLOURLESS model (no variant of it has a colour option at all), and only
+         when it too is a verified file of the company (review of #408);
+      5. else nothing: `image_pending`, which the shop draws as the neutral «Imagen pendiente».
+
+    `source` says which of them ('own', 'finish', 'cover'; '' when pending).
+
+    Never another colour's photo, never the cover of a model with colours. `is_demo` (a verified demo resource) is
+    shown and said («Imagen referencial»). Entries have the shapes `public_model` always gave: own pictures
+    `product_media.public_payload` + `is_demo`; finish pictures `finish_media.public_payload`. A bounded number of
+    queries whatever the number of products (review of #377).
+    """
+    from .finish_media import colour_attribute_ids, public_payload as finish_public_payload, shop_states
     from .models import ModelFinishImage, ProductImage
 
-    products = [product for product in products if product is not None]
+    products = [product for product in products if product is not None and product.product_model_id]
     if not products:
         return {}
-    chosen: dict[int, tuple[str, bool]] = {}   # product id -> (address, may be a demo)
-    own = {}
-    # The primary first (one per product, `one_primary_image_per_product`), then the gallery's order.
-    for product_id, address in (ProductImage.objects.filter(product_id__in=[p.pk for p in products])
-                                .order_by('product_id', '-is_primary', 'sort_order', 'id')
-                                .values_list('product_id', 'image_url')):
-        own.setdefault(product_id, address)
-    rest = []
-    for product in products:
-        if product.pk in own:
-            chosen[product.pk] = (own[product.pk], True)
-        elif product.image_url:
-            chosen[product.pk] = (product.image_url, False)
-        elif product.product_model_id:
-            rest.append(product)
-    dimensions = {company_id: colour_attribute_ids(company_id) for company_id in {p.company_id for p in rest}}
-    colour_of = {}
-    if rest:
-        attribute_ids = set().union(*dimensions.values())
-        for product_id, option_id in (ProductVariantOption.objects.filter(
-                product_id__in=[p.pk for p in rest], attribute_id__in=attribute_ids)
-                .order_by('product_id', 'pk').values_list('product_id', 'option_id')):
-            colour_of.setdefault(product_id, option_id)
-    coloured = [p for p in rest if p.pk in colour_of]
-    #: (model id, colour option id) -> its pictures, the primary first (one per finish), then the gallery's order.
-    finishes: dict[tuple[int, int], list[str]] = {}
+    ids = [product.pk for product in products]
+    own: dict[int, list[dict]] = {}
+    for row in (ProductImage.objects.filter(product_id__in=ids).order_by('product_id', 'sort_order', 'id')
+                .values('product_id', 'image_url', 'alt_text', 'is_primary', 'width', 'height')):
+        own.setdefault(row['product_id'], []).append(row)
+    dimensions = {company_id: colour_attribute_ids(company_id) for company_id in {p.company_id for p in products}}
+    colour_of: dict[int, tuple[int, str]] = {}
+    attribute_ids = set().union(*dimensions.values())
+    if attribute_ids:
+        for product_id, option_id, label in (ProductVariantOption.objects.filter(
+                product_id__in=ids, attribute_id__in=attribute_ids)
+                .order_by('product_id', 'pk').values_list('product_id', 'option_id', 'option__label')):
+            colour_of.setdefault(product_id, (option_id, label))
+    models = {pk: (name, cover) for pk, name, cover in ProductModel.objects.filter(
+        pk__in={p.product_model_id for p in products}).values_list('pk', 'name', 'image_url')}
+    #: (model id, colour option id) -> its pictures, in the gallery's order.
+    finishes: dict[tuple[int, int], list] = {}
+    coloured = [p for p in products if p.pk in colour_of]
     if coloured:
-        for model_id, option_id, address in (ModelFinishImage.objects.filter(
+        for row in (ModelFinishImage.objects.filter(
                 model_id__in={p.product_model_id for p in coloured},
-                color_option_id__in={colour_of[p.pk] for p in coloured})
-                .order_by('model_id', 'color_option_id', '-is_primary', 'sort_order', 'pk')
-                .values_list('model_id', 'color_option_id', 'image_url')):
-            finishes.setdefault((model_id, option_id), []).append(address)
-    # Licence and demo flag of every candidate file, own and finish, in one query, by the product's company.
-    states = shop_states([address for address, may_be_demo in chosen.values() if may_be_demo]
-                         + [address for addresses in finishes.values() for address in addresses],
-                         {p.company_id for p in products})
+                color_option_id__in={colour_of[p.pk][0] for p in coloured})
+                .order_by('model_id', 'color_option_id', 'sort_order', 'pk')):
+            finishes.setdefault((row.model_id, row.color_option_id), []).append(row)
+    # Licence and demo flag of every candidate file — own, own address and finish — in one query.
+    states = shop_states(
+        [row['image_url'] for rows in own.values() for row in rows] + [p.image_url for p in products]
+        + [row.image_url for rows in finishes.values() for row in rows]
+        + [cover for _name, cover in models.values() if cover],
+        {p.company_id for p in products})
 
-    def state(product, address):
-        return states.get((product.company_id, storefront_media.managed_public_id(address)))
+    def public(product, address):
+        """(verified, is a demo) of a managed file of the product's company; None when the shop may not show it."""
+        found = states.get((product.company_id, storefront_media.managed_public_id(address)))
+        return found if found is not None and found[0] else None
 
-    for product in coloured:
-        for address in finishes.get((product.product_model_id, colour_of[product.pk]), ()):
-            found = state(product, address)
-            if found is not None and found[0]:      # public: its licence was verified
-                chosen[product.pk] = (address, True)
-                break
-    plain = [p for p in rest if p.pk not in colour_of]
+    out: dict[int, tuple[str, list]] = {}
+    plain = []
+    for product in products:
+        gallery, source = [], 'own'
+        for row in own.get(product.pk, ()):
+            found = public(product, row['image_url'])
+            if found:
+                gallery.append({'url': row['image_url'], 'alt_text': row['alt_text'], 'is_primary': row['is_primary'],
+                                'width': row['width'], 'height': row['height'], 'is_demo': found[1]})
+        if not gallery and product.image_url:
+            found = public(product, product.image_url)
+            if found:
+                gallery = [{'url': product.image_url, 'alt_text': '', 'is_primary': True, 'width': 0, 'height': 0,
+                            'is_demo': found[1]}]
+        if not gallery and product.pk in colour_of:
+            source = 'finish'
+            option_id, label = colour_of[product.pk]
+            model_name = models.get(product.product_model_id, ('', ''))[0]
+            for row in finishes.get((product.product_model_id, option_id), ()):
+                found = public(product, row.image_url)
+                if found:
+                    gallery.append(finish_public_payload(row, is_demo=found[1], alt=f'{model_name} {label}'))
+        if not gallery and product.pk not in colour_of:
+            plain.append(product)
+        out[product.pk] = (source if gallery else '', gallery)
     if plain:
         with_colour = set(ProductVariantOption.objects.filter(
             product__product_model_id__in={p.product_model_id for p in plain}).filter(
             Q(attribute__role=VariantAttribute.ROLE_COLOR) | Q(attribute__kind=VariantAttribute.KIND_COLOR))
             .values_list('product__product_model_id', flat=True).distinct())
-        covers = dict(ProductModel.objects.filter(pk__in={p.product_model_id for p in plain})
-                      .values_list('pk', 'image_url'))
         for product in plain:
-            cover = covers.get(product.product_model_id)
-            if cover and product.product_model_id not in with_colour:
-                chosen[product.pk] = (cover, False)
+            cover = models.get(product.product_model_id, ('', ''))[1]
+            # D-PRC-8: a COLOURLESS model: its cover is not another colour's photo. Review of #408: and it passes the
+            # same licence gate (a managed file of the company, verified; its real demo flag).
+            found = public(product, cover) if cover and product.product_model_id not in with_colour else None
+            if found:
+                out[product.pk] = ('cover', [{'url': cover, 'alt_text': '', 'is_primary': True, 'width': 0,
+                                              'height': 0, 'is_demo': found[1]}])
+    result = {}
+    for product_id, (source, gallery) in out.items():
+        primary = next((image for image in gallery if image['is_primary']), gallery[0] if gallery else None)
+        result[product_id] = {
+            'gallery': gallery,
+            # Where it comes from: 'own', 'finish', 'cover' or '' (pending).
+            'source': source,
+            'image_url': primary['url'] if primary else '',
+            'image_pending': primary is None,
+            'image_is_demo': bool(primary and primary['is_demo']),
+        }
+    return result
+
+
+def variant_pictures(products) -> dict[int, tuple[str, bool, bool]]:
+    """
+    The picture each device variant opens on (`variant_galleries`'s primary, the one the model page opens on: the
+    configurator's `gallery.findIndex(image => image.is_primary)`, else the first): product id → `(address, pending,
+    is_demo)`; `('', True, False)` is the pending marker. `test_finish_images.CartPictureTest` keeps it equal to the
+    picture the page opens on. A product without a model answers its own address, unchanged.
+    """
+    products = [product for product in products if product is not None]
+    galleries = variant_galleries(products)
     out = {}
     for product in products:
-        if product.pk in chosen:
-            address, may_be_demo = chosen[product.pk]
-            found = state(product, address) if may_be_demo else None
-            out[product.pk] = (address, False, bool(found and found[1]))
-        else:
-            out[product.pk] = ('', True, False)
+        found = galleries.get(product.pk)
+        out[product.pk] = ((found['image_url'], found['image_pending'], found['image_is_demo']) if found is not None
+                           else (product.image_url, not product.image_url, False))
     return out
 
 
@@ -1603,15 +1655,18 @@ def public_model(model, branch) -> dict:
     published does not mean available): it comes with its price and photos
     and `availability: 'none'`, and the page sells nothing of it.
 
-    CATALOG-REFERENCE-01 · PR C (D-C-1) — what a variant SHOWS is `gallery`:
-    its own pictures (its gallery or, before galleries, its own address) →
-    else the PUBLIC pictures of its finish (model + its colour,
+    CATALOG-REFERENCE-01 · PR C (D-C-1) — what a variant SHOWS is `gallery`, by
+    `variant_galleries` (the rule every surface of the shop shares): its own
+    VERIFIED pictures (IMG-GATE-01: its gallery or, before galleries, its own
+    address — only a managed file of the company whose licence was verified)
+    → else the PUBLIC pictures of its finish (model + its colour,
     `finish_images`; only those whose licence was verified, owner
     2026-11-23) → else nothing and `image_pending: true`, which the shop draws as the
     neutral «Imagen pendiente». Never another colour's photo and never the
     model's cover (`image_url` stays for lists and a model without variants)
     — except on a model none of whose variants (any) has an option of a
-    `color` role or `color` kind attribute (D-PRC-8).
+    `color` role or `color` kind attribute (D-PRC-8). A variant's `image_url`
+    and `images` are that same gallery's (never an unverified own picture).
     Of a picture's provenance only `is_demo` is public.
     """
     from django.db.models import OuterRef, Prefetch, Subquery, Value
@@ -1620,7 +1675,6 @@ def public_model(model, branch) -> dict:
     from .accessory_compat import for_model_public
     from .finish_media import colour_attribute_ids, public_payload as finish_public_payload, shop_states
     from .models import ModelFinishImage, ModelOption
-    from .product_media import public_payload
     from .storefront_media import managed_public_id
     from .supply_services import on_order_payload
 
@@ -1630,7 +1684,6 @@ def public_model(model, branch) -> dict:
         # even if its flag was written past the services.
         .exclude(Product.pending_draft_q())
         .prefetch_related(
-            'images',
             # PR E: each link carries the place this MODEL gives its option (0 = not placed), read in the same
             # query as the links: no query more than before.
             Prefetch('variant_options', queryset=ProductVariantOption.objects.annotate(model_rank=Coalesce(
@@ -1694,9 +1747,9 @@ def public_model(model, branch) -> dict:
             'name': product.name,
             'options': selection,
             'price': str(product.price),
-            'image_url': product.image_url,
-            'images': [public_payload(image) for image in product.images.all()],
-            # Resolved below, once the finishes are read (one query for all of them).
+            # Resolved below (`variant_galleries`, one batch for every variant): never an unverified own picture.
+            'image_url': '',
+            'images': [],
             'gallery': None,
             'image_pending': None,
             'available': availability != 'none',
@@ -1714,56 +1767,32 @@ def public_model(model, branch) -> dict:
                                         color_option_id__in=set(colour_of.values()))
         .select_related('color_option').order_by('sort_order', 'pk')
     ) if colour_of else []
-    own_by_product = {product.pk: list(product.images.all()) for product in variants}
-    states = shop_states([row.image_url for row in finish_rows] + [
-        image.image_url for images in own_by_product.values() for image in images], {model.company_id})
+    states = shop_states([row.image_url for row in finish_rows], {model.company_id})
 
     def state(address) -> tuple[bool, bool]:
         """(licence verified, is a demo) of a managed file of this company; (False, False) for any other address."""
         return states.get((model.company_id, managed_public_id(address)), (False, False))
 
     # Owner, 2026-11-23: a finish picture is on the shop only once its licence is verified (`finish_media.is_public`);
-    # until then the finish is `image_pending` here and the picture stays in the panel. A variant's own pictures are
-    # not gated (they are audited, not hidden).
+    # until then the finish is `image_pending` here and the picture stays in the panel.
     finish_rows = [row for row in finish_rows if state(row.image_url)[0]]
-    colourless_cache: list[bool] = []
-
-    def colourless() -> bool:
-        """
-        D-PRC-8 (re-review of #372): NO variant of the model — published or not, of any line — has an option of an
-        attribute with the `color` role OR the `color` kind. Wider than the company's colour dimension on purpose: a
-        model on a legacy colour attribute is never «colourless». Read once, only when a variant would need it.
-        """
-        if not colourless_cache:
-            colourless_cache.append(not ProductVariantOption.objects.filter(product__product_model=model).filter(
-                Q(attribute__role=VariantAttribute.ROLE_COLOR) | Q(attribute__kind=VariantAttribute.KIND_COLOR),
-            ).exists())
-        return colourless_cache[0]
-
     for row in finish_rows:
         finishes.setdefault(row.color_option_id, []).append(finish_public_payload(
             row, is_demo=state(row.image_url)[1],
             alt=f'{model.name} {row.color_option.label}'))
+    # IMG-GATE-01: one rule for every surface — the variant's own VERIFIED pictures, else its colour's finish, else
+    # the cover of a colourless model, else nothing (`variant_galleries`).
+    galleries = variant_galleries([product for product in variants
+                                   if product.condition_line != Product.CONDITION_USED]) if variant_rows else {}
     for entry in variant_rows:
-        own = own_by_product[entry['product_id']]
-        if own:
-            gallery = [{**public_payload(image), 'is_demo': state(image.image_url)[1]}
-                       for image in own]
-        elif entry['image_url']:
-            gallery = [{'url': entry['image_url'], 'alt_text': '', 'is_primary': True, 'width': 0, 'height': 0,
-                        'is_demo': False}]
-        elif entry['product_id'] in colour_of:
-            # Its colour's finish, or nothing.
-            gallery = list(finishes.get(colour_of[entry['product_id']], []))
-        elif model.image_url and colourless():
-            # D-PRC-8: a COLOURLESS model: the cover is not another colour's photo.
-            gallery = [{'url': model.image_url, 'alt_text': '', 'is_primary': True, 'width': 0, 'height': 0,
-                        'is_demo': False}]
-        else:
-            # A model with colours never shows its cover (one colour's photo).
-            gallery = []
-        entry['gallery'] = gallery
-        entry['image_pending'] = not gallery
+        found = galleries.get(entry['product_id'], {'gallery': [], 'image_url': '', 'image_pending': True,
+                                                     'source': ''})
+        entry['gallery'] = found['gallery']
+        entry['image_pending'] = found['image_pending']
+        if found['source'] == 'own':
+            # `image_url`/`images` stay what they always were — the variant's OWN pictures — but only verified ones.
+            entry['image_url'] = found['image_url']
+            entry['images'] = [{key: image[key] for key in PUBLIC_IMAGE_KEYS} for image in found['gallery']]
 
     used_units = []
     if used_products and branch is not None:

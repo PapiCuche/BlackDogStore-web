@@ -47,6 +47,19 @@ class V1ProductSerializer(serializers.ModelSerializer):
             'inventory', 'category', 'image_url', 'images', 'average_rating', 'review_count',
         ]
 
+    def to_representation(self, instance):
+        """IMG-GATE-01: a device variant's pictures are the gated ones (`serializers.public_variant_gallery`). The
+        shape is unchanged: no key is added to the pinned contract."""
+        from .device_catalog import PUBLIC_IMAGE_KEYS
+        from .serializers import public_variant_gallery
+
+        data = super().to_representation(instance)
+        gated = public_variant_gallery(self, instance)
+        if gated is not None:
+            data['image_url'] = gated['image_url']
+            data['images'] = [{key: image[key] for key in PUBLIC_IMAGE_KEYS} for image in gated['gallery']]
+        return data
+
     def get_images(self, obj):
         # `image_url` is still the primary one; this is the whole gallery.
         # `.all()` reads the prefetch set up by the viewset.
