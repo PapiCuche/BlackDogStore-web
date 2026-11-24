@@ -878,6 +878,16 @@ class LineNeverGuessedTest(LoadShop, TestCase):
         self.assertEqual(payload['counts']['create'], 0, payload['rows'])
         self.assertIn('nuevo o seminuevo', self.errors(payload)[3])
 
+    def test_a_sale_price_alone_without_a_line_is_a_row_error_not_a_new_device(self):
+        # NEW-TEMPLATE-PRICE review: «Precio de venta» left the used-only columns (it is in both templates now), but
+        # without a line it still says «seminuevo»: never a new device with its price dropped.
+        upload = self.renamed([self.used_row('GUESS-P001')])
+        response = self.loader_api.post(PREVIEW_URL, {'file': upload, 'reason': 'X'}, format='multipart')
+        self.assertEqual(response.status_code, 201, response.content)
+        payload = response.json()
+        self.assertEqual(payload['counts']['create'], 0, payload['rows'])
+        self.assertIn('nuevo o seminuevo', self.errors(payload)[3])
+
     def test_the_same_file_with_the_line_chosen_on_screen_loads_used(self):
         upload = self.renamed([self.used_row('GUESS-0002', **{'Garantía (días)': 90})])
         response = self.loader_api.post(PREVIEW_URL, {'file': upload, 'reason': 'X', 'line': 'used'},

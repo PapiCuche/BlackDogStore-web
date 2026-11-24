@@ -443,7 +443,7 @@ export type UnitImportPriceReview = {
   difference: string | null;
   units_in_file: number;
   rows_with_price: number;
-  /** Available devices of the variant in the caller's branches. */
+  /** Available devices of the variant in the branches of the file (the job's), never another. */
   units_in_stock: number;
   is_published_online: boolean;
   is_sold_online: boolean;

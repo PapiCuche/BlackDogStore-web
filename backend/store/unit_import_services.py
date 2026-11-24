@@ -285,6 +285,10 @@ STOCK_TEMPLATES = {
 #: says would otherwise be ignored on every row («ignorado en un equipo nuevo»). «Precio de venta» is no longer one of
 #: them (NEW-TEMPLATE-PRICE): in the new template it proposes the variant's price, and is never stored on the device.
 USED_TEMPLATE_FIELDS = frozenset(field for _header, field in _STOCK_USED)
+#: What says «this is a used device» in a row whose line nobody said (INV-LOAD-02 review, #409): the used-only columns
+#: AND «Precio de venta». A new device sells at its variant's price, so a row priced on its own without a line is never
+#: guessed new (its price would be dropped): LINE_UNSAID.
+LINE_SIGNAL_FIELDS = USED_TEMPLATE_FIELDS | {'sale_price'}
 #: What the importer reads that neither stock template carries, and why.
 NOT_IN_STOCK_TEMPLATES = {
     'code': 'El equipo se identifica por «Modelo» y sus opciones, no por un código de producto.',
@@ -764,7 +768,7 @@ def price_review(company, staged: list[dict], *, products: dict, branch_ids) -> 
     """
     Per variant whose file price is not its price: the price now, the file's price(s), the proposal (one price only;
     two or more is a conflict, and nothing is proposed), how many devices of it the file brings and how many are
-    already available in `branch_ids` (the caller's branches), and whether it is published and sold online. Reads only.
+    already available in `branch_ids` (the job's branches), and whether it is published and sold online. Reads only.
     """
     per_variant: dict[int, dict] = {}
     for values in staged:
@@ -844,11 +848,21 @@ def clean_price_updates(job, actor, raw) -> list[dict]:
     return cleaned
 
 
+def _messages(detail) -> list[str]:
+    """The sentences of a DRF error detail (a dict of lists, a list or one message), in order."""
+    if isinstance(detail, dict):
+        return [message for value in detail.values() for message in _messages(value)]
+    if isinstance(detail, (list, tuple)):
+        return [message for value in detail for message in _messages(value)]
+    return [str(detail)]
+
+
 def apply_price_updates(job, actor, updates: list[dict], *, request=None) -> list[dict]:
     """
-    Write the confirmed updates, inside the caller's transaction. Each variant is locked (pk order, BEFORE any shelf:
-    DEC-CATALOG-PALETTE-LOCK-01 is Product → shelf) and must still be this company's, not archived, and at the price
-    the preview saw; otherwise `preview_stale` (409) and nothing is written. The price goes through the product's own
+    Write the confirmed updates, inside the caller's transaction, AFTER the load's devices: their movements already
+    hold each variant's row (shelf → product, the order of every sale; locking the product before its shelf deadlocked
+    a concurrent sale). Each variant is locked again (pk order, `of=('self',)`) and must still be this company's, not
+    archived, and at the price the preview saw; otherwise `preview_stale` (409) and nothing is written. The price goes through the product's own
     write (`write_product_fields`: its validation and audit fields), never the sale switch: a draft stays a draft.
     """
     if not updates:
@@ -872,8 +886,9 @@ def apply_price_updates(job, actor, updates: list[dict], *, request=None) -> lis
         old = product.price
         try:
             product, changed = write_product_fields(job.company, product, {'price': f'{update["price"]:.2f}'})
-        except ValidationError:                      # the product's own rule: the refusal of the whole apply
-            raise UnitImportError(f'No se pudo cambiar el precio de «{product.name}». No se registró nada.',
+        except ValidationError as exc:               # the product's own rule: the refusal of the whole apply, with why
+            reason = ' '.join(_messages(exc.detail)) or 'el producto no admite el cambio.'
+            raise UnitImportError(f'No se pudo cambiar el precio de «{product.name}»: {reason} No se registró nada.',
                                   code=PRICE_UPDATE_INVALID) from None
         AdminAuditLog.log(
             actor=actor, action='product_updated', target_type='product', target_id=product.pk,
@@ -1192,7 +1207,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         # are ignored and said, like its price.
         # INV-LOAD-02 review — a row found by its MODEL whose line nobody said (no template, no line chosen on screen,
         # no «Línea» cell) took the default, NEW. With a used device's data on it, that is a guess: never loaded.
-        stated = [name for name in sorted(USED_TEMPLATE_FIELDS) if fields[name]]
+        stated = [name for name in sorted(LINE_SIGNAL_FIELDS) if fields[name]]
         if not line and not fields['line'] and stated and fields['model'] and (
                 product is None or (by_model and product.condition_line != LINE_USED)):
             errors.append(LINE_UNSAID)
@@ -1322,7 +1337,9 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     if template_line == LINE_NEW:
         review['price_review'] = price_review(
             company, [row.normalized_data for row in staged if row.action == BulkImportRow.CREATE],
-            products=products, branch_ids=reachable)
+            # The JOB's branches (`mapping_snapshot.branch_ids`): whoever may read the job reaches all of them (`_Reach`),
+            # so its summary never counts the stock of a branch a reader of the job does not operate.
+            products=products, branch_ids=branch_ids)
     job.rows_total = len(staged)
     job.rows_create = counts['create']
     job.rows_skip = counts['skip']
@@ -1422,9 +1439,6 @@ def apply_units(*, job, actor, request=None, price_updates=None):
             )
         groups.setdefault(_reception_key(values), []).append(row)
 
-    # NEW-TEMPLATE-PRICE — the variants first (Product → shelf), then the shelves and the devices.
-    price_changes = apply_price_updates(job, actor, price_updates, request=request)
-
     # INV-OPENING-01 — a job staged before the option has none: a purchase, as it was.
     opening = (job.options_snapshot or {}).get('entry_kind') == ENTRY_OPENING
     movement_type = StockMovement.INITIAL_STOCK if opening else StockMovement.PURCHASE_ENTRY
@@ -1478,6 +1492,11 @@ def apply_units(*, job, actor, request=None, price_updates=None):
             if not products[product_id].requires_imei:
                 unmarked += sum(1 for unit in created if unit.imei)
             movements += 1
+
+    # NEW-TEMPLATE-PRICE — AFTER the devices (DEC-LOCK-SCOPE-01 · NEW-TEMPLATE-PRICE in 05_): every movement above
+    # locked its shelf and then wrote the product row (`inventory_services`, `inventory = F(...)`), like a sale does, so
+    # each proposed variant (it has devices in this file) is already held here: shelf → product, never the reverse.
+    price_changes = apply_price_updates(job, actor, price_updates, request=request)
 
     # LABEL-A — one batch per branch, only here: a second apply returned above, on the APPLIED state.
     label_failed = sum(batch is label_batches.FAILED

@@ -131,7 +131,7 @@ function PriceReview({ review, canUpdate, chosen, disabled, onToggle }: {
         <thead>
           <tr className="border-b border-bd-border">
             <Th>Variante</Th><Th>Precio actual</Th><Th>Precio del archivo</Th><Th>Diferencia</Th>
-            <Th>Entran</Th><Th>Ya en stock (tus sucursales)</Th><Th>En la tienda</Th><Th>Propuesta</Th>
+            <Th>Entran</Th><Th>Ya en stock (sucursales del archivo)</Th><Th>En la tienda</Th><Th>Propuesta</Th>
           </tr>
         </thead>
         <tbody>

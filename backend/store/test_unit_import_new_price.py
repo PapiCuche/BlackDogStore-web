@@ -14,7 +14,7 @@ Los equipos se crean exactamente como antes: el precio del archivo nunca se guar
 """
 from decimal import Decimal
 
-from django.test import TestCase
+from django.test import TestCase, TransactionTestCase
 
 from store import device_catalog
 from store import unit_import_services as unit_import
@@ -286,6 +286,22 @@ class NewTemplatePriceApplyTest(NewPriceShop, TestCase):
         self.assertFalse(StockUnit.objects.filter(serial_number='NP-1001').exists())
         self.assertEqual(self.price_of(self.new128), Decimal('3050.00'))
 
+    def test_a_refusal_of_the_products_own_rule_says_its_reason(self):
+        from store.models import Category
+
+        payload = self.staged()
+        other = NewPriceShop()
+        other.assertEqual = self.assertEqual
+        other.build('newprice-apply-otra')
+        foreign = Category.objects.create(company=other.company, name='Ajena', slug='ajena-np')
+        Product.objects.filter(pk=self.new128.pk).update(category=foreign)      # a row the serializer refuses
+        refused = self.apply_with(payload, [{'variant_id': self.new128.pk, 'price': '3199.90', 'confirm': True}],
+                                  expect=400)
+        self.assertEqual(refused['code'], unit_import.PRICE_UPDATE_INVALID)
+        self.assertIn('La categoría no pertenece a la empresa de este producto.', refused['detail'])
+        self.assertFalse(StockUnit.objects.filter(serial_number='NP-1001').exists())
+        self.assertEqual(self.price_of(self.new128), Decimal('3000.00'))
+
     def test_an_applied_job_cannot_replay_its_proposal(self):
         payload = self.staged()
         self.apply(payload)
@@ -346,7 +362,8 @@ class NewTemplatePriceIsolationTest(NewPriceShop, TestCase):
     def staged_other(self):
         return self.other.preview('new', [self.other.new_row('NP-2101', **{'Precio de venta': 3199.9})])
 
-    def test_units_in_stock_count_only_the_callers_branches(self):
+    def test_units_in_stock_count_only_the_branches_of_the_job(self):
+        # The job is readable by whoever reaches ITS branches (`_Reach`): its summary never counts another branch's stock.
         self.receive(self.new128, 1)                                   # main branch
         from store.stock_unit_services import receive_units
 
@@ -357,5 +374,69 @@ class NewTemplatePriceIsolationTest(NewPriceShop, TestCase):
         payload = self.preview('new', [self.new_row('NP-2201', branch=self.north, **{'Precio de venta': 3199.9})],
                                client=client_for(scoped))
         self.assertEqual(self.review(payload)[self.new128.pk]['units_in_stock'], 1)
+        # A company-wide loader, with a file of the main branch only: the north's device is not counted.
         payload = self.preview('new', [self.new_row('NP-2202', **{'Precio de venta': 3199.9})])
+        self.assertEqual(self.review(payload)[self.new128.pk]['units_in_stock'], 1)
+        # A file of both branches counts both.
+        payload = self.preview('new', [self.new_row('NP-2203', **{'Precio de venta': 3199.9}),
+                                       self.new_row('NP-2204', branch=self.north, **{'Precio de venta': 3199.9})])
         self.assertEqual(self.review(payload)[self.new128.pk]['units_in_stock'], 2)
+
+
+# ---------------------------------------------------------------------------
+# Lock order: a load that changes a price never deadlocks a sale of the same variant
+# ---------------------------------------------------------------------------
+
+class ApplyWithPriceAgainstSaleTest(TransactionTestCase):
+    """
+    Every stock movement locks the shelf, then writes the product row (`inventory_services`: the compatibility
+    `inventory` aggregate). The price update therefore runs AFTER the devices of the load, whose movements already
+    hold that row: shelf → product, like a sale. Locking the product first (before its shelf) deadlocked a sale of the
+    same variant, and PostgreSQL could kill the sale — a payment already captured.
+    """
+
+    def test_a_sale_waiting_on_the_shelf_lands_and_the_load_with_its_price_lands_too(self):
+        import threading
+
+        from django.utils import timezone
+
+        from store import inventory_services as inventory
+        from store.models import Order, OrderItem
+        from store.test_supply_lock_scope import Race, after_call, in_thread, waited
+
+        shop = NewPriceShop()
+        shop.assertEqual = self.assertEqual
+        shop.build('newprice-race')
+        shop.receive(shop.new128, 1)                      # the device the till sells
+        payload = shop.preview('new', [shop.new_row('NP-RACE-1', **{'Precio de venta': 3199.9})])
+        order = Order.objects.create(
+            company=shop.company, fulfillment_branch=shop.branch, customer_email='x@example.com',
+            total=shop.new128.price, status=Order.Status.PAID, paid=True, paid_at=timezone.now())
+        OrderItem.objects.create(order=order, product=shop.new128, quantity=1, price=shop.new128.price)
+        job = BulkImportJob.objects.get(pk=payload['id'])
+        race = Race()
+        load_has_price = threading.Event()
+
+        def hold_then_let_the_sale_in():
+            # The load holds what it locked by the time it writes the price; the sale now asks for the same rows.
+            if in_thread('load'):
+                load_has_price.set()
+                race.blocked('sale')                      # waits until the sale waits for a lock (or finished)
+
+        def load():
+            job_, _changed = unit_import.apply_units(job=job, actor=shop.loader, price_updates=[
+                {'variant_id': shop.new128.pk, 'price': '3199.90', 'confirm': True}])
+            return job_.status
+
+        def sale():
+            waited(load_has_price, 'the load to write the price')
+            inventory.record_sale_stock_movements(order, strict=True)
+            return 'sold'
+
+        with after_call(unit_import, 'apply_price_updates', hold_then_let_the_sale_in):
+            outcomes = race.run(load=load, sale=sale)
+        self.assertEqual(outcomes, {'load': BulkImportJob.APPLIED, 'sale': 'sold'},
+                         {name: repr(value) for name, value in outcomes.items()})
+        self.assertEqual(Product.objects.get(pk=shop.new128.pk).price, Decimal('3199.90'))
+        self.assertEqual(StockUnit.objects.filter(product=shop.new128, status='available').count(), 1)
+        self.assertEqual(StockUnit.objects.filter(product=shop.new128, status='sold').count(), 1)
