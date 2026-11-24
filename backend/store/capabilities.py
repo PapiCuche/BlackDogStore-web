@@ -127,6 +127,12 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('inventory.labels.sensitive', 'inventory', 'Imprimir IMEI y series',
          'Imprimir etiquetas que muestran el IMEI o la serie de un equipo (perfil «IMEI 1» y '
          'etiqueta técnica). Cada impresión queda registrada.', STATUS_ACTIVE),
+    # USED-READY-01. Saying a used device was checked — and so may be sold — is its own authority: whoever
+    # receives it (`inventory.adjust`) does not thereby approve it. Migration 0187 grants it to the roles that
+    # hold `company.manage` (the administration preset); a tenant hands it to its technicians on purpose.
+    _cap('inventory.units.inspect', 'inventory', 'Inspeccionar seminuevos',
+         'Aprobar o rechazar la inspección de un equipo seminuevo. Sin inspección aprobada no se vende '
+         'en caja ni se publica en línea.', STATUS_ACTIVE),
     # DEVICE-COMMERCE-01 · DC1. What a thing COST is its own authority, and it
     # is NOT `inventory.adjust`: whoever puts a device on the shelf does not
     # thereby see what the shop paid for it, nor the margin it leaves. Owner's

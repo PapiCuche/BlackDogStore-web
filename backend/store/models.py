@@ -4034,6 +4034,11 @@ class CompanySettings(models.Model):
     # form an HTML-injection vector into other people's email clients.
     warranty_policy_text = models.TextField(blank=True, max_length=2000)
     warranty_policy_url = models.URLField(max_length=300, blank=True)
+    # USED-READY-01 — the days of warranty a used device of THIS company carries when its own record says none
+    # (`StockUnit.warranty_days`). NULL: no number; the shop shows its warranty policy text. Never a platform value.
+    used_warranty_days = models.PositiveSmallIntegerField(
+        null=True, blank=True, validators=[MaxValueValidator(3650)],
+    )
     terms_url = models.URLField(max_length=300, blank=True)
     privacy_url = models.URLField(max_length=300, blank=True)
 
@@ -10822,6 +10827,19 @@ class StockUnit(models.Model):
         REFURBISHED = 'refurbished', 'Reacondicionado'
         USED = 'used', 'Usado'
 
+    # USED-READY-01 — whether somebody checked THIS used device. NOT a status: the shelf count
+    # (`BranchStock.quantity == count(AVAILABLE)`) never looks at it (docs/adr-trade-in.md §3.2). It only
+    # decides where a device of the USED line may be sold: online only once approved (and published), and at
+    # the till only once approved. A new device ignores it.
+    class Inspection(models.TextChoices):
+        PENDING = 'pending', 'Pendiente de inspección'
+        APPROVED = 'approved', 'Inspección aprobada'
+        REJECTED = 'rejected', 'Inspección rechazada'
+
+    class FunctionalState(models.TextChoices):
+        FULL = 'full', 'Sin fallas declaradas'
+        WITH_FAULTS = 'with_faults', 'Con fallas declaradas'
+
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='stock_units')
     branch = models.ForeignKey('store.Branch', on_delete=models.PROTECT, related_name='stock_units')
     product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='stock_units')
@@ -10900,6 +10918,36 @@ class StockUnit(models.Model):
     hold_origin = models.CharField(max_length=64, blank=True, default='', db_default='')
     hold_started_at = models.DateTimeField(null=True, blank=True)
 
+    # --- USED-READY-01 ------------------------------------------------------
+    # Meaningful only for a device of the USED line (`product.condition_line`). Every device enters
+    # `pending` and unpublished (`db_default`: the previous release keeps inserting while this migrates,
+    # and what it inserts must not reach the web either). Written only by `used_unit_services`.
+    inspection_status = models.CharField(
+        max_length=10, choices=Inspection.choices, default=Inspection.PENDING, db_default=Inspection.PENDING,
+    )
+    #: Staff only: why it was rejected, or what the inspection noted.
+    inspection_note = models.CharField(max_length=300, blank=True, default='', db_default='')
+    inspected_at = models.DateTimeField(null=True, blank=True)
+    inspected_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    #: The device ITSELF is on the web. Never set by an import or a reception: a decision of its own.
+    published_online = models.BooleanField(default=False, db_default=False)
+    published_at = models.DateTimeField(null=True, blank=True)
+    published_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name='+',
+    )
+    #: This device's warranty in days. NULL = the company's warranty policy; 0 = sold without warranty.
+    warranty_days = models.PositiveSmallIntegerField(null=True, blank=True, validators=[MaxValueValidator(3650)])
+    #: '' = not stated. «Con fallas» goes with `defects`, which says which.
+    functional_state = models.CharField(
+        max_length=12, choices=FunctionalState.choices, blank=True, default='', db_default='',
+    )
+    #: Public: what does not work or is damaged, in the shop's words.
+    defects = models.CharField(max_length=500, blank=True, default='', db_default='')
+    #: Public: what comes in the box (charger, cable, box…).
+    accessories = models.CharField(max_length=300, blank=True, default='', db_default='')
+
     received_at = models.DateTimeField(default=timezone.now)
     sold_at = models.DateTimeField(null=True, blank=True)
     # The sale it left in. PROTECT: an order that sold a unit is its history.
@@ -10961,6 +11009,28 @@ class StockUnit(models.Model):
             models.CheckConstraint(
                 condition=models.Q(battery_health__isnull=True) | models.Q(battery_health__lte=100),
                 name='stock_unit_battery_health_percent',
+            ),
+            # USED-READY-01 — a device is on the web only once inspected and approved…
+            models.CheckConstraint(
+                condition=models.Q(published_online=False) | models.Q(inspection_status='approved'),
+                name='stock_unit_published_is_inspected',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(inspection_status__in=['pending', 'approved', 'rejected']),
+                name='stock_unit_inspection_status_valid',
+            ),
+            # …and a decision says when it was taken.
+            models.CheckConstraint(
+                condition=models.Q(inspection_status='pending') | models.Q(inspected_at__isnull=False),
+                name='stock_unit_inspection_decided_has_date',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(functional_state__in=['', 'full', 'with_faults']),
+                name='stock_unit_functional_state_valid',
+            ),
+            models.CheckConstraint(
+                condition=models.Q(warranty_days__isnull=True) | models.Q(warranty_days__lte=3650),
+                name='stock_unit_warranty_days_range',
             ),
         ]
         indexes = [

@@ -147,8 +147,8 @@ class QuoteCapabilitiesTest(TestCase):
         from store.tests import _saas_company
 
         module = sales_quote_migration()
-        copies = importlib.import_module('store.migrations.0161_document_copy_capability')
-        self.assertEqual(copies.ADMIN_PREVIOUS | set(copies.NEW_CAPABILITIES), module.ADMIN_PREVIOUS)
+        previous = importlib.import_module('store.migrations.0187_used_unit_readiness')
+        self.assertEqual(previous.ADMIN_PREVIOUS | set(previous.NEW_CAPABILITIES), module.ADMIN_PREVIOUS)
         self.assertEqual(module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES), DEFAULT_ADMIN_CAPABILITY_CODES)
 
         company = _saas_company('Antes', 'sq-antes', tax_id='20900095009')
@@ -511,7 +511,14 @@ class QuoteUsedUnitTest(QuoteBase):
                                          units=[{'serial_number': 'USADOSQ001', 'imei': IMEI_A, 'condition': 'used',
                                                  'cost': '900.00', 'sale_price': '1500.00'}])
 
+    def inspected(self):
+        """USED-READY-01: approve the device's inspection with the real service."""
+        from store.used_unit_test_support import approve
+
+        self.unit = approve(self.unit, self.boss)
+
     def test_a_used_device_is_quoted_by_the_device_and_masked(self):
+        self.inspected()
         res = self.client.post(URL, self.body(items=[{'product': self.used.pk, 'quantity': 1}]), format='json')
         self.assertEqual(res.status_code, 400, res.content)
         quote = self.create(items=[{'product': self.used.pk, 'quantity': 1, 'unit': self.unit.pk}])
@@ -519,7 +526,14 @@ class QuoteUsedUnitTest(QuoteBase):
         self.assertNotIn(self.unit.imei, str(quote))
         self.assertEqual(StockUnit.objects.get(pk=self.unit.pk).status, 'available')   # named, never reserved
 
+    def test_an_uninspected_used_device_is_not_quoted(self):
+        res = self.client.post(URL, self.body(items=[{'product': self.used.pk, 'quantity': 1, 'unit': self.unit.pk}]),
+                               format='json')
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'unit_not_inspected'))
+        self.assertFalse(SalesQuote.objects.exists())
+
     def test_the_used_ready_rule_refuses_quoting_and_converting(self):
+        self.inspected()
         quote = self.create(items=[{'product': self.used.pk, 'quantity': 1, 'unit': self.unit.pk}])
         self.act(quote['id'], 'approve')
         refusal = 'este seminuevo todavía no tiene la inspección aprobada.'
@@ -533,11 +547,13 @@ class QuoteUsedUnitTest(QuoteBase):
         self.assertEqual(res.status_code, 201, res.content)
         self.assertEqual(StockUnit.objects.get(pk=self.unit.pk).status, 'sold')
 
-    def test_the_adapter_answers_nothing_until_used_ready_lands(self):
-        import sys
+    def test_the_adapter_applies_the_used_ready_rule_of_the_till(self):
+        from store import used_unit_services
 
-        with patch.dict(sys.modules, {'store.used_unit_services': None}):
-            self.assertEqual(quotes.used_unit_till_refusal(self.unit), '')
+        self.assertEqual(quotes.used_unit_till_refusal(self.unit), used_unit_services.till_refusal(self.unit))
+        self.assertTrue(quotes.used_unit_till_refusal(self.unit))
+        self.inspected()
+        self.assertEqual(quotes.used_unit_till_refusal(self.unit), '')
 
 
 # ---------------------------------------------------------------------------

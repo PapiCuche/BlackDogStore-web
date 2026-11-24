@@ -29,6 +29,7 @@ from store.test_document_goldens import escpos_text
 from store.test_supplier_offers import SupplyShop
 from store.tests import _c1_sale, _p2d_member, _prod
 from store.ticket_services import generate_sales_note_ticket_pdf
+from store.used_unit_test_support import approve, approve_all, ready_used  # noqa: F401
 
 D = Decimal
 MIGRATION = '0178_orderitem_line_snapshot'
@@ -54,7 +55,7 @@ class _Devices(SaleShop):
         self.build()
         self.new_a, = self.receive(self.new128, 1)
         self.used_a, = self.receive(self.used128, 1)
-        units.update_unit(self.used_a, sale_price='1999.00', cost='1100.00', cosmetic_grade=self.grade.pk)
+        ready_used(self.used_a, sale_price='1999.00', cost='1100.00', cosmetic_grade=self.grade.pk)
         self.used_a.refresh_from_db()
 
 

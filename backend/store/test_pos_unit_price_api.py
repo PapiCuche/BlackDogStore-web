@@ -15,6 +15,7 @@ from store.models import Order, OrderItem, Product, StockMovement, StockUnit
 from store.test_pos_reconcile import _web_login
 from store.test_stock_units import IMEI_A, IMEI_B, IMEI_C
 from store.tests import Ip1PosBase
+from store.used_unit_test_support import approve_all
 
 WEB = '/api/admin/pos/'
 
@@ -37,6 +38,7 @@ class UsedAtTheTillApiTest(Ip1PosBase):
                 {'serial_number': 'USADO10002', 'imei': IMEI_B, 'condition': 'used', 'cost': '1600.00',
                  'sale_price': '2450.00'},
             ])
+        self.a, self.b = approve_all([self.a, self.b])        # USED-READY-01: the till sells approved devices
 
     def items(self, *picked):
         return [{'product': self.used.pk, 'quantity': len(picked),

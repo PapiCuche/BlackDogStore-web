@@ -20,6 +20,7 @@ two operations on the same shelf queue instead of deadlocking.
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import re
 from decimal import Decimal, InvalidOperation
@@ -28,7 +29,7 @@ from django.db import IntegrityError, connection, transaction
 from django.db.models import Q
 from django.utils import timezone
 
-from . import device_identity, money_input
+from . import device_identity, inventory_services, money_input
 from .inventory_services import (
     InsufficientStockError, InvalidMovementError, InventoryError, create_stock_movement,
 )
@@ -36,6 +37,11 @@ from .models import AdminAuditLog, BranchStock, Product, StockMovement, StockUni
 
 MAX_BATCH = 200
 MAX_REASON = 300
+#: INV-LOAD-01 — `StockUnit.notes` holds 300 characters. More is refused with this sentence, never cut in silence.
+MAX_NOTES = 300
+NOTES_TOO_LONG = f'Las notas internas del equipo admiten hasta {MAX_NOTES} caracteres.'
+#: INV-LOAD-01 — the oldest entry date a person may state: older is a typo («1920»), not stock.
+OLDEST_ENTRY = datetime.date(2000, 1, 1)
 
 
 class StockUnitError(InventoryError):
@@ -244,11 +250,168 @@ def clean_grade(company, value):
     return found
 
 
+def clean_notes(value) -> str:
+    """INV-LOAD-01 — a device's internal notes, whitespace collapsed. Too long is an error on `notes`, never a cut."""
+    text = ' '.join(str(value or '').split())
+    if len(text) > MAX_NOTES:
+        raise StockUnitError(NOTES_TOO_LONG, field='notes')
+    return text
+
+
+_DAY_FORMATS = ('%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y')
+
+
+def clean_received_on(value) -> datetime.date | None:
+    """
+    INV-LOAD-01 — the day a device entered the shop, as a person states it: a date (or the date of a datetime), or a
+    text «AAAA-MM-DD» / «DD/MM/AAAA». Empty is None (today). Never in the future, never before `OLDEST_ENTRY`.
+    """
+    if value in (None, ''):
+        return None
+    if isinstance(value, datetime.datetime):
+        day = (timezone.localtime(value) if timezone.is_aware(value) else value).date()
+    elif isinstance(value, datetime.date):
+        day = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        # An Excel date cell arrives as its ISO text, with a time: «2026-10-01T00:00:00».
+        text = re.split(r'[T ]', text, maxsplit=1)[0]
+        day = None
+        for pattern in _DAY_FORMATS:
+            try:
+                day = datetime.datetime.strptime(text, pattern).date()
+                break
+            except ValueError:
+                continue
+        if day is None:
+            raise StockUnitError('Fecha de ingreso no válida: escríbela como AAAA-MM-DD o DD/MM/AAAA.',
+                                 field='received_on')
+    else:
+        raise StockUnitError('Fecha de ingreso no válida.', field='received_on')
+    if day > timezone.localdate():
+        raise StockUnitError('La fecha de ingreso no puede ser futura.', field='received_on')
+    if day < OLDEST_ENTRY:
+        raise StockUnitError(
+            f'La fecha de ingreso no puede ser anterior al {OLDEST_ENTRY.strftime("%d/%m/%Y")}.',
+            field='received_on')
+    return day
+
+
+def received_at_for(day) -> datetime.datetime:
+    """The moment stored for a device that entered on `day`: now for today (or none), else that day at noon."""
+    if day is None or day == timezone.localdate():
+        return timezone.now()
+    return timezone.make_aware(datetime.datetime.combine(day, datetime.time(12, 0)))
+
+
 def clean_public_notes(value) -> str:
     text = ' '.join(str(value or '').split())
     if len(text) > 500:
         raise StockUnitError('Los detalles para el comprador admiten hasta 500 caracteres.', field='public_notes')
     return text
+
+
+# ---------------------------------------------------------------------------
+# USED-READY-01 — what the shop says about ONE used device beyond battery and grade
+# ---------------------------------------------------------------------------
+#
+# Only a device of the USED line carries them (a new device is sold with its variant's terms). All four are public:
+# the buyer reads them on the device's card. Optional on every door; an absent key changes nothing.
+
+USED_ONLY_FIELDS = ('warranty_days', 'functional_state', 'defects', 'accessories')
+MAX_WARRANTY_DAYS = 3650
+MAX_DEFECTS = 500
+MAX_ACCESSORIES = 300
+NOT_USED_LINE = 'not_used_line'
+FAULTS_UNDESCRIBED = 'Un equipo «con fallas» dice cuáles: completa «Defectos».'
+_WARRANTY_DAYS = re.compile(r'[0-9]{1,4}', re.ASCII)
+_FUNCTIONAL_WORDS = {
+    'full': StockUnit.FunctionalState.FULL, 'funciona': StockUnit.FunctionalState.FULL,
+    'funciona al 100': StockUnit.FunctionalState.FULL, 'funciona al 100 %': StockUnit.FunctionalState.FULL,
+    'sin fallas': StockUnit.FunctionalState.FULL, 'sin fallas declaradas': StockUnit.FunctionalState.FULL,
+    'with_faults': StockUnit.FunctionalState.WITH_FAULTS, 'con fallas': StockUnit.FunctionalState.WITH_FAULTS,
+    'con fallas declaradas': StockUnit.FunctionalState.WITH_FAULTS,
+}
+
+
+def clean_warranty_days(value) -> int | None:
+    """Days of THIS device's warranty. Empty = the company's policy; 0 = sold without warranty."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    message = f'La garantía se indica en días: un número entero de 0 a {MAX_WARRANTY_DAYS}, o vacío.'
+    if isinstance(value, bool) or not isinstance(value, (int, str)):
+        raise StockUnitError(message, field='warranty_days')
+    text = str(value).strip()
+    if not _WARRANTY_DAYS.fullmatch(text) or int(text) > MAX_WARRANTY_DAYS:
+        raise StockUnitError(message, field='warranty_days')
+    return int(text)
+
+
+def clean_functional_state(value) -> str:
+    """'' (not stated), «full» or «with_faults» — by code or by the words of the screen and the template."""
+    import unicodedata
+
+    if value is None:
+        return ''
+    if not isinstance(value, str):
+        raise StockUnitError('Estado funcional desconocido.', field='functional_state')
+    folded = ''.join(ch for ch in unicodedata.normalize('NFKD', value) if not unicodedata.combining(ch))
+    folded = ' '.join(folded.lower().split())
+    if not folded:
+        return ''
+    found = _FUNCTIONAL_WORDS.get(folded) or _FUNCTIONAL_WORDS.get(folded.replace('%', '').strip())
+    if found is None:
+        raise StockUnitError('Estado funcional desconocido: «Sin fallas» o «Con fallas».',
+                             field='functional_state')
+    return str(found)
+
+
+def _clean_text(value, *, limit: int, field: str, label: str) -> str:
+    if value is not None and not isinstance(value, (str, int)):
+        raise StockUnitError(f'{label}: escribe un texto.', field=field)
+    text = ' '.join(str(value or '').split())
+    if len(text) > limit:
+        raise StockUnitError(f'{label} admite hasta {limit} caracteres.', field=field)
+    return text
+
+
+def clean_defects(value) -> str:
+    return _clean_text(value, limit=MAX_DEFECTS, field='defects', label='«Defectos»')
+
+
+def clean_accessories(value) -> str:
+    return _clean_text(value, limit=MAX_ACCESSORIES, field='accessories', label='«Accesorios»')
+
+
+_USED_CLEANERS = {
+    'warranty_days': clean_warranty_days, 'functional_state': clean_functional_state,
+    'defects': clean_defects, 'accessories': clean_accessories,
+}
+
+
+def clean_used_details(product, values: dict) -> dict:
+    """
+    The used-only fields present in `values`, cleaned. A field stated for a device that is not of the USED line is
+    refused (`not_used_line`): a new device is sold with its variant's terms. `None` / blank is «not stated».
+    """
+    cleaned = {}
+    for name in USED_ONLY_FIELDS:
+        if name not in values:
+            continue
+        cleaned[name] = _USED_CLEANERS[name](values[name])
+        stated = cleaned[name] not in (None, '')
+        if stated and product.condition_line != Product.CONDITION_USED:
+            raise StockUnitError(
+                f'«{product.name}» no es seminuevo: la garantía propia, el estado funcional, los defectos y los '
+                'accesorios son de los equipos seminuevos.', field=name, code=NOT_USED_LINE)
+    return cleaned
+
+
+def refuse_undescribed_faults(functional_state: str, defects: str) -> None:
+    if functional_state == StockUnit.FunctionalState.WITH_FAULTS and not defects:
+        raise StockUnitError(FAULTS_UNDESCRIBED, field='defects')
 
 
 def _reason(value, *, required: bool = True) -> str:
@@ -306,7 +469,7 @@ def _clean_row(product, row: dict) -> dict:
         'imei2': imei2 or None,
         'condition': _condition(row.get('condition')),
         'cost': _money(row.get('cost'), 'El costo', 'cost'),
-        'notes': ' '.join(str(row.get('notes') or '').split())[:300],
+        'notes': clean_notes(row.get('notes')),
     }
     # DC2 — what the shop tells buyers about the device. Optional, and only
     # present in the result when the row brought it (an old caller's rows are
@@ -320,6 +483,11 @@ def _clean_row(product, row: dict) -> dict:
     price = clean_sale_price(row.get('sale_price'))
     if price is not None:
         cleaned['sale_price'] = price
+    # USED-READY-01 — optional, only when the row brought them. NEVER the inspection or the publication: every device
+    # enters pending and unpublished, whoever receives it and through whichever door.
+    used = {name: value for name, value in clean_used_details(product, row).items() if value not in (None, '')}
+    refuse_undescribed_faults(used.get('functional_state', ''), used.get('defects', ''))
+    cleaned.update(used)
     problem = condition_line_problem(product, condition=cleaned['condition'],
                                      graded=cleaned.get('cosmetic_grade') is not None)
     if problem:
@@ -437,6 +605,17 @@ def holds_stock(product) -> bool:
         product=product, transfer__status=StockTransfer.STATUS_IN_TRANSIT).exists()
 
 
+def lock_products(products) -> None:
+    """
+    INV-LOAD-01 re-review — hold `products` (pk order) before any of their shelves, for a caller that will switch them
+    with `set_serialized` after locking shelves: DEC-CATALOG-PALETTE-LOCK-01 is Product → shelf (registration, the POS,
+    a purchase receipt). Must run inside the caller's transaction.
+    """
+    ids = sorted({product.pk for product in products})
+    if ids:
+        list(Product.objects.select_for_update().filter(pk__in=ids).order_by('pk').values_list('pk', flat=True))
+
+
 @transaction.atomic
 def set_serialized(product, *, serialized: bool, requires_imei: bool | None = None,
                    actor=None, request=None) -> Product:
@@ -506,7 +685,8 @@ class ReceivedUnits(list):
 
 @transaction.atomic
 def receive_units(*, branch, product, units, actor=None, reason: str = '',
-                  movement_type: str = StockMovement.PURCHASE_ENTRY, request=None, supplier=None) -> ReceivedUnits:
+                  movement_type: str = StockMovement.PURCHASE_ENTRY, request=None, supplier=None,
+                  received_on=None) -> ReceivedUnits:
     """
     Units arrive. ALL OF THEM OR NONE: one bad line refuses the batch, and the
     error names the line.
@@ -515,6 +695,9 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
 
     `supplier` (CATALOG-REFERENCE-01 · PR F, D-F-3): who sold the batch, written on every unit. Only a supplier
     of the branch's company; one of another company is refused like one that does not exist.
+
+    `received_on` (INV-LOAD-01): the day the batch entered the shop, when it is not today — the real stock of a shop
+    that starts here came in long ago. Validated by `clean_received_on` (never future, never before 2000).
     """
     if product.company_id != branch.company_id:
         raise StockUnitError('El producto no pertenece a la empresa de esta sucursal.')
@@ -531,6 +714,7 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
                              StockMovement.MANUAL_ENTRY):
         raise StockUnitError('Tipo de entrada no válido para equipos.')
     reason = _reason(reason)
+    received_at = received_at_for(clean_received_on(received_on))
 
     # First every row is CLEANED (pure reads), so that the identifiers of the whole batch can be locked
     # before any of them is looked up; the verdicts are then given in row order, exactly as before.
@@ -540,6 +724,9 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
             prepared.append((index, _clean_row(product, row), None))
         except StockUnitError as exc:
             prepared.append((index, None, exc))
+    # LOCK ORDER (module docstring): the shelf first, the identifiers second. INV-LOAD-01 review — the shelf used to be
+    # taken only by the writer, after the identifiers, the inverse of a caller that holds the shelf to decide an opening.
+    inventory_services._locked_branch_stocks(branch, [product])
     _lock_identifiers(branch.company_id, product.pk, [c for _, c, _ in prepared if c is not None])
 
     cleaned_rows, seen_serials, seen_imeis = [], set(), set()
@@ -565,13 +752,12 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
         seen_imeis.update(imeis)
         cleaned_rows.append(cleaned)
 
-    now = timezone.now()
     try:
         with transaction.atomic():
             created = [
                 StockUnit.objects.create(
                     company_id=branch.company_id, branch=branch, product=product,
-                    status=StockUnit.Status.AVAILABLE, received_at=now, created_by=actor, supplier=supplier,
+                    status=StockUnit.Status.AVAILABLE, received_at=received_at, created_by=actor, supplier=supplier,
                     **cleaned,
                 )
                 for cleaned in cleaned_rows
@@ -907,6 +1093,11 @@ def return_unit(unit, *, reason, actor=None, request=None) -> StockUnit:
         extra_fields={'sold_at': None, 'order': None},
     )
     unit_identification.released_by_return(returned, current.order_id, actor=actor, request=request)
+    # USED-READY-01 — a used device that comes back is checked again before it is sold again.
+    from . import used_unit_services
+
+    if used_unit_services.require_reinspection(returned.pk, why='returned', actor=actor, request=request):
+        returned = StockUnit.objects.get(pk=returned.pk)
     return returned
 
 
@@ -968,7 +1159,7 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
             locked.cost = cost
             changed.append('cost')
     if 'notes' in fields:
-        locked.notes = ' '.join(str(fields['notes'] or '').split())[:300]
+        locked.notes = clean_notes(fields['notes'])
         changed.append('notes')
     # DC2 — what the shop says about this device.
     if 'battery_health' in fields:
@@ -991,6 +1182,14 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
                 )
             locked.sale_price = price
             changed.append('sale_price')
+    # USED-READY-01 — warranty, functional state, defects, accessories: a used device only.
+    used = clean_used_details(locked.product, {k: fields[k] for k in USED_ONLY_FIELDS if k in fields})
+    for name, value in used.items():
+        if getattr(locked, name) != value:
+            setattr(locked, name, value)
+            changed.append(name)
+    if used:
+        refuse_undescribed_faults(locked.functional_state, locked.defects)
     if changed:
         locked.save(update_fields=[*changed, 'updated_at'])
         AdminAuditLog.log(

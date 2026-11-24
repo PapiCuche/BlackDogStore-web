@@ -3,6 +3,36 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — USED-READY-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0187`
+
+Un seminuevo es un equipo con su inspección, su publicación, sus fotos reales y su garantía. Sólo en la rama `feat/used-ready-01`.
+
+- **Web:** sólo disponible, con precio > 0, inspección aprobada, publicado y con ≥ 1 foto real (`used_unit_services.web_ready_q`; la foto se lee al consultar).
+- **Caja y rutas internas:** sin inspección aprobada no se vende ni se entrega (409 `unit_not_inspected`). La publicación no se pide en caja.
+- **Autoridad:** inspeccionar = `inventory.units.inspect` (nueva, a quien tiene `company.manage`); publicar = `products.manage`; todo auditado.
+- **Importación y recepción:** nunca inspeccionan ni publican. Un equipo devuelto vuelve a pendiente.
+- **Migración `0187`:** aditiva, sin aprobar ni publicar nada histórico (orden del propietario). Tras desplegar, TODOS los seminuevos existentes salen de la web y de la caja hasta inspeccionarlos; el ensayo de la release debe contarlos. Stock sin cambios.
+- **Pendiente:** UNIT-PHOTO-02 (procedencia de las fotos) endurece `real_photos`/`used_unit_publish_blockers`.
+
+## 2026-11-23 — INV-LOAD-01 · cargar el stock real de equipos sin compras ficticias · PR abierto, SIN FUSIONAR ni desplegar
+
+Rama `feat/inv-load-01`. Sin migraciones. Producción sin cambios.
+
+- **Inventario inicial por tandas** (`receipt_services.opening_problem`): se acepta otra carga inicial mientras el Kardex del producto en esa sucursal sólo tenga `initial_stock` y el stock coincida con su última línea. Cualquier otro movimiento lo cierra con el mensaje de siempre. Vale para la recepción, la carga de equipos y «Registrar equipo».
+- **Carga de equipos:** columnas «Proveedor», «Fecha de ingreso», «Notas internas» y «Detalles para el comprador». Un proveedor de otra empresa, desconocido o desactivado es error de la fila. El número de serie repetido en otro producto es aviso. La previsualización guarda en `summary.simulation` el antes → después por sucursal × producto y los movimientos por tipo, agrupados igual que el registro (`_reception_key`).
+- **«Registrar equipo»:** `entry_kind`, `supplier` y `received_on` en `POST /api/admin/inventory/units/`; la lista de proveedores sólo con `products.view`.
+- **Notas:** más de 300 caracteres es un error en `notes`, sin recorte. Cambia la API: registro, edición (PATCH) y recepción (que admitía 2000) responden 400 donde antes recortaban.
+- **Revisión del #401:**
+  - El inventario inicial se comprueba con todos sus estantes bloqueados (`receipt_services.lock_shelves`, que crea las filas que faltan), en la recepción, la carga y el registro. Lo prueba una carrera real (`OpeningRaceTest`).
+  - `receive_units` toma el estante antes que los identificadores.
+  - La recepción de inventario inicial bloquea antes el producto que pasa a control por equipo, después el estante (DEC-CATALOG-PALETTE-LOCK-01).
+  - Un bloqueo mutuo responde 409 `busy` (`db_busy.answers_busy`) en el registro, la aplicación de la carga de equipos, el alta de artículos, la recepción rápida de la caja y la recepción de una línea de proveedor.
+  - Indicar un proveedor exige `products.view` o `costs.view` (D-F-3).
+  - Los alias genéricos «Fecha», «Notas» y «Observaciones» no se leen.
+  - El máximo del selector de fecha es «hoy» en Lima.
+- **Exportación de equipos para recargar:** escribe «Fecha de ingreso», «Notas internas» y «Detalles para el comprador» (seminuevos); «Proveedor» queda vacío a propósito. El reporte no cambia.
+- Pruebas: `store.test_inv_load` y `__tests__/inv-load-01.test.tsx`. Playwright no se ejecutó (puertos compartidos).
+
 ## 2026-11-23 — POS-ORDER-ARRIVAL-01 · el equipo que espera un pedido pagado no entra como stock libre (rama, sin desplegar)
 
 Hallazgo de la auditoría sobre `e5e1e70`, verificado en el código. Desde la caja, «Llegó el equipo» de una variante con una línea pagada bajo pedido lo registraba como stock libre: se podía vender otra vez, el pedido seguía pendiente y la oferta del proveedor, comprometida. Rama `feat/pos-order-arrival-01`, PR abierto, **sin fusionar ni desplegar**, sin migraciones.

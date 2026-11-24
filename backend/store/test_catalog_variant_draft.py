@@ -40,6 +40,7 @@ from store.tenancy import company_storefront_products
 from store.test_device_commerce import _client
 from store.test_model_palette import PaletteShop
 from store.tests import _p2d_member, _prod
+from store.used_unit_test_support import approve, ready_used
 
 
 def _unit(unit):
@@ -504,7 +505,7 @@ class BypassRoutesTest(DraftShop, TestCase):
         self.assertIn('no encontrado', str(caught.exception))
         # The historical used variant of the shop, at product price 0, still sells by unit (§D case 1).
         self.receive(self.used128, 1, cost='800.00', sale_price='1300.00')
-        hist = StockUnit.objects.get(product=self.used128)
+        hist = approve(StockUnit.objects.get(product=self.used128))      # USED-READY-01: the till sells approved
         sale = pos_services.build_pos_sale(operator=self.staff, company=self.company, branch=self.branch,
                                            items=[{'product': self.used128.pk, 'quantity': 1, 'units': [_unit(hist)]}],
                                            validate_cash=False)
@@ -557,7 +558,7 @@ class HistoricalRowsUntouchedTest(DraftShop, TestCase):
         self.assertFalse(self.used128.is_pending_draft)
         self.assertEqual(self.publish_by_form(self.used128).status_code, 200)
         self.receive(self.used128, 1, cost='800.00', sale_price='1300.00')
-        unit = StockUnit.objects.get(product=self.used128)
+        unit = approve(StockUnit.objects.get(product=self.used128))      # USED-READY-01: the till sells approved
         sale = pos_services.build_pos_sale(operator=self.staff, company=self.company, branch=self.branch,
                                            items=[{'product': self.used128.pk, 'quantity': 1, 'units': [_unit(unit)]}],
                                            validate_cash=False)
@@ -736,7 +737,8 @@ class ReviewFindingsTest(DraftShop, TestCase):
         used = self.priced(self.gb256, self.black, line=Product.CONDITION_USED, price='0.00')
         Product.objects.filter(pk=used.pk).update(is_serialized=True, requires_imei=True, is_published_online=True)
         used.refresh_from_db()
-        self.receive(used, 2, cost='800.00', sale_price='1200.00')
+        for unit in self.receive(used, 2, cost='800.00', sale_price='1200.00'):
+            ready_used(unit)           # USED-READY-01: what the web could hold, but for the draft
         self.assertEqual(unit_hold_services._web_available_by_unit(self.branch), 0)
         device_catalog.enable_variant_for_sale(used, actor=self.manager, request=None)
         self.assertEqual(unit_hold_services._web_available_by_unit(self.branch), 2)

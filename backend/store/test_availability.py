@@ -29,6 +29,7 @@ from store import unit_hold_services as holds
 from store.models import Branch, Category, Product, ProductBarcode, StockMovement, StockUnit, SupplierOffer
 from store.test_device_commerce import DeviceShop, _client, assert_no_amount
 from store.tests import _p2d_member, _p3_company, _prod
+from store.used_unit_test_support import ready_used
 
 URL = '/api/admin/availability/'
 D = Decimal
@@ -256,7 +257,9 @@ class AvailabilityNoCostTest(AvailabilityShop, TestCase):
 class AvailabilityUnitsTest(AvailabilityShop, TestCase):
     def setUp(self):
         self.build()
-        self.receive(self.used128, 2, battery_health=88, cosmetic_grade=self.grade.pk, sale_price='2500.00')
+        received = self.receive(self.used128, 2, battery_health=88, cosmetic_grade=self.grade.pk, sale_price='2500.00')
+        for unit in received:
+            ready_used(unit)           # USED-READY-01: the web holds a device inspected, published, with a photo
         units.receive_units(branch=self.branch2, product=self.used128, actor=self.staff, reason='Compra',
                             units=[{'serial_number': 'SERNORTE9', 'imei': next(self._imei), 'sale_price': '2400.00'}])
         self.held = holds.hold(product=self.used128, branch=self.branch, session_key='carrito-web',

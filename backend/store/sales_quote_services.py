@@ -135,15 +135,13 @@ def _audit(*, actor, company, action: str, quote, request=None, **metadata):
 
 def used_unit_till_refusal(unit) -> str:
     """
-    USED-READY-01 (PR #403): '' when a used device may be sold at the till, else the sentence.
-
-    A SMALL ADAPTER, on purpose: `used_unit_services` lands with that PR. Until then there is no
-    inspection rule to apply and this answers ''; once it is on `master` the same call applies it,
-    to quoting and to converting alike — and the till (`pos_services.unit_prices`) applies it again
-    when the sale is written.
+    USED-READY-01: '' when a used device may be sold at the till, else the sentence (inspection pending or
+    rejected). ONE adapter, so quoting and converting ask the same rule the till applies again when the sale is
+    written (`pos_services.unit_prices`). Guarded import: a release without `used_unit_services` answers ''.
     """
+
     try:
-        from . import used_unit_services  # noqa: PLC0415 — optional until USED-READY-01 is merged
+        from . import used_unit_services  # noqa: PLC0415 — guarded: absent in a release before USED-READY-01
     except ImportError:
         return ''
     refusal = getattr(used_unit_services, 'till_refusal', None)

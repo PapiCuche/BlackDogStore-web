@@ -6,13 +6,14 @@
  * Choosing it does not buy it: it fills the summary (and the gallery with this
  * device's own photos), where «Comprar este equipo» is. Everything on the card
  * is what the shop published about THIS device: its options, its grade, its
- * battery reading (only when there is one — never a made-up number) and its
- * price.
+ * battery reading (only when there is one — never a made-up number), declared
+ * faults and its own warranty (USED-READY-01), and its price. The photo is
+ * this device's own: the web only offers a used device that has one.
  */
 
 import { ProductImage } from "../ProductImage";
 import { formatMoney } from "../../lib/format";
-import { optionsText, type UsedUnit } from "../../lib/catalog-models";
+import { optionsText, unitWarrantyText, type UsedUnit } from "../../lib/catalog-models";
 
 type Props = {
   unit: UsedUnit;
@@ -29,6 +30,9 @@ export function UsedUnitCardV4({ unit, modelName, attributeOrder = [], selected,
   const details = [
     unit.cosmetic_grade ? `Estado: ${unit.cosmetic_grade.label}` : null,
     unit.battery_health !== null && unit.battery_health !== undefined ? `Batería: ${unit.battery_health}%` : null,
+    // USED-READY-01 — only what the shop stated about THIS device.
+    unit.functional_state === "with_faults" ? "Con fallas declaradas" : null,
+    unitWarrantyText(unit.warranty_days),
   ].filter(Boolean);
 
   return (

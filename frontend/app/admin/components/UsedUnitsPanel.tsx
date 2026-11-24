@@ -15,6 +15,11 @@
  * A used device has no fallback price: without its own it is sold NOWHERE — neither at the till nor online — until
  * somebody with authority prices it. Setting a price publishes nothing.
  *
+ * USED-READY-01 — the shop sells THIS device, so it is offered online only when it is available, priced, its
+ * inspection is APPROVED (`inventory.units.inspect`), it is itself PUBLISHED (`products.manage`) and it has at least
+ * ONE real photo. The till sells it once approved. Warranty (days; empty = the company's policy), functional state,
+ * defects and accessories are what the buyer reads on its card. Every device enters pending and unpublished.
+ *
  * A battery nobody measured is «no informado», never a number. Staff see the full identifiers here, as on
  * «Equipos»; the shop only ever gets a hint.
  */
@@ -22,8 +27,9 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import {
-  deleteUnitPhoto, fetchStockUnits, unitWebReasonText, updateStockUnitListing, uploadUnitPhoto,
-  type StockUnit, type StockUnitPage, type UnitListingWrite,
+  FUNCTIONAL_STATE_TEXT, INSPECTION_TEXT, deleteUnitPhoto, fetchStockUnits, inspectStockUnit, setStockUnitPublication,
+  unitWebReasonText, updateStockUnitListing, uploadUnitPhoto,
+  type FunctionalState, type StockUnit, type StockUnitPage, type UnitInspection, type UnitListingWrite,
 } from "@/app/lib/stock-units";
 import { unitIdentifier } from "@/app/lib/unit-identifier";
 import { fetchCosmeticGrades, type CosmeticGradeRow } from "../lib/internal-api";
@@ -53,23 +59,58 @@ const STATUS_TONE: Record<StockUnit["status"], string> = {
   in_transit: "border-warning-border text-warning",
 };
 
-type ListingDraft = { battery: string; grade: string; notes: string; price: string };
+type ListingDraft = {
+  battery: string; grade: string; notes: string; price: string;
+  warranty: string; functional: FunctionalState | ""; defects: string; accessories: string;
+};
 
 const toDraft = (unit: StockUnit): ListingDraft => ({
   battery: unit.battery_health === null || unit.battery_health === undefined ? "" : String(unit.battery_health),
   grade: unit.cosmetic_grade ? String(unit.cosmetic_grade) : "",
   notes: unit.public_notes ?? "",
   price: hasUsablePrice(unit.sale_price) ? unit.sale_price! : "",
+  warranty: unit.warranty_days === null || unit.warranty_days === undefined ? "" : String(unit.warranty_days),
+  functional: unit.functional_state ?? "",
+  defects: unit.defects ?? "",
+  accessories: unit.accessories ?? "",
 });
 
-/** What a used device still lacks to be published well. Recommended, not required by the server. */
+/** What a used device would be better published with. Recommended: the server does not require these two. */
 export function missingDetails(unit: StockUnit): string[] {
   const missing: string[] = [];
   if (unit.battery_health === null || unit.battery_health === undefined) missing.push("la batería medida");
   if (!unit.cosmetic_grade) missing.push("el estado estético");
-  if (!unit.photos || unit.photos.length === 0) missing.push("fotos del equipo");
   return missing;
 }
+
+/**
+ * USED-READY-01 — what still keeps THIS device from being published, in words: the server's own rule (it refuses
+ * the publication with these same reasons). Empty: it may be published.
+ */
+export function publicationBlockers(unit: StockUnit, photoCount = unit.photos?.length ?? 0): string[] {
+  const blockers: string[] = [];
+  if (!["available", "reserved", "in_transit"].includes(unit.status)) blockers.push("ya no está en la tienda");
+  if (!hasUsablePrice(unit.sale_price)) blockers.push("precio de venta");
+  if (unit.inspection_status === "rejected") blockers.push("una inspección aprobada (fue rechazada)");
+  else if (unit.inspection_status !== "approved") blockers.push("la inspección aprobada");
+  if (photoCount === 0) blockers.push("al menos una foto real del equipo");
+  return blockers;
+}
+
+/** «Con 90 días de garantía», «Sin garantía», or the company's policy. */
+export function warrantyText(days: number | null | undefined): string {
+  if (days === null || days === undefined) return "Según la política de garantía de la empresa";
+  if (days === 0) return "Sin garantía";
+  return days === 1 ? "1 día de garantía" : `${days} días de garantía`;
+}
+
+const INSPECTION_TONE: Record<UnitInspection, string> = {
+  pending: "border-warning-border text-warning",
+  approved: "border-success-border text-success",
+  rejected: "border-danger-border text-danger",
+};
+
+const inspectionOf = (unit: StockUnit): UnitInspection => unit.inspection_status ?? "pending";
 
 /** «Se ofrece» or «No se ofrece: …», from the server's reading of the list row. */
 export function webStatusText(unit: StockUnit): string | null {
@@ -90,7 +131,8 @@ export function priceLockedReason({ sold, canManageProducts }: { sold: boolean; 
 
 /** Edit one device's listing. Battery may be left blank: blank is «not stated», sent as null. */
 export function UnitListingDialog({
-  unit, grades, canEdit, canManagePrice, canManageProducts = false, canSeeCost, onClose, onSaved,
+  unit, grades, canEdit, canManagePrice, canManageProducts = false, canSeeCost, canInspect = false, onClose, onSaved,
+  onChanged,
 }: {
   unit: StockUnit;
   grades: CosmeticGradeRow[];
@@ -101,8 +143,12 @@ export function UnitListingDialog({
   /** `products.manage` alone: only changes WHY the price is read only. */
   canManageProducts?: boolean;
   canSeeCost: boolean;
+  /** `inventory.units.inspect`: approve or reject its inspection. */
+  canInspect?: boolean;
   onClose: () => void;
   onSaved: (unit: StockUnit) => void;
+  /** An inspection or a publication was saved: the dialog stays open on the fresh device. */
+  onChanged?: (unit: StockUnit) => void;
 }) {
   const titleId = useId();
   const pendingId = useId();
@@ -120,6 +166,10 @@ export function UnitListingDialog({
   const [confirming, setConfirming] = useState<UnitListingWrite | null>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const confirmButton = useRef<HTMLButtonElement>(null);
+  // USED-READY-01 — the inspection and the publication are decided apart from «Guardar».
+  const [current, setCurrent] = useState<StockUnit>(unit);
+  const [inspectionNote, setInspectionNote] = useState("");
+  const [decisionNotice, setDecisionNotice] = useState<string | null>(null);
 
   // The question appears below the fields: the cursor goes to its answer (on a phone it is out of sight otherwise).
   useEffect(() => {
@@ -161,6 +211,13 @@ export function UnitListingDialog({
     const next: Partial<Record<keyof ListingDraft, string>> = {};
     const battery = draft.battery.trim();
     if (battery && (!/^\d+$/.test(battery) || Number(battery) > 100)) next.battery = "Un número entero de 0 a 100, o vacío si no se midió.";
+    const warranty = draft.warranty.trim();
+    if (priceEditable && warranty && (!/^\d{1,4}$/.test(warranty) || Number(warranty) > 3650)) {
+      next.warranty = "Días enteros de 0 a 3650, o vacío para la política de la empresa.";
+    }
+    if (canEdit && draft.functional === "with_faults" && !draft.defects.trim()) {
+      next.defects = "Un equipo con fallas dice cuáles.";
+    }
     const price = draft.price.trim();
     if (priceEditable && price && (!PRICE.test(price) || Number(price) <= 0)) {
       next.price = "Un importe mayor que cero, como 2599 o 2599.90. Vacío deja el equipo sin precio.";
@@ -173,8 +230,12 @@ export function UnitListingDialog({
       if (battery !== before.battery.trim()) body.battery_health = battery ? Number(battery) : null;
       if (draft.grade !== before.grade) body.cosmetic_grade = draft.grade ? Number(draft.grade) : null;
       if (draft.notes !== before.notes) body.public_notes = draft.notes;
+      if (draft.functional !== before.functional) body.functional_state = draft.functional;
+      if (draft.defects !== before.defects) body.defects = draft.defects;
+      if (draft.accessories !== before.accessories) body.accessories = draft.accessories;
     }
     if (priceEditable && price !== before.price.trim()) body.sale_price = price || null;
+    if (priceEditable && warranty !== before.warranty.trim()) body.warranty_days = warranty ? Number(warranty) : null;
     return body;
   }
 
@@ -231,9 +292,49 @@ export function UnitListingDialog({
     }
   }
 
+  async function decide(decision: "approved" | "rejected") {
+    if (decision === "rejected" && !inspectionNote.trim()) {
+      setError("Indica por qué se rechaza la inspección.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    setDecisionNotice(null);
+    try {
+      const saved = await inspectStockUnit(unit.id, decision, inspectionNote.trim());
+      setCurrent((before) => ({ ...before, ...saved }));
+      setInspectionNote("");
+      setDecisionNotice(decision === "approved" ? "Inspección aprobada." : "Inspección rechazada: el equipo no se vende.");
+      onChanged?.(saved);
+    } catch (err) {
+      setError(message(err, "No se pudo guardar la inspección."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function publish(published: boolean) {
+    setBusy(true);
+    setError(null);
+    setDecisionNotice(null);
+    try {
+      const saved = await setStockUnitPublication(unit.id, published);
+      setCurrent((before) => ({ ...before, ...saved }));
+      setDecisionNotice(published ? "Equipo publicado en la tienda en línea." : "Equipo retirado de la tienda en línea.");
+      onChanged?.(saved);
+    } catch (err) {
+      setError(message(err, "No se pudo cambiar la publicación."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const web = webStatusText(unit);
-  const missing = missingDetails({ ...unit, photos });
+  const missing = missingDetails(unit);
   const nextPrice = confirming?.sale_price ?? null;
+  const inspection = inspectionOf(current);
+  const inHand = ["available", "reserved", "in_transit"].includes(current.status);
+  const blockers = publicationBlockers(current, photos.length);
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-0 sm:items-center sm:p-4">
@@ -283,6 +384,41 @@ export function UnitListingDialog({
               {/* P2 · F5c — the buyer reads these notes: claims control (Manual V4 §21), advice only. */}
               <ClaimsHint text={draft.notes} />
             </div>
+            <label className="block text-xs text-muted">
+              Estado funcional
+              <select
+                value={draft.functional}
+                onChange={(e) => setDraft({ ...draft, functional: e.target.value as FunctionalState | "" })}
+                className={`mt-1.5 ${internalInputClass}`}
+              >
+                <option value="">No informado</option>
+                {(Object.keys(FUNCTIONAL_STATE_TEXT) as FunctionalState[]).map((value) => (
+                  <option key={value} value={value}>{FUNCTIONAL_STATE_TEXT[value]}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block text-xs text-muted">
+              Accesorios incluidos
+              <input
+                value={draft.accessories}
+                maxLength={300}
+                onChange={(e) => setDraft({ ...draft, accessories: e.target.value })}
+                placeholder="Caja, cargador, cable…"
+                className={`mt-1.5 ${internalInputClass}`}
+              />
+            </label>
+            <label className="block text-xs text-muted sm:col-span-2">
+              Defectos (los lee el comprador)
+              <textarea
+                value={draft.defects}
+                maxLength={500}
+                onChange={(e) => setDraft({ ...draft, defects: e.target.value })}
+                rows={2}
+                aria-invalid={errors.defects ? true : undefined}
+                className={`mt-1.5 ${internalInputClass}`}
+              />
+              {errors.defects ? <span role="alert" className="mt-1 block text-danger">{errors.defects}</span> : null}
+            </label>
 
             <div className="sm:col-span-2">
               <p className="text-xs font-semibold text-muted">Fotos del equipo ({photos.length})</p>
@@ -359,6 +495,24 @@ export function UnitListingDialog({
                 </div>
               )}
             </div>
+            {priceEditable ? (
+              <label className="block text-xs text-muted">
+                Garantía (días)
+                <input
+                  inputMode="numeric"
+                  value={draft.warranty}
+                  disabled={busy}
+                  onChange={(e) => setDraft({ ...draft, warranty: e.target.value })}
+                  placeholder="Política de la empresa"
+                  aria-invalid={errors.warranty ? true : undefined}
+                  className={`mt-1.5 ${internalInputClass}`}
+                />
+                {errors.warranty ? <span role="alert" className="mt-1 block text-danger">{errors.warranty}</span> : null}
+                <span className="mt-1 block">Vacío: la política de garantía de la empresa. 0: sin garantía.</span>
+              </label>
+            ) : (
+              <p className="text-xs text-muted">Garantía: {warrantyText(unit.warranty_days)}</p>
+            )}
             {!sold && !(priceEditable ? draft.price.trim() : priced) ? (
               <p id={pendingId} role="note" className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs text-foreground">
                 {PENDING_PRICE_TEXT}
@@ -366,9 +520,69 @@ export function UnitListingDialog({
             ) : null}
             {web ? <p className={`text-xs ${unit.web?.offered ? "text-success" : "text-muted"}`}>{web}</p> : null}
             {missing.length > 0 && !sold ? (
-              <p className="text-xs text-muted">Para publicarlo completo se recomienda añadir {missing.join(", ")}.</p>
+              <p className="text-xs text-muted">Se recomienda añadir {missing.join(" y ")}.</p>
             ) : null}
-            <p className="text-xs text-muted">Fijar el precio no publica nada: publicar se decide en «Publicación e-commerce».</p>
+            <p className="text-xs text-muted">Fijar el precio no publica nada: el equipo se publica aparte, abajo.</p>
+          </section>
+
+          <section aria-label="Inspección y publicación" className="space-y-3 rounded-lg border border-bd-border p-3 sm:p-4">
+            <h3 className="text-xs font-semibold uppercase tracking-widest text-muted">Inspección y publicación</h3>
+            <p className="flex flex-wrap items-center gap-2 text-sm">
+              <span data-testid="unit-inspection" className={`rounded-full border px-2.5 py-1 text-[11px] ${INSPECTION_TONE[inspection]}`}>
+                {INSPECTION_TEXT[inspection]}
+              </span>
+              <span data-testid="unit-publication" className="text-xs text-muted">
+                {current.published_online ? "Publicado en línea" : "No publicado en línea"}
+              </span>
+            </p>
+            {current.inspection_note ? <p className="text-xs text-muted">Nota: {current.inspection_note}</p> : null}
+            {inspection !== "approved" ? (
+              <p className="text-xs text-muted">Sin inspección aprobada no se vende en caja ni se publica en línea.</p>
+            ) : null}
+            {canInspect && inHand ? (
+              <div className="space-y-2">
+                <label className="block text-xs text-muted">
+                  Nota de la inspección {inspection === "approved" ? "" : "(obligatoria para rechazar)"}
+                  <input
+                    value={inspectionNote}
+                    maxLength={300}
+                    disabled={busy}
+                    onChange={(e) => setInspectionNote(e.target.value)}
+                    className={`mt-1.5 ${internalInputClass}`}
+                  />
+                </label>
+                <div className="flex flex-wrap gap-2">
+                  {inspection !== "approved" ? (
+                    <button type="button" className={internalPrimaryButtonClass} disabled={busy} onClick={() => void decide("approved")}>
+                      Aprobar inspección
+                    </button>
+                  ) : null}
+                  {inspection !== "rejected" ? (
+                    <button type="button" className={internalButtonClass} disabled={busy} onClick={() => void decide("rejected")}>
+                      Rechazar inspección
+                    </button>
+                  ) : null}
+                </div>
+              </div>
+            ) : !canInspect && inspection !== "approved" ? (
+              <p className="text-xs text-muted">Aprobar la inspección es de quien tiene el permiso «Inspeccionar seminuevos».</p>
+            ) : null}
+            {canManagePrice && canEdit ? (
+              current.published_online ? (
+                <button type="button" className={internalButtonClass} disabled={busy} onClick={() => void publish(false)}>
+                  Retirar de la tienda en línea
+                </button>
+              ) : blockers.length > 0 ? (
+                <p data-testid="publication-blockers" className="text-xs text-muted">Para publicarlo falta: {blockers.join(", ")}.</p>
+              ) : (
+                <button type="button" className={internalPrimaryButtonClass} disabled={busy} onClick={() => void publish(true)}>
+                  Publicar este equipo
+                </button>
+              )
+            ) : (
+              <p className="text-xs text-muted">Publicar o retirar un equipo pide gestionar productos y ajustar inventario.</p>
+            )}
+            {decisionNotice ? <p role="status" className="text-xs text-success">{decisionNotice}</p> : null}
           </section>
 
           {confirming ? (
@@ -400,7 +614,8 @@ export function UnitListingDialog({
 }
 
 export function UsedUnitsPanel({
-  branch, canEdit, canManagePrice = false, canManageProducts = false, canSeeCost, initialPriced = "", initialProduct = "",
+  branch, canEdit, canManagePrice = false, canManageProducts = false, canSeeCost, canInspect = false, initialPriced = "",
+  initialProduct = "",
 }: {
   branch: number | "all" | undefined;
   /** `inventory.adjust`: the device's data and photos. The server checks it again on every change. */
@@ -411,6 +626,8 @@ export function UsedUnitsPanel({
   canManageProducts?: boolean;
   /** `costs.view`: the server only sends the cost to whoever has it. */
   canSeeCost: boolean;
+  /** `inventory.units.inspect`: approve or reject an inspection. The server says it too (`can_inspect`). */
+  canInspect?: boolean;
   /** «Sin precio» from a link (the reception's next step). */
   initialPriced?: "" | "yes" | "no";
   /** One article from a link: its id. */
@@ -423,6 +640,7 @@ export function UsedUnitsPanel({
   const [status, setStatus] = useState("");
   const [priced, setPriced] = useState<"" | "yes" | "no">(initialPriced);
   const [product, setProduct] = useState(initialProduct);
+  const [inspectionFilter, setInspectionFilter] = useState<"" | UnitInspection>("");
   const [grades, setGrades] = useState<CosmeticGradeRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<StockUnit | null>(null);
@@ -431,12 +649,12 @@ export function UsedUnitsPanel({
 
   useEffect(() => {
     let cancelled = false;
-    fetchStockUnits({ branch, line: "used", search: applied, status, priced, product, page: pageNumber }).then(
+    fetchStockUnits({ branch, line: "used", search: applied, status, priced, product, inspection: inspectionFilter, page: pageNumber }).then(
       (loaded) => { if (!cancelled) { setPage(loaded); setError(null); } },
       (err) => { if (!cancelled) setError(message(err, "No se pudieron cargar los equipos.")); },
     );
     return () => { cancelled = true; };
-  }, [branch, applied, status, priced, product, pageNumber, reloadKey]);
+  }, [branch, applied, status, priced, product, inspectionFilter, pageNumber, reloadKey]);
 
   useEffect(() => {
     fetchCosmeticGrades().then(setGrades, () => { /* the editor still works with «Sin grado» */ });
@@ -453,10 +671,10 @@ export function UsedUnitsPanel({
   return (
     <Panel
       title="Equipos seminuevos"
-      description="Cada fila es un equipo. Su precio de venta es suyo: sin él no se vende en caja ni se ofrece en línea. La batería, el estado y las fotos completan lo que ve el comprador."
+      description="Cada fila es un equipo. Se vende en caja con precio e inspección aprobada; en línea, además, publicado y con al menos una foto real. La batería, el estado, la garantía, los defectos y los accesorios completan lo que ve el comprador."
     >
       <form
-        className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_12rem_12rem_auto]"
+        className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_12rem_12rem_12rem_auto]"
         onSubmit={(e) => { e.preventDefault(); setPageNumber(1); setApplied(search.trim()); }}
       >
         <label className="block text-xs text-muted">
@@ -476,6 +694,19 @@ export function UsedUnitsPanel({
             <option value="">Todos</option>
             <option value="no">Sin precio</option>
             <option value="yes">Con precio</option>
+          </select>
+        </label>
+        <label className="block text-xs text-muted">
+          Inspección
+          <select
+            value={inspectionFilter}
+            onChange={(e) => { setInspectionFilter(e.target.value as "" | UnitInspection); setPageNumber(1); }}
+            className={`mt-1.5 ${internalInputClass}`}
+          >
+            <option value="">Todas</option>
+            {(Object.keys(INSPECTION_TEXT) as UnitInspection[]).map((value) => (
+              <option key={value} value={value}>{INSPECTION_TEXT[value]}</option>
+            ))}
           </select>
         </label>
         <div className="flex items-end"><button type="submit" className={internalButtonClass}>Filtrar</button></div>
@@ -511,7 +742,7 @@ export function UsedUnitsPanel({
             <thead>
               <tr className="border-b border-bd-border">
                 <Th>Producto</Th><Th>Serie</Th><Th>IMEI</Th><Th>Batería</Th><Th>Estado estético</Th>
-                <Th right>Precio de venta</Th><Th>Estado</Th><Th>En línea</Th><Th right>Fotos</Th><Th right>Acciones</Th>
+                <Th right>Precio de venta</Th><Th>Estado</Th><Th>Inspección</Th><Th>En línea</Th><Th right>Fotos</Th><Th right>Acciones</Th>
               </tr>
             </thead>
             <tbody>
@@ -532,6 +763,11 @@ export function UsedUnitsPanel({
                   </Td>
                   <Td>
                     <span className={`rounded-full border px-2.5 py-1 text-[11px] ${STATUS_TONE[unit.status]}`}>{unit.status_label}</span>
+                  </Td>
+                  <Td>
+                    <span className={`rounded-full border px-2.5 py-1 text-[11px] ${INSPECTION_TONE[inspectionOf(unit)]}`}>
+                      {INSPECTION_TEXT[inspectionOf(unit)]}
+                    </span>
                   </Td>
                   <Td muted={!unit.web?.offered}>
                     {unit.web
@@ -573,6 +809,7 @@ export function UsedUnitsPanel({
           canManagePrice={canManagePrice}
           canManageProducts={canManageProducts}
           canSeeCost={canSeeCost}
+          canInspect={canInspect || Boolean(page?.can_inspect)}
           onClose={() => { setEditing(null); setReloadKey((k) => k + 1); }}
           onSaved={() => { setEditing(null); setNotice("Equipo guardado."); setReloadKey((k) => k + 1); }}
         />
