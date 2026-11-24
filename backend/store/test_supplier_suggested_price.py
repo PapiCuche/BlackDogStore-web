@@ -405,7 +405,9 @@ class MigrationTest(TestCase):
         checks = [op for op in operations if isinstance(op, migrations.AddConstraint)]
         self.assertEqual(sorted(op.constraint.name for op in checks),
                          ['companysettings_supplier_margin_0_500', 'companysettings_supplier_round_to_positive'])
-        self.assertEqual(len(operations), 4)
+        # Plus the R13 reverse guard, last: refuses to go back while quote print tickets exist; no-op forward.
+        self.assertEqual(len(operations), 5)
+        self.assertEqual(operations[-1].reverse_code.__name__, 'refuse_reverse_with_quote_tickets')
 
     def test_the_state_before_and_after(self):
         from django.db.migrations.loader import MigrationLoader

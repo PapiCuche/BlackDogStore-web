@@ -44,7 +44,8 @@ def first_photo_is_primary(apps, schema_editor):
 
 def refuse_reverse_with_quote_tickets(apps, schema_editor):
     """Reverse guard: the pre-0189 print-job check refuses any `sales_quote_ticket` row, so going back with one
-    would stop halfway (rehearsal R13). Refuse BEFORE anything is undone and name the fix."""
+    would stop halfway (rehearsal R13). Every node from 0189 to the leaf carries it LAST, so a reverse from ANY
+    of them refuses before anything is undone. A future node after 0192 must carry it too."""
     PrintJob = apps.get_model('store', 'PrintJob')
     tickets = PrintJob.objects.filter(kind='sales_quote_ticket').count()
     if tickets:

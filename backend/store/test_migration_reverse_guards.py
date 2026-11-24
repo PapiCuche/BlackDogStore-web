@@ -1,7 +1,7 @@
 """
 R13 rehearsal finding: reversing 0192 → 0186 stopped halfway at 0189 (CheckViolation on
 `print_job_target_matches_kind`) whenever a `sales_quote_ticket` print job existed, after 0192–0190 had already
-been undone. Both 0192 (first to reverse) and 0189 now end with a guard that refuses the reverse BEFORE anything
+been undone. Every node from 0189 to the leaf (0192) now ends with a guard that refuses the reverse BEFORE anything
 is undone and names the DELETE to run.
 """
 from importlib import import_module
@@ -10,7 +10,7 @@ from unittest import mock
 from django.db import migrations
 from django.test import SimpleTestCase
 
-NODES = ('0192_unit_photo_provenance', '0189_sales_quote')
+NODES = ('0192_unit_photo_provenance', '0191_trade_in_quote', '0190_supplier_margin', '0189_sales_quote')
 
 
 def _module(node):
@@ -53,3 +53,20 @@ class ReverseGuardRefusesQuoteTicketsTest(SimpleTestCase):
             with self.subTest(node=node):
                 apps, _ = _apps_with(0)
                 self.assertIsNone(_module(node).refuse_reverse_with_quote_tickets(apps, None))
+
+
+class EveryNodeSinceTheQuotesCarriesTheGuardTest(SimpleTestCase):
+    """A reverse that stops part-way (e.g. at 0190) and resumes later must still refuse first: each node from
+    0189 to the current leaf carries the guard, so no node is undone while a quote ticket exists."""
+
+    def test_no_store_node_after_0189_lacks_the_guard(self):
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        nodes = sorted(name for app, name in loader.disk_migrations if app == 'store' and name >= '0189')
+        self.assertTrue(nodes)
+        for node in nodes:
+            with self.subTest(node=node):
+                last = loader.disk_migrations[('store', node)].operations[-1]
+                self.assertIsInstance(last, migrations.RunPython)
+                self.assertEqual(getattr(last.reverse_code, '__name__', ''), 'refuse_reverse_with_quote_tickets')

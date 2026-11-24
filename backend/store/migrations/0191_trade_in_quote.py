@@ -18,6 +18,20 @@ from django.conf import settings
 from django.db import migrations, models
 
 
+
+def refuse_reverse_with_quote_tickets(apps, schema_editor):
+    """Reverse guard: the pre-0189 print-job check refuses any `sales_quote_ticket` row, so going back with one
+    would stop halfway (rehearsal R13). Every node from 0189 to the leaf carries it LAST, so a reverse from ANY
+    of them refuses before anything is undone. A future node after 0192 must carry it too."""
+    PrintJob = apps.get_model('store', 'PrintJob')
+    tickets = PrintJob.objects.filter(kind='sales_quote_ticket').count()
+    if tickets:
+        raise RuntimeError(
+            f'0191: hay {tickets} trabajo(s) de impresión de cotizaciones (incluidos los cancelados). '
+            f"Antes de volver atrás: DELETE FROM store_printjob WHERE kind='sales_quote_ticket'; "
+            f'(docs/despliegue-produccion.md §7).')
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -48,4 +62,6 @@ class Migration(migrations.Migration):
                 'constraints': [models.CheckConstraint(condition=models.Q(('estimated_valuation__gte', Decimal('0.00'))), name='sales_quote_trade_in_valuation_non_negative'), models.CheckConstraint(condition=models.Q(('customer_asking_price__isnull', True), ('customer_asking_price__gte', Decimal('0.00')), _connector='OR'), name='sales_quote_trade_in_asking_non_negative'), models.CheckConstraint(condition=models.Q(('battery_health__isnull', True), ('battery_health__lte', 100), _connector='OR'), name='sales_quote_trade_in_battery_percent'), models.CheckConstraint(condition=models.Q(('imei_last4', ''), ('imei_last4__regex', '^[0-9]{4}$'), _connector='OR'), name='sales_quote_trade_in_imei_last4_only')],
             },
         ),
+        # Last: on reverse it runs FIRST, before any data is undone.
+        migrations.RunPython(migrations.RunPython.noop, refuse_reverse_with_quote_tickets),
     ]
