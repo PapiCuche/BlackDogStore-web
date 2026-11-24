@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — VARIANT-SAFE-01 · PARCIAL (rama apilada sobre #403, sin fusionar ni desplegar) · migración `0188`
+
+Eliminar, archivar y desactivar variantes sin perder datos. Rama `feat/variant-safe-01`, creada desde `feat/used-ready-01` (0187).
+
+- **Eliminar:** `DELETE /api/admin/products/<pk>/` con `{reason, confirm_name}`; exige `products.manage` + `products.delete` (nueva, a quien tiene `company.manage`). Sólo si nada depende de la variante; sus opciones y códigos se borran explícitamente y la auditoría guarda la foto (nombre, clave, opciones, precio, códigos). La auditoría previa queda intacta (no tiene FK).
+- **Vista previa:** `GET …/deletion-check/` → `{deletable, archivable, blockers[{code,count,label}], stock, can_delete, can_archive}`; otra empresa = 404.
+- **Archivar / desarchivar:** `POST …/archive/` y `…/unarchive/` con motivo, auditados. Archivada = inactiva (CHECK `archived_product_is_inactive`), fuera de tienda, caja, cargas, registro guiado, resolutores y del conjunto «existente» de la paleta («Archivada» en la matriz; estado `variante_archivada` en el resolutor). Con stock → 409 `stock_available` con cifras. Desarchivar la deja inactiva.
+- **Sin cascadas:** `ProductImage`, `CartItem`, `Review`, `ProductBarcode`, `AccessoryCompatibility.accessory`, `SupplierProductRef` pasan a PROTECT; `Product.product_model` SET_NULL → PROTECT. `ProductVariantOption` sigue CASCADE a propósito (lo borra el servicio). Sin SQL: Django aplica `on_delete`.
+- **Guardia:** `test_variant_safe` falla si aparece una relación hacia `Product` sin clasificar en `variant_lifecycle.RELATIONS`. Admin de Django sin borrar productos.
+- **`ProductModel.is_active`** (db_default true): un modelo inactivo sale de la tienda pública.
+- **Panel:** en el editor del modelo, Desactivar/Activar, Archivar/Desarchivar y Eliminar (con `products.delete`), con diálogo que lee `deletion-check`.
+
 ## 2026-11-24 — USED-READY-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0187`
 
 Un seminuevo es un equipo con su inspección, su publicación, sus fotos reales y su garantía. Sólo en la rama `feat/used-ready-01`.

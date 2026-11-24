@@ -30,6 +30,12 @@ Regla nueva en `AGENTS.md` §10. Todo cambio productivo se hace con el GO exacto
 - Ensayado: un segundo titular, un deploy simulado y la liberación al terminar.
 - Todos los scripts de GO del kit se relanzan solos bajo el candado.
 
+## VARIANT-SAFE-01 — rama `feat/variant-safe-01` (migración `0188`), apilada sobre #403 (`0187`); sin PR hasta que `0187` esté en master
+
+- Después de fusionar #403: `git merge origin/master` en la rama (sin rebase), CI verde y abrir el PR contra `master`.
+- Decisiones por confirmar con el propietario: las imágenes de la galería bloquean la eliminación (no se borran con la variante); los códigos de barras sí se borran con ella (quedan en la auditoría); un carrito con la variante bloquea; desarchivar la deja inactiva; eliminar/archivar sólo para variantes (producto con modelo).
+- Despliegue: la migración no cambia SQL de las FK (Django aplica `on_delete`); añade 3 columnas, 1 CHECK y la capacidad `products.delete`. Con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`.
+
 ## FASES 1.1 Y 1.2 — código de la Fase 1.2 en producción con `16189e4`; todo lo demás preparado y ensayado, SIN EJECUTAR
 
 Runbook: `backups/release-f12/RUNBOOK-16189e4-prod02.md`.
