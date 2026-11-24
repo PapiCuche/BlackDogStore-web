@@ -3,15 +3,6 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-24 — USED-UNIT-OWN-GATE-01 (rama `fix/used-unit-own-gate`, sin fusionar)
-
-**Fixed**
-- Un seminuevo sin precio ya no impide habilitar la venta de su variante: basta un equipo disponible con precio.
-- La caja cuenta como disponibles sólo los seminuevos con precio e inspección aprobada de la sucursal.
-- Quitar el precio de un seminuevo apartado libera el apartado; el pago de un pedido con ese equipo no se abre, y si
-  el dinero llega no se vende y se marca la línea.
-- El pago web que aparta seminuevos por cantidad no toma uno sin precio; el checkout cuenta sólo los vendibles.
-
 ## 2026-11-24 — Post-R13 en `master` (`bf6a3307`, sin desplegar)
 
 **Fixed**
