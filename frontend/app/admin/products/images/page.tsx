@@ -4,10 +4,12 @@
  * Productos › Imágenes por reemplazar — P2 · F4 «Imágenes propias».
  *
  * `products.view` para llegar, como el endpoint. Subir en lote exige `products.manage`: sólo con él se enlaza.
+ * IMG-GATE-01: debajo, «Salud de las imágenes» (sólo lectura, al pulsar «Revisar ahora»).
  */
 
 import { AccessGuard } from "../../components/AccessGuard";
 import { AdminShell } from "../../components/AdminShell";
+import { ImageHealthPanel } from "../../components/ImageHealthPanel";
 import { ImageSourcesReport } from "../../components/ImageSourcesReport";
 import { PageHeader } from "../../components/internal-ui";
 import type { InternalAccess } from "../../lib/internal-access";
@@ -26,6 +28,8 @@ function ImagesContent({ user, access }: { user: AuthUser; access: InternalAcces
           canManage={access.can("products.manage", ["admin", "superadmin"])}
           companyId={access.dashboard?.company?.id ?? null}
         />
+        {/* IMG-HEALTH (IMG-GATE-01): read-only, on demand. */}
+        <ImageHealthPanel companyId={access.dashboard?.company?.id ?? null} />
       </div>
     </AdminShell>
   );

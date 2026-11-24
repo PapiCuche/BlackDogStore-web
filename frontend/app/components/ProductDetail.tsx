@@ -10,6 +10,8 @@ import { fetchWithAuth } from "../lib/auth";
 import { emitCartChange } from "../lib/cart";
 import { CartError, SOLD_OUT_LABEL, addProductToCart, onOrderLabel, overStockOffer, type OnOrder } from "../lib/catalog-models";
 import { formatMoney } from "../lib/format";
+import { v3ModelPath, v3VariantPath } from "../lib/structured-data";
+import { ImagePending } from "./ImagePending";
 import { OnOrderOfferPrompt, OverStockOnOrderOption } from "./OnOrderOffer";
 import { ProductCard } from "./ProductCard";
 import { RichText } from "./RichText";
@@ -38,7 +40,24 @@ type Product = {
   sells_by_unit?: boolean;
   /** DC3: sold «bajo pedido» when the shelf is empty; null when no offer covers it. */
   on_order?: OnOrder | null;
+  /**
+   * IMG-GATE-01 — a device variant only: the server sends just the pictures the shop may show (its own verified ones,
+   * else its colour's verified finish); none → «Imagen pendiente», never another colour's photo. Absent otherwise.
+   */
+  image_pending?: boolean;
 };
+
+/**
+ * IMG-GATE-01 — where a device variant's options live: a NEW variant opens chosen on its model's page
+ * (`/modelo/<model>?variante=<variant>`); a used one, on the page's used line. Null for a product without a
+ * published model.
+ */
+export function modelPageHref(product: Pick<Product, "slug" | "product_model" | "condition_line">): string | null {
+  if (!product.product_model) return null;
+  return product.condition_line === "used"
+    ? `${v3ModelPath(product.product_model)}?line=used`
+    : v3VariantPath(product.product_model, product.slug);
+}
 
 type Review = {
   id: number;
@@ -93,6 +112,9 @@ export default function ProductDetail({ product }: { product: Product }) {
       : [];
   const [selected, setSelected] = useState(() => Math.max(0, gallery.findIndex((image) => image.is_primary)));
   const shown = gallery[selected] ?? gallery[0] ?? null;
+  // IMG-GATE-01: a device variant without a picture the shop may show is «Imagen pendiente», as on its model page.
+  const pending = !shown && (product.image_pending === true || Boolean(product.product_model));
+  const optionsHref = modelPageHref(product);
   const [status, setStatus] = useState<string | null>(null);
   const [statusType, setStatusType] = useState<"success" | "error">("success");
   const [loading, setLoading] = useState(false);
@@ -252,6 +274,10 @@ export default function ProductDetail({ product }: { product: Product }) {
                   fetchPriority="high"
                 />
               </div>
+            ) : pending ? (
+              <div className="relative aspect-[4/3] min-h-80 text-muted lg:min-h-[520px]">
+                <ImagePending />
+              </div>
             ) : (
               <div className="flex aspect-[4/3] min-h-80 items-center justify-center lg:min-h-[520px]">
                 <div className="flex h-28 w-28 items-center justify-center rounded-full border border-bd-border text-5xl font-black text-foreground/[0.10]" aria-hidden="true">
@@ -309,9 +335,9 @@ export default function ProductDetail({ product }: { product: Product }) {
               <p className="mt-6 text-sm leading-7 text-muted sm:text-base">Consulta el detalle, precio y disponibilidad de este producto.</p>
             )}
 
-            {product.product_model ? (
+            {optionsHref ? (
               <Link
-                href={`/modelo/${product.product_model}${product.condition_line === "used" ? "?line=used" : ""}`}
+                href={optionsHref}
                 className="mt-4 inline-flex w-fit items-center gap-1 text-sm font-bold text-foreground underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
               >
                 Ver todas las opciones

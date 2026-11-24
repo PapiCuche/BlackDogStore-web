@@ -13,16 +13,21 @@
  *
  * UN ARCHIVO QUE FALLA NO DETIENE A LOS DEMÁS. Se suben de uno en uno y cada
  * uno muestra su estado; el que falla dice por qué y se puede reintentar.
+ *
+ * IMG-GATE-01: cada imagen dice de dónde sale y si su licencia está verificada
+ * (`ProductImageLicence`). La de una variante de un modelo no se ve en la tienda
+ * hasta verificarla.
  */
 
 import { type ReactNode, useEffect, useRef, useState } from "react";
 import {
-  AdminProductImage, PRODUCT_IMAGE_ACCEPT, PRODUCT_IMAGE_MAX_BYTES,
+  AdminProductImage, PRODUCT_IMAGE_ACCEPT, PRODUCT_IMAGE_MAX_BYTES, type ProductImagePatch,
   deleteProductImage, patchProductImage, reorderProductImages, uploadProductImage,
 } from "../../lib/admin";
 import { storefrontMediaStyle } from "../../lib/storefront-media";
 import { ImageDropzone } from "./ImageDropzone";
 import { TRANSPARENCY_GRID_STYLE } from "./ImageUploadField";
+import { ProductImageLicence } from "./ProductImageLicence";
 import { internalButtonClass, internalInputClass } from "./internal-ui";
 
 type Props = {
@@ -104,7 +109,7 @@ export function ProductGallery({
   const scoped = companyId !== undefined && companyId !== null;
   const api = {
     upload: (file: File) => (scoped ? uploadProductImage(productId, file, "", companyId) : uploadProductImage(productId, file)),
-    patch: (imageId: number, data: { alt_text?: string; is_primary?: true }) => (
+    patch: (imageId: number, data: ProductImagePatch) => (
       scoped ? patchProductImage(productId, imageId, data, companyId) : patchProductImage(productId, imageId, data)),
     remove: (imageId: number) => (
       scoped ? deleteProductImage(productId, imageId, companyId) : deleteProductImage(productId, imageId)),
@@ -250,6 +255,26 @@ export function ProductGallery({
         row.id === updated.id ? updated : { ...row, is_primary: false }
       ));
     });
+  }
+
+  /**
+   * IMG-GATE-01: procedencia y verificación de la licencia del archivo. De la respuesta se toma la imagen entera:
+   * el servidor dice si la tienda la muestra.
+   */
+  async function patchLicence(image: AdminProductImage, data: ProductImagePatch): Promise<boolean> {
+    setBusy(image.id);
+    setError(null);
+    try {
+      const updated = await api.patch(image.id, data);
+      publish(current.current.map((row) => (row.id === updated.id ? { ...row, ...updated } : row)));
+      return true;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "No se pudo guardar el cambio.");
+      return false;
+    } finally {
+      setBusy(null);
+      hostSettled.current?.();
+    }
   }
 
   /**
@@ -426,6 +451,14 @@ export function ProductGallery({
                     </span>
                   ) : null}
                 </div>
+
+                <ProductImageLicence
+                  image={image}
+                  name={`imagen ${position}`}
+                  readOnly={readOnly}
+                  busy={working}
+                  onPatch={(data) => patchLicence(image, data)}
+                />
 
                 {readOnly ? (
                   image.alt_text ? <p className="mt-2 text-xs text-muted">{image.alt_text}</p> : null

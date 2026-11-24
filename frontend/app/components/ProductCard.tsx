@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { SOLD_OUT_LABEL } from "../lib/catalog-models";
 import { formatMoney } from "../lib/format";
+import { ImagePending } from "./ImagePending";
 import { ProductImage } from "./ProductImage";
 import { markdownToPlainText } from "../lib/markdown-lite";
 
@@ -17,6 +18,8 @@ type ProductCardProps = {
   review_count?: number;
   /** DC3: an empty shelf an offer still covers is «bajo pedido», not «agotado». */
   on_order?: { lead_time_days: number; price: string } | null;
+  /** IMG-GATE-01: a device variant with no picture the shop may show draws «Imagen pendiente», as its model page. */
+  image_pending?: boolean;
 };
 
 function StockBadge({ inventory, onOrder }: { inventory?: number; onOrder?: boolean }) {
@@ -61,6 +64,7 @@ export function ProductCard({
   average_rating,
   review_count,
   on_order,
+  image_pending,
 }: ProductCardProps) {
   const onOrder = Boolean(on_order);
   const outOfStock = inventory !== undefined && inventory === 0 && !onOrder;
@@ -79,6 +83,8 @@ export function ProductCard({
             sizes="(max-width: 640px) 100vw, (max-width: 1280px) 50vw, 33vw"
             className={`object-contain p-6 transition-transform duration-300 ease-out group-hover:scale-105 ${outOfStock ? "opacity-50" : ""}`}
           />
+        ) : image_pending ? (
+          <div className="text-muted"><ImagePending /></div>
         ) : (
           <div className="flex h-full items-center justify-center">
             <div className="flex h-20 w-20 items-center justify-center rounded-full border border-bd-border text-2xl font-semibold text-foreground/[0.12]" aria-hidden="true">

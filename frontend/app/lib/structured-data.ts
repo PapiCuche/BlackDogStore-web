@@ -68,6 +68,8 @@ export type ProductForJsonLd = {
   on_order?: { price?: string } | null;
   /** DC2: a used variant sells device by device, at each device's own price — it gets no product-level Offer. */
   condition_line?: string;
+  /** DC2: the published model this product is one option of (its slug), or null. */
+  product_model?: string | null;
 };
 
 /**
@@ -116,6 +118,21 @@ export function v3ModelPath(slug: string): string {
  */
 export function v3VariantPath(modelSlug: string, variantSlug: string): string {
   return `${v3ModelPath(modelSlug)}?variante=${encodeURIComponent(variantSlug)}`;
+}
+
+/**
+ * IMG-GATE-01 — the canonical address of a product page. A DEVICE VARIANT (a product whose model is published) is one
+ * option of its model's page: a new one canonicalises to `/modelo/<model>?variante=<variant>` (the address the model's
+ * `ProductGroup` gives it), a used one to the model's page (its devices are sold one by one there). Any other
+ * product: its own page.
+ */
+export function productCanonicalPath(product: { slug: string; product_model?: string | null; condition_line?: string }): string {
+  if (product.product_model) {
+    return product.condition_line === "used"
+      ? v3ModelPath(product.product_model)
+      : v3VariantPath(product.product_model, product.slug);
+  }
+  return `/product/${encodeURIComponent(product.slug)}`;
 }
 
 /** V4-SEO — the address of a model's V4 page (`/v4/modelo/<slug>`). */

@@ -59,6 +59,11 @@ class V1CustomerOrderItemSerializer(serializers.ModelSerializer):
             data['product_name'] = closed['name']
             data['product_slug'] = ''
             data['image_url'] = closed['image_url']
+        elif product.product_model_id:
+            # IMG-GATE-01: a device variant's picture is the gated one (never an unverified or external picture).
+            from .device_catalog import variant_picture
+
+            data['image_url'] = variant_picture(product)[0]
         return data
 
 

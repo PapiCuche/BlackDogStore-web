@@ -7,7 +7,7 @@ import { readPublicProduct } from "../../lib/catalog-models-server";
 import { markdownToPlainText } from "../../lib/markdown-lite";
 import { siteOrigin } from "../../lib/site-origin";
 import { canonical } from "../../lib/canonical";
-import { breadcrumbJsonLd, productJsonLd } from "../../lib/structured-data";
+import { breadcrumbJsonLd, productCanonicalPath, productJsonLd } from "../../lib/structured-data";
 
 /**
  * The page of one product.
@@ -42,8 +42,9 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   return {
     title: product.name,
     description: summary || `Compra ${product.name} en nuestra tienda.`,
-    // SEO-01: one address per product («?…» variants are the same page).
-    alternates: await canonical(`/product/${encodeURIComponent(slug)}`),
+    // SEO-01: one address per product («?…» variants are the same page). IMG-GATE-01: a device variant's is its
+    // place on its model's page.
+    alternates: await canonical(productCanonicalPath(product)),
     openGraph: {
       title: product.name,
       description: summary || undefined,
