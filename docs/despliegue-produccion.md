@@ -609,6 +609,16 @@ vez por hora:
 - `--dry-run` sólo cuenta las que marcaría (`Cotizaciones por vencer: <n> …`); `--company <slug>`, sólo esa empresa.
 - `sh deploy/healthcheck.sh` la vigila **sólo cuando existe `backups/expire_sales_quotes.log`**: avisa si no hubo
   pasada en 2 horas (`QUOTES_MAX_AGE_MINUTES`) o si la última no terminó con la línea de resumen.
+- **Un despliegue cerca del minuto :41.** Si un despliegue (o un `up -d`) recrea `backend` justo cuando toca la
+  pasada, esa hora el registro termina con algo como `service "backend" is not running` y el healthcheck dice
+  `ATENCIÓN cotizaciones vencidas: la última pasada falló` hasta el siguiente :41 (hasta 4 correos, y el postcheck
+  del despliegue sale con `healthcheck_rc=1`). No es un fallo de la tarea. Al terminar el despliegue, lanza una
+  pasada con la misma redirección; añade una línea de resumen y el aviso desaparece:
+  ```sh
+  $C exec -T backend python manage.py expire_sales_quotes >> backups/expire_sales_quotes.log 2>&1
+  ```
+  Los kits de despliegue muestran `healthcheck.sh | tail -N`, que puede dejar fuera ese aviso: busca las líneas
+  `ATENCIÓN` con `grep '^ATENCIÓN'`.
 - El registro crece una línea por hora (unos 250 KB al año): como los demás registros de tareas en `backups/`,
   no necesita rotación.
 - Una cotización marcada «Vencida» no vuelve atrás: se renueva con «Revisar» (escribe la revisión siguiente con
