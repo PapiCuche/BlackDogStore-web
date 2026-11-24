@@ -28,6 +28,7 @@ with both totals, and the sale goes ahead only when somebody decides — charge 
 """
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -43,6 +44,7 @@ from .models import (
     ProductBarcode,
     SalesQuote,
     SalesQuoteItem,
+    SalesQuoteTradeIn,
     StockUnit,
 )
 from .tenancy import has_capability
@@ -383,6 +385,130 @@ def _customer_fields(company, data, customer) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# TRADE-IN-QUOTE-00 — the device offered in part-exchange (referential, non-binding)
+# ---------------------------------------------------------------------------
+
+#: The block's own columns (what a revision copies and what «unchanged» compares).
+TRADE_IN_FIELDS = ('device_description', 'capacity', 'color', 'condition', 'battery_health', 'accessories',
+                   'imei_last4', 'customer_asking_price', 'estimated_valuation', 'valuation_notes')
+_TRADE_IN_TEXTS = (('device_description', 200, 'La descripción del equipo'), ('capacity', 40, 'La capacidad'),
+                   ('color', 40, 'El color'), ('accessories', 200, 'Los accesorios'),
+                   ('valuation_notes', 1000, 'Las notas de la valorización'))
+_MAX_MONEY = Decimal('9999999999.99')
+#: Eight digits or more in a row (spaces, dots or dashes between them included): an IMEI, a serial or a DNI.
+_DIGIT_SEPARATORS = re.compile(r'(?<=\d)[\s.\-]+(?=\d)')
+_IDENTIFIER_LIKE = re.compile(r'\d{8,}')
+TRADE_IN_NO_IDENTIFIERS = ('No escribas el IMEI completo ni números de documento: del IMEI sólo se anotan los '
+                           'últimos 4 dígitos.')
+TRADE_IN_EXCEEDS = 'trade_in_exceeds_total'
+
+
+def _trade_in_money(raw, message: str, *, required: bool) -> Decimal | None:
+    if raw in (None, ''):
+        if required:
+            raise QuoteError(message, code='trade_in_invalid')
+        return None
+    if isinstance(raw, bool):
+        raise QuoteError(message, code='trade_in_invalid')
+    try:
+        value = Decimal(str(raw).strip())
+    except (InvalidOperation, TypeError, ValueError):
+        raise QuoteError(message, code='trade_in_invalid') from None
+    if not value.is_finite() or value < 0 or value > _MAX_MONEY or value != value.quantize(Decimal('0.01')):
+        raise QuoteError(message, code='trade_in_invalid')
+    return value.quantize(Decimal('0.01'))
+
+
+def _trade_in_spec(raw) -> dict | None:
+    """
+    The part-exchange block of a request, validated, or None (no block). Writes nothing. Never echoes what was
+    typed in a refusal: a refused value may be an IMEI.
+    """
+    if raw in (None, ''):
+        return None
+    if not isinstance(raw, dict):
+        raise QuoteError('Formato de la parte de pago inválido.', code='trade_in_invalid')
+    spec = {}
+    for name, limit, label in _TRADE_IN_TEXTS:
+        text = _text(raw.get(name), limit, label)
+        if _IDENTIFIER_LIKE.search(_DIGIT_SEPARATORS.sub('', text)):
+            raise QuoteError(TRADE_IN_NO_IDENTIFIERS, code='trade_in_identifier')
+        spec[name] = text
+    if not spec['device_description']:
+        raise QuoteError('Describe el equipo ofrecido (modelo).', code='trade_in_invalid')
+    condition = str(raw.get('condition') or '').strip()
+    if condition not in dict(SalesQuoteTradeIn.CONDITION_CHOICES):
+        raise QuoteError('Estado declarado del equipo no reconocido.', code='trade_in_invalid')
+    spec['condition'] = condition
+    battery = raw.get('battery_health')
+    if battery in (None, ''):
+        spec['battery_health'] = None
+    else:
+        try:
+            if isinstance(battery, bool):
+                raise ValueError
+            battery = int(str(battery).strip())
+        except (TypeError, ValueError):
+            battery = -1
+        if not 0 <= battery <= 100:
+            raise QuoteError('La batería se indica en % (de 0 a 100).', code='trade_in_invalid')
+        spec['battery_health'] = battery
+    last4 = str(raw.get('imei_last4') or '').strip()
+    if last4 and not re.fullmatch(r'[0-9]{4}', last4):
+        raise QuoteError('Del IMEI sólo se anotan los últimos 4 dígitos.', code='trade_in_identifier')
+    spec['imei_last4'] = last4
+    spec['customer_asking_price'] = _trade_in_money(
+        raw.get('customer_asking_price'), 'El precio que pide el cliente no es válido.', required=False)
+    spec['estimated_valuation'] = _trade_in_money(
+        raw.get('estimated_valuation'), 'Indica una valorización estimada válida (S/ 0.00 o más).', required=True)
+    return spec
+
+
+def trade_in_of(quote) -> SalesQuoteTradeIn | None:
+    if quote is None or quote.pk is None:
+        return None
+    return SalesQuoteTradeIn.objects.filter(quote_id=quote.pk).select_related('valued_by').first()
+
+
+def _trade_in_body(quote) -> dict | None:
+    block = trade_in_of(quote)
+    if block is None:
+        return None
+    return {name: getattr(block, name) for name in TRADE_IN_FIELDS}
+
+
+def _check_trade_in_total(valuation, total) -> None:
+    """D4 pending: the valuation never exceeds what is quoted (no negative balance, no change in kind)."""
+    if valuation is not None and valuation > total:
+        raise QuoteError(
+            f'La valorización del equipo ofrecido ({valuation:.2f}) no puede superar el total cotizado '
+            f'({total:.2f}): no hay saldo a favor del cliente mientras el propietario no decida otra cosa (D4).',
+            code=TRADE_IN_EXCEEDS)
+
+
+def _write_trade_in(*, actor, company, quote, composed, before, request=None) -> None:
+    """
+    The block of `quote` as composed. Who valued it is kept when the block is the previous one unchanged (an edit
+    of other fields, a revision); any change makes the editor its valuer. Audited without any identifier.
+    """
+    spec = composed['trade_in']
+    if spec is None:
+        if before is not None:
+            _audit(actor=actor, company=company, action='sales_quote_trade_in_removed', quote=quote,
+                   request=request)
+        return
+    unchanged = before is not None and all(getattr(before, name) == spec[name] for name in TRADE_IN_FIELDS)
+    valued_by = before.valued_by if unchanged else (actor if getattr(actor, 'is_authenticated', False) else None)
+    valued_at = before.valued_at if unchanged else timezone.now()
+    SalesQuoteTradeIn.objects.create(quote=quote, valued_by=valued_by, valued_at=valued_at, **spec)
+    if not unchanged:
+        _audit(actor=actor, company=company, action='sales_quote_trade_in_valued', quote=quote, request=request,
+               estimated_valuation=str(spec['estimated_valuation']),
+               estimated_balance=str(quote.total - spec['estimated_valuation']),
+               condition=spec['condition'])
+
+
 def _compose(*, actor, company, data, branch=None, previous=None) -> dict:
     """
     Everything a draft is made of, priced, from a request body. Writes nothing.
@@ -406,6 +532,7 @@ def _compose(*, actor, company, data, branch=None, previous=None) -> dict:
     except pos_services.PosValidationError as exc:
         raise QuoteError(str(exc)) from None
     lines = _raw_lines(data.get('items'))
+    trade_in = _trade_in_spec(data.get('trade_in'))
     discount_type, discount_value, discount_reason = _discount_spec(data)
     seller_id = data.get('seller')
     may_discount = has_capability(actor, company, CAP_DISCOUNTS)
@@ -432,8 +559,9 @@ def _compose(*, actor, company, data, branch=None, previous=None) -> dict:
     if inherited:
         money['discount_authorized_by'] = previous.discount_authorized_by
     seller = priced['seller'] if getattr(priced['seller'], 'is_authenticated', False) else None
+    _check_trade_in_total(trade_in and trade_in['estimated_valuation'], priced['total'])
     return {
-        'branch': branch, 'lines': lines, 'priced': priced, 'inherited_discount': inherited,
+        'branch': branch, 'lines': lines, 'priced': priced, 'inherited_discount': inherited, 'trade_in': trade_in,
         'fields': {
             'branch': branch,
             **_customer_fields(company, data, customer),
@@ -542,6 +670,8 @@ def create_quote(*, actor, company, data, request=None) -> SalesQuote:
         _audit(actor=actor, company=company, action='sales_quote_created', quote=quote, request=request,
                total=str(quote.total), lines=len(composed['priced']['lines']),
                discount_source=quote.discount_source)
+        _write_trade_in(actor=actor, company=company, quote=quote, composed=composed, before=None,
+                        request=request)
     return quote
 
 
@@ -577,6 +707,7 @@ def _body_of(quote) -> dict:
         'discount_reason': quote.discount_reason if quote.discount_source == DiscountSource.MANUAL else '',
         'valid_until': quote.valid_until.isoformat() if quote.valid_until else None,
         'conditions': quote.conditions, 'notes': quote.notes,
+        'trade_in': _trade_in_body(quote),
     }
 
 
@@ -603,6 +734,11 @@ def update_quote(*, actor, company, quote, data, request=None) -> SalesQuote:
         _write_lines(locked, composed['priced'], composed['lines'])
         _audit(actor=actor, company=company, action='sales_quote_updated', quote=locked, request=request,
                total=str(locked.total))
+        # The previous block is compared (who valued it), then replaced: a draft's block is rewritten whole.
+        before = trade_in_of(locked)
+        SalesQuoteTradeIn.objects.filter(quote=locked).delete()
+        _write_trade_in(actor=actor, company=company, quote=locked, composed=composed, before=before,
+                        request=request)
     return locked
 
 
@@ -632,6 +768,8 @@ def revise_quote(*, actor, company, quote, data=None, request=None) -> SalesQuot
                          created_by=actor, updated_by=actor, **fields)
         new.save()
         _write_lines(new, composed['priced'], composed['lines'])
+        _write_trade_in(actor=actor, company=company, quote=new, composed=composed,
+                        before=trade_in_of(locked), request=request)
         _audit(actor=actor, company=company, action='sales_quote_superseded', quote=locked, request=request,
                superseded_by=new.pk)
         _audit(actor=actor, company=company, action='sales_quote_revised', quote=new, request=request,
@@ -690,6 +828,8 @@ def approve_quote(*, actor, company, quote, request=None) -> SalesQuote:
                 f'Los precios cambiaron desde que se elaboró: el total era {locked.total} y hoy es '
                 f'{priced["total"]}. Actualiza el borrador antes de aprobarlo.',
                 expected=locked.total, current=priced['total'], priced=priced)
+        block = trade_in_of(locked)
+        _check_trade_in_total(block and block.estimated_valuation, locked.total)
         locked.status = SalesQuote.STATUS_APPROVED
         locked.approved_by = actor
         locked.approved_at = timezone.now()
@@ -958,7 +1098,9 @@ def convert_quote(*, actor, company, quote, data, idempotency_key, request=None)
                                    'conversion_key', 'updated_at'])
         _audit(actor=actor, company=company, action='sales_quote_converted', quote=locked, request=request,
                order_id=order.pk, quoted_total=str(locked.total), charged_total=str(order.total),
-               price_decision=decision or 'quoted_total')
+               price_decision=decision or 'quoted_total',
+               # TRADE-IN-QUOTE-00: the sale was charged in full; the offered device is NOT applied (D1–D12).
+               trade_in_applied=False, trade_in_valuation=_trade_in_valuation(locked))
     return order, True
 
 
@@ -1019,3 +1161,8 @@ def history(quote):
     return SalesQuote.objects.filter(company_id=quote.company_id, number=quote.number).order_by('revision')
 
 
+
+
+def _trade_in_valuation(quote) -> str | None:
+    block = trade_in_of(quote)
+    return str(block.estimated_valuation) if block is not None else None

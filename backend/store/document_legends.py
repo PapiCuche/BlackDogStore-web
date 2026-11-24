@@ -127,6 +127,12 @@ SALES_QUOTE_LEGEND = 'No es comprobante de pago.'
 SALES_QUOTE_LEGEND_DETAIL = ('Precios y disponibilidad sujetos a la vigencia indicada. '
                              'La venta se confirma al cobrar y se documenta por separado.')
 
+#: TRADE-IN-QUOTE-00 — the heading of the part-exchange block of a quote, and the statement under it (owner's
+#: words): the valuation is referential and is neither credit, payment, purchase nor a receipt.
+TRADE_IN_QUOTE_HEADING = 'Equipo ofrecido en parte de pago (referencial)'
+TRADE_IN_QUOTE_LEGEND = ('Valorización referencial sujeta a inspección; no es crédito, pago ni compra. '
+                         'No es comprobante de pago.')
+
 
 def quote_prefix_error(prefix) -> str:
     """Why `prefix` may not number commercial quotes, or '' when it may (never F or B, like the sales note)."""
