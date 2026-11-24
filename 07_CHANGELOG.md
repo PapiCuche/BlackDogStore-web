@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-24 — STOCK-REAL-READY (rama, sin fusionar)
+
+**Added**
+- `store.test_stock_real_simulation`: simulación de la carga del stock real en 13 escenarios, sobre las vistas reales,
+  con el stock y el Kardex comprobados antes y después de cada uno.
+
+**Changed**
+- La fila de ejemplo de las plantillas de stock lleva un IMEI sintético evidente.
+
+**Docs**
+- `docs/carga-stock-real.md`: cómo exportar lo ya cargado antes de llenar, qué pasa con el IMEI de un equipo dado de
+  baja y cómo correr la simulación y su ejecutor portátil.
+
 ## 2026-11-25 — Release R13 preparada (`f47bd477`)
 
 **Fixed**

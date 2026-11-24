@@ -100,9 +100,26 @@ seminuevo entra **pendiente de inspección y sin publicar** (USED-READY-01). Eso
   el mismo equipo, no lo cargues dos veces.
 - En una variante que «lleva IMEI», la serie es opcional si la fila trae un IMEI válido. En las demás, la serie es
   obligatoria.
-- Un equipo vendido no se vuelve a cargar. Un equipo **anulado** libera su IMEI y su serie.
+- Un equipo vendido no se vuelve a cargar. Un equipo **anulado** libera su IMEI y su serie. Un equipo **dado de baja**
+  NO los libera: sigue ocupando su IMEI (`unique_stock_unit_imei_per_company` sólo excluye «Anulado»). Si un equipo
+  dado de baja vuelve a la tienda, no se carga de nuevo con el mismo IMEI: se resuelve en su ficha.
 - Formatea las columnas de IMEI y serie como texto (la plantilla ya lo hace): Excel convierte 15 dígitos en
   `3.52819E+14` si la celda es numérica.
+
+### 3.1 Antes de llenar: exportar lo que ya está cargado
+
+Para no escribir dos veces un equipo y para cuadrar el conteo físico, descarga primero lo que el sistema ya tiene. En
+«Carga de stock» (`/admin/inventory/import`), bloque «Exportar», elige «Equipos con serie»:
+
+- **«Reporte»**: una fila por equipo (también vendidos y dados de baja, con su estado), con su serie, **IMEI e IMEI 2
+  completos**, sucursal, variante, precio y notas. Sirve para comparar con el conteo físico y marcar los que ya están.
+- **«Para volver a cargar»**: sólo los equipos en estante, con las columnas de la plantilla combinada («Equipos»).
+  Subido a la misma tienda no carga nada: cada fila sale como «ya está registrado».
+
+Las dos respetan las sucursales de quien descarga (`inventory.view`). El costo sólo sale con `costs.view`. El IMEI no
+sale enmascarado: el archivo es del personal que identifica los equipos por ese número y no se reenvía. No existe una
+exportación con el formato de las dos plantillas de stock: la de equipos usa la plantilla combinada. Aunque se te pase
+un equipo, la vista previa lo rechaza: el IMEI no se repite en la empresa.
 
 ## 4. Inventario inicial o compra
 
@@ -155,6 +172,39 @@ su inspección) y otro en la web (después de aprobarlo, fotografiarlo y publica
 cd backend
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/blackdog_ensayo python3 manage.py test store.test_stock_load --noinput
 ```
+
+**Simulación completa (STOCK-REAL-READY).** `store.test_stock_real_simulation` recorre en 13 escenarios, con las
+vistas reales y permisos reales:
+
+1. la primera carga de nuevos y seminuevos;
+2. una segunda tanda del mismo modelo;
+3. el mismo archivo otra vez, también con dos vistas previas antes de registrar;
+4. un IMEI repetido en el archivo, uno ya registrado y uno con dígito de control inválido;
+5. una variante que la paleta admite pero no existe (error que dice «Créala en Catálogo › Modelos»; creada, el
+   archivo entra);
+6. una variante fuera de la paleta;
+7. una recepción de proveedor;
+8. la venta en caja de ese equipo exacto;
+9. un seminuevo pendiente, que no sale en la web, no entra al carrito y la caja rechaza (409);
+10. inspección, foto subida y confirmada y publicación, con lo que sale en la web (y no en la de otra empresa);
+11. la venta web del equipo exacto;
+12. el Kardex neto igual al stock de cada estante;
+13. el aislamiento entre sucursales y entre empresas.
+
+Cada escenario compara el stock y el Kardex antes y después. Con `-v 2` imprime la bitácora:
+
+```sh
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/blackdog_ensayo python3 manage.py test store.test_stock_real_simulation --noinput -v 2
+```
+
+El motor de esa prueba (entre las marcas `PORTABLE DRIVER`) sólo usa código de producción. Copiado en
+`sim_stock_real.py` (kit de preparación, fuera del repositorio), corre con `manage.py shell < sim_stock_real.py`
+dentro de la imagen sobre una **copia aislada**:
+
+- se niega si `SIM_ISOLATED_DB` no nombra la base conectada;
+- crea una empresa sintética única;
+- apaga SUNAT, el correo y WhatsApp;
+- deshace todo al terminar.
 
 **Ensayo sobre una copia aislada** (opcional, con las plantillas ya llenas con datos reales o sintéticos). Nunca sobre
 producción:
