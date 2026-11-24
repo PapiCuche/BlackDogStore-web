@@ -98,7 +98,7 @@ function productOf(variant: PosConfigVariant): PosProduct {
 }
 
 export function PosDevicePicker({
-  companyId, branch, onAddProduct, onAddOnOrder, onReceived,
+  companyId, branch, onAddProduct, onAddOnOrder, onReceived, focusRequested = false, onFocusHandled,
 }: {
   companyId: number | null;
   branch: number | null;
@@ -106,9 +106,25 @@ export function PosDevicePicker({
   onAddOnOrder: (product: PosProduct) => void;
   /** `method`: how the device's IMEI was read in the form — the scanner or by hand. */
   onReceived: (unit: PosUnit, product: PosProduct, method: EntryMethod) => void;
+  /**
+   * NAV-SALES-01 — «Venta rápida de equipo» (`?panel=equipo`): open the block, bring it into view and put the caret
+   * in the model search (or on the block's button once a model is chosen). The till clears the request through
+   * `onFocusHandled`, so a block mounted again later does not take the focus back from the scanner.
+   */
+  focusRequested?: boolean;
+  onFocusHandled?: () => void;
 }) {
   const panelId = useId();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(focusRequested);
+  const sectionRef = useRef<HTMLElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const modelInputRef = useRef<HTMLInputElement>(null);
+  // A request that arrives while mounted opens the block at once (adjusted while rendering, like the branch below).
+  const [openedFor, setOpenedFor] = useState(focusRequested);
+  if (focusRequested !== openedFor) {
+    setOpenedFor(focusRequested);
+    if (focusRequested) setOpen(true);
+  }
   const [term, setTerm] = useState("");
   const [hits, setHits] = useState<PosModelHit[]>([]);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -188,9 +204,18 @@ export function PosDevicePicker({
   const combination = useMemo(() => (config ? chosenCombination(config, picked) : null), [config, picked]);
   const variant = combination?.variant ?? null;
 
+  // The model search is disabled until the till has a branch: the caret waits for it.
+  useEffect(() => {
+    if (!focusRequested || !open || branch === null) return;
+    sectionRef.current?.scrollIntoView?.({ block: "start" });
+    (modelInputRef.current ?? toggleRef.current)?.focus({ preventScroll: true });
+    onFocusHandled?.();
+  }, [focusRequested, open, branch, onFocusHandled]);
+
   return (
-    <section className="rounded-xl border border-bd-border bg-surface">
+    <section ref={sectionRef} className="scroll-mt-24 rounded-xl border border-bd-border bg-surface">
       <button
+        ref={toggleRef}
         type="button"
         aria-expanded={open}
         aria-controls={panelId}
@@ -210,6 +235,7 @@ export function PosDevicePicker({
           <div>
             <label className={LABEL} htmlFor={`${panelId}-model`}>Modelo</label>
             <input
+              ref={modelInputRef}
               id={`${panelId}-model`}
               autoComplete="off"
               disabled={branch === null}

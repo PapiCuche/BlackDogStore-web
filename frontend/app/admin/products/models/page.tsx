@@ -10,6 +10,9 @@
 import Link from "next/link";
 
 import { AccessGuard } from "../../components/AccessGuard";
+import { AddressQuery } from "../../components/AddressQuery";
+import { modelsAnchorFor } from "../../lib/models-sections";
+import { useMenuRequest } from "../../lib/use-menu-request";
 import { AdminShell } from "../../components/AdminShell";
 import { CatalogModelsManager } from "../../components/CatalogModelsManager";
 import { CatalogReadinessPanel } from "../../components/CatalogReadinessPanel";
@@ -19,8 +22,12 @@ import type { InternalAccess } from "../../lib/internal-access";
 import type { AuthUser } from "../../../lib/auth";
 
 function ModelsContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
+  // NAV-SALES-01: «Productos › Colores» opens this page with `?seccion=colores`, also while it is already open. Once
+  // the section has the focus the parameter leaves the address, so clicking «Colores» again is a new request.
+  const section = useMenuRequest(modelsAnchorFor, "/admin/products/models");
   return (
     <AdminShell user={user}>
+      <AddressQuery onChange={section.onQuery} />
       <div className="space-y-6">
         <PageHeader
           eyebrow="Productos"
@@ -43,6 +50,8 @@ function ModelsContent({ user, access }: { user: AuthUser; access: InternalAcces
         <CatalogModelsManager
           canManage={access.can("products.manage", ["admin", "superadmin"])}
           companyId={access.dashboard?.company?.id ?? null}
+          goTo={section.pending ? { anchor: section.pending, request: section.request } : null}
+          onArrived={section.done}
         />
       </div>
     </AdminShell>

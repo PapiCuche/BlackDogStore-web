@@ -42,11 +42,12 @@ test.afterAll(async () => {
 });
 
 async function tour(page: Page, env: Env) {
-  // 1 · Stock y equipos: la barra con sus cuatro pantallas; la actual marcada; se mueve sin pasar por el menú.
+  // 1 · Stock y equipos: la barra con sus pantallas (NAV-SALES-01 sumó las cargas y el Kardex); la actual marcada; se
+  // mueve sin pasar por el menú.
   await page.goto("/admin/inventory/used", { waitUntil: "domcontentloaded" });
   let tabs = tabsNav(page, "Stock y equipos");
   await expect(tabs).toBeVisible({ timeout: 60_000 });
-  await expect(tabs.getByRole("link")).toHaveText(["Resumen", "Existencias", "Equipos nuevos", "Equipos seminuevos"]);
+  await expect(tabs.getByRole("link")).toHaveText(["Resumen", "Existencias", "Equipos nuevos", "Equipos seminuevos", "Carga de stock", "Carga de equipos", "Kardex"]);
   await expect(tabs.getByRole("link", { name: "Equipos seminuevos" })).toHaveAttribute("aria-current", "page");
   for (const link of await tabs.getByRole("link").all()) {
     expect((await link.boundingBox())?.height ?? 0, "alto de una pestaña").toBeGreaterThanOrEqual(44);
@@ -61,13 +62,14 @@ async function tour(page: Page, env: Env) {
   await expect(tabsNav(page, "Stock y equipos").getByRole("link", { name: "Equipos seminuevos" })).toHaveAttribute("aria-current", "page");
   await page.screenshot({ path: `${SHOTS}/${env.name}-tabs.png`, fullPage: false });
 
-  // 2 · Proveedores: el directorio y las ofertas son dos pestañas con su propio nombre.
+  // 2 · Proveedores (en Compras desde NAV-SALES-01): directorio, lista semanal, ofertas y disponibilidad, cada una con
+  // su propio nombre.
   await page.goto("/admin/products/suppliers", { waitUntil: "domcontentloaded" });
   tabs = tabsNav(page, "Proveedores");
-  await expect(tabs.getByRole("link")).toHaveText(["Directorio", "Ofertas y listas"], { timeout: 60_000 });
-  await tabs.getByRole("link", { name: "Ofertas y listas" }).click();
+  await expect(tabs.getByRole("link")).toHaveText(["Directorio", "Lista semanal", "Ofertas", "Disponibilidad"], { timeout: 60_000 });
+  await tabs.getByRole("link", { name: "Ofertas", exact: true }).click();
   await expect(page).toHaveURL(/\/admin\/products\/suppliers\/offers$/);
-  await expect(tabsNav(page, "Proveedores").getByRole("link", { name: "Ofertas y listas" })).toHaveAttribute("aria-current", "page");
+  await expect(tabsNav(page, "Proveedores").getByRole("link", { name: "Ofertas", exact: true })).toHaveAttribute("aria-current", "page");
 
   // 3 · Más herramientas: una página por tarea; sin pestañas; cada tarjeta lleva a la pantalla de siempre.
   await page.goto("/admin/inventory/tools", { waitUntil: "domcontentloaded" });
@@ -77,12 +79,12 @@ async function tour(page: Page, env: Env) {
   await expect(main.getByRole("heading", { name: "Reponer" })).toBeVisible();
   await expect(page.getByRole("navigation", { name: /^Secciones de/ })).toHaveCount(0);
   await expectNoOverflow(page, `${env.name} más herramientas`);
-  await main.getByRole("link", { name: /Carga de stock/ }).click();
-  await expect(page).toHaveURL(/\/admin\/inventory\/import$/);
+  await main.getByRole("link", { name: /Carga de productos/ }).click();
+  await expect(page).toHaveURL(/\/admin\/products\/import$/);
 
   // 4 · Productos → «Recibir mercadería» a un clic → paso 2 con las cargas de Excel a la vista.
   await page.goto("/admin/products", { waitUntil: "domcontentloaded" });
-  await expect(tabsNav(page, "Productos y variantes")).toBeVisible({ timeout: 60_000 });
+  await expect(tabsNav(page, "Productos")).toBeVisible({ timeout: 60_000 });
   await page.locator("main").getByRole("link", { name: "Recibir mercadería", exact: true }).click();
   await expect(page).toHaveURL(/\/admin\/inventory\/receive$/);
   await expect(page.getByRole("heading", { name: "¿De dónde viene y adónde llega?" })).toBeVisible({ timeout: 60_000 });
@@ -125,7 +127,7 @@ test("2 · quien sólo ve el inventario: sus pestañas y su página de herramien
   const { context, page } = await openAs(browser, "viewer", env);
   try {
     await page.goto("/admin/inventory/used", { waitUntil: "domcontentloaded" });
-    await expect(tabsNav(page, "Stock y equipos").getByRole("link")).toHaveText(["Resumen", "Existencias", "Equipos nuevos", "Equipos seminuevos"], { timeout: 60_000 });
+    await expect(tabsNav(page, "Stock y equipos").getByRole("link")).toHaveText(["Resumen", "Existencias", "Equipos nuevos", "Equipos seminuevos", "Kardex"], { timeout: 60_000 });
     await page.goto("/admin/inventory/tools", { waitUntil: "domcontentloaded" });
     const main = page.locator("main");
     await expect(main.getByRole("link", { name: /Gestión masiva de inventario/ })).toBeVisible({ timeout: 60_000 });
@@ -154,12 +156,12 @@ test("3 · clics hasta cada tarea con las pestañas, medidos", async ({ browser 
     await page.locator("main").getByRole("link", { name: "Recibir mercadería", exact: true }).click();
     await expect(page).toHaveURL(/\/admin\/inventory\/receive$/);
     observations.push({ env: env.name, metric: "clics: de Productos a Recibir mercadería", value: 1 });
-    // Una carga avanzada por la página de herramientas: menú → Más herramientas → tarjeta = 2 clics.
+    // NAV-SALES-01: la carga de equipos es una pestaña de Stock y equipos: menú → Stock y equipos → pestaña = 2 clics.
     await page.goto("/admin", { waitUntil: "domcontentloaded" });
-    await page.getByRole("navigation", { name: "Módulos del control interno" }).getByRole("link", { name: "Más herramientas" }).click();
-    await page.locator("main").getByRole("link", { name: /Carga de equipos/ }).click();
+    await page.getByRole("navigation", { name: "Módulos del control interno" }).getByRole("link", { name: "Stock y equipos" }).click();
+    await tabsNav(page, "Stock y equipos").getByRole("link", { name: "Carga de equipos" }).click();
     await expect(page).toHaveURL(/\/admin\/inventory\/units\/import$/);
-    observations.push({ env: env.name, metric: "clics: abrir la carga de equipos por Más herramientas", value: 2 });
+    observations.push({ env: env.name, metric: "clics: abrir la carga de equipos por Stock y equipos", value: 2 });
   } finally {
     await context.close();
   }
