@@ -6,3 +6,6 @@ Cambios de inventario solo por servicios existentes del maestro. Product.invento
 
 ## Aclaración permanente (review #424)
 No fallback a /api/products, /api/catalog, /api/admin, /api/v1/internal o /api/v1/customer para inventario. No ejecutar release_expired ni get_or_create aunque se invoquen por GET, 304, HEAD, middleware, serializer o webhook. Los procesos autónomos existentes del maestro liberan reservas; CRM nunca los dispara. Scopes de catálogo, inventario, precios y promociones son independientes y también limitan filtros, feed, eventos, ETag, conteos y caché. Los datos no autorizados no se entregan ni por inferencia. Pedidos y reparaciones permanecen deshabilitados hasta autorización por cliente aprobada; no condicionan catálogo. No se reabre propiedad del inventario.
+
+La proyección consolidada exige catalog.read + prices.read + inventory.read para filas de oferta. La existencia de una fila no puede convertirse en canal lateral de información comercial. Beneficios de promoción requieren prices.read + promotions.read. Esta es una regla de lectura y no modifica propiedad.
+
