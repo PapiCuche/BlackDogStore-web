@@ -104,6 +104,12 @@ describe('la aprobación', () => {
     expect(toggleModel(PROPOSAL.plan, approvable(PROPOSAL.plan), 'model:teléfono y', false)).toEqual({ models: [], variants: [], options: [] });
   });
 
+  it('una variante archivada nunca se aprueba (VARIANT-SAFE-01)', () => {
+    const plan = { ...PROPOSAL.plan, variants: [...PROPOSAL.plan.variants, {
+      ...PROPOSAL.plan.variants[2], ref: 'v4', status: 'archived' as const, archived: '«X» está archivada.' }] };
+    expect(approvable(plan).variants).toEqual(['v1', 'v2']);
+  });
+
   it('cuenta lo que se crearía, con las opciones una sola vez', () => {
     expect(approvalCounts(PROPOSAL.plan, approvable(PROPOSAL.plan))).toEqual({ models: 1, variants: 2, options: 1 });
     expect(approvalCounts(PROPOSAL.plan, { models: ['model:teléfono y'], variants: ['v1'], options: [] })).toEqual({ models: 1, variants: 1, options: 0 });
@@ -146,6 +152,18 @@ describe('el panel', () => {
   it('no aparece sin filas', () => {
     const { container } = render(<CatalogProposalPanel rows={[]} allowed onApplied={() => undefined} />);
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('una variante archivada se muestra como archivada, con el motivo, y no se ofrece (VARIANT-SAFE-01)', async () => {
+    const archived = { ...PROPOSAL, plan: { ...PROPOSAL.plan, variants: PROPOSAL.plan.variants.map(v => (v.ref === 'v3'
+      ? { ...v, status: 'archived' as const, archived: '«Teléfono X 128 GB Azul Seminuevo» está archivada.' } : v)) } };
+    send.mockImplementation(async (url) => (String(url).includes('/catalog-proposal/') ? reply(200, archived) : reply(404, {})));
+    panel();
+    await propose();
+    const list = screen.getByRole('list', { name: 'Propuesta por modelo' });
+    expect(within(list).getByText('(archivada)')).toBeInTheDocument();
+    expect(within(list).getByRole('note')).toHaveTextContent('está archivada');
+    expect(within(list).queryByLabelText('Crear la variante Teléfono X 128 GB Azul Seminuevo')).toBeNull();
   });
 
   it('propone sin escribir y muestra la propuesta agrupada por modelo', async () => {

@@ -254,7 +254,10 @@ function VariantRow({ variant, approval, price, plan, noImei, onToggle, onPrice,
             checked={approval.variants.includes(variant.ref)} onChange={event => onToggle(event.target.checked)} />
           {variant.suggested_name}
         </label>
+      ) : variant.status === "archived" ? (
+        <span>{variant.suggested_name} <span className="text-muted">(archivada)</span></span>
       ) : <span>{variant.suggested_name} <span className="text-muted">(ya existe)</span></span>}
+      {variant.archived ? <span role="note" className="basis-full text-warning">{variant.archived}</span> : null}
       <span className="text-muted">{variant.row_keys.length} fila(s)</span>
       {variant.mixed ? <span role="alert" className="basis-full text-warning">{variant.mixed}</span> : null}
       {options.length ? <span className="text-muted">crea la opción {options.join(", ")}</span> : null}

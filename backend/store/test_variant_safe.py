@@ -637,3 +637,126 @@ def _blocked_signal(event):
 
     # Give the commit a moment to reach the lock wait; the deletion only proceeds after this.
     Timer(0.5, watch).start()
+
+
+# ---------------------------------------------------------------------------
+# No importer uses, re-creates or reactivates an archived variant
+# ---------------------------------------------------------------------------
+
+class ArchivedImportersTest(LifecycleShop, TestCase):
+    UNIT_HEADERS = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 2', 'Condición', 'Costo',
+                    'Motivo / referencia', 'Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea']
+
+    def setUp(self):
+        self.build('vs-cargas')
+        ProductBarcode.objects.create(company=self.company, product=self.new256, code='VS-TX256-NEGRO')
+        self.assertEqual(self.archive(self.new256).status_code, 200)
+        self.new256.refresh_from_db()
+
+    def still_archived(self):
+        self.new256.refresh_from_db()
+        self.assertIsNotNone(self.new256.archived_at)
+        self.assertFalse(self.new256.is_active)
+        self.assertEqual(Product.objects.filter(company=self.company, product_model=self.model,
+                                                variant_key=self.new256.variant_key,
+                                                condition_line=self.new256.condition_line).count(), 1)
+
+    # -- the device (unit) load --------------------------------------------------------------------------------
+    def units_file(self, rows):
+        from store import unit_import_services
+        from store.test_cost_imports import upload
+
+        job = unit_import_services.preview_units(
+            company=self.company, actor=self.staff, upload=upload(self.UNIT_HEADERS, rows, title='Equipos'),
+            filename='equipos.xlsx', reachable_branch_ids=[self.branch.pk], default_branch=self.branch.pk,
+            default_reason='Compra')
+        return job, list(job.rows.order_by('row_number'))
+
+    def test_the_unit_load_refuses_an_archived_variant_by_model_and_by_code(self):
+        job, (by_model, by_code) = self.units_file([
+            ['', '', '', 'SERVSARCH1', next(self._imei), '', 'Nuevo', '', 'Compra', 'Teléfono X', '256 GB', 'Negro',
+             '', '', 'Nuevo'],
+            ['VS-TX256-NEGRO', '', '', 'SERVSARCH2', next(self._imei), '', 'Nuevo', '', 'Compra', '', '', '', '', '',
+             ''],
+        ])
+        for row in (by_model, by_code):
+            self.assertIn('archivada', ' '.join(row.errors), row.normalized_data)
+        self.assertEqual(job.rows_error, 2)
+        self.assertEqual(StockUnit.objects.filter(product=self.new256).count(), 0)
+        self.still_archived()
+
+    # -- the product load --------------------------------------------------------------------------------------
+    def products_file(self, headers, rows):
+        from store import import_services
+        from store.test_cost_imports import upload
+
+        job = import_services.preview_products(company=self.company, actor=self.staff, filename='p.xlsx',
+                                               upload=upload(headers, rows))
+        return job, list(job.rows.order_by('row_number'))
+
+    def test_the_product_load_never_recreates_an_archived_combination(self):
+        _job, [row] = self.products_file(
+            ['Código', 'Nombre', 'Precio de venta', 'Modelo', 'Capacidad', 'Color', 'Línea'],
+            [['VS-OTRO', 'Teléfono X 256 GB Negro otra vez', '3600', 'Teléfono X', '256 GB', 'Negro', 'Nuevo']])
+        self.assertIn('archivada', ' '.join(row.errors))
+        self.assertFalse(Product.objects.filter(company=self.company, name__endswith='otra vez').exists())
+        self.still_archived()
+
+    def test_the_product_load_never_reactivates_an_archived_variant(self):
+        from store import import_services
+
+        job, [row] = self.products_file(['Código', 'Nombre', 'Precio de venta', 'Estado'],
+                                        [['VS-TX256-NEGRO', self.new256.name, '3450', 'Activo']])
+        self.assertEqual(row.errors, [])
+        self.assertIn('no activa ni desactiva', ' '.join(row.warnings))
+        import_services.apply_products(job=job, actor=self.staff)
+        self.still_archived()
+
+    # -- the catalogue proposal (pasted text) ------------------------------------------------------------------
+    def test_the_catalogue_proposal_marks_it_archived_and_never_approves_it(self):
+        from rest_framework.test import APIClient
+
+        api = APIClient()
+        api.force_authenticate(self.staff)
+        rows = [{'key': '1', 'model': 'Teléfono X', 'capacityGb': 256, 'colour': 'negro', 'line': 'new'}]
+        res = api.post('/api/admin/inventory/text-preview/catalog-proposal/', {'rows': rows}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        [variant] = res.json()['plan']['variants']
+        self.assertEqual((variant['status'], variant['product_id']), ('archived', self.new256.pk))
+        self.assertIn('archivada', variant['archived'])
+        before = Product.objects.filter(company=self.company).count()
+        res = api.post('/api/admin/inventory/text-preview/catalog-proposal/apply/',
+                       {'rows': rows, 'approve': {'models': [], 'variants': [variant['ref']]}}, format='json',
+                       HTTP_IDEMPOTENCY_KEY='vs-propuesta-archivada')
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'variant_archived'), res.content)
+        self.assertEqual(Product.objects.filter(company=self.company).count(), before)
+        self.still_archived()
+
+    # -- the supplier's Excel and the supplier-list resolver ---------------------------------------------------
+    def test_the_supplier_excel_refuses_it(self):
+        from store import supplier_offer_import, supply_services
+        from store.test_cost_imports import upload
+        from store.test_supplier_offers import OFFER_HEADERS
+
+        supply_services.create_supplier(company=self.company, name='Proveedor VS', actor=self.staff)
+        start = timezone.localdate()
+        values = {'Proveedor': 'Proveedor VS', 'Código/SKU del producto': '', 'Modelo': 'Teléfono X',
+                  'Capacidad': '256 GB', 'Color': 'Negro', 'Línea': 'Nuevo', 'Costo pactado': '',
+                  'Precio comercial': '3600', 'Cantidad confirmada': 2, 'Vigente desde': start.isoformat(),
+                  'Vigente hasta': (start + timedelta(days=6)).isoformat(), 'Plazo (días)': 3}
+        job = supplier_offer_import.preview(
+            company=self.company, actor=self.staff, filename='ofertas.xlsx', message_date=start,
+            upload=upload(OFFER_HEADERS, [[values[h] for h in OFFER_HEADERS]], title='Ofertas de proveedor'))
+        [row] = job.rows.all()
+        self.assertIn('archivada', ' '.join(row.errors))
+        self.assertFalse(SupplierOffer.objects.filter(product=self.new256).exists())
+
+    def test_the_supplier_list_resolver_says_variante_archivada(self):
+        res = self.manage_api.post(f'/api/admin/catalog/resolve/{self.q}', {'rows': [{
+            'key': 'a', 'model_text': 'Teléfono X', 'line': 'nuevo', 'capacity_text': '256 GB',
+            'colour_text': 'Negro', 'sim_text': '', 'region_text': ''}]}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        [config] = res.json()['rows'][0]['configurations']
+        self.assertEqual((config['status'], config['complete'], config['product_id']),
+                         ('variante_archivada', False, None))
+        self.assertEqual(res.json()['summary']['variante_archivada'], 1)
