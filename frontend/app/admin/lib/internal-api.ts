@@ -3189,7 +3189,9 @@ export type SupplierWrite = Partial<Omit<SupplierRow, "id" | "offer_count">>;
 
 export type Paginated<T> = { count: number; page: number; page_size: number; results: T[] };
 
-export type SupplierOfferState = "active" | "expired" | "inactive" | "scheduled" | "unconfirmed" | "exhausted";
+/** SUPPLY-GUARDS-01: `supplier_inactive` — switched on, but its supplier is off: it sells nothing. */
+export type SupplierOfferState =
+  | "active" | "expired" | "inactive" | "scheduled" | "unconfirmed" | "exhausted" | "supplier_inactive";
 
 export const SUPPLIER_OFFER_STATE_LABELS: Record<SupplierOfferState, string> = {
   active: "Vigente",
@@ -3198,7 +3200,20 @@ export const SUPPLIER_OFFER_STATE_LABELS: Record<SupplierOfferState, string> = {
   exhausted: "Agotada",
   expired: "Vencida",
   inactive: "Desactivada",
+  supplier_inactive: "Proveedor inactivo",
 };
+
+/** The offer list's «Estado» filter: what the server's `?state=` understands. */
+export type SupplierOfferStateFilter = "" | "active" | "expired" | "inactive" | "supplier_inactive";
+
+/**
+ * SUPPLY-GUARDS-01 — the 409 codes of a price below the agreed cost (`costs.view`, with both amounts) and of a
+ * price change over a cost the person cannot see (no amounts, whatever the price). Resent with
+ * `confirm_below_cost: true` once the person confirms.
+ */
+export const MARGIN_CONFIRMATION_CODES: readonly string[] = [
+  "below_cost_confirmation_required", "cost_unseen_confirmation_required",
+];
 
 export type SupplierOffer = {
   id: number;
@@ -3237,6 +3252,8 @@ export type SupplierOfferWrite = Partial<{
   valid_until: string;
   lead_time_days: number;
   is_active: boolean;
+  /** SUPPLY-GUARDS-01: the person confirmed a price below the cost (or over a cost they cannot see). */
+  confirm_below_cost: boolean;
 }>;
 
 export type SupplierOfferHistoryEntry = {
@@ -3251,6 +3268,8 @@ export const SUPPLIER_OFFER_ACTION_LABELS: Record<string, string> = {
   supplier_offer_updated: "Modificada",
   supplier_offer_deactivated: "Desactivada",
   supplier_offer_expired: "Vencida",
+  supplier_offer_below_cost_confirmed: "Precio bajo el costo confirmado",
+  supplier_offer_cost_unseen_confirmed: "Precio confirmado sin ver el costo",
 };
 
 export type SupplierSettlementRow = {
@@ -3341,7 +3360,7 @@ export function fetchSupplierSettlement(companyId?: number | null): Promise<Supp
 }
 
 export function fetchSupplierOffers(
-  params: { supplier?: number | ""; product?: number | ""; state?: "active" | "expired" | "inactive" | ""; page?: number } = {},
+  params: { supplier?: number | ""; product?: number | ""; state?: SupplierOfferStateFilter; page?: number } = {},
   companyId?: number | null,
 ): Promise<SupplierOffer[]> {
   return catalogCall<{ results: SupplierOffer[] } | SupplierOffer[]>(
