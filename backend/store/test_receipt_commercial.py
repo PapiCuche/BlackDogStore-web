@@ -106,6 +106,13 @@ class AuthorityTest(CommercialBase):
         self.assertEqual(self.preview(self.clerk, body).status_code, 403)
         self.assertEqual(self.snapshot(), before)
 
+    def test_two_unpriced_devices_are_warned_in_the_plural(self):
+        body = self.body(self.dev(self.used, self.used_unit('SEMI00043', IMEIS[9]), self.used_unit('SEMI00044', IMEIS[10])))
+        [line] = self.preview(self.clerk, body, expect=200).json()['lines']
+        self.assertEqual(line['commercial']['units_unpriced'], 2)
+        self.assertIn('2 equipos sin precio propio: se reciben, pero no se venden en caja ni se ofrecen en línea hasta '
+                      'que alguien con permiso fije el precio.', line['warnings'])
+
     def test_without_authority_the_device_is_still_received_unpriced_and_the_preview_says_so(self):
         body = self.body(self.dev(self.used, self.used_unit('SEMI00042', IMEIS[8], public_notes='Caja original')))
         pre = self.preview(self.clerk, body, expect=200).json()

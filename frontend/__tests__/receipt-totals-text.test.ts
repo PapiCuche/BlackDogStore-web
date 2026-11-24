@@ -22,7 +22,7 @@ describe('receiptTotalsText', () => {
     expect(receiptTotalsText({ quantity_units: 50, devices: 0, labels: 50 }, 'future'))
       .toBe('Entrarán 50 unidades por cantidad. Se prepararán 50 etiquetas.');
     expect(receiptTotalsText({ quantity_units: 1, devices: 0, labels: 0 }, 'future'))
-      .toBe('Entrará 1 unidad por cantidad. No se preparan etiquetas.');
+      .toBe('Entrará 1 unidad por cantidad. No se prepararán etiquetas.');
   });
 
   it('las dos cosas: sujeto compuesto, verbo en plural', () => {

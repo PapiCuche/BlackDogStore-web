@@ -345,7 +345,7 @@ export function receiptTotalsText(
   const entering = `${verb} ${parts.join(" y ")}`;
   if (tense === "past") return entering;
   const labels = totals.labels === 0
-    ? "No se preparan etiquetas."
+    ? "No se prepararán etiquetas."
     : `${totals.labels === 1 ? "Se preparará" : "Se prepararán"} ${counted(totals.labels, "etiqueta", "etiquetas")}.`;
   return `${entering}. ${labels}`;
 }
