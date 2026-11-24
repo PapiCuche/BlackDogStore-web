@@ -112,6 +112,9 @@ class AuthorityTest(CommercialBase):
         [line] = pre['lines']
         self.assertEqual(line['commercial']['units_unpriced'], 1)
         self.assertTrue(any('sin precio propio' in w for w in line['warnings']))
+        # STOCK-UX-WALK: words agree with the count, and the till is named too (an unpriced device is not sold there).
+        self.assertIn('1 equipo sin precio propio: se recibe, pero no se vende en caja ni se ofrece en línea hasta que '
+                      'alguien con permiso fije el precio.', line['warnings'])
         res = self.confirm(self.clerk, body, expect=201).json()
         [created] = StockUnit.objects.filter(product=self.used)
         self.assertIsNone(created.sale_price)

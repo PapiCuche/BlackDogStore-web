@@ -633,9 +633,12 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
 
         if entry['commercial']['units_unpriced']:
             count = entry['commercial']['units_unpriced']
+            # STOCK-UX-WALK: the words agree with the count, and the till is named (it does not sell it either).
+            verbs = ('se recibe, pero no se vende en caja ni se ofrece' if count == 1
+                     else 'se reciben, pero no se venden en caja ni se ofrecen')
             entry['warnings'].append(
-                f'{count} {"equipo" if count == 1 else "equipos"} sin precio propio: '
-                'se recibe(n), pero no se ofrece(n) en línea hasta que alguien con permiso fije el precio.')
+                f'{count} {"equipo" if count == 1 else "equipos"} sin precio propio: {verbs} en línea hasta que '
+                'alguien con permiso fije el precio.')
         if not entry['errors'] and not entry['duplicates']:
             entry['will_receive'], entry['labels'] = amount, amount
         else:
