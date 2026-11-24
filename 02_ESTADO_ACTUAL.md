@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — TRADE-IN-QUOTE-00 · PARCIAL (rama `feat/trade-in-quote-00`, sin PR, sin fusionar ni desplegar) · migración `0191_trade_in_quote`
+
+Valoración **referencial y no vinculante** del equipo que el cliente ofrece en parte de pago, dentro de una cotización comercial. Sólo en la rama. La migración se llama 0191 porque SUPPLY-MARGIN-01 toma la 0190; hoy depende de `0189_sales_quote` y quien fusione la segunda ajusta la dependencia.
+
+- **Modelo:** `SalesQuoteTradeIn` (uno por revisión, `CASCADE` sólo desde la cotización): equipo en texto (sin FK al catálogo: puede ser de otra marca), capacidad, color, estado declarado (5 opciones), batería declarada %, accesorios, **sólo los últimos 4 dígitos del IMEI** (la base rechaza cualquier otra cosa), precio que pide el cliente (interno), valorización estimada ≥ 0, notas (internas), quién y cuándo valorizó. Sin DNI, fotos ni IMEI completo; un texto con 8 dígitos seguidos se rechaza.
+- **Reglas:** el precio de venta y la valorización van **separados**. La valorización nunca es `manual_discount`, no cambia subtotal, IGV ni total, y no puede superar el total cotizado (D4 pendiente → 400 `trade_in_exceeds_total`; también al aprobar). El saldo estimado (total − valorización) se calcula al leer; no se guarda. Ejemplo del propietario: 4 500 − 1 200 = 3 300.
+- **Autoridad:** fija el bloque `sales.quotes.manage` (es parte del borrador); lo aprueba `sales.quotes.approve` con la cotización. Sin capacidades nuevas. Cambiar el bloque de una cotización ya ofrecida crea una revisión, que copia el bloque (y conserva quién valorizó si no cambió); duplicar también lo copia.
+- **Convertir en venta:** la venta se crea **exactamente igual que sin bloque**, al precio completo: sin crédito, sin compra, sin stock, sin pago ni cambio fiscal. El diálogo avisa «La parte de pago aún no se puede aplicar: la venta se cobra completa». La cotización conserva el bloque; la auditoría de la conversión anota `trade_in_applied: false`.
+- **Guardas:** pruebas que fallan si `Order` gana un campo `trade…`, si `PaymentMethod` o `StockMovement` ganan una opción de parte de pago, si la caja (`pos_services`) o la llamada a `create_pos_sale` de la conversión leen el bloque, o si un descuento manual lleva la parte de pago.
+- **Papeles:** A4, PDF 80 mm y ESC/POS añaden, bajo los totales y fuera de ellos, «Equipo ofrecido en parte de pago (referencial)», «Valorización estimada», «Saldo estimado a pagar» y la leyenda «Valorización referencial sujeta a inspección; no es crédito, pago ni compra. No es comprobante de pago.». IMEI como `****1234`. El precio pedido y las notas no se imprimen.
+- **Panel:** bloque plegable opcional en el editor, resumen en el detalle y aviso en la conversión.
+- **Bloqueado (sin cambios):** recibir el equipo, crédito en caja, documentos de compra y todo lo de D1–D12 (`docs/decisiones-propietario-trade-in.md`).
+
 ## 2026-11-24 — SALES-QUOTE-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0189_sales_quote`
 
 Cotizaciones comerciales, independientes de las de reparación. Sólo en la rama.
@@ -15,7 +28,7 @@ Cotizaciones comerciales, independientes de las de reparación. Sólo en la rama
 - **Autoridad:** `sales.quotes.view` / `.manage` (Ventas y el rol legacy de ventas) y `.approve` (roles con `company.manage`).
 - **Panel:** Ventas › Cotizaciones (lista, editor, revisiones, conversión).
 - **Despliegue y vuelta atrás:** añadir `expire_sales_quotes` al crontab; antes de volver a una versión sin cotizaciones, `cancel_sales_quote_print_jobs --apply` (`docs/despliegue-produccion.md` §7).
-- **Pendiente:** TRADE-IN-QUOTE-00; decisiones del propietario listadas en el PR (precio cambiado, aprobación obligatoria, vigencia por defecto de 7 días).
+- **Pendiente:** TRADE-IN-QUOTE-00 (rama propia, ver arriba); decisiones del propietario listadas en el PR (precio cambiado, aprobación obligatoria, vigencia por defecto de 7 días).
 
 ## 2026-11-24 — IMG-GATE-01 · la foto propia de una variante también necesita licencia verificada (PR abierto, sin fusionar ni desplegar)
 
