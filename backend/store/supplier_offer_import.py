@@ -13,7 +13,9 @@ nothing; then apply all of the file or none of it.
 
 A PARTIAL UPDATE (owner, SUPPLIER-DEVICE-FLOW-02). Only the rows of the file
 change something. An offer the file does not mention is not touched: not
-switched off, its quantity and its window stay.
+switched off, its quantity and its window stay. SUPPLY-WEEKLY-01 (ADR §8.4):
+the preview lists them (`unmentioned`: the running offers of the suppliers the
+file names that it does not mention) — information only, nothing is switched off.
 
 ONE OFFER PER SUPPLIER AND VARIANT AND WINDOW, UPDATED IN PLACE
 (`match_offer`). A row updates the offer with exactly its window. Else, when
@@ -139,7 +141,11 @@ is one); a barcode or SKU (slug); the supplier's own code already mapped to a
 variant (`SupplierProductRef`, «Código del proveedor», or an unmatched code
 cell); model and options; the name, only when one product carries it. Two keys
 naming different variants are an error — nothing is guessed — and so is a
-model whose options fit several variants. A row whose supplier code matched
+model whose options fit several variants. A model and options that the company's
+resolver reads as ONE whole combination of the palette with no variant yet is an
+error of its own (`combinacion_valida_sin_variante`, SUPPLY-WEEKLY-01) carrying
+`variant_proposal` — what «Crear variante» needs to make the pending draft; the
+preview creates nothing. A row whose supplier code matched
 without doubt by another key records the mapping when applied (audited); an
 unmatched or ambiguous row offers `mappable` so a person picks the variant
 (`save_product_ref`, `POST /api/admin/suppliers/<pk>/product-refs/`) and the
@@ -895,7 +901,7 @@ _KEY_LABELS = {'identifier': 'el identificador', 'barcode': 'el código del prod
                'supplier_code': 'el código del proveedor'}
 
 
-def _by_model(company, fields, *, cache=None, notes=None):
+def _by_model(company, fields, *, cache=None, notes=None, proposal=None):
     try:
         spec = device_catalog.resolve_variant_spec(
             company, model_name=fields['model'], line_text=fields.get('line') or '',
@@ -928,13 +934,51 @@ def _by_model(company, fields, *, cache=None, notes=None):
             names = ', '.join(f'«{name}»' for name in lacking)
             return None, (f'Falta{"n" if len(lacking) > 1 else ""} {names}: «{only.name[:60]}» coincide en parte, '
                           'pero nunca se elige sola. Indica todas las opciones o el código.')
+    found = _valid_combination(company, fields, spec, cache=cache)
+    if found is not None:
+        if proposal is not None:
+            proposal.update(found)
+        labels = ', '.join(f'«{label[:30]}»' for label in found['labels'])
+        return None, (f'«{spec["model_name"][:60]}» con {labels} es una combinación válida de su paleta, pero aún '
+                      'no existe la variante. Créala con «Crear variante» (queda como borrador oculto, sin precio ni '
+                      'stock) y vuelve a previsualizar.')
     return None, 'No existe esa variante del modelo. Créala en Catálogo › Modelos.'
 
 
-def _resolve_product(company, index, fields, *, supplier, refs, cache=None, notes=None):
+def _valid_combination(company, fields, spec, *, cache=None):
+    """
+    SUPPLY-WEEKLY-01 — `combinacion_valida_sin_variante`: the row's description, read again by the company's
+    resolver (`configuration_resolver`), is ONE whole combination of the model's palette and no variant is it
+    yet. What «Crear variante» needs (`POST /api/admin/catalog/models/<id>/variants/`), or None. Only for the
+    new line: a used device is sold by unit, never on order. Reads only; creates nothing.
+    """
+    from . import configuration_resolver as resolver
+
+    if spec['condition_line'] != Product.CONDITION_NEW:
+        return None
+    result = resolver.resolve_configuration(
+        device_catalog.vocabulary_cached(company, cache), model_text=fields.get('model') or '',
+        line=fields.get('line') or '', capacity_text=fields.get('capacity') or '',
+        colour_text=fields.get('colour') or '', sim_text=fields.get('sim') or '',
+        region_text=fields.get('region') or '')
+    configurations = result['configurations']
+    if result['error'] or len(configurations) != 1 or result['model'].get('model_id') != spec['model_id']:
+        return None
+    configuration = configurations[0]
+    if configuration['status'] != resolver.STATUS_VALID or configuration['option_ids'] != spec['option_ids']:
+        return None
+    return {'status': resolver.STATUS_VALID, 'model_id': spec['model_id'], 'model_name': spec['model_name'],
+            'condition_line': spec['condition_line'], 'option_ids': list(spec['option_ids']),
+            'labels': [option['label'] for option in configuration['options']]}
+
+
+def _resolve_product(company, index, fields, *, supplier, refs, cache=None, notes=None, proposal=None,
+                     matched=None):
     """
     `(product, problem, matched_by, map_code, mappable_code)` — see WHICH VARIANT.
-    `refs` is this supplier's {supplier code: product id}.
+    `refs` is this supplier's {supplier code: product id}. `proposal` (a dict) receives what «Crear variante»
+    needs when the row is a valid combination without a variant (SUPPLY-WEEKLY-01). `matched` (a set) receives
+    every variant a key of the row named, even when they disagree (the row mentions them all).
     """
     code = fields.get('code') or ''
     identifier = fields.get('identifier') or ''
@@ -964,6 +1008,8 @@ def _resolve_product(company, index, fields, *, supplier, refs, cache=None, note
         hits.append(('supplier_code', refs[ref_code]))
 
     if hits:
+        if matched is not None:
+            matched.update(product_id for _by, product_id in hits)
         if len({product_id for _by, product_id in hits}) > 1:
             names = dict(Product.objects.filter(company=company, pk__in={p for _b, p in hits})
                          .values_list('pk', 'name'))
@@ -982,7 +1028,7 @@ def _resolve_product(company, index, fields, *, supplier, refs, cache=None, note
     if code:
         return None, f'No existe un producto con el código «{code[:40]}».{hint}', None, None, mappable
     if fields.get('model'):
-        product, problem = _by_model(company, fields, cache=cache, notes=notes)
+        product, problem = _by_model(company, fields, cache=cache, notes=notes, proposal=proposal)
         if product is None:
             return None, f'{problem}{hint}', None, None, mappable
         map_code = supplier_code if supplier is not None and supplier_code else None
@@ -1095,6 +1141,8 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
         counts[action] += 1
 
     catalog_cache: dict = {}     # A2 (H10): models, palettes and the vocabulary, read once per pass
+    listing = set()              # SUPPLY-WEEKLY-01: the suppliers the file names…
+    mentioned = set()            # …and the (supplier, variant) pairs it names, errors included
     for row_number, values, _numeric in rows:
         fields = {}
         formula = False
@@ -1113,6 +1161,8 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
 
         errors, warnings = [], []
         supplier = suppliers.get(' '.join(fields['supplier'].split()).lower()) if fields['supplier'] else None
+        if supplier is not None:
+            listing.add(supplier.pk)
         if supplier is None:
             errors.append(f'No existe el proveedor «{fields["supplier"][:60]}». Créalo en Productos › Proveedores.'
                           if fields['supplier'] else 'Indica el proveedor.')
@@ -1123,10 +1173,13 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
             # SUPPLY-GUARDS-01: `valid_offer_q` never sells it. Recorded, said.
             warnings.append(f'El proveedor «{supplier.name[:60]}» está inactivo: la oferta se registra, pero no se '
                             'vende hasta reactivarlo en Productos › Proveedores.')
-        notes = []
+        notes, proposal, named = [], {}, set()
         product, problem, matched_by, map_code, mappable = _resolve_product(
             company, index, fields, supplier=supplier, refs=refs[supplier.pk] if supplier else {},
-            cache=catalog_cache, notes=notes)
+            cache=catalog_cache, notes=notes, proposal=proposal, matched=named)
+        if supplier is not None:
+            # Review of #405: a row whose keys named a variant mentions it, even if the row is an error.
+            mentioned.update((supplier.pk, product_id) for product_id in named | ({product.pk} if product else set()))
         # A2 (P8): what the company's vocabulary read is said in the row.
         warnings.extend(notes)
         if product is not None and product.is_pending_draft:
@@ -1193,6 +1246,10 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
         }
         if mappable and supplier is not None:
             shown['mappable'] = {'supplier_id': supplier.pk, 'supplier_code': mappable}
+        if proposal:
+            # SUPPLY-WEEKLY-01: never the generic «no existe»: what the person may create, from the preview.
+            shown['error_code'] = proposal['status']
+            shown['variant_proposal'] = proposal
         if errors:
             stage(row_number, BulkImportRow.ERROR, data=shown, errors=errors, warnings=warnings)
             continue
@@ -1395,6 +1452,8 @@ def preview(*, company, actor, upload, filename, message_date, complete_supplier
         job.summary = {**job.summary, 'snapshot': snapshot_absent(
             company, complete_supplier, {product_id for supplier_id, product_id in seen
                                          if supplier_id == complete_supplier.pk}, on=today)}
+    else:
+        job.summary = {**job.summary, 'unmentioned': unmentioned_offers(company, listing, mentioned, on=today)}
     job.rows_total = len(staged)
     job.rows_create, job.rows_update = counts['create'], counts['update']
     job.rows_no_change, job.rows_skip, job.rows_error = counts['no_change'], counts['skip'], counts['error']
@@ -1523,6 +1582,30 @@ def _running_offers(company, supplier, *, on):
             .select_related('product').order_by('pk'))
 
 
+#: SUPPLY-WEEKLY-01 — the unmentioned offers a preview lists at most (the count says the rest).
+MAX_UNMENTIONED = 200
+
+
+def unmentioned_offers(company, supplier_ids, mentioned, *, on) -> dict:
+    """
+    SUPPLY-WEEKLY-01 (ADR §8.4) — a PARTIAL list's running offers of the suppliers it names that it does not
+    mention. INFORMATION ONLY: a partial list never switches anything off (only a complete list does, on
+    confirmation). One query whatever the suppliers. No cost.
+    """
+    if not supplier_ids:
+        return {'count': 0, 'offers': []}
+    running = (SupplierOffer.objects.filter(company=company, supplier_id__in=supplier_ids, is_active=True,
+                                            valid_from__lte=on, valid_until__gte=on)
+               .select_related('supplier', 'product').order_by('supplier__name', 'product__name', 'pk'))
+    absent = [offer for offer in running if (offer.supplier_id, offer.product_id) not in mentioned]
+    return {'count': len(absent), 'offers': [{
+        'offer_id': offer.pk, 'supplier_id': offer.supplier_id, 'supplier_name': offer.supplier.name,
+        'product_id': offer.product_id, 'product_name': offer.product.name,
+        'commercial_price': str(offer.commercial_price), 'available': offer.remaining_known,
+        'valid_until': offer.valid_until.isoformat(),
+    } for offer in absent[:MAX_UNMENTIONED]]}
+
+
 def snapshot_absent(company, supplier, listed_product_ids, *, on) -> dict:
     """What a complete list would switch off: running offers of `supplier` whose product is not in the file."""
     running = list(_running_offers(company, supplier, on=on))
@@ -1599,7 +1682,20 @@ def job_payload(job, *, include_cost: bool) -> dict:
         'same_rows_applied': _same_rows_payload(job) if pending and not content else None,
         'summary': summary, 'rows': rows,
         **_snapshot_payload(job),
+        **_unmentioned_payload(job),
     }
+
+
+def _unmentioned_payload(job) -> dict:
+    """
+    SUPPLY-WEEKLY-01: a partial list's unmentioned running offers (information), as of its PREVIEW: `[]` once
+    the job is applied (they would be stale) and for a complete list.
+    """
+    summary = job.summary or {}
+    if summary.get('snapshot') or job.status == BulkImportJob.APPLIED:
+        return {'unmentioned': [], 'unmentioned_count': 0}
+    found = summary.get('unmentioned') or {}
+    return {'unmentioned': list(found.get('offers') or []), 'unmentioned_count': int(found.get('count') or 0)}
 
 
 def _restore_row(row, units, declared_on) -> dict:
@@ -1900,6 +1996,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                   'message_date': job.message_date.isoformat(), 'note': note})
     created = updated = unchanged = sold_out = prices_changed = prices_kept = mappings = 0
     repeated = older = confirmed_count = reactivated = 0
+    quantity_kept_rows = []     # SUPPLY-WEEKLY-01: the rows whose cleared quantity the person kept (as applied)
     for row in writing:
         data = row.normalized_data or {}
         declaration = data.get('declaration', DECLARATION_NEW)
@@ -1951,6 +2048,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                 elif data.get('quantity_cleared') and decisions.get(str(offer.pk)) == 'keep':
                     # B0 (f): the person kept the confirmed quantity of a row that came without one.
                     fields.pop('confirmed_quantity', None)
+                    quantity_kept_rows.append(row.row_number)
                     AdminAuditLog.log(actor=actor, action='supplier_offer_quantity_kept', target_type='supplier_offer',
                                       target_id=offer.pk, request=request, company=job.company, metadata={
                                           'job_id': job.pk, 'row_number': row.row_number,
@@ -2049,7 +2147,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
     job.status = BulkImportJob.APPLIED
     job.applied_by = actor
     job.applied_at = timezone.now()
-    job.summary = {**(job.summary or {}), 'applied': result}
+    job.summary = {**(job.summary or {}), 'applied': result, 'quantity_kept_rows': quantity_kept_rows}
     job.save(update_fields=['status', 'applied_by', 'applied_at', 'summary'])
     AdminAuditLog.log(actor=actor, action='supplier_offers_import_applied', target_type='bulk_import_job',
                       target_id=job.pk, metadata={'job_id': job.pk, **result, 'file_sha256': job.file_sha256,

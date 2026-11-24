@@ -8,6 +8,7 @@ supply of orders sold «bajo pedido».
     /api/admin/supplier-offers/                   ?supplier= &product=
                                                   &state=active|expired|inactive|supplier_inactive
     /api/admin/supplier-offers/<pk>/              (+ /deactivate/, /history/)
+    /api/admin/supplier-offers/weekly/            ?supplier= &week=YYYY-Www|YYYY-MM-DD (SUPPLY-WEEKLY-01)
     /api/admin/suppliers/<pk>/product-refs/       GET products.view · POST products.manage
                                                   (the supplier's own codes, SUPPLIER-DEVICE-FLOW-02)
     /api/admin/products/<pk>/sale-mode/           products.manage
@@ -298,6 +299,43 @@ class AdminOfferDeactivateView(APIView):
         supply_services.deactivate_offer(offer, actor=request.user, request=request,
                                          reason=request.data.get('reason') or '')
         return Response(offer_payload(_offer(company, pk), with_cost=user_may_view_costs(request.user, company)))
+
+
+class AdminOfferWeeklyView(APIView):
+    """
+    GET /api/admin/supplier-offers/weekly/ — SUPPLY-WEEKLY-01 (`supplier_weekly`). `products.view`; the agreed
+    cost only to `costs.view`. Own stock counts the branches the caller reaches. A supplier of another company
+    answers 404 like one that does not exist.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request):
+        from . import supplier_weekly
+        from .tenancy import visible_branches
+
+        company, error = _view(request)
+        if error:
+            return error
+        params = request.query_params
+        supplier_id = None
+        raw = (params.get('supplier') or '').strip()
+        if raw:
+            supplier_id = supply_services._pk(raw)
+            if supplier_id is None:
+                return Response({'detail': 'Proveedor no válido.', 'code': 'invalid', 'field': 'supplier'},
+                                status=status.HTTP_400_BAD_REQUEST)
+            if not Supplier.objects.filter(company=company, pk=supplier_id).exists():
+                return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        today = supply_services.today()
+        try:
+            start = supplier_weekly.week_start(params.get('week'), on=today)
+        except supplier_weekly.WeekError as exc:
+            return Response({'detail': str(exc), 'code': 'invalid', 'field': 'week'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        return Response(supplier_weekly.weekly(
+            company, start=start, branches=visible_branches(request.user, company),
+            with_cost=user_may_view_costs(request.user, company), supplier_id=supplier_id, on=today))
 
 
 class AdminOfferHistoryView(APIView):
