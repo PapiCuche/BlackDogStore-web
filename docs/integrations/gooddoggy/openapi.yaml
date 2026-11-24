@@ -111,17 +111,6 @@
             "description": "Requires authorization for filter domain."
           },
           {
-            "name": "fields",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "maxLength": 512,
-              "pattern": "^[a-z_]+(,[a-z_]+)*$"
-            },
-            "description": "Optional authorized top-level fields; required fields cannot be removed."
-          },
-          {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
@@ -129,6 +118,33 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 256
+            }
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "style": "form",
+            "explode": false,
+            "description": "Comma-separated optional fields. Required identity/version/timestamp fields never removed. Missing fields selects authorized defaults; unauthorized requested field = 403; unknown = 400.",
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "name",
+                  "sku",
+                  "model",
+                  "capacity",
+                  "color",
+                  "image_url",
+                  "commercial_url",
+                  "warranty"
+                ]
+              }
             }
           }
         ],
@@ -355,7 +371,17 @@
               }
             }
           }
-        }
+        },
+        "x-selectable-fields": [
+          "name",
+          "sku",
+          "model",
+          "capacity",
+          "color",
+          "image_url",
+          "commercial_url",
+          "warranty"
+        ]
       }
     },
     "/products/{id}/": {
@@ -377,17 +403,6 @@
             }
           },
           {
-            "name": "fields",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "maxLength": 512,
-              "pattern": "^[a-z_]+(,[a-z_]+)*$"
-            },
-            "description": "Optional authorized top-level fields; required fields cannot be removed."
-          },
-          {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
@@ -395,6 +410,33 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 256
+            }
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "style": "form",
+            "explode": false,
+            "description": "Comma-separated optional fields. Required identity/version/timestamp fields never removed. Missing fields selects authorized defaults; unauthorized requested field = 403; unknown = 400.",
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "minItems": 1,
+              "maxItems": 8,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "name",
+                  "sku",
+                  "model",
+                  "capacity",
+                  "color",
+                  "image_url",
+                  "commercial_url",
+                  "warranty"
+                ]
+              }
             }
           }
         ],
@@ -621,13 +663,23 @@
               }
             }
           }
-        }
+        },
+        "x-selectable-fields": [
+          "name",
+          "sku",
+          "model",
+          "capacity",
+          "color",
+          "image_url",
+          "commercial_url",
+          "warranty"
+        ]
       }
     },
     "/catalog/search/": {
       "get": {
         "operationId": "catalog_search",
-        "description": "Catalog-only rows have offer_kind/offer_id/branch_id null. Offer rows require BOTH prices.read and inventory.read; price and availability are mandatory on such rows and cannot be projected away. Optional promotion benefits require prices.read. No stock/price inference via ordering, filters, counts or offer existence.",
+        "description": "Catalog-only rows have offer_kind/offer_id/branch_id null. Offer rows require BOTH prices.read and inventory.read; price and availability are mandatory and cannot be projected away. include_offers=false requests compact catalog-only projection. Optional promotion benefits require prices.read. No inference via ordering, filters, counts or offer existence.",
         "x-required-scope": "catalog.read",
         "x-enabled": true,
         "x-blocked-reason": null,
@@ -662,6 +714,11 @@
             "catalog.read",
             "inventory.read",
             "prices.read"
+          ],
+          "include_offers": [
+            "catalog.read",
+            "prices.read",
+            "inventory.read"
           ]
         },
         "parameters": [
@@ -762,17 +819,6 @@
             }
           },
           {
-            "name": "fields",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "maxLength": 512,
-              "pattern": "^[a-z_]+(,[a-z_]+)*$"
-            },
-            "description": "Optional authorized top-level fields; required fields cannot be removed."
-          },
-          {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
@@ -780,6 +826,45 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 256
+            }
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "style": "form",
+            "explode": false,
+            "description": "Comma-separated optional fields. Required identity/version/timestamp fields never removed. Missing fields selects authorized defaults; unauthorized requested field = 403; unknown = 400.",
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "minItems": 1,
+              "maxItems": 11,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "product.name",
+                  "product.sku",
+                  "product.model",
+                  "product.capacity",
+                  "product.color",
+                  "product.image_url",
+                  "product.commercial_url",
+                  "product.warranty",
+                  "promotions",
+                  "promotions.benefit",
+                  "branch"
+                ]
+              }
+            }
+          },
+          {
+            "name": "include_offers",
+            "in": "query",
+            "required": false,
+            "description": "Absent: include only if prices.read AND inventory.read; explicit true without both = 403. False: catalog-only rows, no offer identity/price/availability. Field selection never removes mandatory offer fields.",
+            "schema": {
+              "type": "boolean"
             }
           }
         ],
@@ -864,6 +949,37 @@
                               "source": "unit"
                             }
                           }
+                        }
+                      ],
+                      "next_cursor": null,
+                      "snapshot_at": "2026-11-24T22:00:00Z",
+                      "watermark": "w_demo"
+                    }
+                  },
+                  "catalog_only": {
+                    "value": {
+                      "results": [
+                        {
+                          "product": {
+                            "product_id": "p_demo",
+                            "variant_id": "v_demo",
+                            "model_id": "m_demo",
+                            "data_version": 7,
+                            "observed_at": "2026-11-24T22:00:00Z",
+                            "condition": "used",
+                            "name": "Equipo demo",
+                            "sku": "SKU-DEMO",
+                            "model": "Modelo demo",
+                            "capacity": "128 GB",
+                            "color": "Negro",
+                            "image_url": "https://example.invalid/demo.webp",
+                            "commercial_url": "https://example.invalid/modelo-demo"
+                          },
+                          "data_version": 7,
+                          "observed_at": "2026-11-24T22:00:00Z",
+                          "offer_id": null,
+                          "branch_id": null,
+                          "offer_kind": null
                         }
                       ],
                       "next_cursor": null,
@@ -1071,7 +1187,20 @@
               }
             }
           }
-        }
+        },
+        "x-selectable-fields": [
+          "product.name",
+          "product.sku",
+          "product.model",
+          "product.capacity",
+          "product.color",
+          "product.image_url",
+          "product.commercial_url",
+          "product.warranty",
+          "promotions",
+          "promotions.benefit",
+          "branch"
+        ]
       }
     },
     "/availability/": {
@@ -1197,17 +1326,6 @@
               "minLength": 1,
               "maxLength": 128
             }
-          },
-          {
-            "name": "fields",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "maxLength": 512,
-              "pattern": "^[a-z_]+(,[a-z_]+)*$"
-            },
-            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
@@ -1685,17 +1803,6 @@
             }
           },
           {
-            "name": "fields",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "maxLength": 512,
-              "pattern": "^[a-z_]+(,[a-z_]+)*$"
-            },
-            "description": "Optional authorized top-level fields; required fields cannot be removed."
-          },
-          {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
@@ -2009,17 +2116,6 @@
             }
           },
           {
-            "name": "fields",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "maxLength": 512,
-              "pattern": "^[a-z_]+(,[a-z_]+)*$"
-            },
-            "description": "Optional authorized top-level fields; required fields cannot be removed."
-          },
-          {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
@@ -2027,6 +2123,26 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 256
+            }
+          },
+          {
+            "name": "fields",
+            "in": "query",
+            "required": false,
+            "style": "form",
+            "explode": false,
+            "description": "Comma-separated optional fields. Required identity/version/timestamp fields never removed. Missing fields selects authorized defaults; unauthorized requested field = 403; unknown = 400.",
+            "schema": {
+              "type": "array",
+              "uniqueItems": true,
+              "minItems": 1,
+              "maxItems": 1,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "benefit"
+                ]
+              }
             }
           }
         ],
@@ -2053,6 +2169,37 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PromotionPage"
+                },
+                "examples": {
+                  "conditional": {
+                    "value": {
+                      "results": [
+                        {
+                          "promotion_id": "promo_demo",
+                          "data_version": 1,
+                          "observed_at": "2026-11-24T22:00:00Z",
+                          "name": "Combo demo",
+                          "kind": "bundle_percent",
+                          "starts_at": null,
+                          "ends_at": null,
+                          "branch_ids": [
+                            "b_demo"
+                          ],
+                          "eligibility": "conditional",
+                          "product_ids": [
+                            "p_demo"
+                          ],
+                          "benefit": {
+                            "type": "percent",
+                            "percent": "10.00"
+                          }
+                        }
+                      ],
+                      "next_cursor": null,
+                      "snapshot_at": "2026-11-24T22:00:00Z",
+                      "watermark": "w_demo"
+                    }
+                  }
                 }
               }
             }
@@ -2259,7 +2406,10 @@
             "promotions.read",
             "prices.read"
           ]
-        }
+        },
+        "x-selectable-fields": [
+          "benefit"
+        ]
       }
     },
     "/branches/": {
@@ -2300,17 +2450,6 @@
               "minLength": 1,
               "maxLength": 2048
             }
-          },
-          {
-            "name": "fields",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "maxLength": 512,
-              "pattern": "^[a-z_]+(,[a-z_]+)*$"
-            },
-            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
@@ -2587,27 +2726,6 @@
               "minLength": 1,
               "maxLength": 2048
             }
-          },
-          {
-            "name": "fields",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "maxLength": 512,
-              "pattern": "^[a-z_]+(,[a-z_]+)*$"
-            },
-            "description": "Optional authorized top-level fields; required fields cannot be removed."
-          },
-          {
-            "name": "If-None-Match",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256
-            }
           }
         ],
         "responses": {
@@ -2616,7 +2734,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2626,7 +2757,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2644,7 +2788,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2654,7 +2811,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2685,27 +2855,6 @@
               "minLength": 1,
               "maxLength": 128
             }
-          },
-          {
-            "name": "fields",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "maxLength": 512,
-              "pattern": "^[a-z_]+(,[a-z_]+)*$"
-            },
-            "description": "Optional authorized top-level fields; required fields cannot be removed."
-          },
-          {
-            "name": "If-None-Match",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256
-            }
           }
         ],
         "responses": {
@@ -2714,7 +2863,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2724,7 +2886,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2742,7 +2917,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2752,7 +2940,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2778,27 +2979,6 @@
               "minLength": 1,
               "maxLength": 128
             }
-          },
-          {
-            "name": "fields",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "maxLength": 512,
-              "pattern": "^[a-z_]+(,[a-z_]+)*$"
-            },
-            "description": "Optional authorized top-level fields; required fields cannot be removed."
-          },
-          {
-            "name": "If-None-Match",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 256
-            }
           }
         ],
         "responses": {
@@ -2807,7 +2987,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unauthenticated"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2817,7 +3010,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "not_found"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2835,7 +3041,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "rate_limited"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2845,7 +3064,20 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Error"
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    },
+                    {
+                      "properties": {
+                        "code": {
+                          "enum": [
+                            "unavailable"
+                          ]
+                        }
+                      }
+                    }
+                  ]
                 }
               }
             }
@@ -2857,7 +3089,7 @@
     "/sync/changes/": {
       "get": {
         "operationId": "sync_changes",
-        "description": "Initial GET without cursor or watermark opens consistent snapshot: results=[], next_cursor=resume cursor, has_more=false, watermark=W. Bootstrap lists with snapshot=W; then resume feed after W. With cursor, watermark must be absent; scope/filters bound to cursor. Feed only domain-authorized invalidations, no prices or quantities. Offer-specific price/used-unit invalidation additionally requires inventory+prices scopes where its identity reveals availability.",
+        "description": "Initial GET without cursor opens consistent snapshot: results=[], next_cursor=resume cursor, has_more=false, watermark=W. Bootstrap lists with snapshot=W; then resume feed after W via cursor. Optional domain filter must be authorized, bound to initial cursor and unchanged. Feed only domain-authorized invalidations, no prices or quantities. Offer-specific price/used-unit invalidation additionally requires inventory+prices scopes where identity reveals availability. Expired/changed scope -> 410 and resnapshot.",
         "x-required-scope": "sync.read",
         "x-enabled": true,
         "x-blocked-reason": null,
@@ -2891,16 +3123,6 @@
             }
           },
           {
-            "name": "watermark",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string",
-              "minLength": 1,
-              "maxLength": 2048
-            }
-          },
-          {
             "name": "domain",
             "in": "query",
             "required": false,
@@ -2920,13 +3142,6 @@
           "200": {
             "description": "Authorized read",
             "headers": {
-              "ETag": {
-                "schema": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                }
-              },
               "Cache-Control": {
                 "schema": {
                   "type": "string",
@@ -3162,13 +3377,6 @@
           "200": {
             "description": "Authorized read",
             "headers": {
-              "ETag": {
-                "schema": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 256
-                }
-              },
               "Cache-Control": {
                 "schema": {
                   "type": "string",
@@ -3684,6 +3892,44 @@
                     "unknown",
                     "out_of_stock"
                   ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "used_unit"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "status": {
+                  "const": "available"
+                },
+                "quantity": {
+                  "const": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "on_order"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "status": {
+                  "const": "on_order"
+                },
+                "quantity": {
+                  "const": 0
                 }
               }
             }
@@ -4650,6 +4896,11 @@
                   {
                     "required": [
                       "used_details"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "branch"
                     ]
                   }
                 ]
