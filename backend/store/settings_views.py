@@ -46,7 +46,9 @@ from .storefront_content_services import (
 )
 from django.core.exceptions import ValidationError as DjangoValidationError
 
+from .cost_services import COSTS_FORBIDDEN, states_a_cost, user_may_view_costs
 from .serializers import (
+    SUPPLIER_PRICING_FIELDS,
     CompanyIdentityWriteSerializer,
     CompanySettingsSerializer,
     InternalSequenceSerializer,
@@ -82,6 +84,8 @@ SALES_POLICY_OPTIONS = frozenset({
 })
 
 _NOT_FOUND = 'Empresa no encontrada o sin acceso.'
+#: SUPPLY-MARGIN-01 — the margin of the suggested price is cost information.
+MARGIN_REQUIRES_COSTS = 'Necesitas el permiso «Ver costos y márgenes» para cambiar el margen del precio sugerido.'
 
 
 # ---------------------------------------------------------------------------
@@ -317,7 +321,9 @@ class AdminCompanySettingsView(APIView):
                 'slug': company.slug,
                 'is_active': company.is_active,
             },
-            'settings': CompanySettingsSerializer(settings_row).data,
+            # SUPPLY-MARGIN-01: the margin of the suggested price only to `costs.view` (absent otherwise).
+            'settings': CompanySettingsSerializer(
+                settings_row, context={'with_cost': user_may_view_costs(request.user, company)}).data,
             'fulfillment_branch': (
                 None if branch is None else {'id': branch.pk, 'name': branch.name}
             ),
@@ -327,6 +333,12 @@ class AdminCompanySettingsView(APIView):
             'can_manage_order_review': (
                 has_capability(request.user, company, CAP_COMPANY_MANAGE)
                 and has_capability(request.user, company, CAP_SETTINGS_MANAGE)
+            ),
+            # SUPPLY-MARGIN-01: the same pair, plus `costs.view` (a suggested price reveals the cost).
+            'can_manage_supplier_pricing': (
+                has_capability(request.user, company, CAP_COMPANY_MANAGE)
+                and has_capability(request.user, company, CAP_SETTINGS_MANAGE)
+                and user_may_view_costs(request.user, company)
             ),
         })
 
@@ -339,6 +351,16 @@ class AdminCompanySettingsView(APIView):
             return error
 
         payload = request.data if isinstance(request.data, dict) else {}
+
+        # SUPPLY-MARGIN-01. Who cannot see costs cannot state the margin of the suggested price: a stated value is
+        # refused whatever it is (equal or not to the current one — no oracle), an empty one changes nothing.
+        # COST-WRITE-AUTHORITY / DEC-INV-05: 403 `costs_forbidden`, before anything is written.
+        if any(field in payload for field in SUPPLIER_PRICING_FIELDS) \
+                and not user_may_view_costs(request.user, company):
+            if any(states_a_cost(payload.get(field)) for field in SUPPLIER_PRICING_FIELDS):
+                return Response({'detail': MARGIN_REQUIRES_COSTS, 'code': COSTS_FORBIDDEN},
+                                status=status.HTTP_403_FORBIDDEN)
+            payload = {key: value for key, value in payload.items() if key not in SUPPLIER_PRICING_FIELDS}
 
         # Identity lives on Company; the rest on CompanySettings. Validate BOTH
         # before writing EITHER, so a rejected colour cannot leave the name
@@ -375,6 +397,14 @@ class AdminCompanySettingsView(APIView):
         ) and not has_capability(request.user, company, CAP_SETTINGS_MANAGE):
             return Response(
                 {'detail': 'No tienes permisos para cambiar los apartados ni la venta bajo pedido de esta empresa.'},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if any(
+            field in SUPPLIER_PRICING_FIELDS and getattr(settings_row, field) != value
+            for field, value in settings_ser.validated_data.items()
+        ) and not has_capability(request.user, company, CAP_SETTINGS_MANAGE):
+            return Response(
+                {'detail': 'No tienes permisos para cambiar el margen del precio sugerido de esta empresa.'},
                 status=status.HTTP_403_FORBIDDEN,
             )
 

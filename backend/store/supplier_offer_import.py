@@ -66,6 +66,11 @@ current price. Both at once is refused. Each decision is audited per offer
 (`supplier_offer_price_changed` with before/after, `supplier_offer_price_kept`
 with the current and the proposed price) with the job id.
 
+SUPPLY-MARGIN-01 — THE SUGGESTED PRICE IS ONLY READ. `job_payload` adds `suggested_price` to each row for a
+reader with `costs.view` (the row's cost, else its offer's, plus the company's margin: `supplier_pricing`),
+computed when read and never staged; without `costs.view` the key is absent. Apply writes the file's prices,
+under the rules above, and never the suggestion.
+
 A STALE PREVIEW IS NOT APPLIED. The preview keeps what it read of each
 existing offer (`offer_state`: price, confirmed, window, lead time, state,
 cost); apply compares it under the lock (an edit, another file) and refuses
@@ -1641,10 +1646,25 @@ def _clean_active(value):
     return 'invalid'
 
 
+def _row_cost(data: dict):
+    """SUPPLY-MARGIN-01 — the cost the row leaves on its offer: the file's, else the offer's as previewed."""
+    from .cost_services import states_a_cost
+
+    if states_a_cost(data.get('agreed_cost')):
+        return data['agreed_cost']
+    return (data.get('offer_state') or {}).get('agreed_cost')
+
+
 def job_payload(job, *, include_cost: bool) -> dict:
+    from . import supplier_pricing
+
+    # SUPPLY-MARGIN-01: the suggested price is computed HERE, when read, for `costs.view` only — never staged.
+    pricing = supplier_pricing.company_rules(job.company_id) if include_cost else None
     rows = []
     for row in job.rows.order_by('row_number', 'pk')[:MAX_ROWS]:
         data = dict(row.normalized_data or {})
+        if include_cost:
+            data['suggested_price'] = supplier_pricing.suggest(_row_cost(data), pricing)
         if not include_cost:
             data.pop('agreed_cost', None)
             if isinstance(data.get('before'), dict):

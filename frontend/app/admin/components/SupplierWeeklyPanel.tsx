@@ -10,6 +10,9 @@
  *
  * The shop's OWN stock is a column of its own: a supplier's quantity is never added to it. The agreed cost is
  * shown only when the server sent it (`costs.view`). READ ONLY: nothing here changes an offer or a price.
+ *
+ * SUPPLY-MARGIN-01: «Precio sugerido» (cost + the company's margin, computed by the server) sits next to the offer's
+ * price, only when the rows carry the key (`costs.view`). A proposal to read; this screen writes nothing.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -90,6 +93,15 @@ function matches(row: SupplierWeeklyRow, words: string[]): boolean {
   return words.every((word) => text.includes(word));
 }
 
+/** SUPPLY-MARGIN-01: the server's suggestion, or why there is none. Shown only when the row carries the key. */
+export function suggestedText(value: string | null | undefined): string {
+  return value ? formatSoles(value) : "Sin sugerencia";
+}
+
+function hasSuggestion(row: SupplierWeeklyRow): boolean {
+  return Object.prototype.hasOwnProperty.call(row, "suggested_price");
+}
+
 function available(row: SupplierWeeklyRow): string {
   if (row.remaining === null) return "Sin confirmar";
   return String(row.remaining);
@@ -129,6 +141,7 @@ export function SupplierWeeklyPanel({
     [data, deltaFilter, words],
   );
   const withCost = Boolean(data?.with_cost);
+  const withSuggestion = Boolean(data?.results.some(hasSuggestion));
   const isCurrent = Boolean(data && data.today >= data.week_start && data.today <= data.week_end);
 
   return (
@@ -208,6 +221,7 @@ export function SupplierWeeklyPanel({
                 {deltaDetail(row).map((text) => <span key={text} className="block text-xs text-foreground">{text}</span>)}
                 <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                   <dt className="text-muted">Precio oferta</dt><dd className="text-right">{formatSoles(row.commercial_price)}</dd>
+                  {withSuggestion ? (<><dt className="text-muted">Precio sugerido</dt><dd className="text-right">{suggestedText(row.suggested_price)}</dd></>) : null}
                   <dt className="text-muted">Precio variante</dt><dd className="text-right">{formatSoles(row.variant_price)}</dd>
                   {withCost ? (<><dt className="text-muted">Costo</dt><dd className="text-right">{row.agreed_cost ? formatSoles(row.agreed_cost) : "Sin costo"}</dd></>) : null}
                   <dt className="text-muted">Quedan (proveedor)</dt><dd className="text-right">{available(row)}</dd>
@@ -223,7 +237,9 @@ export function SupplierWeeklyPanel({
             <TableWrap>
               <thead>
                 <tr className="border-b border-bd-border">
-                  <Th>Variante</Th><Th>Proveedor</Th><Th>Cambio</Th><Th right>Precio oferta</Th><Th right>Precio variante</Th>
+                  <Th>Variante</Th><Th>Proveedor</Th><Th>Cambio</Th><Th right>Precio oferta</Th>
+                  {withSuggestion ? <Th right>Precio sugerido</Th> : null}
+                  <Th right>Precio variante</Th>
                   {withCost ? <Th right>Costo pactado</Th> : null}
                   <Th right>Quedan (proveedor)</Th><Th right>Stock propio</Th><Th right>Plazo</Th><Th>Vigencia</Th><Th>Estado</Th>
                 </tr>
@@ -244,6 +260,7 @@ export function SupplierWeeklyPanel({
                       {row.message_date ? <span className="block text-xs text-muted">Lista del {day(row.message_date)}</span> : null}
                     </Td>
                     <Td right>{formatSoles(row.commercial_price)}</Td>
+                    {withSuggestion ? <Td right>{suggestedText(row.suggested_price)}</Td> : null}
                     <Td right>{formatSoles(row.variant_price)}</Td>
                     {withCost ? <Td right>{row.agreed_cost ? formatSoles(row.agreed_cost) : "Sin costo"}</Td> : null}
                     <Td right>{available(row)}</Td>

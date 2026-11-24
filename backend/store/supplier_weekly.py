@@ -11,7 +11,9 @@ WHAT A ROW SAYS
   * The variant as the catalogue has it: its model and the option of each ROLE (capacity, colour, SIM, region),
     never parsed from a name. Nothing is hardcoded about a brand.
   * The offer as it is NOW: commercial price, confirmed and left quantity, lead time, validity and its state
-    (`supplier_views.offer_state`). The agreed cost only to `costs.view` — without it the key is absent.
+    (`supplier_views.offer_state`). The agreed cost only to `costs.view` — without it the key is absent; so is
+    SUPPLY-MARGIN-01's `suggested_price` (cost + the company's margin, `supplier_pricing`: a proposal, never
+    written).
   * The variant's own price (`Product.price`) and the shop's OWN stock (`BranchStock.quantity` in the branches
     the caller reaches) in their own columns: a supplier's quantity is never added to it, and a list never
     creates a unit, a stock row or a movement.
@@ -47,7 +49,7 @@ from decimal import Decimal, InvalidOperation
 from django.db.models import Q, Sum
 from django.utils import timezone
 
-from . import supply_services
+from . import supplier_pricing, supply_services
 from .models import (
     AdminAuditLog, BranchStock, BulkImportJob, BulkImportRow, ProductVariantOption, SupplierOffer, VariantAttribute,
 )
@@ -307,6 +309,7 @@ def weekly(company, *, start: date, branches, with_cost: bool, supplier_id=None,
     switched_off = _switched_off_recently(company, [o for o in chosen.values() if not o.is_active],
                                           since=previous_start, end=end)
     product_ids = {offer.product_id for offer in chosen.values()}
+    pricing = supplier_pricing.company_rules(company.pk) if with_cost else None
     options = _options(product_ids)
     stock = _own_stock(product_ids, branches)
 
@@ -340,6 +343,8 @@ def weekly(company, *, start: date, branches, with_cost: bool, supplier_id=None,
         }
         if with_cost:
             row['agreed_cost'] = str(offer.agreed_cost) if offer.agreed_cost is not None else None
+            # SUPPLY-MARGIN-01: a proposal to read, next to the offer's price; never written anywhere.
+            row['suggested_price'] = supplier_pricing.suggest(offer.agreed_cost, pricing)
         rows.append(row)
     rows.sort(key=lambda r: (r['supplier_name'].lower(), (r['model'] or '').lower(), r['product_name'].lower(),
                              r['offer_id']))

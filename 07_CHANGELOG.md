@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-24 — SUPPLY-MARGIN-01: precio sugerido de las ofertas de proveedor (rama, sin fusionar ni desplegar)
+
+**Added**
+- Margen sobre el costo (0–500 %) y paso de redondeo por empresa (Configuración › Precio sugerido de ofertas de proveedor), sólo para quien ve costos; cambiarlos exige además `settings.manage`. Migración `0190_supplier_margin`.
+- «Precio sugerido» junto al precio actual en el panel «Semana», en la lista de ofertas y en la vista previa del Excel (y en el ensayo del asistente de texto), sólo con `costs.view`.
+- «Usar sugerido» en el formulario de la oferta: sólo llena el precio; nada se guarda hasta guardar.
+
+**Unchanged**
+- Ningún precio cambia solo: ni el de la oferta, ni el publicado de la variante. La importación aplica los precios del archivo con las mismas decisiones y confirmaciones.
+
 ## 2026-11-24 — CATALOG-ADMIN-UX-B: el editor de modelos a escala (rama, sin desplegar)
 
 **Added**
