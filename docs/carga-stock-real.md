@@ -302,9 +302,15 @@ caja, se ofrecen en la web y se pueden apartar en un carrito. En concreto:
   precio, no un precio en cada equipo.
 - La caja cuenta como disponibles sólo los equipos con precio e inspección aprobada de esa sucursal, y rechaza por su
   nombre el equipo sin precio.
-- Si se quita el precio de un equipo que un comprador tiene apartado, el apartado vuelve al estante en el acto (con
-  su línea de Kardex) y el pago no se abre; si el dinero llegara igual, ese equipo no se vende y la línea queda
-  marcada para revisión. Los apartados de sus hermanos no cambian.
+- Si se quita el precio de un equipo que un comprador tiene en el carrito y **todavía no hay pedido**, el apartado
+  vuelve al estante en el acto (con su línea de Kardex) y el checkout avisa que el carrito cambió.
+- Si **ya hay un pedido** con ese equipo, el equipo sigue apartado para ese pedido hasta que se intenta pagar: el pago
+  no se abre, el pedido queda fallido y entonces el equipo vuelve al estante. Si el dinero llegara igual (un
+  formulario de pago ya abierto), ese equipo no se vende y la línea queda marcada para revisión.
+- En ningún caso cambian los apartados de sus hermanos: los del mismo carrito siguen siendo del comprador, que puede
+  volver a comprar sin el equipo retirado.
+- Al entregar un pedido, no se puede cambiar el equipo apartado por uno del estante sin precio o sin inspección
+  aprobada (409 `no_price` o `unit_not_inspected`).
 - Un pago web que aparta equipos por cantidad (un seminuevo sin modelo) toma sólo equipos con precio e inspección
   aprobada, y el checkout cuenta sólo esos.
 
