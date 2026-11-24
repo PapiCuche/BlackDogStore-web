@@ -210,7 +210,8 @@ def _unit(raw, where: str, *, may_view_costs: bool, may_set_prices: bool = False
     condition = _text(raw.get('condition'), f'{where}.condition', limit=20)
     if condition:
         row['condition'] = condition
-    notes = _text(raw.get('notes'), f'{where}.notes', limit=2000)
+    # INV-LOAD-01 — the device's notes hold `MAX_NOTES` characters: more is refused here, never cut further on.
+    notes = _text(raw.get('notes'), f'{where}.notes', limit=units_service.MAX_NOTES)
     if notes:
         row['notes'] = notes
 
@@ -270,17 +271,38 @@ def movement_type_for(normalised: dict) -> str:
 
 def opening_problem(branch, product) -> str:
     """
-    Why `product` cannot take an OPENING count in `branch`, or ''. Opening stock says nothing was on that shelf before:
-    the same rule the stock import enforces (§31). A shelf with any Kardex history, or holding stock that no Kardex line
-    explains, is not an opening.
+    Why `product` cannot take an OPENING count in `branch`, or ''. Opening stock says nothing but the opening was on
+    that shelf before: the same rule the stock import enforces (§31), widened by INV-LOAD-01 so a shop can load what
+    it already had IN SEVERAL BATCHES (several files, or a receipt and then a file) without a fictitious purchase.
+
+    A shelf whose Kardex holds ONLY opening lines (INITIAL_STOCK) still takes one more. Any other line — a sale, a
+    purchase, a transfer, a correction, a write-off, a hold — closes the opening for good. A shelf holding stock that no
+    Kardex line explains (no line at all, or a quantity the last opening line does not account for) is not an opening.
     """
-    if StockMovement.objects.filter(branch=branch, product=product).exists():
+    lines = StockMovement.objects.filter(branch=branch, product=product)
+    if lines.exclude(movement_type=StockMovement.INITIAL_STOCK).exists():
         return (f'«{product.name}» ya tiene movimientos en {branch.name}: no es inventario inicial. Regístralo como '
                 'compra.')
-    if BranchStock.objects.filter(branch=branch, product=product, quantity__gt=0).exists():
+    shelf = BranchStock.objects.filter(branch=branch, product=product).values_list('quantity', flat=True).first() or 0
+    last = lines.order_by('-pk').values_list('stock_after', flat=True).first()
+    if shelf > 0 and shelf != (last or 0):
         return (f'«{product.name}» ya tiene stock en {branch.name} sin un movimiento que lo explique: no se puede '
                 'declarar como inventario inicial. Regístralo como compra o corrige su stock.')
     return ''
+
+
+def lock_shelves(shelves) -> None:
+    """
+    INV-LOAD-01 review — hold every `(branch, product)` shelf an OPENING is about to write, creating the rows that do not
+    exist yet (a missing row cannot be locked), in the module-wide `(branch_id, product_id)` order. `opening_problem`
+    is then asked under these locks: a sale, a hold or a write-off cannot commit between the check and the entry.
+    """
+    by_branch: dict = {}
+    for branch, product in shelves:
+        by_branch.setdefault(branch.pk, (branch, {}))[1][product.pk] = product
+    for branch_id in sorted(by_branch):
+        branch, products = by_branch[branch_id]
+        inventory_services._locked_branch_stocks(branch, list(products.values()))
 
 
 def normalise(body, *, may_view_costs: bool, may_set_prices: bool = False) -> dict:
@@ -691,6 +713,13 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
 
     Returns `(record, trail)` — the record is ids and counts, never an identifier or an amount.
     """
+    if normalised.get('entry_kind') == ENTRY_OPENING:
+        # INV-LOAD-01 review — the shelves first, so the opening check below is decided under their locks. Before
+        # them, the products this receipt switches to devices (Product → shelf, the order of every other door).
+        units_service.lock_products(product for product in resolved.products.values() if not product.is_serialized
+                       and any(line['kind'] == KIND_UNITS and line['product'] == product.pk
+                               for line in normalised['lines']))
+        lock_shelves((resolved.branch, product) for product in resolved.products.values())
     verdicts = check(company, resolved, normalised)
     if not all(v['status'] == 'ok' for v in verdicts):
         raise ReceiptInvalid(preview(company, resolved, normalised))
@@ -944,9 +973,9 @@ def previous(company, actor, key):
 
 def is_busy(error) -> bool:
     """Whether a database error is a deadlock or a serialization failure: the other receipt won, retry."""
-    cause = getattr(error, '__cause__', None)
-    code = getattr(cause, 'pgcode', None) or getattr(cause, 'sqlstate', None)
-    return code in ('40P01', '40001')
+    from .db_busy import is_busy as busy
+
+    return busy(error)
 
 
 def lock(company_id, actor_id, key) -> None:

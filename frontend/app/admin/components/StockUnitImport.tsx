@@ -17,7 +17,7 @@ import { useRef, useState } from "react";
 
 import {
   applyUnitImport, previewUnitImport, unitImportErrorsUrl, unitImportTemplateUrl,
-  type UnitImportJob, type UnitImportRow,
+  type UnitImportJob, type UnitImportRow, type UnitImportSimulation,
 } from "@/app/lib/stock-units";
 
 import { CostColumnNotice } from "./CostColumnNotice";
@@ -50,6 +50,41 @@ function Outcome({ row }: { row: UnitImportRow }) {
       Se registrará
       {row.warnings.length ? <span className="block text-xs text-muted">{row.warnings.join(" · ")}</span> : null}
     </span>
+  );
+}
+
+/**
+ * INV-LOAD-01 — what registering the file would do, as the SERVER simulated it from the shop as it is now: per branch ×
+ * product, the available devices before → after, and how many Kardex lines of each type it writes.
+ */
+function Simulation({ simulation }: { simulation: UnitImportSimulation }) {
+  const { movements } = simulation;
+  return (
+    <section className="mb-4 space-y-3" aria-labelledby="unit-import-simulation">
+      <h3 id="unit-import-simulation" className="text-sm font-semibold text-foreground">Resultado si registras el archivo</h3>
+      <p role="note" aria-label="Movimientos en el Kardex" className="text-sm text-muted">
+        Movimientos en el Kardex: {movements.initial_stock} de inventario inicial · {movements.purchase_entry} de compra.
+      </p>
+      <TableWrap>
+        <caption className="sr-only">Resultado si registras el archivo</caption>
+        <thead>
+          <tr className="border-b border-bd-border">
+            <Th>Sucursal</Th><Th>Producto</Th><Th>Entran</Th><Th>Equipos disponibles</Th><Th>Stock</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {simulation.shelves.map((shelf) => (
+            <tr key={`${shelf.branch_id}-${shelf.product_id}`} className="border-b border-bd-border">
+              <Td>{shelf.branch}</Td>
+              <Td>{shelf.product}</Td>
+              <Td>{shelf.adds}</Td>
+              <Td>{shelf.units_before} → {shelf.units_after}</Td>
+              <Td>{shelf.stock_before} → {shelf.stock_after}</Td>
+            </tr>
+          ))}
+        </tbody>
+      </TableWrap>
+    </section>
   );
 }
 
@@ -153,7 +188,7 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
                 <label className="flex items-center gap-2">
                   <input type="radio" name="unit-import-entry-kind" value="opening" disabled={working}
                     checked={entryKind === "opening"} onChange={() => { setEntryKind("opening"); setJob(null); }} />
-                  Inventario inicial (equipos que ya tenías; sólo en artículos sin movimientos en esa sucursal)
+                  Inventario inicial (equipos que ya tenías; se puede cargar en varias tandas mientras el artículo no tenga otros movimientos en esa sucursal)
                 </label>
               </div>
             </fieldset>
@@ -224,6 +259,9 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
               registra ningún equipo.
             </p>
           ) : null}
+          {!job.counts.error && job.counts.create > 0 && job.summary.simulation ? (
+            <Simulation simulation={job.summary.simulation} />
+          ) : null}
           {unmarked > 0 ? (
             <p
               role="note"
@@ -240,7 +278,8 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
             <thead>
               <tr className="border-b border-bd-border">
                 <Th>Fila</Th><Th>Producto</Th><Th>Sucursal</Th><Th>Número de serie</Th>
-                <Th>IMEI</Th><Th>IMEI 2</Th><Th>Condición</Th><Th>Resultado</Th>
+                <Th>IMEI</Th><Th>IMEI 2</Th><Th>Condición</Th><Th>Proveedor</Th><Th>Fecha de ingreso</Th>
+                <Th>Resultado</Th>
               </tr>
             </thead>
             <tbody>
@@ -253,6 +292,8 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
                   <Td><span className="font-mono text-xs">{row.data.imei ?? ""}</span></Td>
                   <Td><span className="font-mono text-xs">{row.data.imei2 ?? ""}</span></Td>
                   <Td>{row.data.condition ? CONDITIONS[row.data.condition] ?? row.data.condition : ""}</Td>
+                  <Td>{row.data.supplier ?? ""}</Td>
+                  <Td>{row.data.received_on ?? ""}</Td>
                   <Td><Outcome row={row} /></Td>
                 </tr>
               ))}

@@ -803,11 +803,14 @@ class UnitsExportTest(_Base):
         self.assertEqual(headers, unit_import_services.HEADERS)
         # DC2: «Modelo» … «Precio de venta» after «Motivo / referencia», empty here
         # (no variant, grade, battery or price). A1b: «SIM» and «Región» among them.
-        dc2 = [None] * 13        # + USED-READY-01: warranty, functional state, defects, accessories
+        dc2 = [None] * 9
+        # INV-LOAD-01: «Proveedor» empty on purpose, the day each came in, no notes.
+        load = [None, timezone.localdate().isoformat(), None, None]
+        used = [None] * 4        # USED-READY-01: warranty, functional state, defects, accessories
         self.assertEqual(rows, [
-            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0001', IMEI_A, None, 'Nuevo', 3800, None, *dc2],
-            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0002', IMEI_B, None, 'Usado', None, None, *dc2],
-            ['TEL-X', 'Teléfono X', 'Norte', 'SER-0003', IMEI_C, IMEI_D, 'Caja abierta', 3650.5, None, *dc2],
+            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0001', IMEI_A, None, 'Nuevo', 3800, None, *dc2, *load, *used],
+            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0002', IMEI_B, None, 'Usado', None, None, *dc2, *load, *used],
+            ['TEL-X', 'Teléfono X', 'Norte', 'SER-0003', IMEI_C, IMEI_D, 'Caja abierta', 3650.5, None, *dc2, *load, *used],
         ])
 
     def test_serials_and_imeis_are_text(self):
@@ -864,8 +867,10 @@ class UnitsExportTest(_Base):
         title, headers, _rows = self.sheet(response)
 
         self.assertEqual(title, 'Reporte de equipos')
-        # The device template without «Motivo / referencia» (a reception's reason), plus what happened.
-        self.assertEqual(headers, [header for header in unit_import_services.HEADERS if header != 'Motivo / referencia']
+        # The device template without «Motivo / referencia» (a reception's reason) nor the reception columns of
+        # INV-LOAD-01 (the report has its own date and notes), plus what happened.
+        reception = ('Motivo / referencia', 'Proveedor', 'Fecha de ingreso', 'Notas internas', 'Detalles para el comprador')
+        self.assertEqual(headers, [header for header in unit_import_services.HEADERS if header not in reception]
                          + ['Estado', 'Fecha de ingreso', 'Pedido', 'Notas'])
         rows = {row['Número de serie']: row for row in self.records(response)}
         self.assertEqual(set(rows), {'SER-0001', 'SER-0002', 'SER-0003', 'SER-0004', 'SER-0005'})
@@ -971,6 +976,8 @@ class DeviceCommerceRoundTripTest(_Base):
         self.receive(self.centro, {
             'serial_number': 'SER-U001', 'imei': imei('35693803564390'), 'condition': 'used', 'cost': '1200.00',
             'cosmetic_grade': self.grade.pk, 'battery_health': 88, 'sale_price': '1899.90',
+            # INV-LOAD-01 — written back under «Notas internas» and «Detalles para el comprador».
+            'notes': 'Caja original', 'public_notes': 'Sin rayones',
             # USED-READY-01 — the four optional columns of a used device, written back under their headers.
             'warranty_days': 90, 'functional_state': 'with_faults', 'defects': 'Botón lateral duro',
             'accessories': 'Caja',
@@ -1012,6 +1019,8 @@ class DeviceCommerceRoundTripTest(_Base):
             [units['SER-U001'][key] for key in ('Modelo', 'Capacidad', 'Color', 'Línea', 'Estado estético',
                                                 'Batería %', 'Precio de venta', 'Motivo / referencia')],
             ['Serie 16', '128 GB', 'Azul', 'Seminuevo', self.grade.label, 88, 1899.9, None])
+        self.assertEqual([units['SER-U001'][key] for key in ('Notas internas', 'Detalles para el comprador')],
+                         ['Caja original', 'Sin rayones'])
         # A new device sells at its variant's price: none of its own in the file.
         self.assertEqual((units['SER-0001']['Línea'], units['SER-0001']['Precio de venta']), ('Nuevo', None))
         # The report reads the same, and says what happened to each device.
