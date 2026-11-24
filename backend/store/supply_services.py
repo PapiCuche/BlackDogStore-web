@@ -366,10 +366,33 @@ COST_UNSEEN_TEXT = ('Esta oferta tiene un costo pactado que no puedes ver, así 
                     'revise.')
 COST_UNSEEN_ROW_TEXT = ('La oferta tiene un costo pactado que no puedes ver: no se comprueba si este precio lo cubre. '
                         'Al aplicar tendrás que confirmarlo.')
-#: The audit lines of a confirmation. The first one names a comparison: the offer's history hides it from who
-#: cannot see costs (`supplier_views.AdminOfferHistoryView`).
+#: The audit lines of a confirmation, with the actor, the offer, the price, the cost and the reason. The cost lives
+#: ONLY in the audit row: the offer's history hides the first line (it names a comparison) and the `agreed_cost`
+#: key from who cannot see costs, and so does the audit log (`supplier_views.AdminOfferHistoryView`,
+#: `admin_views.AdminAuditLogListView`).
 BELOW_COST_AUDIT = 'supplier_offer_below_cost_confirmed'
 COST_UNSEEN_AUDIT = 'supplier_offer_cost_unseen_confirmed'
+MARGIN_AUDITS = (BELOW_COST_AUDIT, COST_UNSEEN_AUDIT)
+#: Owner, 2026-11-23: an exception is confirmed AND explained. The codebase's reason lengths (5 to 500).
+MARGIN_REASON_MIN, MARGIN_REASON_MAX = 5, 500
+MARGIN_REASON_REQUIRED = 'margin_reason_required'
+MARGIN_REASON_TEXT = (f'Escribe el motivo de este precio ({MARGIN_REASON_MIN} a {MARGIN_REASON_MAX} caracteres): '
+                      'quedará en la auditoría.')
+
+
+def audit_metadata_without_cost(metadata):
+    """An audit row's metadata for a reader without `costs.view`: the cost a margin confirmation keeps, dropped."""
+    if not isinstance(metadata, dict) or 'agreed_cost' not in metadata:
+        return metadata
+    return {key: value for key, value in metadata.items() if key != 'agreed_cost'}
+
+
+def clean_margin_reason(value) -> str:
+    """The reason of a confirmed exception, whitespace folded; '' when it is not a usable one."""
+    text = ' '.join(str(value or '').split())
+    if not MARGIN_REASON_MIN <= len(text) <= MARGIN_REASON_MAX or any(ord(c) < 32 for c in text):
+        return ''
+    return text
 
 
 def below_cost_text(price, cost) -> str:
@@ -403,16 +426,22 @@ def margin_check(values: dict, *, current=None, may_view_costs: bool) -> str | N
     return BELOW_COST if price < cost else None
 
 
-def _guard_margin(values, *, current, may_view_costs, confirm_below_cost) -> str | None:
+def _guard_margin(values, *, current, may_view_costs, confirm_below_cost, reason='') -> tuple[str | None, str]:
     """
     `confirm_below_cost`: None = the caller judged it already (the weekly file, per job); False/True = the
-    panel's request. Refuses an unconfirmed one (409); returns the verdict to audit once written.
+    panel's request. Refuses an unconfirmed one (409) and a confirmed one without a reason (400
+    `margin_reason_required`); returns the verdict and the reason, to audit once written.
     """
     if confirm_below_cost is None:
-        return None
+        return None, ''
     verdict = margin_check(values, current=current, may_view_costs=may_view_costs)
-    if verdict is None or confirm_below_cost:
-        return verdict
+    if verdict is None:
+        return None, ''
+    if confirm_below_cost:
+        reason = clean_margin_reason(reason)
+        if not reason:
+            raise SupplyError(MARGIN_REASON_TEXT, field='below_cost_reason', code=MARGIN_REASON_REQUIRED)
+        return verdict, reason
     if verdict == COST_UNSEEN:
         raise SupplyError(COST_UNSEEN_TEXT, field='commercial_price', code=COST_UNSEEN)
     price = values.get('commercial_price', getattr(current, 'commercial_price', None))
@@ -421,12 +450,17 @@ def _guard_margin(values, *, current, may_view_costs, confirm_below_cost) -> str
                       extra={'commercial_price': str(price), 'agreed_cost': str(cost)})
 
 
-def audit_margin(verdict, offer, *, actor=None, request=None, **metadata) -> None:
-    """A confirmed price below the cost (or over a cost the person cannot see). Never an amount."""
+def audit_margin(verdict, offer, *, reason, actor=None, request=None, **metadata) -> None:
+    """
+    A confirmed price below the cost (or over a cost the person cannot see): who (the row's actor), which offer,
+    the price and the cost written, and why. The cost stays in this row (see `MARGIN_AUDITS`).
+    """
     if verdict is None:
         return
     _audit(BELOW_COST_AUDIT if verdict == BELOW_COST else COST_UNSEEN_AUDIT, company=offer.company, actor=actor,
-           target_type='supplier_offer', target_id=offer.pk, request=request, **metadata)
+           target_type='supplier_offer', target_id=offer.pk, request=request, reason=reason,
+           commercial_price=str(offer.commercial_price),
+           agreed_cost=str(offer.agreed_cost) if offer.agreed_cost is not None else None, **metadata)
 
 
 def _offer_snapshot(offer) -> dict:
@@ -450,12 +484,12 @@ def _is_duplicate(exc) -> bool:
 
 
 def create_offer(*, company, actor=None, request=None, may_view_costs: bool = False,
-                 confirm_below_cost: bool | None = None, **fields) -> SupplierOffer:
+                 confirm_below_cost: bool | None = None, below_cost_reason: str = '', **fields) -> SupplierOffer:
     fields.setdefault('supplier_id', None)
     fields.setdefault('product_id', None)
     values = _offer_values(company, fields, may_view_costs=may_view_costs)
-    verdict = _guard_margin(values, current=None, may_view_costs=may_view_costs,
-                            confirm_below_cost=confirm_below_cost)
+    verdict, reason = _guard_margin(values, current=None, may_view_costs=may_view_costs,
+                                    confirm_below_cost=confirm_below_cost, reason=below_cost_reason)
     try:
         with transaction.atomic():
             offer = SupplierOffer.objects.create(company=company, created_by=actor, **values)
@@ -465,12 +499,12 @@ def create_offer(*, company, actor=None, request=None, may_view_costs: bool = Fa
         raise SupplyError(_DUPLICATE, field='valid_from', code='duplicate') from None
     _audit('supplier_offer_created', company=company, actor=actor, target_type='supplier_offer',
            target_id=offer.pk, request=request, **_offer_snapshot(offer))
-    audit_margin(verdict, offer, actor=actor, request=request, source='panel')
+    audit_margin(verdict, offer, reason=reason, actor=actor, request=request, source='panel')
     return offer
 
 
 def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = False,
-                 confirm_below_cost: bool | None = None, **fields) -> SupplierOffer:
+                 confirm_below_cost: bool | None = None, below_cost_reason: str = '', **fields) -> SupplierOffer:
     """`confirm_below_cost`: see `_guard_margin` (None: not judged here)."""
     fields = {k: v for k, v in fields.items() if k not in ('supplier_id', 'product_id')}
     with transaction.atomic():
@@ -479,8 +513,8 @@ def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = Fals
         if not values:
             return locked
         # Under the lock: the price and the cost compared are the ones this write replaces.
-        verdict = _guard_margin(values, current=locked, may_view_costs=may_view_costs,
-                                confirm_below_cost=confirm_below_cost)
+        verdict, reason = _guard_margin(values, current=locked, may_view_costs=may_view_costs,
+                                        confirm_below_cost=confirm_below_cost, reason=below_cost_reason)
         before = _offer_snapshot(locked)
         try:
             with transaction.atomic():
@@ -495,7 +529,7 @@ def update_offer(offer, *, actor=None, request=None, may_view_costs: bool = Fals
             changed.append('agreed_cost')
         _audit('supplier_offer_updated', company=locked.company, actor=actor, target_type='supplier_offer',
                target_id=locked.pk, request=request, changed=sorted(set(changed)), **_offer_snapshot(locked))
-        audit_margin(verdict, locked, actor=actor, request=request, source='panel')
+        audit_margin(verdict, locked, reason=reason, actor=actor, request=request, source='panel')
     offer.refresh_from_db()
     return offer
 

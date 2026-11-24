@@ -232,7 +232,8 @@ class AdminOfferListView(APIView):
                 # SUPPLY-GUARDS-01: a price below the cost (or over a cost the caller cannot see) is confirmed.
                 offer = supply_services.create_offer(
                     company=company, actor=request.user, request=request, may_view_costs=with_cost,
-                    confirm_below_cost=_flag(request.data.get('confirm_below_cost')), **fields)
+                    confirm_below_cost=_flag(request.data.get('confirm_below_cost')),
+                    below_cost_reason=str(request.data.get('below_cost_reason') or ''), **fields)
         except supply_services.SupplyError as exc:
             return _error(exc)
         return Response(offer_payload(offer, with_cost=with_cost), status=status.HTTP_201_CREATED)
@@ -271,7 +272,8 @@ class AdminOfferDetailView(APIView):
                 supplier_offer_import.guard_offer_overlap(company, fields, current=offer)
                 offer = supply_services.update_offer(
                     offer, actor=request.user, request=request, may_view_costs=with_cost,
-                    confirm_below_cost=_flag(request.data.get('confirm_below_cost')), **fields)
+                    confirm_below_cost=_flag(request.data.get('confirm_below_cost')),
+                    below_cost_reason=str(request.data.get('below_cost_reason') or ''), **fields)
                 if fields.get('availability_confirmed') is True and offer.availability_confirmed:
                     # B0: a person's explicit «el proveedor confirmó la disponibilidad» — the one confirmation
                     # that is not a message. Audited; no job.
@@ -308,14 +310,15 @@ class AdminOfferHistoryView(APIView):
         if offer is None:
             return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
         rows = AdminAuditLog.objects.filter(company=company, target_type='supplier_offer', target_id=str(offer.pk))
-        if not user_may_view_costs(request.user, company):
+        sees_costs = user_may_view_costs(request.user, company)
+        if not sees_costs:
             # SUPPLY-GUARDS-01: «sold below its cost» says something about the cost.
             rows = rows.exclude(action=supply_services.BELOW_COST_AUDIT)
         rows = rows.select_related('actor').order_by('-created_at', '-pk')[:200]
         return Response({'results': [{
             'action': row.action, 'at': row.created_at.isoformat(),
             'actor': row.actor.get_username() if row.actor_id else None,
-            'metadata': row.metadata,
+            'metadata': row.metadata if sees_costs else supply_services.audit_metadata_without_cost(row.metadata),
         } for row in rows]})
 
 
@@ -556,7 +559,8 @@ class AdminOfferImportApplyView(APIView):
                 confirm_new_declaration=request.data.get('confirm_new_declaration') is True,
                 new_declaration_note=str(request.data.get('new_declaration_note') or ''),
                 # SUPPLY-GUARDS-01: rows below their cost (or over a cost the caller cannot see).
-                confirm_below_cost=_flag(request.data.get('confirm_below_cost')))
+                confirm_below_cost=_flag(request.data.get('confirm_below_cost')),
+                below_cost_reason=str(request.data.get('below_cost_reason') or ''))
         except supplier_offer_import.OfferImportError as exc:
             code = (status.HTTP_409_CONFLICT if exc.code in ('price_confirmation_required', 'already_applied',
                                                               supply_services.BELOW_COST, supply_services.COST_UNSEEN,

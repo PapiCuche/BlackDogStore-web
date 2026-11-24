@@ -4,7 +4,9 @@ SUPPLY-GUARDS-01 — what the offers screen and the weekly file say before an of
   * An offer of an INACTIVE supplier never sells (`valid_offer_q`), so it is never shown as «Vigente»: its state
     is `supplier_inactive`, the «Vigentes» filter leaves it out and `state=supplier_inactive` lists it.
   * A commercial price BELOW the agreed cost (a sale at a loss) is never saved in silence — not by the panel's
-    create or edit, not by the weekly file's apply: 409 until the request says `confirm_below_cost`.
+    create or edit, not by the weekly file's apply: 409 until the request says `confirm_below_cost` AND gives a
+    reason (`below_cost_reason`, owner 2026-11-23; 400 `margin_reason_required` without one). The exception is
+    audited with the actor, the offer, the price, the cost and the reason — the cost returned only to `costs.view`.
   * Who cannot see costs never learns the cost: not its amount and not whether a price is below it. Any answer
     that depended on the comparison would be an oracle (try prices until the answer flips). So for them the
     check is UNIFORM: changing the price of an offer that carries a cost they cannot see asks for the same
@@ -29,6 +31,7 @@ from store.test_supplier_offers import OFFER_HEADERS, SupplyShop, today
 from store.tests import _p2d_member
 
 D = Decimal
+WHY = 'Liquidación de modelo anterior'
 
 
 class GuardShop(SupplyShop):
@@ -122,12 +125,33 @@ class BelowCostPanelTest(GuardShop, TestCase):
         self.assertEqual((body['commercial_price'], body['agreed_cost']), ('100.00', '120.00'))
         self.assertEqual(body['field'], 'commercial_price')
         self.assertEqual(SupplierOffer.objects.count(), count)
-        res = self.new_offer(self.api, agreed_cost='120.00', confirm_below_cost=True)
+        res = self.new_offer(self.api, agreed_cost='120.00', confirm_below_cost=True, below_cost_reason=WHY)
         self.assertEqual(res.status_code, 201, res.content)
         made = SupplierOffer.objects.get(pk=res.json()['id'])
         self.assertEqual((made.commercial_price, made.agreed_cost), (D('100.00'), D('120.00')))
-        self.assertTrue(AdminAuditLog.objects.filter(
-            company=self.company, action='supplier_offer_below_cost_confirmed', target_id=str(made.pk)).exists())
+        audit = AdminAuditLog.objects.get(company=self.company, action='supplier_offer_below_cost_confirmed',
+                                          target_type='supplier_offer', target_id=str(made.pk))
+        self.assertEqual(audit.actor, self.staff)
+        self.assertEqual((audit.metadata['commercial_price'], audit.metadata['agreed_cost'], audit.metadata['reason']),
+                         ('100.00', '120.00', WHY))
+
+    def test_a_confirmation_without_a_reason_writes_nothing(self):
+        count = SupplierOffer.objects.count()
+        for reason in (None, '', '   ', 'abc', 'x' * 501):
+            extra = {} if reason is None else {'below_cost_reason': reason}
+            res = self.new_offer(self.api, agreed_cost='120.00', confirm_below_cost=True, **extra)
+            self.assertEqual((res.status_code, res.json()['code'], res.json()['field']),
+                             (400, 'margin_reason_required', 'below_cost_reason'), reason)
+        self.assertEqual(SupplierOffer.objects.count(), count)
+        url = f'/api/admin/supplier-offers/{self.offer.pk}/'
+        res = self.api.patch(url, {'commercial_price': '60.00', 'confirm_below_cost': True}, format='json')
+        self.assertEqual((res.status_code, res.json()['code']), (400, 'margin_reason_required'))
+        res = self.blind.patch(url, {'commercial_price': '60.00', 'confirm_below_cost': True}, format='json')
+        self.assertEqual((res.status_code, res.json()['code']), (400, 'margin_reason_required'))
+        assert_no_amount(self, res.json(), '70')
+        self.offer.refresh_from_db()
+        self.assertEqual(self.offer.commercial_price, D('110.00'))
+        self.assertFalse(AdminAuditLog.objects.filter(action__in=supply.MARGIN_AUDITS).exists())
 
     def test_a_price_at_or_above_the_cost_or_without_cost_is_saved_as_always(self):
         self.assertEqual(self.new_offer(self.api, agreed_cost='100.00').status_code, 201)
@@ -144,10 +168,14 @@ class BelowCostPanelTest(GuardShop, TestCase):
         self.assertEqual((res.status_code, res.json()['code']), (409, 'below_cost_confirmation_required'))
         self.offer.refresh_from_db()
         self.assertEqual((self.offer.commercial_price, self.offer.agreed_cost), (D('110.00'), D('70.00')))
-        res = self.api.patch(url, {'commercial_price': '60.00', 'confirm_below_cost': True}, format='json')
+        res = self.api.patch(url, {'commercial_price': '60.00', 'confirm_below_cost': True,
+                                   'below_cost_reason': WHY}, format='json')
         self.assertEqual(res.status_code, 200, res.content)
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.commercial_price, D('60.00'))
+        audit = AdminAuditLog.objects.get(action='supplier_offer_below_cost_confirmed', target_id=str(self.offer.pk))
+        self.assertEqual((audit.actor, audit.metadata['commercial_price'], audit.metadata['agreed_cost'],
+                          audit.metadata['reason']), (self.staff, '60.00', '70.00', WHY))
 
     def test_the_editor_resending_what_the_offer_holds_does_not_ask_again(self):
         # An offer already below its cost (confirmed before, or older than this guard): saving its quantity with
@@ -170,11 +198,15 @@ class BelowCostPanelTest(GuardShop, TestCase):
         assert_no_amount(self, below.json(), '70', '60', '150')
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.commercial_price, D('110.00'))
-        res = self.blind.patch(url, {'commercial_price': '60.00', 'confirm_below_cost': True}, format='json')
+        res = self.blind.patch(url, {'commercial_price': '60.00', 'confirm_below_cost': True,
+                                     'below_cost_reason': WHY}, format='json')
         self.assertEqual(res.status_code, 200, res.content)
         self.assertNotIn('agreed_cost', res.json())
-        self.assertTrue(AdminAuditLog.objects.filter(action='supplier_offer_cost_unseen_confirmed',
-                                                     target_id=str(self.offer.pk)).exists())
+        assert_no_amount(self, res.json(), '70')
+        audit = AdminAuditLog.objects.get(action='supplier_offer_cost_unseen_confirmed', target_id=str(self.offer.pk))
+        # The cost lives in the audit row (owner, 2026-11-23), never in what this person is answered.
+        self.assertEqual((audit.actor, audit.metadata['agreed_cost'], audit.metadata['reason']),
+                         (self.seller, '70.00', WHY))
         # Nothing else asks: the same price again, another field, or an offer without a cost.
         self.assertEqual(self.blind.patch(url, {'commercial_price': '60.00', 'lead_time_days': 6},
                                           format='json').status_code, 200)
@@ -184,15 +216,39 @@ class BelowCostPanelTest(GuardShop, TestCase):
     def test_without_costs_view_a_new_offer_has_no_cost_and_asks_nothing(self):
         self.assertEqual(self.new_offer(self.blind, commercial_price='1.00').status_code, 201)
 
-    def test_the_history_hides_a_below_cost_confirmation_from_who_cannot_see_costs(self):
-        self.api.patch(f'/api/admin/supplier-offers/{self.offer.pk}/',
-                       {'commercial_price': '60.00', 'confirm_below_cost': True}, format='json')
-        url = f'/api/admin/supplier-offers/{self.offer.pk}/history/'
-        seen = [row['action'] for row in self.api.get(url).json()['results']]
-        self.assertIn('supplier_offer_below_cost_confirmed', seen)
-        hidden = self.blind.get(url).json()['results']
+    def test_the_history_hides_the_cost_and_the_comparison_from_who_cannot_see_costs(self):
+        url = f'/api/admin/supplier-offers/{self.offer.pk}/'
+        self.assertEqual(self.api.patch(url, {'commercial_price': '60.00', 'confirm_below_cost': True,
+                                              'below_cost_reason': WHY}, format='json').status_code, 200)
+        self.assertEqual(self.blind.patch(url, {'commercial_price': '65.00', 'confirm_below_cost': True,
+                                                'below_cost_reason': WHY}, format='json').status_code, 200)
+        history = f'{url}history/'
+        seen = self.api.get(history).json()['results']
+        self.assertIn('supplier_offer_below_cost_confirmed', [row['action'] for row in seen])
+        self.assertIn('70.00', [row['metadata'].get('agreed_cost') for row in seen])
+        hidden = self.blind.get(history).json()['results']
         self.assertNotIn('supplier_offer_below_cost_confirmed', [row['action'] for row in hidden])
+        unseen = [row for row in hidden if row['action'] == 'supplier_offer_cost_unseen_confirmed']
+        self.assertEqual(unseen[0]['metadata']['reason'], WHY)
+        self.assertNotIn('agreed_cost', unseen[0]['metadata'])
         assert_no_amount(self, hidden, '70')
+
+    def test_the_audit_log_returns_the_cost_only_to_costs_view(self):
+        url = f'/api/admin/supplier-offers/{self.offer.pk}/'
+        self.api.patch(url, {'commercial_price': '60.00', 'confirm_below_cost': True, 'below_cost_reason': WHY},
+                       format='json')
+        auditor, _ = _p2d_member(self.company, 'sg_auditor_sin_costos', ['company.view', 'memberships.view'])
+        rows = self.as_(auditor).get('/api/admin/audit-logs/?action=below_cost').json()['results']
+        self.assertEqual(len(rows), 1, rows)
+        self.assertEqual(rows[0]['metadata']['reason'], WHY)
+        self.assertNotIn('agreed_cost', rows[0]['metadata'])
+        self.assertNotIn('commercial_price', rows[0]['metadata'])     # price + «below» would bound the cost
+        assert_no_amount(self, rows, '70', '60')
+        owner, _ = _p2d_member(self.company, 'sg_auditor_con_costos',
+                               ['company.view', 'memberships.view', 'costs.view'])
+        rows = self.as_(owner).get('/api/admin/audit-logs/?action=below_cost').json()['results']
+        self.assertEqual((rows[0]['metadata']['agreed_cost'], rows[0]['metadata']['commercial_price']),
+                         ('70.00', '60.00'))
 
 
 # ---------------------------------------------------------------------------
@@ -242,11 +298,16 @@ class ImportGuardTest(GuardShop, TestCase):
         self.assertEqual(res.json()['below_cost'][0]['agreed_cost'], '120.00')
         self.assertFalse(SupplierOffer.objects.exists())
         res = self.apply(body['id'], confirm_below_cost=True)
+        self.assertEqual((res.status_code, res.json()['code']), (400, 'margin_reason_required'))
+        self.assertFalse(SupplierOffer.objects.exists())
+        res = self.apply(body['id'], confirm_below_cost=True, below_cost_reason=WHY)
         self.assertEqual(res.status_code, 200, res.content)
         made = SupplierOffer.objects.get()
         self.assertEqual((made.commercial_price, made.agreed_cost), (D('100.00'), D('120.00')))
-        self.assertTrue(AdminAuditLog.objects.filter(action='supplier_offer_below_cost_confirmed',
-                                                     target_id=str(made.pk)).exists())
+        audit = AdminAuditLog.objects.get(action='supplier_offer_below_cost_confirmed', target_id=str(made.pk))
+        self.assertEqual((audit.actor, audit.metadata['commercial_price'], audit.metadata['agreed_cost'],
+                          audit.metadata['reason'], audit.metadata['job_id']),
+                         (self.staff, '100.00', '120.00', WHY, body['id']))
 
     def test_an_update_below_the_existing_cost_asks_on_top_of_the_price_decision(self):
         body = self.preview([self.row(**{'Precio comercial': '60'})])
@@ -255,7 +316,7 @@ class ImportGuardTest(GuardShop, TestCase):
         self.assertEqual((res.status_code, res.json()['code']), (409, 'below_cost_confirmation_required'))
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.commercial_price, D('110.00'))
-        res = self.apply(body['id'], accept_price_changes=True, confirm_below_cost=True)
+        res = self.apply(body['id'], accept_price_changes=True, confirm_below_cost=True, below_cost_reason=WHY)
         self.assertEqual(res.status_code, 200, res.content)
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.commercial_price, D('60.00'))
@@ -293,7 +354,11 @@ class ImportGuardTest(GuardShop, TestCase):
             answers.append({k: v for k, v in res.json().items() if k != 'cost_checks'})
         self.assertEqual(answers[0], answers[1])
         res = self.apply(below['id'], client=self.blind, accept_price_changes=True, confirm_below_cost=True)
+        self.assertEqual((res.status_code, res.json()['code']), (400, 'margin_reason_required'))
+        res = self.apply(below['id'], client=self.blind, accept_price_changes=True, confirm_below_cost=True,
+                         below_cost_reason=WHY)
         self.assertEqual(res.status_code, 200, res.content)
+        assert_no_amount(self, res.json(), '70')
         self.offer.refresh_from_db()
         self.assertEqual(self.offer.commercial_price, D('60.00'))
 

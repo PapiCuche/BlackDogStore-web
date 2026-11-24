@@ -163,9 +163,12 @@ offer's) warns in the preview, and apply refuses the job (409
 WRITTEN: kept prices (`keep_prices`) are not below the cost. Who cannot see
 costs never learns the comparison: for them every row that changes the price of
 an offer with a cost warns and asks the same way (409
-`cost_unseen_confirmation_required`, no amounts), whatever the price. The
-preview stores no sentence about the margin: `job_payload` writes it for each
-reader. Audited per offer, never with an amount. A row of an INACTIVE supplier
+`cost_unseen_confirmation_required`, no amounts), whatever the price. A
+confirmation needs a reason too (`below_cost_reason`; 400
+`margin_reason_required` without one). The preview stores no sentence about the
+margin: `job_payload` writes it for each reader. Audited per offer with the
+actor, the price, the cost and the reason — the cost returned only to `costs.view`
+(`supply_services.MARGIN_AUDITS`). A row of an INACTIVE supplier
 warns: the offer is recorded and sells nothing until the supplier is back on.
 
 LOCK ORDER: the job row; then a transaction advisory lock per (company,
@@ -1667,7 +1670,7 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
           confirm_reapply: bool = False, all_messages_included: bool = False,
           confirm_deactivations=None, reapply_reason: str = '', may_override_reapply: bool = False,
           confirm_reactivations=None, quantity_decisions=None, confirm_new_declaration: bool = False,
-          new_declaration_note: str = '', confirm_below_cost: bool = False) -> dict:
+          new_declaration_note: str = '', confirm_below_cost: bool = False, below_cost_reason: str = '') -> dict:
     """
     Write every staged offer. ALL OF THE FILE OR NONE OF IT. A job applied
     before answers with what it did then, and does nothing.
@@ -1681,8 +1684,9 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
     applied load under a later message date (B0 review). Repetitions and older
     messages write nothing whatever is confirmed.
 
-    SUPPLY-GUARDS-01: `confirm_below_cost` for rows that write a price below
-    the cost (or, for who cannot see costs, change the price of an offer with one).
+    SUPPLY-GUARDS-01: `confirm_below_cost` AND `below_cost_reason` (owner,
+    2026-11-23) for rows that write a price below the cost (or, for who cannot
+    see costs, change the price of an offer with one). Audited per offer.
     """
     job = BulkImportJob.objects.select_for_update().get(pk=job.pk)
     if job.import_type != BulkImportJob.SUPPLIER_OFFERS:
@@ -1826,8 +1830,13 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
     # SUPPLY-GUARDS-01: under the locks, on what will be written.
     margins = _margin_rows(writing, offers, with_cost=with_cost, sees_costs=applier_sees_costs,
                            keep_prices=keep_prices)
-    if margins and not confirm_below_cost:
-        _refuse_margins(margins)
+    margin_reason = ''
+    if margins:
+        if not confirm_below_cost:
+            _refuse_margins(margins)
+        margin_reason = supply_services.clean_margin_reason(below_cost_reason)
+        if not margin_reason:
+            raise OfferImportError(supply_services.MARGIN_REASON_TEXT, code=supply_services.MARGIN_REASON_REQUIRED)
 
     earlier = previously_applied(job)
     if earlier is not None and earlier_content is None and not confirm_reapply:
@@ -1922,8 +1931,9 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                                      may_view_costs=with_cost, supplier_id=data.get('supplier_id'),
                                                      product_id=data.get('product_id'), **fields)
                 if row.row_number in margins:
-                    supply_services.audit_margin(margins[row.row_number]['verdict'], offer, actor=actor,
-                                                 request=request, source='import', job_id=job.pk,
+                    offer.refresh_from_db()
+                    supply_services.audit_margin(margins[row.row_number]['verdict'], offer, reason=margin_reason,
+                                                 actor=actor, request=request, source='import', job_id=job.pk,
                                                  row_number=row.row_number)
                 created += 1
                 confirmed_count += _register_declaration(
@@ -1965,8 +1975,9 @@ def apply(*, job, actor, request=None, accept_price_changes: bool = False, keep_
                                           'valid_until': data.get('valid_until')})
                 supply_services.update_offer(offer, actor=actor, request=request, may_view_costs=with_cost, **fields)
                 if row.row_number in margins:
-                    supply_services.audit_margin(margins[row.row_number]['verdict'], offer, actor=actor,
-                                                 request=request, source='import', job_id=job.pk,
+                    offer.refresh_from_db()
+                    supply_services.audit_margin(margins[row.row_number]['verdict'], offer, reason=margin_reason,
+                                                 actor=actor, request=request, source='import', job_id=job.pk,
                                                  row_number=row.row_number)
                 quantity_after = {'confirmed': offer.confirmed_quantity, 'committed': offer.committed_quantity,
                                   'available': _available(offer)}

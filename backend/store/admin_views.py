@@ -380,6 +380,25 @@ class AdminUserRoleView(APIView):
         })
 
 
+def _audit_metadata_for(user, log, sees_costs: dict):
+    """
+    SUPPLY-GUARDS-01 — a margin confirmation keeps the offer's cost in its audit row; it is returned only to who
+    may see costs in that row's company (`sees_costs` caches the answer per company). A «below the cost» row also
+    loses its price for them: price and comparison together would bound the cost.
+    """
+    from . import supply_services
+    from .cost_services import user_may_view_costs
+
+    if log.action not in supply_services.MARGIN_AUDITS or not isinstance(log.metadata, dict):
+        return log.metadata
+    if log.company_id not in sees_costs:
+        sees_costs[log.company_id] = bool(log.company_id) and user_may_view_costs(user, log.company)
+    if sees_costs[log.company_id]:
+        return log.metadata
+    hidden = {'agreed_cost'} | ({'commercial_price'} if log.action == supply_services.BELOW_COST_AUDIT else set())
+    return {key: value for key, value in log.metadata.items() if key not in hidden}
+
+
 class AdminAuditLogListView(APIView):
     """
     GET /api/admin/audit-logs/ — administrative actions this caller may read.
@@ -436,6 +455,7 @@ class AdminAuditLogListView(APIView):
             logs = logs.filter(target_type=target_type_filter)
 
         page_qs, meta = _paginate(logs, request)
+        sees_costs = {}
         results = [
             {
                 'id': log.id,
@@ -443,7 +463,7 @@ class AdminAuditLogListView(APIView):
                 'action': log.action,
                 'target_type': log.target_type,
                 'target_id': log.target_id,
-                'metadata': log.metadata,
+                'metadata': _audit_metadata_for(request.user, log, sees_costs),
                 'ip_address': log.ip_address,
                 'created_at': log.created_at,
             }
