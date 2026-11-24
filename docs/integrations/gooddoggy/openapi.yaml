@@ -2,8 +2,8 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Good Doggy read-only integration — draft",
-    "version": "0.1.0",
-    "description": "GD-001 proposal only. No writes. Generic Record projections and field-level schemas remain to be finalized before implementation."
+    "version": "0.2.0",
+    "description": "GD-001 documentary proposal. Permanent read-only inventory; no fallback; no runtime implementation. Cross-field identity equality, scopes and cursor invariants require backend tests."
   },
   "servers": [
     {
@@ -19,15 +19,19 @@
     "/products/": {
       "get": {
         "operationId": "products",
+        "description": "Read only; no commercial mutation or fallback.",
         "x-required-scope": "catalog.read",
-        "x-customer-grant-required": false,
+        "x-enabled": true,
+        "x-blocked-reason": null,
         "parameters": [
           {
             "name": "cursor",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
             }
           },
           {
@@ -42,91 +46,115 @@
             }
           },
           {
+            "name": "snapshot",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          {
             "name": "sku",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "model",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "capacity",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "color",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "branch_id",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "fields",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^[a-z_]+(,[a-z_]+)*$"
+            },
+            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
             }
           }
         ],
         "responses": {
           "200": {
             "description": "Authorized read",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "results",
-                    "next_cursor"
-                  ],
-                  "properties": {
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/Product"
-                      }
-                    },
-                    "next_cursor": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "snapshot_at": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  }
+                  "$ref": "#/components/schemas/ProductPage"
                 }
               }
             }
@@ -196,6 +224,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -220,15 +256,19 @@
     "/products/{id}/": {
       "get": {
         "operationId": "products__id__detail",
+        "description": "Read only; no commercial mutation or fallback.",
         "x-required-scope": "catalog.read",
-        "x-customer-grant-required": false,
+        "x-enabled": true,
+        "x-blocked-reason": null,
         "parameters": [
           {
             "name": "id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           },
           {
@@ -236,21 +276,42 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^[a-z_]+(,[a-z_]+)*$"
+            },
+            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
             }
           }
         ],
         "responses": {
           "200": {
             "description": "Authorized read",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -324,6 +385,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -348,15 +417,31 @@
     "/catalog/search/": {
       "get": {
         "operationId": "catalog_search",
+        "description": "Read only; no commercial mutation or fallback.",
         "x-required-scope": "catalog.read",
-        "x-customer-grant-required": false,
+        "x-enabled": true,
+        "x-blocked-reason": null,
+        "x-field-scopes": {
+          "product": "catalog.read",
+          "price": "prices.read",
+          "availability": "inventory.read",
+          "promotions": "promotions.read",
+          "branch": "branches.read",
+          "used_details": [
+            "catalog.read",
+            "inventory.read",
+            "prices.read"
+          ]
+        },
         "parameters": [
           {
             "name": "cursor",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
             }
           },
           {
@@ -371,51 +456,78 @@
             }
           },
           {
+            "name": "snapshot",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          {
             "name": "sku",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "model",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "capacity",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "color",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "branch_id",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "q",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 120
             }
           },
           {
@@ -423,45 +535,109 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^[a-z_]+(,[a-z_]+)*$"
+            },
+            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
             }
           }
         ],
         "responses": {
           "200": {
             "description": "Authorized read",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "results",
-                    "next_cursor"
-                  ],
-                  "properties": {
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/Product"
-                      }
-                    },
-                    "next_cursor": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "snapshot_at": {
-                      "type": "string",
-                      "format": "date-time"
+                  "$ref": "#/components/schemas/SearchResultPage"
+                },
+                "examples": {
+                  "used": {
+                    "value": {
+                      "results": [
+                        {
+                          "product": {
+                            "product_id": "p_demo",
+                            "variant_id": "v_demo",
+                            "model_id": "m_demo",
+                            "data_version": 7,
+                            "observed_at": "2026-11-24T22:00:00Z",
+                            "condition": "used",
+                            "name": "Equipo demo",
+                            "sku": "SKU-DEMO",
+                            "model": "Modelo demo",
+                            "capacity": "128 GB",
+                            "color": "Negro",
+                            "image_url": "https://example.invalid/demo.webp",
+                            "commercial_url": "https://example.invalid/modelo-demo"
+                          },
+                          "data_version": 7,
+                          "observed_at": "2026-11-24T22:00:00Z",
+                          "offer_id": "u_demo",
+                          "branch_id": "b_demo",
+                          "offer_kind": "used_unit",
+                          "price": {
+                            "product_id": "p_demo",
+                            "variant_id": "v_demo",
+                            "offer_id": "u_demo",
+                            "branch_id": "b_demo",
+                            "offer_kind": "used_unit",
+                            "data_version": 7,
+                            "observed_at": "2026-11-24T22:00:00Z",
+                            "amount": "1499.00",
+                            "currency": "PEN",
+                            "valid_from": null,
+                            "valid_until": null
+                          },
+                          "availability": {
+                            "product_id": "p_demo",
+                            "variant_id": "v_demo",
+                            "offer_id": "u_demo",
+                            "branch_id": "b_demo",
+                            "offer_kind": "used_unit",
+                            "data_version": 7,
+                            "observed_at": "2026-11-24T22:00:00Z",
+                            "status": "available",
+                            "quantity": 1
+                          },
+                          "used_details": {
+                            "battery_health": 89,
+                            "cosmetic_grade": "B",
+                            "warranty": {
+                              "days": 90,
+                              "source": "unit"
+                            }
+                          }
+                        }
+                      ],
+                      "next_cursor": null,
+                      "snapshot_at": "2026-11-24T22:00:00Z",
+                      "watermark": "w_demo"
                     }
                   }
                 }
@@ -533,6 +709,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -557,15 +741,19 @@
     "/availability/": {
       "get": {
         "operationId": "availability",
+        "description": "Read only; no commercial mutation or fallback.",
         "x-required-scope": "inventory.read",
-        "x-customer-grant-required": false,
+        "x-enabled": true,
+        "x-blocked-reason": null,
         "parameters": [
           {
             "name": "cursor",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
             }
           },
           {
@@ -580,43 +768,98 @@
             }
           },
           {
+            "name": "snapshot",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          {
             "name": "sku",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "model",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "capacity",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "color",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "branch_id",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
+          },
+          {
+            "name": "product_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "variant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "offer_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           },
           {
@@ -624,45 +867,146 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^[a-z_]+(,[a-z_]+)*$"
+            },
+            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
             }
           }
         ],
         "responses": {
           "200": {
             "description": "Authorized read",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "results",
-                    "next_cursor"
-                  ],
-                  "properties": {
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/Availability"
-                      }
-                    },
-                    "next_cursor": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "snapshot_at": {
-                      "type": "string",
-                      "format": "date-time"
+                  "$ref": "#/components/schemas/AvailabilityPage"
+                },
+                "examples": {
+                  "confirmed": {
+                    "value": {
+                      "results": [
+                        {
+                          "product_id": "p_demo",
+                          "variant_id": "v_demo",
+                          "offer_id": null,
+                          "branch_id": "b_demo",
+                          "offer_kind": "shelf",
+                          "data_version": 7,
+                          "observed_at": "2026-11-24T22:00:00Z",
+                          "status": "available",
+                          "quantity": 3
+                        }
+                      ],
+                      "next_cursor": null,
+                      "snapshot_at": "2026-11-24T22:00:00Z",
+                      "watermark": "w_demo"
+                    }
+                  },
+                  "sold_out": {
+                    "value": {
+                      "results": [
+                        {
+                          "product_id": "p_demo",
+                          "variant_id": "v_demo",
+                          "offer_id": null,
+                          "branch_id": "b_demo",
+                          "offer_kind": "shelf",
+                          "data_version": 7,
+                          "observed_at": "2026-11-24T22:00:00Z",
+                          "status": "out_of_stock",
+                          "quantity": 0
+                        }
+                      ],
+                      "next_cursor": null,
+                      "snapshot_at": "2026-11-24T22:00:00Z",
+                      "watermark": "w_demo"
+                    }
+                  },
+                  "unknown": {
+                    "value": {
+                      "results": [
+                        {
+                          "product_id": "p_demo",
+                          "variant_id": "v_demo",
+                          "offer_id": null,
+                          "branch_id": "b_demo",
+                          "offer_kind": "shelf",
+                          "data_version": 7,
+                          "observed_at": "2026-11-24T22:00:00Z",
+                          "status": "unknown",
+                          "quantity": null
+                        }
+                      ],
+                      "next_cursor": null,
+                      "snapshot_at": "2026-11-24T22:00:00Z",
+                      "watermark": "w_demo"
+                    }
+                  },
+                  "on_order": {
+                    "value": {
+                      "results": [
+                        {
+                          "product_id": "p_demo",
+                          "variant_id": "v_demo",
+                          "offer_id": "o_demo",
+                          "branch_id": "b_demo",
+                          "offer_kind": "on_order",
+                          "data_version": 7,
+                          "observed_at": "2026-11-24T22:00:00Z",
+                          "status": "on_order",
+                          "quantity": 0
+                        }
+                      ],
+                      "next_cursor": null,
+                      "snapshot_at": "2026-11-24T22:00:00Z",
+                      "watermark": "w_demo"
+                    }
+                  },
+                  "used": {
+                    "value": {
+                      "results": [
+                        {
+                          "product_id": "p_demo",
+                          "variant_id": "v_demo",
+                          "offer_id": "u_demo",
+                          "branch_id": "b_demo",
+                          "offer_kind": "used_unit",
+                          "data_version": 7,
+                          "observed_at": "2026-11-24T22:00:00Z",
+                          "status": "available",
+                          "quantity": 1
+                        }
+                      ],
+                      "next_cursor": null,
+                      "snapshot_at": "2026-11-24T22:00:00Z",
+                      "watermark": "w_demo"
                     }
                   }
                 }
@@ -734,6 +1078,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -758,15 +1110,19 @@
     "/prices/": {
       "get": {
         "operationId": "prices",
+        "description": "Read only; no commercial mutation or fallback.",
         "x-required-scope": "prices.read",
-        "x-customer-grant-required": false,
+        "x-enabled": true,
+        "x-blocked-reason": null,
         "parameters": [
           {
             "name": "cursor",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
             }
           },
           {
@@ -781,43 +1137,98 @@
             }
           },
           {
+            "name": "snapshot",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          {
             "name": "sku",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "model",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "capacity",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "color",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
           },
           {
             "name": "branch_id",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Requires authorization for filter domain."
+          },
+          {
+            "name": "product_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "variant_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          },
+          {
+            "name": "offer_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           },
           {
@@ -825,45 +1236,68 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^[a-z_]+(,[a-z_]+)*$"
+            },
+            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
             }
           }
         ],
         "responses": {
           "200": {
             "description": "Authorized read",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "results",
-                    "next_cursor"
-                  ],
-                  "properties": {
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/Money"
-                      }
-                    },
-                    "next_cursor": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "snapshot_at": {
-                      "type": "string",
-                      "format": "date-time"
+                  "$ref": "#/components/schemas/PricePage"
+                },
+                "examples": {
+                  "used": {
+                    "value": {
+                      "results": [
+                        {
+                          "product_id": "p_demo",
+                          "variant_id": "v_demo",
+                          "offer_id": "u_demo",
+                          "branch_id": "b_demo",
+                          "offer_kind": "used_unit",
+                          "data_version": 7,
+                          "observed_at": "2026-11-24T22:00:00Z",
+                          "amount": "1499.00",
+                          "currency": "PEN",
+                          "valid_from": null,
+                          "valid_until": null
+                        }
+                      ],
+                      "next_cursor": null,
+                      "snapshot_at": "2026-11-24T22:00:00Z",
+                      "watermark": "w_demo"
                     }
                   }
                 }
@@ -935,6 +1369,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -959,15 +1401,19 @@
     "/promotions/": {
       "get": {
         "operationId": "promotions",
+        "description": "Read only; no commercial mutation or fallback.",
         "x-required-scope": "promotions.read",
-        "x-customer-grant-required": false,
+        "x-enabled": true,
+        "x-blocked-reason": null,
         "parameters": [
           {
             "name": "cursor",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
             }
           },
           {
@@ -982,51 +1428,60 @@
             }
           },
           {
+            "name": "snapshot",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          {
             "name": "fields",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^[a-z_]+(,[a-z_]+)*$"
+            },
+            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
             }
           }
         ],
         "responses": {
           "200": {
             "description": "Authorized read",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "results",
-                    "next_cursor"
-                  ],
-                  "properties": {
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/Record"
-                      }
-                    },
-                    "next_cursor": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "snapshot_at": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  }
+                  "$ref": "#/components/schemas/PromotionPage"
                 }
               }
             }
@@ -1096,6 +1551,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1120,15 +1583,19 @@
     "/branches/": {
       "get": {
         "operationId": "branches",
+        "description": "Read only; no commercial mutation or fallback.",
         "x-required-scope": "branches.read",
-        "x-customer-grant-required": false,
+        "x-enabled": true,
+        "x-blocked-reason": null,
         "parameters": [
           {
             "name": "cursor",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
             }
           },
           {
@@ -1143,51 +1610,60 @@
             }
           },
           {
+            "name": "snapshot",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          {
             "name": "fields",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^[a-z_]+(,[a-z_]+)*$"
+            },
+            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
             }
           }
         ],
         "responses": {
           "200": {
             "description": "Authorized read",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "results",
-                    "next_cursor"
-                  ],
-                  "properties": {
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/Record"
-                      }
-                    },
-                    "next_cursor": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "snapshot_at": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  }
+                  "$ref": "#/components/schemas/BranchPage"
                 }
               }
             }
@@ -1257,6 +1733,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1281,15 +1765,19 @@
     "/services/": {
       "get": {
         "operationId": "services",
+        "description": "Disabled; uniform 404 until approval. Future projection is ServicePage",
         "x-required-scope": "services.read",
-        "x-customer-grant-required": false,
+        "x-enabled": false,
+        "x-blocked-reason": "source_pending",
         "parameters": [
           {
             "name": "cursor",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
             }
           },
           {
@@ -1304,58 +1792,38 @@
             }
           },
           {
+            "name": "snapshot",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            }
+          },
+          {
             "name": "fields",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^[a-z_]+(,[a-z_]+)*$"
+            },
+            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
             }
           }
         ],
         "responses": {
-          "200": {
-            "description": "Authorized read",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "results",
-                    "next_cursor"
-                  ],
-                  "properties": {
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/Record"
-                      }
-                    },
-                    "next_cursor": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "snapshot_at": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "304": {
-            "description": "Not modified after authorization"
-          },
           "400": {
             "description": "Structured error",
             "content": {
@@ -1418,6 +1886,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1442,15 +1918,19 @@
     "/orders/{id}/": {
       "get": {
         "operationId": "orders__id__detail",
+        "description": "Disabled; uniform 404 until approval. Future projection is Order",
         "x-required-scope": "orders.read",
-        "x-customer-grant-required": true,
+        "x-enabled": false,
+        "x-blocked-reason": "customer_grant_pending",
         "parameters": [
           {
             "name": "id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           },
           {
@@ -1458,15 +1938,20 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^[a-z_]+(,[a-z_]+)*$"
+            },
+            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
             }
           },
           {
@@ -1474,24 +1959,13 @@
             "in": "header",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
             }
           }
         ],
         "responses": {
-          "200": {
-            "description": "Authorized read",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Record"
-                }
-              }
-            }
-          },
-          "304": {
-            "description": "Not modified after authorization"
-          },
           "400": {
             "description": "Structured error",
             "content": {
@@ -1554,6 +2028,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1578,15 +2060,19 @@
     "/repairs/{id}/": {
       "get": {
         "operationId": "repairs__id__detail",
+        "description": "Disabled; uniform 404 until approval. Future projection is Repair",
         "x-required-scope": "repairs.read",
-        "x-customer-grant-required": true,
+        "x-enabled": false,
+        "x-blocked-reason": "customer_grant_pending",
         "parameters": [
           {
             "name": "id",
             "in": "path",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
             }
           },
           {
@@ -1594,15 +2080,20 @@
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
-            }
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^[a-z_]+(,[a-z_]+)*$"
+            },
+            "description": "Optional authorized top-level fields; required fields cannot be removed."
           },
           {
             "name": "If-None-Match",
             "in": "header",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
             }
           },
           {
@@ -1610,24 +2101,13 @@
             "in": "header",
             "required": true,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
             }
           }
         ],
         "responses": {
-          "200": {
-            "description": "Authorized read",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Record"
-                }
-              }
-            }
-          },
-          "304": {
-            "description": "Not modified after authorization"
-          },
           "400": {
             "description": "Structured error",
             "content": {
@@ -1690,6 +2170,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1714,15 +2202,26 @@
     "/sync/changes/": {
       "get": {
         "operationId": "sync_changes",
+        "description": "Read only; no commercial mutation or fallback.",
         "x-required-scope": "sync.read",
-        "x-customer-grant-required": false,
+        "x-enabled": true,
+        "x-blocked-reason": null,
+        "x-domain-scopes": {
+          "product": "catalog.read",
+          "inventory": "inventory.read",
+          "price": "prices.read",
+          "promotion": "promotions.read",
+          "branch": "branches.read"
+        },
         "parameters": [
           {
             "name": "cursor",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
             }
           },
           {
@@ -1737,57 +2236,57 @@
             }
           },
           {
-            "name": "fields",
+            "name": "watermark",
             "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
             }
           },
           {
-            "name": "If-None-Match",
-            "in": "header",
+            "name": "domain",
+            "in": "query",
             "required": false,
             "schema": {
-              "type": "string"
+              "type": "string",
+              "enum": [
+                "product",
+                "inventory",
+                "price",
+                "promotion",
+                "branch"
+              ]
             }
           }
         ],
         "responses": {
           "200": {
             "description": "Authorized read",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
-                  "type": "object",
-                  "required": [
-                    "results",
-                    "next_cursor"
-                  ],
-                  "properties": {
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "$ref": "#/components/schemas/Change"
-                      }
-                    },
-                    "next_cursor": {
-                      "type": [
-                        "string",
-                        "null"
-                      ]
-                    },
-                    "snapshot_at": {
-                      "type": "string",
-                      "format": "date-time"
-                    }
-                  }
+                  "$ref": "#/components/schemas/ChangePage"
                 }
               }
             }
-          },
-          "304": {
-            "description": "Not modified after authorization"
           },
           "400": {
             "description": "Structured error",
@@ -1851,6 +2350,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1875,12 +2382,30 @@
     "/health/": {
       "get": {
         "operationId": "health",
+        "description": "Read only; no commercial mutation or fallback.",
         "x-required-scope": "health.read",
-        "x-customer-grant-required": false,
+        "x-enabled": true,
+        "x-blocked-reason": null,
         "parameters": [],
         "responses": {
           "200": {
             "description": "Authorized read",
+            "headers": {
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1888,9 +2413,6 @@
                 }
               }
             }
-          },
-          "304": {
-            "description": "Not modified after authorization"
           },
           "400": {
             "description": "Structured error",
@@ -1954,6 +2476,14 @@
           },
           "429": {
             "description": "Structured error",
+            "headers": {
+              "Retry-After": {
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -1980,145 +2510,1073 @@
     "securitySchemes": {
       "ServiceBearer": {
         "type": "http",
-        "scheme": "bearer"
+        "scheme": "bearer",
+        "description": "Dedicated read-only service principal; no staff fallback."
       }
     },
     "schemas": {
       "Error": {
         "type": "object",
-        "required": [
-          "code",
-          "detail"
-        ],
+        "additionalProperties": false,
         "properties": {
           "code": {
-            "type": "string"
+            "type": "string",
+            "enum": [
+              "invalid_request",
+              "invalid_field",
+              "unauthenticated",
+              "forbidden",
+              "not_found",
+              "method_not_allowed",
+              "cursor_expired",
+              "rate_limited",
+              "unavailable"
+            ]
           },
           "detail": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
           },
           "request_id": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
           }
-        }
-      },
-      "Record": {
-        "type": "object",
+        },
         "required": [
-          "id",
-          "data_version",
-          "updated_at"
-        ],
+          "code",
+          "detail",
+          "request_id"
+        ]
+      },
+      "Availability": {
+        "type": "object",
+        "additionalProperties": false,
         "properties": {
-          "id": {
-            "type": "string"
+          "product_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "variant_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offer_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "branch_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "offer_kind": {
+            "type": "string",
+            "enum": [
+              "shelf",
+              "used_unit",
+              "on_order"
+            ]
           },
           "data_version": {
             "type": "integer",
             "minimum": 1
           },
-          "updated_at": {
+          "observed_at": {
             "type": "string",
             "format": "date-time"
-          }
-        }
-      },
-      "Money": {
-        "type": "object",
-        "required": [
-          "amount",
-          "currency"
-        ],
-        "properties": {
-          "amount": {
-            "type": "string",
-            "pattern": "^[0-9]+\\.[0-9]{2}$",
-            "example": "2499.00"
-          },
-          "currency": {
-            "type": "string",
-            "pattern": "^[A-Z]{3}$",
-            "example": "PEN"
-          },
-          "valid_until": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time"
-          }
-        }
-      },
-      "Availability": {
-        "type": "object",
-        "required": [
-          "branch_id",
-          "status",
-          "quantity"
-        ],
-        "properties": {
-          "branch_id": {
-            "type": "string"
           },
           "status": {
+            "type": "string",
             "enum": [
               "available",
               "out_of_stock",
-              "on_order",
-              "unknown"
+              "unknown",
+              "on_order"
             ]
           },
           "quantity": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "minimum": 0
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
-        }
-      },
-      "Product": {
+        },
+        "required": [
+          "product_id",
+          "variant_id",
+          "offer_id",
+          "branch_id",
+          "offer_kind",
+          "data_version",
+          "observed_at",
+          "status",
+          "quantity"
+        ],
         "allOf": [
           {
-            "$ref": "#/components/schemas/Record"
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "shelf"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "offer_id": {
+                  "type": "null"
+                }
+              }
+            }
           },
           {
-            "type": "object",
-            "properties": {
-              "sku": {
-                "type": "string"
-              },
-              "name": {
-                "type": "string"
-              },
-              "model": {
-                "type": "string"
-              },
-              "capacity": {
-                "type": "string"
-              },
-              "color": {
-                "type": "string"
-              },
-              "condition": {
-                "type": "string"
-              },
-              "url": {
-                "type": "string",
-                "format": "uri"
-              },
-              "images": {
-                "type": "array",
-                "items": {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "enum": [
+                    "used_unit",
+                    "on_order"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "offer_id": {
                   "type": "string",
-                  "format": "uri"
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "used_unit"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "variant_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "available"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "quantity": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "out_of_stock"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "quantity": {
+                  "const": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "unknown"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "quantity": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "on_order"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "quantity": {
+                  "const": 0
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "used_unit"
+                },
+                "status": {
+                  "const": "available"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "quantity": {
+                  "const": 1
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "on_order"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "offer_kind": {
+                  "const": "on_order"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "on_order"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "status": {
+                  "enum": [
+                    "on_order",
+                    "unknown",
+                    "out_of_stock"
+                  ]
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Price": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "variant_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offer_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "branch_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "offer_kind": {
+            "type": "string",
+            "enum": [
+              "shelf",
+              "used_unit",
+              "on_order"
+            ]
+          },
+          "data_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "amount": {
+            "type": "string",
+            "pattern": "^[0-9]{1,8}\\.[0-9]{2}$"
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$"
+          },
+          "valid_from": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "valid_until": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "product_id",
+          "variant_id",
+          "offer_id",
+          "branch_id",
+          "offer_kind",
+          "data_version",
+          "observed_at",
+          "amount",
+          "currency",
+          "valid_from",
+          "valid_until"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "shelf"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "offer_id": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "enum": [
+                    "used_unit",
+                    "on_order"
+                  ]
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "offer_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "used_unit"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "variant_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                }
+              }
+            }
+          }
+        ]
+      },
+      "Promotion": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "promotion_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "data_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 150
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24
+          },
+          "starts_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ends_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "branch_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "maxItems": 50
+          },
+          "eligibility": {
+            "type": "string",
+            "enum": [
+              "conditional",
+              "confirmed"
+            ]
+          },
+          "product_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "maxItems": 50
+          }
+        },
+        "required": [
+          "promotion_id",
+          "data_version",
+          "observed_at",
+          "name",
+          "kind",
+          "starts_at",
+          "ends_at",
+          "branch_ids",
+          "eligibility",
+          "product_ids"
+        ]
+      },
+      "Branch": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "branch_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "data_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
+        },
+        "required": [
+          "branch_id",
+          "data_version",
+          "observed_at",
+          "name"
+        ]
+      },
+      "Service": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "service_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "data_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "conditions": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 300
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parts_availability": {
+            "type": "string",
+            "enum": [
+              "unknown",
+              "available",
+              "out_of_stock",
+              "on_order"
+            ]
+          }
+        },
+        "required": [
+          "service_id",
+          "data_version",
+          "observed_at",
+          "name",
+          "conditions",
+          "parts_availability"
+        ]
+      },
+      "Order": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "order_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "data_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "payment_status": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          },
+          "fulfillment_status": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        },
+        "required": [
+          "order_id",
+          "data_version",
+          "observed_at",
+          "payment_status",
+          "fulfillment_status"
+        ]
+      },
+      "Repair": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repair_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "data_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "status": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 40
+          }
+        },
+        "required": [
+          "repair_id",
+          "data_version",
+          "observed_at",
+          "status"
+        ]
+      },
+      "Warranty": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "days": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 3650
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "unit",
+              "company",
+              "policy",
+              "unknown"
+            ]
+          }
+        },
+        "required": [
+          "days",
+          "source"
+        ]
+      },
+      "UsedDetails": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "battery_health": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "cosmetic_grade": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "warranty": {
+            "$ref": "#/components/schemas/Warranty"
+          }
+        },
+        "required": [
+          "battery_health",
+          "cosmetic_grade",
+          "warranty"
+        ]
+      },
+      "Product": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "variant_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "data_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255
+          },
+          "sku": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "capacity": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "condition": {
+            "type": "string",
+            "enum": [
+              "new",
+              "used",
+              "unspecified"
+            ]
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uri",
+                "pattern": "^https://",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "commercial_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uri",
+                "pattern": "^https://",
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "product_id",
+          "variant_id",
+          "model_id",
+          "data_version",
+          "observed_at",
+          "condition"
+        ]
+      },
+      "SearchResult": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "product": {
+            "$ref": "#/components/schemas/Product"
+          },
+          "data_version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "observed_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "offer_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "offer_kind": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "shelf",
+                  "used_unit",
+                  "on_order"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "price": {
+            "$ref": "#/components/schemas/Price"
+          },
+          "availability": {
+            "$ref": "#/components/schemas/Availability"
+          },
+          "promotions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Promotion"
+            },
+            "maxItems": 10
+          },
+          "branch": {
+            "$ref": "#/components/schemas/Branch"
+          },
+          "used_details": {
+            "$ref": "#/components/schemas/UsedDetails"
+          }
+        },
+        "required": [
+          "product",
+          "data_version",
+          "observed_at",
+          "offer_id",
+          "branch_id",
+          "offer_kind"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "const": "used_unit"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "price",
+                "availability",
+                "used_details"
+              ],
+              "properties": {
+                "offer_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "branch_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "availability": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/Availability"
+                    },
+                    {
+                      "properties": {
+                        "status": {
+                          "const": "available"
+                        },
+                        "quantity": {
+                          "const": 1
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "offer_kind": {
+                  "type": "null"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "offer_id": {
+                  "type": "null"
+                },
+                "branch_id": {
+                  "type": "null"
                 }
               },
-              "price": {
-                "$ref": "#/components/schemas/Money"
-              },
-              "availability": {
-                "$ref": "#/components/schemas/Availability"
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "price"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "availability"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "used_details"
+                    ]
+                  }
+                ]
               }
             }
           }
@@ -2126,49 +3584,397 @@
       },
       "Change": {
         "type": "object",
-        "required": [
-          "event_id",
-          "event_type",
-          "entity_id",
-          "data_version",
-          "occurred_at"
-        ],
+        "additionalProperties": false,
         "properties": {
           "event_id": {
             "type": "string",
             "format": "uuid"
           },
-          "event_type": {
-            "type": "string"
+          "domain": {
+            "type": "string",
+            "enum": [
+              "product",
+              "inventory",
+              "price",
+              "promotion",
+              "branch"
+            ]
           },
           "entity_id": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "branch_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "data_version": {
-            "type": "integer"
+            "type": "integer",
+            "minimum": 1
           },
           "occurred_at": {
             "type": "string",
             "format": "date-time"
           },
-          "deleted": {
-            "type": "boolean"
+          "operation": {
+            "type": "string",
+            "enum": [
+              "upsert",
+              "delete"
+            ]
           }
-        }
+        },
+        "required": [
+          "event_id",
+          "domain",
+          "entity_id",
+          "branch_id",
+          "data_version",
+          "occurred_at",
+          "operation"
+        ]
       },
       "Health": {
         "type": "object",
-        "required": [
-          "status"
-        ],
+        "additionalProperties": false,
         "properties": {
           "status": {
+            "type": "string",
             "enum": [
               "ok",
               "degraded"
             ]
           }
-        }
+        },
+        "required": [
+          "status"
+        ]
+      },
+      "ProductPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Product"
+            },
+            "maxItems": 50
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "watermark": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "results",
+          "next_cursor",
+          "snapshot_at",
+          "watermark"
+        ]
+      },
+      "SearchResultPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchResult"
+            },
+            "maxItems": 50
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "watermark": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "results",
+          "next_cursor",
+          "snapshot_at",
+          "watermark"
+        ]
+      },
+      "AvailabilityPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Availability"
+            },
+            "maxItems": 50
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "watermark": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "results",
+          "next_cursor",
+          "snapshot_at",
+          "watermark"
+        ]
+      },
+      "PricePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Price"
+            },
+            "maxItems": 50
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "watermark": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "results",
+          "next_cursor",
+          "snapshot_at",
+          "watermark"
+        ]
+      },
+      "PromotionPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Promotion"
+            },
+            "maxItems": 50
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "watermark": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "results",
+          "next_cursor",
+          "snapshot_at",
+          "watermark"
+        ]
+      },
+      "BranchPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Branch"
+            },
+            "maxItems": 50
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "watermark": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "results",
+          "next_cursor",
+          "snapshot_at",
+          "watermark"
+        ]
+      },
+      "ServicePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Service"
+            },
+            "maxItems": 50
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "snapshot_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "watermark": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "required": [
+          "results",
+          "next_cursor",
+          "snapshot_at",
+          "watermark"
+        ]
+      },
+      "ChangePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Change"
+            },
+            "maxItems": 50
+          },
+          "next_cursor": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "snapshot_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "watermark": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          },
+          "has_more": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "results",
+          "next_cursor",
+          "snapshot_at",
+          "watermark",
+          "has_more"
+        ]
       }
     }
   }
