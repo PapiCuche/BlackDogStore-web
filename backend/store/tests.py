@@ -56024,6 +56024,11 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         # COMMERCE-ADMIN-UX-01 — «Consultar disponibilidad». Same authority as the
         # till (`pos_views._context`): `has_capability`, no legacy bridge.
         'sales/availability/page.tsx': ('sales.pos.use', frozenset()),
+        # SALES-QUOTE-01 — `/api/admin/sales/quotes/` (`sales_quote_views._company`): `has_capability`, no
+        # legacy bridge. The list and the detail read with `view`; composing a new one is `manage`.
+        'sales/quotes/page.tsx': ('sales.quotes.view', frozenset()),
+        'sales/quotes/[id]/page.tsx': ('sales.quotes.view', frozenset()),
+        'sales/quotes/new/page.tsx': ('sales.quotes.manage', frozenset()),
         # COMMERCE-ADMIN-UX-01 — «Registrar artículo» (the product form's
         # authority), «Publicación e-commerce» (the product list's) and «Stock y
         # disponibilidad» (the inventory's).
