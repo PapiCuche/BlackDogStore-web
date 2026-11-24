@@ -167,8 +167,8 @@ vinculante dentro de una cotización comercial**. No decide ninguna de las doce 
   documento de compra, cambio de boleta/factura/IGV/XML ni devolución. Hay pruebas guardianas que fallan si alguien
   los añade sin pasar por TRADE-IN-01B/01C.
 - Ningún dato de identidad: ni DNI, ni IMEI completo, ni fotos, ni consulta de IMEI (**D6**, **D10**). Un texto con
-  ocho o más dígitos se rechaza, aunque vayan separados (espacios, puntos, comas, barras, guiones); las fechas se
-  permiten.
+  ocho o más dígitos se rechaza, aunque vayan separados (espacios, puntos, comas, barras, guiones); las fechas y los
+  importes (con moneda o con decimales) se permiten; «DNI 12,345,678» se sigue rechazando.
 
 ## Estado
 
