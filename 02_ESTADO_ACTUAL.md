@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — SUPPLY-MARGIN-01 · PARCIAL (rama apilada sobre SALES-QUOTE-01, sin fusionar ni desplegar) · migración `0190_supplier_margin`
+
+Precio sugerido de las ofertas de proveedor. Sólo en la rama `feat/supply-margin-01`.
+
+- **Regla del propietario:** «Precio sugerido: costo más margen configurable por empresa, presentado sólo como propuesta revisable. No cambiar automáticamente los precios publicados.»
+- **Configuración:** `CompanySettings.supplier_margin_percent` (0–500 %, dos decimales) y `supplier_price_round_to` (entero 1–100000), los dos nulos y con un CHECK cada uno. Vacío el margen: no se sugiere nada. Vacío el paso: al céntimo. Sección propia en Configuración.
+- **Cálculo (`store/supplier_pricing.py`, sólo en el servidor):** costo pactado × (1 + margen/100), redondeado **hacia arriba** al céntimo o al siguiente múltiplo del paso. Un paso de 9 da múltiplos de 9, no precios terminados en 9. Sin costo (o costo ≤ 0), sin margen o fuera del tope de una oferta: ninguna sugerencia.
+- **Quién lo ve:** sólo `costs.view`, como la clave `suggested_price`: lista y detalle de ofertas, panel «Semana», vista previa del Excel y ensayo del asistente de texto (el mismo `job_payload`). Sin `costs.view` la clave no existe, cualquiera que sea la configuración.
+- **Quién lo cambia:** leer el margen exige `costs.view`. Cambiarlo exige además `company.manage`, `settings.manage` y acceso a toda la empresa. Sin `costs.view`, enviar un valor responde 403 `costs_forbidden` sea cual sea el valor (no hay oráculo); un valor vacío se ignora. Se audita como `company_settings_updated` (sólo nombres de campo).
+- **Nunca escribe un precio:** «Usar sugerido» sólo llena el campo del formulario de la oferta; se guarda cuando la persona guarda, con la decisión de cambio de precio y la confirmación bajo el costo de siempre. Una importación aplica los precios del archivo, nunca la sugerencia. El precio publicado de la variante (`Product.price`) no se toca. El stock propio y el del proveedor siguen separados.
+- **Vuelta atrás:** sólo código. La versión anterior ignora las dos columnas. Revertir la migración borra el margen configurado.
+- **Pruebas:** `store.test_supplier_suggested_price` (31) y las suites afectadas (1077); Jest `supplier-suggested-price` (16) y la suite completa (4995); `tsc`, lint y build verdes. Ida y vuelta 0190↔0189 comprobada. Playwright no ejecutado.
+- **Por decidir (propietario):** ver el PR. En la vista previa del Excel la sugerencia sólo se lee: el precio sale del archivo. «Usar sugerido» está sólo en el formulario de la oferta y se calcula sobre el costo guardado. Los precios terminados en 9 no están cubiertos.
+
 ## 2026-11-24 — CATALOG-ADMIN-UX-B · PARCIAL (PR abierto, sin fusionar ni desplegar) · sin migraciones
 
 El editor de modelos y variantes a escala. Rama `feat/catalog-admin-ux-b` sobre `master` con #407.

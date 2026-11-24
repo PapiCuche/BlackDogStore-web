@@ -70,6 +70,8 @@ export type WeeklyImportRow = Omit<SupplierImportRow, "data"> & {
     reactivation_requires_review?: boolean;
     /** B0: no quantity over an offer with a confirmed one — apply asks to clear it or keep it. */
     quantity_cleared?: boolean;
+    /** SUPPLY-MARGIN-01, `costs.view` only: the row's cost + the company's margin (null: no cost or margin). */
+    suggested_price?: string | null;
     /** SUPPLY-GUARDS-01, `costs.view` only: the price written is below the agreed cost. */
     below_cost?: { commercial_price: string; agreed_cost: string };
     /** SUPPLY-GUARDS-01, without `costs.view`: the price changes over a cost this person cannot see. */

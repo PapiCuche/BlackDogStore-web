@@ -18,6 +18,12 @@
  * only after an explicit decision (accept, or keep the current ones); a row
  * nobody could match may be mapped to a variant by the supplier's code.
  *
+ * SUPPLY-MARGIN-01: «Precio sugerido» (the cost plus the company's margin) is the
+ * SERVER's, sent only to `costs.view` (`suggested_price`). It is shown next to the
+ * current price when the key comes; «Usar sugerido» only fills the price field of
+ * the form, and nothing is saved until the person saves — with the same checks as
+ * any price. The screen never computes it.
+ *
  * SUPPLY-GUARDS-01: a price below the agreed cost (or, without `costs.view`, a
  * price change over a cost the person cannot see) is saved or applied only
  * after the person confirms what the server said AND gives a reason (owner,
@@ -85,6 +91,11 @@ const message = (error: unknown, fallback: string) => (error instanceof Error ? 
 /** The cost is the server's to send. Its key, not its value, says whether it may be shown. */
 export function hasAgreedCost(offer: SupplierOffer): offer is SupplierOffer & { agreed_cost: string | null } {
   return Object.prototype.hasOwnProperty.call(offer, "agreed_cost");
+}
+
+/** SUPPLY-MARGIN-01: the suggestion is the server's to send, only to `costs.view`. Its key says whether to show it. */
+export function hasSuggestedPrice<T extends object>(item: T): item is T & { suggested_price: string | null } {
+  return Object.prototype.hasOwnProperty.call(item, "suggested_price");
 }
 
 /** «12 jun 2026», from a YYYY-MM-DD date, without a timezone shifting the day. */
@@ -337,7 +348,28 @@ function OfferForm({
           {fieldError("product_id")}
         </div>
       )}
-      {input("commercial_price", "Precio de venta bajo pedido (S/)", { inputMode: "decimal" })}
+      <div>
+        {input("commercial_price", "Precio de venta bajo pedido (S/)", { inputMode: "decimal" })}
+        {offer && hasSuggestedPrice(offer) ? (
+          <p data-testid="offer-suggested-price" className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted">
+            {offer.suggested_price ? (
+              <>
+                <span>Precio sugerido: <span className="font-semibold text-foreground">{formatSoles(offer.suggested_price)}</span> (costo guardado más el margen de la empresa).</span>
+                <button
+                  type="button"
+                  className={`min-h-[44px] ${internalButtonClass}`}
+                  // Only fills the field: saving is still the person's, with the same checks as any price.
+                  onClick={() => setDraft({ ...draft, commercial_price: offer.suggested_price ?? draft.commercial_price })}
+                >
+                  Usar sugerido ({formatSoles(offer.suggested_price)})
+                </button>
+              </>
+            ) : (
+              <span>Sin precio sugerido: falta el costo pactado o el margen de la empresa (Configuración).</span>
+            )}
+          </p>
+        ) : null}
+      </div>
       {showCost ? input("agreed_cost", "Costo acordado con el proveedor (S/)", { inputMode: "decimal" }) : null}
       <label className="block text-xs text-muted">
         Cantidad confirmada
@@ -542,6 +574,7 @@ function OffersSection({
   }, [load, seededFromUrl, reloadKey]);
 
   const showCostColumn = (offers ?? []).some(hasAgreedCost);
+  const showSuggestedColumn = (offers ?? []).some(hasSuggestedPrice);
   const current = (id: number) => offers?.find((offer) => offer.id === id) ?? null;
   const done = () => { setMode({ kind: "none" }); load(); };
 
@@ -605,6 +638,7 @@ function OffersSection({
           <thead>
             <tr className="border-b border-bd-border">
               <Th>Producto</Th><Th>Proveedor</Th><Th right>Precio de venta</Th>
+              {showSuggestedColumn ? <Th right>Precio sugerido</Th> : null}
               {showCostColumn ? <Th right>Costo acordado</Th> : null}
               <Th right>Confirmadas</Th><Th right>Comprometidas</Th><Th right>Quedan</Th>
               <Th>Vigencia</Th><Th right>Entrega</Th><Th>Estado</Th><Th right>Acciones</Th>
@@ -619,6 +653,9 @@ function OffersSection({
                 </Td>
                 <Td muted>{offer.supplier_name}</Td>
                 <Td right>{formatSoles(offer.commercial_price)}</Td>
+                {showSuggestedColumn ? (
+                  <Td right>{hasSuggestedPrice(offer) && offer.suggested_price ? formatSoles(offer.suggested_price) : "Sin sugerencia"}</Td>
+                ) : null}
                 {showCostColumn ? (
                   <Td right>{hasAgreedCost(offer) ? (offer.agreed_cost ? formatSoles(offer.agreed_cost) : "Sin costo") : ""}</Td>
                 ) : null}
@@ -934,6 +971,8 @@ function ImportSection({
   // B0: a repetition or an older message changes nothing, but the person sees why — so it stays in the table.
   const shown = preview ? preview.rows.filter((row) => row.action !== "no_change"
     || row.data.declaration === "repetition" || row.data.declaration === "older") : [];
+  // SUPPLY-MARGIN-01: only when the server sent the key (`costs.view`); read only — the file's prices are applied.
+  const showSuggested = Boolean(preview?.rows.some((row) => hasSuggestedPrice(row.data)));
   const summary = preview ? summaryOf(preview) : null;
   const priceRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.price_change) : [];
   const reactivationRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.reactivation_requires_review) : [];
@@ -1068,6 +1107,7 @@ function ImportSection({
               <thead>
                 <tr className="border-b border-bd-border">
                   <Th right>Fila</Th><Th>Acción</Th><Th>Proveedor</Th><Th>Producto</Th><Th right>Precio</Th>
+                  {showSuggested ? <Th right>Precio sugerido</Th> : null}
                   <Th right>Disponible</Th><Th>Vigencia</Th><Th>Antes → después</Th><Th>Observaciones</Th>
                 </tr>
               </thead>
@@ -1096,6 +1136,9 @@ function ImportSection({
                       <Td muted>{row.data.supplier || "—"}</Td>
                       <Td>{row.data.product_name || "—"}</Td>
                       <Td right>{row.data.commercial_price ? formatSoles(row.data.commercial_price) : "—"}</Td>
+                      {showSuggested ? (
+                        <Td right>{row.data.suggested_price ? formatSoles(row.data.suggested_price) : "—"}</Td>
+                      ) : null}
                       <Td right>{row.data.confirmed_quantity ?? "—"}</Td>
                       <Td muted>
                         {row.data.valid_from ? formatDay(String(row.data.valid_from)) : "—"} – {row.data.valid_until ? formatDay(String(row.data.valid_until)) : "—"}
