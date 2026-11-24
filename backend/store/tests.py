@@ -3415,12 +3415,16 @@ class AdminProductDetailTest(TestCase):
         self.client.patch(f'/api/admin/products/{self.product.pk}/', {}, format='json')
         self.assertEqual(AdminAuditLog.objects.count(), initial_log_count)
 
-    def test_delete_returns_405(self):
+    def test_delete_without_the_delete_capability_is_refused(self):
+        # VARIANT-SAFE-01: DELETE exists now, but only for `products.delete`
+        # (store.test_variant_safe covers the allowed path). This legacy user
+        # holds no such capability, so nothing is deleted.
         self.client.force_authenticate(user=self.roles[UserProfile.ROLE_SUPERADMIN])
         self.assertEqual(
             self.client.delete(f'/api/admin/products/{self.product.pk}/').status_code,
-            status.HTTP_405_METHOD_NOT_ALLOWED,
+            status.HTTP_403_FORBIDDEN,
         )
+        self.assertTrue(Product.objects.filter(pk=self.product.pk).exists())
 
     def test_nonexistent_product_returns_404(self):
         self.client.force_authenticate(user=self.roles[UserProfile.ROLE_ADMIN])
@@ -62935,12 +62939,15 @@ class SvcCollectPresetTest(TestCase):
         # …USED-READY-01 (0187, `inventory.units.inspect`) starts where SALES-EMAIL-03 ended…
         inspect_used = self.migration('0187_used_unit_readiness')
         self.assertEqual(copies.ADMIN_PREVIOUS | set(copies.NEW_CAPABILITIES), inspect_used.ADMIN_PREVIOUS)
+        # …VARIANT-SAFE-01 (0188, `products.delete`) starts where USED-READY-01 ended…
+        variant_safe = self.migration('0188_variant_safe')
+        self.assertEqual(inspect_used.ADMIN_PREVIOUS | set(inspect_used.NEW_CAPABILITIES), variant_safe.ADMIN_PREVIOUS)
         # …and THE TRIPWIRE: the last one ends at today's preset (the catalogue
         # minus the explicit grants). It fails when the catalogue grows, and the
         # node that grows it is the one that has to say what happens to this preset.
         from .capabilities import DEFAULT_ADMIN_CAPABILITY_CODES
         self.assertEqual(
-            inspect_used.ADMIN_PREVIOUS | set(inspect_used.NEW_CAPABILITIES),
+            variant_safe.ADMIN_PREVIOUS | set(variant_safe.NEW_CAPABILITIES),
             frozenset(DEFAULT_ADMIN_CAPABILITY_CODES),
         )
         self.assertTrue(DEFAULT_ADMIN_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES)

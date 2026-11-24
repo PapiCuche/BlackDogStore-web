@@ -48,6 +48,15 @@ const message = (error: unknown, fallback: string) => (error instanceof Error ? 
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
+/** VARIANT-SAFE-01: a configuration (or a variant) held only by an archived variant. */
+export function ArchivedBadge() {
+  return (
+    <span className="inline-flex min-h-6 items-center whitespace-nowrap rounded-full border border-bd-border px-2 text-[11px] font-semibold text-muted">
+      Archivada
+    </span>
+  );
+}
+
 /** The state of a configuration or a variant, as a small label. */
 export function PaletteStatusBadge({ status }: { status: PaletteStatus }) {
   const tone = status === "variante_existente"
@@ -459,7 +468,7 @@ export function ModelPalettePanel({
 
   const paletteColumns = palette ? palette.attributes.filter((a) => a.options.some((o) => o.in_palette)) : [];
   const combinations = palette
-    ? (onlyFree ? palette.combinations.filter((c) => c.status !== "variante_existente") : palette.combinations)
+    ? (onlyFree ? palette.combinations.filter((c) => c.status !== "variante_existente" && !c.archived) : palette.combinations)
     : [];
   const troubled = palette ? palette.variants.filter((v) => v.status === "fuera_de_paleta" || v.status === "incompleta") : [];
   // «Crear variante» is offered only on complete configurations without a variant, and only to `products.manage`.
@@ -731,6 +740,7 @@ export function ModelPalettePanel({
                     {plural(palette.summary.combinations, "configuración", "configuraciones")}
                     {" · "}{palette.summary.existing} con variante
                     {" · "}{palette.summary.valid_without_variant} sin variante
+                    {palette.summary.archived ? ` · ${palette.summary.archived} ${palette.summary.archived === 1 ? "archivada" : "archivadas"}` : ""}
                     {palette.summary.outside ? ` · ${palette.summary.outside} fuera de la paleta` : ""}
                     {palette.summary.incomplete ? ` · ${palette.summary.incomplete} ${palette.summary.incomplete === 1 ? "incompleta" : "incompletas"}` : ""}
                   </p>
@@ -771,7 +781,7 @@ export function ModelPalettePanel({
                           <tr className="border-b border-bd-border/60">
                             <Td>
                               <span className="flex flex-col items-start gap-1.5">
-                                <PaletteStatusBadge status={combination.status} />
+                                {combination.archived ? <ArchivedBadge /> : <PaletteStatusBadge status={combination.status} />}
                                 {showActions && offerable(combination) ? (
                                   <button
                                     type="button"
@@ -802,6 +812,7 @@ export function ModelPalettePanel({
                                     <Link key={product.product_id} href={`/admin/products/${product.product_id}`} className="underline-offset-4 hover:underline">
                                       {product.name}
                                       <span className="ml-1 text-xs text-muted">{product.condition_line === "used" ? "(seminuevo)" : ""}</span>
+                                      {product.archived ? <span className="ml-1 text-xs text-muted">(archivada)</span> : null}
                                     </Link>
                                   ))}
                                 </span>

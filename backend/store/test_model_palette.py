@@ -456,7 +456,7 @@ class StatusMatrixTest(PaletteShop, TestCase):
         self.assertEqual(statuses[half.pk], 'incompleta')
         self.assertEqual(statuses[self.new128.pk], 'variante_existente')
         self.assertEqual(body['summary'], {'combinations': 4, 'existing': 3, 'valid_without_variant': 1,
-                                           'outside': 1, 'incomplete': 1,
+                                           'outside': 1, 'incomplete': 1, 'archived': 0,
                                            # A1b-2: the cockpit's «Revisar» (outside + incomplete here) and the roles the palette lacks.
                                            'pending_drafts': 0, 'needs_review': 2, 'roles_missing': ['sim', 'region']})
         self.assertFalse(body['truncated'])

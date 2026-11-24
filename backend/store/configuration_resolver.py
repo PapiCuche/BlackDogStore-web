@@ -22,6 +22,7 @@ Statuses, in precedence order (the first that applies wins):
     variante_existente  every role said, inside the palette, and a variant IS it
     combinacion_valida_sin_variante   …and no variant is it yet (the A1b-2 «Crear variante» may make it)
     sin_paleta          the model has no palette and no variant is exactly that: nothing can be validated
+    variante_archivada  VARIANT-SAFE-01: a variant IS it, but it is archived — never offered, never created again
 
 R-COL — reading the colour text (owner's P3/P5):
   1. the longest phrase among the labels of the model's PALETTE colours;
@@ -55,8 +56,9 @@ STATUS_INCOMPLETE = 'incompleta'
 STATUS_EXISTING = 'variante_existente'
 STATUS_VALID = 'combinacion_valida_sin_variante'
 STATUS_NO_PALETTE = 'sin_paleta'
+STATUS_ARCHIVED = 'variante_archivada'
 STATUSES = (STATUS_UNKNOWN_MODEL, STATUS_AMBIGUOUS, STATUS_NAME_WITH_OPTIONS, STATUS_UNKNOWN_OPTION, STATUS_OUTSIDE, STATUS_INCOMPLETE,
-            STATUS_EXISTING, STATUS_VALID, STATUS_NO_PALETTE)
+            STATUS_EXISTING, STATUS_VALID, STATUS_NO_PALETTE, STATUS_ARCHIVED)
 COMPLETE = (STATUS_EXISTING, STATUS_VALID)
 
 CAPACITY = VariantAttribute.ROLE_CAPACITY
@@ -277,7 +279,7 @@ class Vocabulary:
         products = list(Product.objects.filter(company=self.company, product_model_id__in={m for m, _l in slots},
                                                condition_line__in={l for _m, l in slots})
                         .only('pk', 'name', 'variant_key', 'draft_origin', 'sale_enabled_at', 'is_active',
-                              'product_model_id', 'condition_line')
+                              'archived_at', 'product_model_id', 'condition_line')
                         .order_by('name', 'pk'))
         links: dict[int, set[int]] = {}
         for product_id, option_id in (ProductVariantOption.objects
@@ -297,7 +299,8 @@ class Vocabulary:
         if slot not in self._variants:
             products = list(Product.objects.filter(company=self.company, product_model_id=model_id,
                                                    condition_line=line)
-                            .only('pk', 'name', 'variant_key', 'draft_origin', 'sale_enabled_at', 'is_active')
+                            .only('pk', 'name', 'variant_key', 'draft_origin', 'sale_enabled_at', 'is_active',
+                                  'archived_at')
                             .order_by('name', 'pk'))
             links: dict[int, set[int]] = {}
             for product_id, option_id in (ProductVariantOption.objects
@@ -771,7 +774,11 @@ def resolve_configuration(vocabulary, *, model_text='', line='', capacity_text='
             key = variant_key(config['option_ids'])
             product = next((v['product'] for v in vocabulary.variants(model_id, row['line'])
                             if v['product'].variant_key == key), None)
-            if product is not None:
+            if product is not None and product.archived_at is not None:
+                # VARIANT-SAFE-01: named, so a person knows why, but never a product to act on.
+                status = STATUS_ARCHIVED
+                config.update(archived_product_name=product.name)
+            elif product is not None:
                 status = STATUS_EXISTING
                 config.update(product_id=product.pk, product_name=product.name,
                               draft_pending=product.is_pending_draft)
@@ -779,7 +786,8 @@ def resolve_configuration(vocabulary, *, model_text='', line='', capacity_text='
                 status = STATUS_VALID if palette else STATUS_NO_PALETTE
         if status in (STATUS_INCOMPLETE, STATUS_NO_PALETTE):
             wanted = set(config['option_ids'])
-            fitting = [v['product'] for v in vocabulary.variants(model_id, row['line']) if wanted <= v['option_ids']]
+            fitting = [v['product'] for v in vocabulary.variants(model_id, row['line'])
+                       if wanted <= v['option_ids'] and v['product'].archived_at is None]
             config['candidates'] = [{'product_id': p.pk, 'name': p.name, 'draft_pending': p.is_pending_draft}
                                     for p in fitting[:MAX_CANDIDATES]]
         if model['status'] == 'name_with_options' and status != STATUS_AMBIGUOUS:

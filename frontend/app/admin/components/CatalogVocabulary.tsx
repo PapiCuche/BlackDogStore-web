@@ -830,6 +830,7 @@ const STATUS_TONE: Record<ResolverStatus, string> = {
   nombre_con_opciones: "border-warning-border bg-warning-surface text-warning",
   ambigua: "border-warning-border bg-warning-surface text-warning",
   modelo_desconocido: "border-danger-border bg-danger-surface text-danger",
+  variante_archivada: "border-bd-border text-muted",
 };
 
 export function ResolverStatusBadge({ status }: { status: ResolverStatus }) {

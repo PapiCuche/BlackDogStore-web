@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-24 — VARIANT-SAFE-01: eliminar o archivar variantes sin perder datos (rama, sin desplegar)
+
+**Added**
+- Archivar y desarchivar variantes, con motivo y auditoría; una archivada sale de la tienda, la caja, las cargas, los resolutores y del conjunto «existente» de la paleta. Migración `0188_variant_safe` (aditiva).
+- Eliminar definitivamente una variante sin historial, con motivo y su nombre escrito; capacidad `products.delete`, otorgada a los roles con `company.manage`.
+- `GET /api/admin/products/<pk>/deletion-check/`: qué impide eliminar o archivar, en castellano.
+- Acciones Desactivar / Archivar / Eliminar en el editor del modelo; «Archivada» en la matriz de la paleta.
+- `ProductModel.is_active`: un modelo inactivo sale de la tienda pública.
+
+**Changed**
+- Imágenes, carritos, reseñas, códigos, compatibilidades de accesorio y códigos de proveedor ya no se borran en cascada con un producto; un modelo con variantes no se puede borrar.
+- El admin de Django ya no borra productos.
+- Una variante archivada nunca recibe stock: ni por traslado pendiente, ni moviendo un equipo, ni por la carga de stock, la recepción o la caja.
+
 ## 2026-11-24 — SUPPLY-WEEKLY-01: la semana de las listas de proveedor
 
 **Added**

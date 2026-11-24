@@ -87,16 +87,22 @@ class AccessoryCompatibilityModelTest(AccessoryShop, TestCase):
             AccessoryCompatibility.objects.create(company=self.company, model=self.model, accessory=self.case,
                                                   sort_order=1)
 
-    def test_deleting_the_model_or_the_accessory_deletes_the_link(self):
-        # A product with no stock history (the shop never deletes one that has it).
+    def test_deleting_the_model_deletes_the_link_but_the_accessory_is_protected(self):
+        # VARIANT-SAFE-01: a configured compatibility is commercial data. Deleting the ACCESSORY is refused while it
+        # has links (PROTECT; `variant_lifecycle` lists them as a blocker); deleting a MODEL without variants still
+        # takes its own links along.
+        from django.db import transaction
+        from django.db.models import ProtectedError
+
         loose = Product.objects.create(company=self.company, name='Correa', slug='f3-correa', price=D('9.90'))
         second = device_catalog.create_model(company=self.company, name='Teléfono Y')
         self.link(self.case, loose)
         self.link(loose, model=second)
-        loose.delete()
-        self.assertEqual(self.linked(), [self.case.pk])
+        with self.assertRaises(ProtectedError), transaction.atomic():
+            loose.delete()
+        self.assertEqual(sorted(self.linked()), sorted([self.case.pk, loose.pk]))
         second.delete()
-        self.assertEqual(AccessoryCompatibility.objects.count(), 1)
+        self.assertEqual(AccessoryCompatibility.objects.count(), 2)
 
 
 # ---------------------------------------------------------------------------

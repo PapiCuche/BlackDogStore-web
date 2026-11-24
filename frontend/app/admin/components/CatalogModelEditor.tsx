@@ -33,6 +33,7 @@ import {
   fetchCatalogSettings,
   fetchCatalogVocabulary,
   fetchModelPalette,
+  setProductActive,
   setProductVariant,
   updateAdminCatalogModel,
   type AdminCatalogAttribute,
@@ -58,7 +59,8 @@ import { TRANSPARENCY_GRID_STYLE } from "./ImageUploadField";
 import { ModelAccessoriesPanel } from "./ModelAccessoriesPanel";
 import { ModelCommercialOverview } from "./ModelCommercialOverview";
 import { ModelOptionOrder } from "./ModelOptionOrder";
-import { ModelPalettePanel, PaletteStatusBadge } from "./ModelPalettePanel";
+import { ArchivedBadge, ModelPalettePanel, PaletteStatusBadge } from "./ModelPalettePanel";
+import { VariantLifecycleDialog, type VariantLifecycleMode } from "./VariantLifecycleDialog";
 import { ModelStatusSummary } from "./ModelStatusSummary";
 import { ProductGallery, type GalleryWork } from "./ProductGallery";
 import { EmptyBox, ErrorBox, Panel, Spinner, TableWrap, Td, Th, formatSoles } from "./InventoryUi";
@@ -745,11 +747,13 @@ function EditVariantForm({
 }
 
 export function CatalogModelEditor({
-  modelId, canManage, companyId, canSeeCosts = false,
+  modelId, canManage, companyId, canSeeCosts = false, canDelete = false,
 }: {
   modelId: number; canManage: boolean; companyId: number | null;
   /** PR E: `costs.view` — the «Configuración comercial» summary may then show a supplier's agreed cost. */
   canSeeCosts?: boolean;
+  /** VARIANT-SAFE-01: `products.delete` — «Eliminar» is offered (the server decides again, with the history). */
+  canDelete?: boolean;
 }) {
   const [model, setModel] = useState<AdminCatalogModelDetail | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -764,6 +768,9 @@ export function CatalogModelEditor({
   // Quitar una variante con historial: lo hace un superior, con motivo.
   const [removingId, setRemovingId] = useState<number | null>(null);
   const [removeReason, setRemoveReason] = useState("");
+  // VARIANT-SAFE-01: the variant whose «Archivar / Desarchivar / Eliminar» is open, and a (de)activation on its way.
+  const [lifecycle, setLifecycle] = useState<{ id: number; mode: VariantLifecycleMode } | null>(null);
+  const [activeBusy, setActiveBusy] = useState<number | null>(null);
   const [models, setModels] = useState<AdminCatalogModel[]>([]);
   const [attributesLoaded, setAttributesLoaded] = useState(false);
   // A1: the palette of the model as the server last answered it (null while it loads).
@@ -1009,6 +1016,31 @@ export function CatalogModelEditor({
     } catch (err) {
       setError(message(err, "No se pudo quitar la variante."));
     }
+  }
+
+  async function setActive(variant: AdminModelVariant, active: boolean) {
+    setError(null);
+    setNotice(null);
+    setActiveBusy(variant.product_id);
+    try {
+      await setProductActive(variant.product_id, active, companyId);
+      setNotice(active ? `«${variant.name}» está activa.` : `«${variant.name}» quedó inactiva: no se vende en tienda ni en caja.`);
+      load();
+      loadPalette();
+    } catch (err) {
+      setError(message(err, active ? "No se pudo activar la variante." : "No se pudo desactivar la variante."));
+    } finally {
+      setActiveBusy(null);
+    }
+  }
+
+  function lifecycleDone(text: string) {
+    setLifecycle(null);
+    setError(null);
+    setNotice(text);
+    focusNotice.current = true;
+    load();
+    loadPalette();
   }
 
   function enabled(variant: AdminModelVariant, answer: CockpitVariant, published: boolean) {
@@ -1313,6 +1345,15 @@ export function CatalogModelEditor({
                       <span className="mt-1.5 block"><VariantThumb variant={variant} /></span>
                     </Td>
                     <Td>
+                      {variant.archived ? (
+                        <span className="mb-1 flex flex-wrap items-center gap-1.5" title={variant.archive_reason || undefined}>
+                          <ArchivedBadge />
+                        </span>
+                      ) : variant.is_active === false ? (
+                        <span className="mb-1 inline-flex min-h-6 items-center whitespace-nowrap rounded-full border border-bd-border px-2 text-[11px] font-semibold text-muted">
+                          Inactiva
+                        </span>
+                      ) : null}
                       <CommercialCell
                         row={cockpit.get(variant.product_id)}
                         published={variant.is_published_online}
@@ -1403,6 +1444,46 @@ export function CatalogModelEditor({
                           >
                             Quitar del modelo
                           </button>
+                          {/* VARIANT-SAFE-01 */}
+                          {!variant.archived && typeof variant.is_active === "boolean" ? (
+                            <button
+                              type="button"
+                              className={rowButtonClass}
+                              disabled={enableBusy || activeBusy !== null}
+                              onClick={() => void setActive(variant, !variant.is_active)}
+                              aria-label={`${variant.is_active ? "Desactivar" : "Activar"} ${variant.name}`}
+                            >
+                              {variant.is_active ? "Desactivar" : "Activar"}
+                            </button>
+                          ) : null}
+                          {typeof variant.archived === "boolean" ? (
+                            <button
+                              type="button"
+                              className={rowButtonClass}
+                              disabled={enableBusy}
+                              onClick={() => {
+                                const mode: VariantLifecycleMode = variant.archived ? "unarchive" : "archive";
+                                setLifecycle(lifecycle?.id === variant.product_id && lifecycle.mode === mode ? null : { id: variant.product_id, mode });
+                              }}
+                              aria-expanded={lifecycle?.id === variant.product_id && lifecycle.mode !== "delete"}
+                              aria-label={`${variant.archived ? "Desarchivar" : "Archivar"} ${variant.name}`}
+                            >
+                              {variant.archived ? "Desarchivar" : "Archivar"}
+                            </button>
+                          ) : null}
+                          {canDelete && typeof variant.archived === "boolean" ? (
+                            <button
+                              type="button"
+                              className={rowButtonClass}
+                              disabled={enableBusy}
+                              onClick={() => setLifecycle(lifecycle?.id === variant.product_id && lifecycle.mode === "delete"
+                                ? null : { id: variant.product_id, mode: "delete" })}
+                              aria-expanded={lifecycle?.id === variant.product_id && lifecycle.mode === "delete"}
+                              aria-label={`Eliminar ${variant.name}`}
+                            >
+                              Eliminar
+                            </button>
+                          ) : null}
                         </span>
                       </Td>
                     ) : null}
@@ -1435,6 +1516,23 @@ export function CatalogModelEditor({
                             </button>
                             <button type="button" className={`${touch} ${internalButtonClass}`} onClick={() => setRemovingId(null)}>Cancelar</button>
                           </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                  {canManage && lifecycle?.id === variant.product_id ? (
+                    <tr className="border-b border-bd-border/60">
+                      <td colSpan={8} className="px-3 py-3">
+                        <div className={pinnedRow}>
+                          <VariantLifecycleDialog
+                            key={`${variant.product_id}-${lifecycle.mode}`}
+                            productId={variant.product_id}
+                            name={variant.name}
+                            mode={lifecycle.mode}
+                            companyId={companyId}
+                            onDone={lifecycleDone}
+                            onCancel={() => setLifecycle(null)}
+                          />
                         </div>
                       </td>
                     </tr>

@@ -406,7 +406,13 @@ class _Plan:
                 found = device_catalog.find_variant(self.company, {
                     'model_id': model['model_id'], 'condition_line': variant['line'],
                     'variant_key': device_catalog.variant_key(o['option_id'] for o in options)})
-                if found is not None:
+                if found is not None and found.archived_at is not None:
+                    # VARIANT-SAFE-01: never reused, never created again (it holds the combination).
+                    from .variant_lifecycle import archived_refusal
+
+                    variant.update(status='archived', product_id=found.pk, suggested_name=found.name,
+                                   archived=archived_refusal(found))
+                elif found is not None:
                     variant.update(status='existing', product_id=found.pk, suggested_name=found.name)
 
     def counts(self) -> dict:
@@ -418,6 +424,8 @@ class _Plan:
             'models_missing': n(self.models, 'missing'), 'models_existing': n(self.models, 'existing'),
             'options_missing': n(self.options, 'missing'), 'options_existing': n(self.options, 'existing'),
             'variants_missing': n(self.variants, 'missing'), 'variants_existing': n(self.variants, 'existing'),
+            # VARIANT-SAFE-01: variants a row IS but that are archived — shown, never approvable.
+            'variants_archived': n(self.variants, 'archived'),
             'rows_resolved': resolved, 'rows_unresolved': len(self.rows) - resolved,
         }
 
@@ -590,6 +598,8 @@ def apply(*, company, rows, approve, prices=None, category_id=None, without_imei
                 raise BadProposal('Una referencia de variante no está en la lista.', code='unknown_ref')
             if plan.variants[ref].get('mixed'):
                 raise BadProposal(plan.variants[ref]['mixed'], code='mixed_identity')
+            if plan.variants[ref].get('archived'):
+                raise BadProposal(plan.variants[ref]['archived'], code='variant_archived', status=409)
             model = plan.models[plan.variants[ref]['model_ref']]
             if model['status'] == 'missing' and model['ref'] not in models_ok:
                 raise BadProposal(f'La variante «{plan.variants[ref]["suggested_name"]}» necesita que se apruebe '
