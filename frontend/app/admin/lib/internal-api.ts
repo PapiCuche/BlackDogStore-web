@@ -3382,10 +3382,11 @@ export function fetchSupplierOffers(
 }
 
 /** SUPPLY-WEEKLY-01 — what a row changed against the supplier's previous list. */
-export type SupplierWeeklyDelta = "nuevo" | "precio_cambio" | "cantidad_cambio" | "retirado" | "no_mencionado" | "sin_cambio";
+export type SupplierWeeklyDelta =
+  | "nuevo" | "precio_cambio" | "cantidad_cambio" | "retirado" | "no_mencionado" | "sin_cambio" | "inactivo";
 
 export const SUPPLIER_WEEKLY_DELTAS: SupplierWeeklyDelta[] = [
-  "nuevo", "precio_cambio", "cantidad_cambio", "retirado", "no_mencionado", "sin_cambio",
+  "nuevo", "precio_cambio", "cantidad_cambio", "retirado", "no_mencionado", "sin_cambio", "inactivo",
 ];
 
 export const SUPPLIER_WEEKLY_DELTA_LABELS: Record<SupplierWeeklyDelta, string> = {
@@ -3395,6 +3396,8 @@ export const SUPPLIER_WEEKLY_DELTA_LABELS: Record<SupplierWeeklyDelta, string> =
   retirado: "Retirado",
   no_mencionado: "No mencionado",
   sin_cambio: "Sin cambio",
+  // Switched off or ended before the previous week, and not in its list: a state, not a change of this week.
+  inactivo: "Inactivo",
 };
 
 /** A supplier's list as the week (or the previous one) declared it. */
@@ -3434,7 +3437,9 @@ export type SupplierWeeklyRow = {
   state: SupplierOfferState;
   own_stock: number;
   message_date: string | null;
+  /** As applied: a new price the person kept out (`keep_prices`) leaves `listed_price` at the price that stayed. */
   listed_price: string | null;
+  price_kept: boolean;
   declared_quantity: number | null;
   previous: SupplierWeeklyDeclaration | null;
   delta: SupplierWeeklyDelta;

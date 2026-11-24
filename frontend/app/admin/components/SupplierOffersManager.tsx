@@ -1473,18 +1473,27 @@ export function SupplierOffersManager({
   const [reloadKey, setReloadKey] = useState(0);
   // SUPPLY-WEEKLY-01: «Semana» — the week's lists against the previous ones, with the shop's own stock apart.
   const [tab, setTab] = useState<ManagerTab>("offers");
+  // Both panels stay mounted once opened (review of #405): an Excel preview and its decisions survive a tab switch.
+  const [weekOpened, setWeekOpened] = useState(false);
   const tabRefs = useRef<Partial<Record<ManagerTab, HTMLButtonElement | null>>>({});
 
   useEffect(() => {
     fetchSuppliers({}, companyId).then((page) => setSuppliers(page.results), () => { /* the list still works without names */ });
   }, [companyId]);
 
-  function onTabKey(event: KeyboardEvent<HTMLButtonElement>) {
-    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
-    event.preventDefault();
-    const index = MANAGER_TABS.findIndex((item) => item.id === tab);
-    const next = MANAGER_TABS[(index + (event.key === "ArrowRight" ? 1 : MANAGER_TABS.length - 1)) % MANAGER_TABS.length].id;
+  function choose(next: ManagerTab) {
     setTab(next);
+    if (next === "week") setWeekOpened(true);
+  }
+
+  function onTabKey(event: KeyboardEvent<HTMLButtonElement>) {
+    const index = MANAGER_TABS.findIndex((item) => item.id === tab);
+    const last = MANAGER_TABS.length - 1;
+    const target = { ArrowRight: (index + 1) % MANAGER_TABS.length, ArrowLeft: (index + last) % MANAGER_TABS.length, Home: 0, End: last }[event.key];
+    if (target === undefined) return;
+    event.preventDefault();
+    const next = MANAGER_TABS[target].id;
+    choose(next);
     tabRefs.current[next]?.focus();
   }
 
@@ -1501,7 +1510,7 @@ export function SupplierOffersManager({
             aria-selected={tab === item.id}
             aria-controls={`supplier-offers-panel-${item.id}`}
             tabIndex={tab === item.id ? 0 : -1}
-            onClick={() => setTab(item.id)}
+            onClick={() => choose(item.id)}
             onKeyDown={onTabKey}
             className={`min-h-[44px] rounded-lg border px-4 text-sm font-semibold focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
               tab === item.id ? "border-foreground/40 bg-foreground/[0.06] text-foreground" : "border-bd-border text-muted hover:text-foreground"
@@ -1511,22 +1520,21 @@ export function SupplierOffersManager({
           </button>
         ))}
       </div>
-      {tab === "offers" ? (
-        <div id="supplier-offers-panel-offers" role="tabpanel" aria-labelledby="supplier-offers-tab-offers" className="space-y-6">
-          <OffersSection
-            canManage={canManage}
-            canSeeCosts={canSeeCosts}
-            companyId={companyId}
-            suppliers={suppliers}
-            reloadKey={reloadKey}
-          />
-          <ImportSection canManage={canManage} companyId={companyId} suppliers={suppliers} onApplied={() => setReloadKey((key) => key + 1)} />
-        </div>
-      ) : (
-        <div id="supplier-offers-panel-week" role="tabpanel" aria-labelledby="supplier-offers-tab-week">
-          <SupplierWeeklyPanel companyId={companyId} suppliers={suppliers} />
-        </div>
-      )}
+      <div id="supplier-offers-panel-offers" role="tabpanel" aria-labelledby="supplier-offers-tab-offers" className="space-y-6"
+        hidden={tab !== "offers"}>
+        <OffersSection
+          canManage={canManage}
+          canSeeCosts={canSeeCosts}
+          companyId={companyId}
+          suppliers={suppliers}
+          reloadKey={reloadKey}
+        />
+        <ImportSection canManage={canManage} companyId={companyId} suppliers={suppliers} onApplied={() => setReloadKey((key) => key + 1)} />
+      </div>
+      <div id="supplier-offers-panel-week" role="tabpanel" aria-labelledby="supplier-offers-tab-week" hidden={tab !== "week"}>
+        {/* Mounted the first time it is opened: the page does not ask for the week until somebody looks at it. */}
+        {weekOpened ? <SupplierWeeklyPanel companyId={companyId} suppliers={suppliers} /> : null}
+      </div>
     </div>
   );
 }

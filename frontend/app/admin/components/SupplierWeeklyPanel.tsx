@@ -36,6 +36,7 @@ const DELTA_TONE: Record<SupplierWeeklyDelta, string> = {
   retirado: "border-danger-border bg-danger-surface text-danger",
   no_mencionado: "border-warning-border text-warning",
   sin_cambio: "border-bd-border text-muted",
+  inactivo: "border-bd-border text-muted",
 };
 
 function DeltaBadge({ delta }: { delta: SupplierWeeklyDelta }) {
@@ -69,6 +70,7 @@ export function variantOptions(row: Pick<SupplierWeeklyRow, "capacity" | "color"
 /** «S/ 100.00 → S/ 105.00», «5 → 8»: what changed against the previous list, from what the server sent. */
 export function deltaDetail(row: SupplierWeeklyRow): string[] {
   const out: string[] = [];
+  if (row.price_kept) out.push("Precio nuevo no aplicado: se mantuvo el actual");
   if (!row.previous) return out;
   if (row.changes.includes("price") && row.previous.commercial_price && row.listed_price) {
     out.push(`Precio: ${formatSoles(row.previous.commercial_price)} → ${formatSoles(row.listed_price)}`);

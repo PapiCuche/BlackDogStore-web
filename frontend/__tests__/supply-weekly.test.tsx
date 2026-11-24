@@ -33,11 +33,11 @@ const weekRow = (extra: Partial<SupplierWeeklyRow> = {}): SupplierWeeklyRow => (
   sim: 'eSIM', region: null, condition_line: 'new', commercial_price: '105.00', variant_price: '120.00',
   confirmed_quantity: 8, committed_quantity: 0, remaining: 8, lead_time_days: 4, valid_from: '2026-11-23',
   valid_until: '2026-11-29', state: 'active', own_stock: 3, message_date: '2026-11-24', listed_price: '105.00',
-  declared_quantity: 8, previous: { message_date: '2026-11-17', job_id: 9, commercial_price: '100.00', declared_quantity: 5 },
+  declared_quantity: 8, price_kept: false, previous: { message_date: '2026-11-17', job_id: 9, commercial_price: '100.00', declared_quantity: 5 },
   delta: 'precio_cambio', changes: ['price', 'quantity'], ...extra,
 });
 
-const COUNTS = { nuevo: 1, precio_cambio: 1, cantidad_cambio: 0, retirado: 0, no_mencionado: 1, sin_cambio: 0 };
+const COUNTS = { nuevo: 1, precio_cambio: 1, cantidad_cambio: 0, retirado: 0, no_mencionado: 1, sin_cambio: 0, inactivo: 0 };
 
 const weeklyOf = (results: SupplierWeeklyRow[], extra: Record<string, unknown> = {}) => ({
   week: '2026-W48', week_start: '2026-11-23', week_end: '2026-11-29', previous_week_start: '2026-11-16',
@@ -161,6 +161,48 @@ describe('pestaña «Semana»', () => {
     expect(deltaDetail(weekRow({ previous: null }))).toEqual([]);
     expect(shiftDay('2026-11-23', -7)).toBe('2026-11-16');
     expect(shiftDay('2026-12-28', 7)).toBe('2027-01-04');
+  });
+});
+
+describe('revisión de #405', () => {
+  it('cambiar de pestaña no pierde la vista previa en curso', async () => {
+    previews = [previewOf([{ row_number: 2, action: 'no_change', errors: [], warnings: [],
+      data: { supplier: 'Distribuidora Andina', product_name: 'Cargador' } }], { rows_error: 0 })];
+    render(<SupplierOffersManager canManage canSeeCosts={false} companyId={null} />);
+    await screen.findByText('No hay ofertas que coincidan.');
+    fireEvent.change(screen.getByLabelText('Archivo de ofertas (.xlsx)'), { target: { files: [new File(['x'], 'ofertas.xlsx')] } });
+    fireEvent.change(screen.getByLabelText('Fecha del mensaje del proveedor'), { target: { value: '2026-11-24' } });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' })); });
+    await screen.findByTestId('supplier-import-preview');
+    const week = screen.getByRole('tab', { name: 'Semana' });
+    await act(async () => { fireEvent.click(week); });
+    const offersPanel = document.getElementById('supplier-offers-panel-offers');
+    expect(offersPanel).toHaveAttribute('hidden');
+    expect(week).toHaveAttribute('aria-controls', 'supplier-offers-panel-week');
+    expect(document.getElementById('supplier-offers-panel-week')).toBeInTheDocument();
+    await act(async () => { fireEvent.click(screen.getByRole('tab', { name: 'Ofertas' })); });
+    expect(offersPanel).not.toHaveAttribute('hidden');
+    expect(screen.getByTestId('supplier-import-preview')).toBeInTheDocument();
+    expect(writes.filter((call) => call.path.includes('/import/preview/'))).toHaveLength(1);
+  });
+
+  it('las pestañas responden a Inicio y Fin', async () => {
+    render(<SupplierOffersManager canManage canSeeCosts={false} companyId={null} />);
+    const offers = screen.getByRole('tab', { name: 'Ofertas' });
+    await act(async () => { fireEvent.keyDown(offers, { key: 'End' }); });
+    expect(screen.getByRole('tab', { name: 'Semana' })).toHaveAttribute('aria-selected', 'true');
+    await act(async () => { fireEvent.keyDown(screen.getByRole('tab', { name: 'Semana' }), { key: 'Home' }); });
+    expect(offers).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('«Inactivo» es un estado, no un cambio, y un precio mantenido no se muestra como cambio', async () => {
+    weekly = weeklyOf([weekRow({ delta: 'inactivo', changes: [], state: 'inactive' }),
+      weekRow({ product_id: 47, offer_id: 34, delta: 'sin_cambio', changes: [], price_kept: true, listed_price: '100.00' })],
+    { counts: { ...COUNTS, inactivo: 1 } });
+    const table = await openWeek();
+    expect(within(table).getByTestId('week-row-5-44')).toHaveTextContent('Inactivo');
+    expect(screen.getByRole('button', { name: 'Inactivo (1)' })).toBeInTheDocument();
+    expect(within(table).getByTestId('week-row-5-47')).toHaveTextContent('Precio nuevo no aplicado');
   });
 });
 
