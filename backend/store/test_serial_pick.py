@@ -237,6 +237,25 @@ class LookingADeviceUpTest(_Base):
         self.sell([self.line(self.new)])
         self.assertEqual(self.refused(IMEI_B), 'not_available')
 
+    def test_a_device_of_a_variant_nobody_enabled_for_sale_is_refused_at_the_scan_with_the_reason(self):
+        """
+        STOCK-UX-WALK — a variant born from the palette and not yet enabled for sale (`is_pending_draft`) receives
+        devices, but the till does not sell it. The scan offered «Confirmar este equipo» and the basket then said
+        «Producto no encontrado o no disponible en esta empresa». Both now say what is missing.
+        """
+        Product.objects.filter(pk=self.phone.pk).update(draft_origin=Product.DRAFT_ORIGIN_PALETTE, sale_enabled_at=None)
+        with self.assertRaises(picking.UnitIdentificationError) as refused:
+            self.find(IMEI_B)
+        self.assertEqual(refused.exception.code, 'variant_pending_draft')
+        self.assertEqual(refused.exception.http_status, 409)
+        self.assertIn('«iPhone 16»', refused.exception.detail)
+        self.assertIn('habilítalo', refused.exception.detail)
+        with self.assertRaises(pos.PosValidationError) as basket:
+            self.sell([self.line(self.new)])
+        self.assertIn('«iPhone 16»', str(basket.exception))
+        self.assertIn('habilítalo', str(basket.exception))
+        self.assertEqual(self.status(self.new), (StockUnit.Status.AVAILABLE, None))
+
     def test_typed_by_hand_a_phone_is_its_imei(self):
         """A serial typed by hand is one wrong character away from another device; an IMEI checks itself."""
         self.assertEqual(self.refused('F2LXK1NEW2', method=MANUAL), 'manual_needs_imei')
