@@ -1,7 +1,6 @@
 """
 UNIT-PHOTO-02 — the real photos of each used device: which side they show, which one is the primary, and who confirmed
-that each one is of THIS device. Additive, ONE node (0192, after 0190_supplier_margin, the master leaf; the coordinator
-moves the dependency when 0191 lands first).
+that each one is of THIS device. Additive, ONE node (0192, after 0191_trade_in_quote).
 
 SCHEMA (on `UnitPhoto`; every column nullable or with a constant `db_default`: no table rewrite, and the previous
 release keeps inserting photos while this migrates — what it inserts is `other`, not primary, not attested):
@@ -45,7 +44,7 @@ def first_photo_is_primary(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0190_supplier_margin'),
+        ('store', '0191_trade_in_quote'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
