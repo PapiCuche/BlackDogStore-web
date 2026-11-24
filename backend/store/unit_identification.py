@@ -197,7 +197,7 @@ def sellable_unit(*, company, branch, code, method):
 
 def pending_draft_refusal(product) -> str:
     """What the till says of a variant born from the palette that nobody has enabled for sale yet."""
-    return (f'«{product.name}» es una variante en borrador, sin habilitar para la venta: habilítalo en '
+    return (f'«{product.name}» es una variante en borrador, sin habilitar para la venta: habilítala en '
             'Catálogo › Modelos antes de venderlo.')
 
 

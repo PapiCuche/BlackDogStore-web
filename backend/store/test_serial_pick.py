@@ -249,11 +249,11 @@ class LookingADeviceUpTest(_Base):
         self.assertEqual(refused.exception.code, 'variant_pending_draft')
         self.assertEqual(refused.exception.http_status, 409)
         self.assertIn('«iPhone 16»', refused.exception.detail)
-        self.assertIn('habilítalo', refused.exception.detail)
+        self.assertIn('habilítala en Catálogo', refused.exception.detail)
         with self.assertRaises(pos.PosValidationError) as basket:
             self.sell([self.line(self.new)])
         self.assertIn('«iPhone 16»', str(basket.exception))
-        self.assertIn('habilítalo', str(basket.exception))
+        self.assertIn('habilítala en Catálogo', str(basket.exception))
         self.assertEqual(self.status(self.new), (StockUnit.Status.AVAILABLE, None))
 
     def test_typed_by_hand_a_phone_is_its_imei(self):
