@@ -22,7 +22,7 @@ import {
   createAttributeOption,
   createCatalogAttribute,
   createCosmeticGrade,
-  fetchAdminCatalogModels,
+  fetchAdminCatalogModelPage,
   fetchCatalogAttributes,
   fetchCatalogSettings,
   fetchCosmeticGrades,
@@ -35,11 +35,17 @@ import {
   type AdminCatalogAttribute,
   type AdminCatalogModel,
   type AdminAttributeOption,
+  type CatalogModelFlag,
+  type CatalogModelPage,
   type AttributeRole,
   type CatalogSettings,
   type CosmeticGradeRow,
 } from "../lib/internal-api";
 import { ROLE_LABELS, ROLE_ORDER } from "../lib/palette";
+import {
+  EMPTY_MODEL_LIST_STATE, MODEL_FLAGS, MODEL_LIST_PAGE_SIZE, isFiltered, modelListQuery, readModelListState,
+  writeModelListState, type ModelListState,
+} from "../lib/model-list-query";
 import { SWATCH_APPROXIMATE_CHECKBOX, SWATCH_APPROXIMATE_LABEL } from "../lib/catalog-presentation-api";
 import { DESCRIPTION_MAX_LENGTH } from "@/app/lib/markdown-lite";
 import { ClaimsHint } from "./ClaimsHint";
@@ -102,28 +108,130 @@ export function SwatchInput({
 const rowActionClass =
   "inline-flex min-h-9 items-center rounded-lg border border-bd-border px-2.5 py-1.5 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2";
 
+/** CATALOG-ADMIN-UX-B — the state chips of the list, as the panel says them. */
+export const MODEL_FLAG_LABELS: Record<CatalogModelFlag, string> = {
+  incomplete: "Variantes incompletas",
+  missing: "Combinaciones sin variante",
+  no_palette: "Sin paleta",
+};
+
+const MODEL_FLAG_HINTS: Record<CatalogModelFlag, string> = {
+  incomplete: "Modelos con variantes a las que les falta una opción de la paleta o que llevan una que la paleta ya no admite.",
+  missing: "Modelos cuya paleta tiene combinaciones válidas que todavía no son una variante.",
+  no_palette: "Modelos que todavía no dicen qué opciones admiten: sus variantes podrían combinar cualquier opción de la empresa.",
+};
+
+const chipClass = (on: boolean) =>
+  `inline-flex min-h-[44px] items-center gap-1.5 rounded-full border px-3 text-xs font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 ${
+    on ? "border-foreground/40 bg-foreground/[0.06] text-foreground" : "border-bd-border text-muted hover:border-foreground/25"
+  }`;
+
+/** What a model's palette asks for, on its row of the list (nothing when all is in order). */
+function ModelPaletteState({ model }: { model: AdminCatalogModel }) {
+  const badges: { text: string; tone: "warning" | "muted" }[] = [];
+  if (model.has_palette === false) badges.push({ text: "Sin paleta", tone: "warning" });
+  const broken = (model.incomplete_variant_count ?? 0) + (model.outside_variant_count ?? 0);
+  if (broken > 0) badges.push({ text: broken === 1 ? "1 variante incompleta" : `${broken} variantes incompletas`, tone: "warning" });
+  const missing = model.valid_without_variant ?? 0;
+  if (missing > 0) badges.push({ text: missing === 1 ? "1 combinación sin variante" : `${missing} combinaciones sin variante`, tone: "muted" });
+  if (badges.length === 0) return model.has_palette ? <span className="text-xs text-muted">En orden</span> : <span className="text-muted">—</span>;
+  return (
+    <span className="flex flex-col items-start gap-1">
+      {badges.map((badge) => (
+        <span
+          key={badge.text}
+          className={`inline-flex min-h-6 items-center whitespace-nowrap rounded-full border px-2 text-[11px] font-semibold ${
+            badge.tone === "warning" ? "border-warning-border bg-warning-surface text-warning" : "border-bd-border text-muted"
+          }`}
+        >
+          {badge.text}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function ModelsSection({ canManage, companyId, onLoaded }: {
   canManage: boolean; companyId: number | null; onLoaded?: () => void;
 }) {
-  const [models, setModels] = useState<AdminCatalogModel[] | null>(null);
+  // CATALOG-ADMIN-UX-B: the search and the filters live in the address (`model-list-query`); the server filters.
+  // This section mounts in the browser once the session is known, so the address can be read here.
+  const [query, setQuery] = useState<ModelListState>(
+    () => (typeof window === "undefined" ? EMPTY_MODEL_LIST_STATE : readModelListState(window.location.search)),
+  );
+  const [typed, setTyped] = useState(query.search);
+  const [page, setPage] = useState<CatalogModelPage | null>(null);
+  const models: AdminCatalogModel[] | null = page ? page.results : null;
+  const [loading, setLoading] = useState(false);
   const [categories, setCategories] = useState<AdminCategory[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
   const [fields, setFields] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState({ name: "", category_id: "", slug: "", description: "", image_url: "", is_published_online: true });
+  const ids = useId();
+  // Only the newest read may land: typing fast sends several, and an older answer must not overwrite a newer one.
+  const request = useRef(0);
+  const onLoadedRef = useRef(onLoaded);
+  useEffect(() => { onLoadedRef.current = onLoaded; });
 
   const load = useCallback(() => {
-    fetchAdminCatalogModels(companyId).then(
-      (rows) => { setModels(rows); setError(null); onLoaded?.(); },
-      (err) => { setError(message(err, "No se pudieron cargar los modelos.")); onLoaded?.(); },
+    const mine = ++request.current;
+    setLoading(true);
+    fetchAdminCatalogModelPage(modelListQuery(query), companyId).then(
+      (answer) => {
+        if (mine !== request.current) return;
+        // Review of #411: a page past the end (fewer results since the address was written) goes back to the first.
+        if (answer.results.length === 0 && answer.count > 0 && query.page > 1) {
+          setQuery((current) => ({ ...current, page: 1 }));
+          return;
+        }
+        setPage(answer); setError(null); setLoading(false); onLoadedRef.current?.();
+      },
+      (err) => {
+        if (mine !== request.current) return;
+        setError(message(err, "No se pudieron cargar los modelos.")); setLoading(false); onLoadedRef.current?.();
+      },
     );
-  }, [companyId, onLoaded]);
+  }, [companyId, query]);
 
   useEffect(() => { load(); }, [load]);
+  // The address follows the list (without a new history entry): a reload or a shared link shows the same list.
+  useEffect(() => {
+    const next = writeModelListState(window.location.search, query);
+    if (next !== window.location.search) {
+      window.history.replaceState(window.history.state, "", `${window.location.pathname}${next}${window.location.hash}`);
+    }
+  }, [query]);
+  // Typing searches on its own after a short pause (and from the first page).
+  useEffect(() => {
+    if (typed === query.search) return;
+    const timer = window.setTimeout(() => setQuery((current) => ({ ...current, search: typed, page: 1 })), 300);
+    return () => window.clearTimeout(timer);
+  }, [typed, query.search]);
   useEffect(() => {
     fetchAdminCategories(companyId).then(setCategories, () => { /* the form still works without the list */ });
   }, [companyId]);
+
+  function change(patch: Partial<ModelListState>) {
+    setQuery((current) => ({ ...current, ...patch, page: patch.page ?? 1 }));
+  }
+
+  function toggleFlag(flag: CatalogModelFlag) {
+    setQuery((current) => ({
+      ...current, page: 1,
+      flags: current.flags.includes(flag) ? current.flags.filter((f) => f !== flag) : [...current.flags, flag],
+    }));
+  }
+
+  function clearFilters() {
+    setTyped("");
+    setQuery(EMPTY_MODEL_LIST_STATE);
+  }
+
+  const total = page?.count ?? 0;
+  const pages = Math.max(1, Math.ceil(total / MODEL_LIST_PAGE_SIZE));
+  const filtered = isFiltered(query);
 
   async function create(event: React.FormEvent) {
     event.preventDefault();
@@ -206,16 +314,91 @@ function ModelsSection({ canManage, companyId, onLoaded }: {
         </form>
       ) : null}
 
+      {/* CATALOG-ADMIN-UX-B: search and filters, answered by the server; the address keeps them. */}
+      <div role="search" aria-label="Buscar modelos" className="mb-4 space-y-3">
+        <div className="grid gap-3 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)_minmax(0,1fr)]">
+          <label className="block text-xs text-muted">
+            Buscar
+            <input
+              type="search"
+              value={typed}
+              onChange={(e) => setTyped(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); change({ search: typed }); } }}
+              placeholder="Nombre, dirección o alias de proveedor"
+              maxLength={100}
+              aria-describedby={`${ids}-total`}
+              className={`mt-1.5 min-h-[44px] ${internalInputClass}`}
+            />
+          </label>
+          <label className="block text-xs text-muted">
+            Categoría
+            <select
+              value={query.category}
+              onChange={(e) => change({ category: e.target.value })}
+              className={`mt-1.5 min-h-[44px] ${internalInputClass}`}
+            >
+              <option value="">Todas</option>
+              <option value="none">Sin categoría</option>
+              {categories.map((c) => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
+            </select>
+          </label>
+          <label className="block text-xs text-muted">
+            Estado
+            <select
+              value={query.active}
+              onChange={(e) => change({ active: e.target.value as ModelListState["active"] })}
+              className={`mt-1.5 min-h-[44px] ${internalInputClass}`}
+            >
+              <option value="">Activos e inactivos</option>
+              <option value="true">Activos</option>
+              <option value="false">Inactivos</option>
+            </select>
+          </label>
+        </div>
+        <div role="group" aria-label="Filtrar por estado de la paleta" className="flex flex-wrap items-center gap-2">
+          {MODEL_FLAGS.map((flag) => {
+            const on = query.flags.includes(flag);
+            const count = page?.facets?.[flag];
+            return (
+              <button
+                key={flag}
+                type="button"
+                aria-pressed={on}
+                title={MODEL_FLAG_HINTS[flag]}
+                aria-describedby={`${ids}-${flag}`}
+                onClick={() => toggleFlag(flag)}
+                className={chipClass(on)}
+              >
+                {MODEL_FLAG_LABELS[flag]}
+                {typeof count === "number" ? <span className="font-normal text-muted">({count})</span> : null}
+                <span id={`${ids}-${flag}`} className="sr-only">{MODEL_FLAG_HINTS[flag]}</span>
+              </button>
+            );
+          })}
+          {filtered ? (
+            <button type="button" className={`min-h-[44px] ${internalButtonClass}`} onClick={clearFilters}>Limpiar filtros</button>
+          ) : null}
+        </div>
+        <p id={`${ids}-total`} role="status" aria-live="polite" className="text-xs text-muted">
+          {page === null ? "" : loading ? "Buscando…" : total === 1 ? "1 modelo" : `${total} modelos`}
+          {page && !loading && (page.facets?.no_palette ?? 0) > 0 && !query.flags.includes("no_palette")
+            ? ` · ${page.facets?.no_palette === 1 ? "1 sin paleta" : `${page.facets?.no_palette} sin paleta`}: sus variantes podrían combinar cualquier opción.`
+            : ""}
+        </p>
+      </div>
+
       {error ? <div className="mb-4"><ErrorBox message={error} /></div> : null}
       {models === null && !error ? <Spinner label="Cargando modelos…" /> : null}
       {models && models.length === 0 ? (
-        <EmptyBox message={canManage ? "Todavía no hay modelos. Crea uno y agrégale sus productos como variantes." : "Todavía no hay modelos."} />
+        <EmptyBox message={filtered
+          ? "Ningún modelo coincide con la búsqueda o los filtros."
+          : canManage ? "Todavía no hay modelos. Crea uno y agrégale sus productos como variantes." : "Todavía no hay modelos."} />
       ) : null}
       {models && models.length > 0 ? (
         <TableWrap>
           <thead>
             <tr className="border-b border-bd-border">
-              <Th>Modelo</Th><Th>Categoría</Th><Th right>Variantes</Th><Th right>Seminuevos</Th><Th>Tienda</Th>
+              <Th>Modelo</Th><Th>Categoría</Th><Th>Paleta</Th><Th right>Variantes</Th><Th right>Seminuevos</Th><Th>Tienda</Th>
               <Th right>Acciones</Th>
             </tr>
           </thead>
@@ -226,10 +409,13 @@ function ModelsSection({ canManage, companyId, onLoaded }: {
                   <Link href={`/admin/products/models/${model.id}`} className="font-semibold underline underline-offset-4 decoration-foreground/30 hover:decoration-foreground">{model.name}</Link>
                   <span className="block font-mono text-xs text-muted">{model.slug}</span>
                 </Td>
-                <Td muted>{model.category_name ?? "—"}</Td>
+                <Td muted>{model.category_name || "—"}</Td>
+                <Td><ModelPaletteState model={model} /></Td>
                 <Td right>{model.variant_count}</Td>
                 <Td right>{model.used_unit_count}</Td>
-                <Td muted>{model.is_published_online ? "Publicado" : "Oculto"}</Td>
+                <Td muted>
+                  {model.is_active === false ? "Inactivo" : model.is_published_online ? "Publicado" : "Oculto"}
+                </Td>
                 <Td right>
                   {/* CATALOG-EDITOR-FIX-01: what can be done with the row, said on the row. */}
                   <span className="inline-flex flex-wrap justify-end gap-1.5">
@@ -249,6 +435,27 @@ function ModelsSection({ canManage, companyId, onLoaded }: {
             ))}
           </tbody>
         </TableWrap>
+      ) : null}
+      {page && total > MODEL_LIST_PAGE_SIZE ? (
+        <nav aria-label="Páginas de modelos" className="mt-4 flex flex-wrap items-center justify-between gap-2 text-sm">
+          <button
+            type="button"
+            className={`min-h-[44px] ${internalButtonClass}`}
+            disabled={query.page <= 1 || loading}
+            onClick={() => change({ page: query.page - 1 })}
+          >
+            Anterior
+          </button>
+          <span className="text-muted">Página {Math.min(query.page, pages)} de {pages}</span>
+          <button
+            type="button"
+            className={`min-h-[44px] ${internalButtonClass}`}
+            disabled={query.page >= pages || loading}
+            onClick={() => change({ page: query.page + 1 })}
+          >
+            Siguiente
+          </button>
+        </nav>
       ) : null}
     </Panel>
   );

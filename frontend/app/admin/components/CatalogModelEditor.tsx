@@ -320,19 +320,31 @@ function VariantThumb({ variant }: { variant: AdminModelVariant }) {
           />
         ) : null}
       </span>
-      <span className="text-xs text-muted">{count === 0 ? "Sin imágenes" : plural(count, "imagen", "imágenes")}</span>
+      {/* CATALOG-ADMIN-UX-B: a variant without a picture says so as a state, not as a footnote. */}
+      {count === 0 && !address ? (
+        <span className="inline-flex min-h-6 items-center whitespace-nowrap rounded-full border border-warning-border bg-warning-surface px-2 text-[11px] font-semibold text-warning">
+          Sin imágenes
+        </span>
+      ) : (
+        <span className="text-xs text-muted">{count === 0 ? "Sin imágenes" : plural(count, "imagen", "imágenes")}</span>
+      )}
     </span>
   );
 }
 
 function AddVariantForm({
-  modelId, companyId, attributes, restricted, lineLabels, onSaved, onCancel,
+  modelId, companyId, attributes, restricted, lineLabels, onSaved, onCancel, noPalette = false,
 }: {
   modelId: number;
   companyId: number | null;
   /** A1: with a palette, only its attributes and only its options (the server refuses the rest anyway). */
   attributes: AdminCatalogAttribute[];
   restricted: boolean;
+  /**
+   * CATALOG-ADMIN-UX-B: the model has NO palette (known, not merely unread): any option of the company would be
+   * accepted, so the person confirms explicitly that these options belong to this model before anything is sent.
+   */
+  noPalette?: boolean;
   lineLabels: Record<CatalogLine, string>;
   onSaved: () => void;
   onCancel: () => void;
@@ -346,6 +358,7 @@ function AddVariantForm({
   const [error, setError] = useState<string | null>(null);
   const [field, setField] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [confirmed, setConfirmed] = useState(false);
 
   async function find(event: React.FormEvent) {
     event.preventDefault();
@@ -364,6 +377,10 @@ function AddVariantForm({
   async function save(event: React.FormEvent) {
     event.preventDefault();
     if (!product) { setError("Elige el producto que será la variante."); return; }
+    if (noPalette && !confirmed) {
+      setError("Este modelo no tiene paleta: confirma que esas opciones corresponden a este modelo, o define antes su paleta.");
+      return;
+    }
     if (restricted && attributes.some((attribute) => !chosen[attribute.id])) {
       // The server would answer `variant_incomplete`: every attribute of the palette takes one option.
       setError("Elige una opción de cada atributo de la paleta.");
@@ -430,6 +447,19 @@ function AddVariantForm({
             Sólo las opciones que admite este modelo (<a href="#paleta" className="underline underline-offset-4 hover:text-foreground">Opciones de este modelo</a>).
           </p>
         ) : null}
+        {noPalette ? (
+          <div role="note" className="space-y-2 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs text-warning md:col-span-3">
+            <p>
+              <strong>Este modelo no tiene paleta:</strong> aquí se ofrece cualquier opción de la empresa, también colores o
+              capacidades de otros modelos. Lo más seguro es definir antes su paleta en{" "}
+              <a href="#paleta" className="underline underline-offset-4">Opciones de este modelo</a>.
+            </p>
+            <label className={`flex ${touch} cursor-pointer items-center gap-2 text-foreground`}>
+              <input type="checkbox" className="h-4 w-4" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} />
+              Confirmo que estas opciones corresponden a este modelo
+            </label>
+          </div>
+        ) : null}
         {attributes.map((attribute) => (
           <label key={attribute.id} className="block text-xs text-muted">
             {attribute.name}
@@ -449,7 +479,7 @@ function AddVariantForm({
         {error ? <p role="alert" className="text-sm text-danger md:col-span-3">{error}</p> : null}
         <div className="flex justify-end gap-2 md:col-span-3">
           <button type="button" className={`${touch} ${internalButtonClass}`} onClick={onCancel} disabled={saving}>Cancelar</button>
-          <button type="submit" className={`${touch} ${internalPrimaryButtonClass}`} disabled={saving || !product}>{saving ? "Guardando…" : "Guardar variante"}</button>
+          <button type="submit" className={`${touch} ${internalPrimaryButtonClass}`} disabled={saving || !product || (noPalette && !confirmed)}>{saving ? "Guardando…" : "Guardar variante"}</button>
         </div>
       </form>
     </div>
@@ -746,6 +776,142 @@ function EditVariantForm({
   );
 }
 
+/** A sale price as the server takes it: digits, and at most two decimals after a point or a comma. */
+const PRICE_TEXT = /^\d{1,8}([.,]\d{1,2})?$/;
+
+/**
+ * The variant's identity as this page READ it: what the variant endpoint needs to save only its price or publication,
+ * and (review of #411) the same values as `expected_*`, so a change somebody made meanwhile is answered 409 `stale`
+ * instead of being put back silently.
+ */
+const sameIdentity = (variant: AdminModelVariant, modelId: number) => {
+  const option_ids = variant.options.map((o) => o.option_id);
+  return {
+    model_id: modelId, condition_line: variant.condition_line, option_ids,
+    expected_model_id: modelId, expected_condition_line: variant.condition_line, expected_option_ids: option_ids,
+  };
+};
+
+/** What a row action says when the server answered that the variant changed under the page. */
+const STALE_ROW = "Otra persona cambió esta variante mientras la veías. No se guardó nada: la lista se volvió a cargar.";
+const isStale = (err: unknown) => err instanceof CatalogApiError && err.status === 409 && err.code === "stale";
+
+/**
+ * CATALOG-ADMIN-UX-B — the price of a variant, changed on its row. Saved through the variant endpoint
+ * (`PUT /admin/products/<id>/variant/`, `products.manage`) with its model, line and options unchanged, so the
+ * server applies the same rules as «Editar variante»: the identity is left alone and only the price moves.
+ */
+function InlinePrice({
+  variant, modelId, companyId, shown, disabled, onSaved, onRefused, onStale,
+}: {
+  variant: AdminModelVariant;
+  modelId: number;
+  companyId: number | null;
+  /** What the cell says while closed («Sin precio» for a draft at 0,00). */
+  shown: string;
+  disabled: boolean;
+  onSaved: (text: string) => void;
+  onRefused: (text: string) => void;
+  /** The variant changed under the page (409 `stale`): the page says so and reads the model again. */
+  onStale: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [value, setValue] = useState(variant.price);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const opener = useRef<HTMLButtonElement>(null);
+  const field = useRef<HTMLInputElement>(null);
+  const ids = useId();
+  useEffect(() => { if (open) field.current?.focus(); }, [open]);
+
+  function close() {
+    setOpen(false);
+    setError(null);
+    setValue(variant.price);
+    requestAnimationFrame(() => opener.current?.focus());
+  }
+
+  async function save(event: React.FormEvent) {
+    event.preventDefault();
+    const text = value.trim().replace(",", ".");
+    if (!PRICE_TEXT.test(value.trim())) { setError("Escribe el precio con hasta dos decimales, por ejemplo 1299.90."); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      await setProductVariant(variant.product_id, { ...sameIdentity(variant, modelId), price: text }, companyId);
+      setOpen(false);
+      onSaved(`Precio de «${variant.name}» guardado.`);
+    } catch (err) {
+      if (isStale(err)) { setOpen(false); onStale(); return; }
+      const text = message(err, "No se pudo guardar el precio.");
+      setError(text);
+      onRefused(text);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <span className="inline-flex flex-col items-end gap-1">
+        <span>{shown}</span>
+        <button
+          ref={opener}
+          type="button"
+          className="min-h-[44px] text-xs text-muted underline underline-offset-4 hover:text-foreground disabled:opacity-50"
+          disabled={disabled}
+          onClick={() => { setValue(variant.price); setOpen(true); }}
+          aria-label={`Cambiar precio de ${variant.name}`}
+        >
+          Cambiar precio
+        </button>
+      </span>
+    );
+  }
+  return (
+    <form onSubmit={save} aria-label={`Precio de ${variant.name}`} className="inline-flex flex-col items-end gap-1.5"
+      onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); close(); } }}>
+      <label className="sr-only" htmlFor={`${ids}-precio`}>Precio de venta de {variant.name}</label>
+      <input
+        id={`${ids}-precio`}
+        ref={field}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        inputMode="decimal"
+        autoComplete="off"
+        disabled={busy}
+        aria-invalid={error ? true : undefined}
+        aria-describedby={error ? `${ids}-error` : undefined}
+        className={`w-28 text-right ${touch} ${internalInputClass}`}
+      />
+      <span className="inline-flex gap-1.5">
+        <button type="button" className={`${touch} ${internalButtonClass} px-3 text-xs`} onClick={close} disabled={busy}>Cancelar</button>
+        <button type="submit" className={`${touch} ${internalPrimaryButtonClass} px-3 text-xs`} disabled={busy}>{busy ? "Guardando…" : "Guardar"}</button>
+      </span>
+      {error ? <span id={`${ids}-error`} role="alert" className="max-w-[14rem] text-xs text-danger">{error}</span> : null}
+    </form>
+  );
+}
+
+/**
+ * CATALOG-ADMIN-UX-B — what a variant holds, under its stock: devices, devices set aside and orders still to hand
+ * over (from its history, read for every variant at once).
+ */
+function StockSummary({ variant }: { variant: AdminModelVariant }) {
+  const history = variant.history;
+  const parts = [
+    history?.units ? plural(history.units, "equipo", "equipos") : "",
+    history?.reserved ? plural(history.reserved, "apartado", "apartados") : "",
+    history?.open_orders ? plural(history.open_orders, "pedido por entregar", "pedidos por entregar") : "",
+  ].filter(Boolean);
+  return (
+    <span className="inline-flex flex-col items-end">
+      <span>{variant.stock}</span>
+      {parts.length ? <span className="text-xs text-muted">{parts.join(" · ")}</span> : null}
+    </span>
+  );
+}
+
 export function CatalogModelEditor({
   modelId, canManage, companyId, canSeeCosts = false, canDelete = false,
 }: {
@@ -771,6 +937,8 @@ export function CatalogModelEditor({
   // VARIANT-SAFE-01: the variant whose «Archivar / Desarchivar / Eliminar» is open, and a (de)activation on its way.
   const [lifecycle, setLifecycle] = useState<{ id: number; mode: VariantLifecycleMode } | null>(null);
   const [activeBusy, setActiveBusy] = useState<number | null>(null);
+  // CATALOG-ADMIN-UX-B: a publication change from a row on its way (one at a time).
+  const [rowBusy, setRowBusy] = useState<number | null>(null);
   const [models, setModels] = useState<AdminCatalogModel[]>([]);
   const [attributesLoaded, setAttributesLoaded] = useState(false);
   // A1: the palette of the model as the server last answered it (null while it loads).
@@ -1034,6 +1202,40 @@ export function CatalogModelEditor({
     }
   }
 
+  /** CATALOG-ADMIN-UX-B: a row's price or publication was saved: said, and the model read again. */
+  function rowSaved(text: string) {
+    setError(null);
+    setRowAlert(null);
+    setNotice(text);
+    load();
+    loadPalette();
+  }
+
+  /** CATALOG-ADMIN-UX-B: publish or hide one variant from its row, under the server's publication rules. */
+  async function publish(variant: AdminModelVariant, next: boolean) {
+    if (rowBusy !== null) return;
+    setRowBusy(variant.product_id);
+    setNotice(null);
+    setRowAlert(null);
+    try {
+      await setProductVariant(variant.product_id, { ...sameIdentity(variant, modelId), is_published_online: next }, companyId);
+      rowSaved(next ? `«${variant.name}» está publicada en la tienda.` : `«${variant.name}» ya no se muestra en la tienda.`);
+    } catch (err) {
+      if (isStale(err)) rowStale();
+      else setRowAlert(message(err, next ? "No se pudo publicar la variante." : "No se pudo ocultar la variante."));
+    } finally {
+      setRowBusy(null);
+    }
+  }
+
+  /** Review of #411: the variant changed under the page — nothing was written; said, and read again. */
+  function rowStale() {
+    setNotice(null);
+    setRowAlert(STALE_ROW);
+    load();
+    loadPalette();
+  }
+
   function lifecycleDone(text: string) {
     setLifecycle(null);
     setError(null);
@@ -1144,6 +1346,20 @@ export function CatalogModelEditor({
       ) : null}
 
       <ModelStatusSummary palette={palette} error={paletteError} onShowReview={showReview} />
+
+      {/* CATALOG-ADMIN-UX-B: a model without a palette admits any option of the company — said first, with the way out. */}
+      {palette && !paletteError && !palette.has_palette ? (
+        <div role="note" aria-label="Modelo sin paleta" className="rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning">
+          <p>
+            <strong>Este modelo no tiene paleta.</strong> No dice qué capacidades, colores, SIM o regiones admite, así que
+            sus variantes podrían llevar cualquier opción de la empresa (también los colores de otros modelos). Las variantes
+            no se crean desde la paleta hasta definirla.
+          </p>
+          <a href="#paleta" className={`mt-1 inline-flex ${touch} items-center font-semibold underline underline-offset-4`}>
+            Definir las opciones de este modelo
+          </a>
+        </div>
+      ) : null}
 
       {/* PR E: what the shop will show and what is missing, each part linked to the section that edits it. */}
       <ModelCommercialOverview modelId={modelId} companyId={companyId} canSeeCosts={canSeeCosts} refreshKey={summaryRefresh} />
@@ -1281,6 +1497,7 @@ export function CatalogModelEditor({
             companyId={companyId}
             attributes={formAttributes()}
             restricted={restricted}
+            noPalette={palette !== null && !paletteError && !palette.has_palette}
             lineLabels={lineLabels}
             onCancel={() => setAdding(false)}
             onSaved={() => { setAdding(false); setNotice("Variante guardada."); load(); loadPalette(); }}
@@ -1359,7 +1576,19 @@ export function CatalogModelEditor({
                         published={variant.is_published_online}
                         canManage={canManage}
                         showReasons={filter === "review"}
-                        action={canManage && cockpit.get(variant.product_id)?.draft_pending ? (
+                        action={canManage && !variant.archived && variant.is_active !== false && cockpit.get(variant.product_id)
+                          && !cockpit.get(variant.product_id)?.draft_pending ? (
+                          <button
+                            type="button"
+                            className={`${touch} mt-1 inline-flex items-center whitespace-nowrap rounded-lg border border-bd-border px-3 text-xs font-semibold text-foreground transition-colors hover:border-foreground/25 disabled:cursor-not-allowed disabled:opacity-50`}
+                            onClick={() => void publish(variant, !variant.is_published_online)}
+                            disabled={enableBusy || rowBusy !== null || paletteStale}
+                            aria-describedby={paletteStale ? `${confirmId}-paleta` : undefined}
+                            aria-label={`${variant.is_published_online ? "Ocultar de la tienda" : "Publicar en la tienda"} ${variant.name}`}
+                          >
+                            {rowBusy === variant.product_id ? "Guardando…" : variant.is_published_online ? "Ocultar de la tienda" : "Publicar en la tienda"}
+                          </button>
+                        ) : canManage && cockpit.get(variant.product_id)?.draft_pending ? (
                           <button
                             type="button"
                             ref={(node) => {
@@ -1398,10 +1627,23 @@ export function CatalogModelEditor({
                     </Td>
                     <Td right muted>
                       {/* A draft at 0,00 has no price yet: said in words, never as a price. */}
-                      {cockpit.get(variant.product_id)?.draft_pending && cockpit.get(variant.product_id)?.price_set === false
+                      {canManage && !variant.archived ? (
+                        <InlinePrice
+                          key={`${variant.product_id}-${variant.price}`}
+                          variant={variant}
+                          modelId={modelId}
+                          companyId={companyId}
+                          shown={cockpit.get(variant.product_id)?.draft_pending && cockpit.get(variant.product_id)?.price_set === false
+                            ? "Sin precio" : formatSoles(variant.price)}
+                          disabled={enableBusy || rowBusy !== null}
+                          onSaved={rowSaved}
+                          onRefused={() => setNotice(null)}
+                          onStale={rowStale}
+                        />
+                      ) : cockpit.get(variant.product_id)?.draft_pending && cockpit.get(variant.product_id)?.price_set === false
                         ? "Sin precio" : formatSoles(variant.price)}
                     </Td>
-                    <Td right>{variant.stock}</Td>
+                    <Td right><StockSummary variant={variant} /></Td>
                     {canManage ? (
                       <Td right>
                         <span className="inline-flex flex-wrap justify-end gap-1.5">
