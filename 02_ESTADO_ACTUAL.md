@@ -3,6 +3,16 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-25 — PLAN MAESTRO COMERCIAL · Olas 2 y 3 cerradas en `master` (sin desplegar)
+
+Las olas 2 y 3 están fusionadas en `master` y producción sigue sin cambios (`16189e4`, esquema `0186`). La tabla de PR, SHA y migraciones está en `docs/NEXT_ACTION.md`.
+
+- Las migraciones nuevas, en cadena lineal y todas aditivas, van de la `0187_used_unit_readiness` a la `0192_unit_photo_provenance`.
+- **Carga del stock real:** lista y probada con datos sintéticos (plantillas, inventario inicial por tandas, conciliación y anulación por lote). Falta recibir los archivos reales y el GO.
+- **Experiencia visual tipo Apple Store: no terminada.** Faltan las fotos autorizadas de modelos y acabados y las fotos confirmadas de los seminuevos.
+- Pasada de Playwright sobre `master` (2026-11-25): los fallos atribuibles a la ola 1 eran especificaciones o datos de prueba y se corrigieron (#412). La deuda del entorno E2E está documentada en `AGENTS.md` §6.
+- El siguiente paso es ensayar la release candidata sobre una copia aislada de producción.
+
 ## 2026-11-24 — UNIT-PHOTO-02 · PARCIAL (rama `feat/unit-photo-02`, sin PR, sin fusionar ni desplegar) · migración `0192_unit_photo_provenance` (sobre `0190_supplier_margin`)
 
 Fotos reales de cada seminuevo. Sólo en la rama.

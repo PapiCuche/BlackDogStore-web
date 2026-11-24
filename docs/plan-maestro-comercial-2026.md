@@ -121,14 +121,14 @@ Las migraciones van en serie: un solo PR con migración en curso a la vez, en el
 3. **SUPPLY-GUARDS-01**: estado real de las ofertas de proveedores inactivos y aviso de precio menor que el costo. Sin migración.
 4. **USED-READY-01** (migración 0187): inspección y publicación por unidad, garantía, estado funcional, defectos y accesorios. Un seminuevo sólo se ofrece en la web si está inspeccionado, publicado, tiene precio y al menos una foto real.
 
-**Ola 2**
+**Ola 2 — FUSIONADA (#404, #405, #407, #409, #411, #413), sin desplegar**
 5. **INV-LOAD-02**: comprobación `check_unit_stock`, anulación de un lote y comparación antes y después. Sin migración.
 6. **VARIANT-SAFE-01** (migración): archivar; borrado con verificación de dependencias bajo bloqueo y un test guardián sobre todas las relaciones; las FK pasan a PROTECT.
 7. **CATALOG-ADMIN-UX-B**: búsqueda, filtros, acciones por fila y rendimiento del editor.
 8. **SUPPLY-WEEKLY-01**: panel semanal con diferencias y «no mencionadas»; «configuración válida sin variante» también en Excel.
 9. **NAV-SALES-01**: destinos de Ventas y de Disponibilidad de proveedores, sin duplicar entradas.
 
-**Ola 3**
+**Ola 3 — FUSIONADA (#408, #410, #414, #415), sin desplegar; fotos autorizadas pendientes**
 10. **SALES-QUOTE-01** (migración): modelo, servicios, documentos A4, 80 mm y ESC/POS, panel, y conversión idempotente en venta con revalidación de precio y stock.
 11. **TRADE-IN-QUOTE-00**: bloque «equipo ofrecido (referencial)» en la cotización, no vinculante, con un test guardián que impide el crédito en `Order` y el uso de `manual_discount`.
 12. **UNIT-PHOTO-02** (migración): procedencia y atestación de foto real, principal y orden; el carrito y el pedido muestran la foto de la unidad.

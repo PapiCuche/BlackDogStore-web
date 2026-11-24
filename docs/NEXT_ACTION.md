@@ -36,6 +36,63 @@ Regla nueva en `AGENTS.md` §10. Todo cambio productivo se hace con el GO exacto
 - Decisiones por confirmar con el propietario: las imágenes de la galería bloquean la eliminación (no se borran con la variante); los códigos de barras sí se borran con ella (quedan en la auditoría); un carrito con la variante bloquea; desarchivar la deja inactiva; eliminar/archivar sólo para variantes (producto con modelo).
 - Despliegue: la migración no cambia SQL de las FK (Django aplica `on_delete`); añade 3 columnas, 1 CHECK y la capacidad `products.delete`. Con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`.
 
+## PLAN MAESTRO COMERCIAL 2026 — Olas 2 y 3 cerradas en `master` (sin desplegar)
+
+**Ninguna de estas olas está en producción**: prod-02 sigue en `16189e4`, con esquema `0186`. Desplegarlas requiere el ensayo de la release candidata y el GO exacto del propietario.
+
+**Ola 2, fusionada** (cada PR con revisión independiente, sus correcciones y CI verde sobre el SHA exacto):
+
+| PR | Merge | Qué resuelve | Migración |
+|---|---|---|---|
+| #404 NAV-SALES-01 | `aaffd0ea` | Menú por tareas: Productos, Proveedores, Inventario y Ventas. «Venta rápida de equipo» lleva al bloque de equipos de la caja. | no |
+| #405 SUPPLY-WEEKLY-01 | `337d771e` | Panel semanal de proveedores con diferencias contra la lista anterior y ofertas no mencionadas. En Excel, una combinación válida sin variante ofrece «Crear variante». | no |
+| #407 VARIANT-SAFE-01 | `91c35fb0` | Archivar y eliminar variantes de forma segura: vista previa de impacto, motivo, nombre escrito y permiso `products.delete`. Las FK pasan a PROTECT y una prueba guardiana revisa todas las relaciones. | `0188_variant_safe` |
+| #409 INV-LOAD-02 | `0fe0bab9` | **Plantillas de carga de stock real** (equipos nuevos y seminuevos). Conciliación del stock con las unidades, anulación de una carga completa, informe antes y después y guía `docs/carga-stock-real.md`. | no |
+| #411 CATALOG-ADMIN-UX-B | `6169f546` | Editor de catálogo: búsqueda y filtros de modelos, historial agrupado con número fijo de consultas, «Crear variante» por línea, precio y publicación por fila con control de cambios simultáneos, exclusiones editables. | no |
+| #413 SUPPLY-MARGIN-01 | `db07411f` | Precio sugerido igual al costo más el margen de la empresa, visible sólo con `costs.view`. Nunca cambia precios publicados. | `0190_supplier_margin` |
+
+**Ola 3, fusionada:**
+
+| PR | Merge | Qué resuelve | Migración |
+|---|---|---|---|
+| #408 IMG-GATE-01 | `4d95e1a9` | Una sola regla de fotos para las variantes de equipos: sólo fotos con licencia verificada del mismo color, nunca enlaces externos. Incluye el informe de salud de imágenes. | no |
+| #410 SALES-QUOTE-01 | `5c76538e` | Cotizaciones comerciales: revisiones, aprobación, A4, ticket de 80 mm y ESC/POS, y conversión idempotente en venta. No mueven stock ni cobran. | `0189_sales_quote` |
+| #414 TRADE-IN-QUOTE-00 | `bba6d5c1` | Parte de pago **referencial** dentro de la cotización. Con el ejemplo 4500 − 1200 = 3300, la venta se cobra completa. Sólo guarda los últimos 4 dígitos del IMEI. | `0191_trade_in_quote` |
+| #415 UNIT-PHOTO-02 | `4ca07c4e` | Fotos reales de cada seminuevo, confirmadas por quien lo inspecciona. Sólo las confirmadas se publican; el carrito y los pedidos muestran la foto de esa unidad. | `0192_unit_photo_provenance` |
+
+También: #406 y #412 (pruebas E2E ajustadas a la ola 1, `3435a068`).
+
+**Prioridad del propietario: carga del stock real.** Está lista en código y probada con datos sintéticos (`SyntheticStockLoadTest`):
+- plantillas «Stock de equipos nuevos» y «Stock de seminuevos»;
+- inventario inicial por tandas sin compras ficticias;
+- vista previa con la simulación del stock antes y después;
+- conciliación del stock con las unidades y anulación de una carga completa.
+
+La venta rápida en caja (#400) ofrece primero el pedido pendiente. Cargar el stock real en producción necesita los archivos reales y el «GO carga stock real prod-02» (`docs/carga-stock-real.md` §11). Antes hay que desplegar la release.
+
+**Experiencia visual tipo Apple Store: NO terminada.** El configurador, la regla de fotos y la licencia están hechos. **Faltan las fotografías autorizadas** de los modelos y acabados (0 verificadas) y las fotos confirmadas de los seminuevos. Sin ellas, la tienda muestra «Imagen pendiente» o «Sin fotos de este equipo».
+
+**Pendiente (bloqueado por decisión del propietario o un ADR):**
+- quitar fondos (falta aprobar la herramienta);
+- bajo pedido de una combinación nueva (D-F-1);
+- cobro al llegar el equipo;
+- estado «declarado por el proveedor» (C1);
+- liquidación real de la parte de pago (D1–D12, con el contador);
+- deuda E2E-HARNESS (ver `AGENTS.md` §6);
+- la prueba `inventory-receive` 9: el foco en móvil a 390 px.
+
+Siguen abiertos fuera del alcance: #249, la propuesta de orden de candados entre caja y pago web.
+
+**Decisiones del propietario abiertas en las olas 2 y 3**, cada una detallada en su PR:
+- quién borra variantes y qué lo bloquea;
+- precio de venta en la plantilla de nuevos (hoy fuera, porque cambiaría el precio de toda la variante);
+- la opción «Ambos» en la carga;
+- las 7 decisiones de cotizaciones;
+- las 6 de parte de pago;
+- las 6 de fotos de seminuevos;
+- los productos sin modelo, que no tienen control de licencia;
+- el margen (múltiplos y redondeo hacia arriba).
+
 ## PLAN MAESTRO COMERCIAL 2026 — Ola 1 cerrada en `master` (sin desplegar)
 
 El plan, la auditoría y el orden de los PR están en `docs/plan-maestro-comercial-2026.md`. **Nada de esto está en producción**: desplegarlo requiere ensayo y un GO propio.

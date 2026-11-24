@@ -100,7 +100,27 @@ Next dev no hidrata desde otro origen. Backend en `:8100` y `next dev` en `:3002
 no sirve: le falta el pedido pagado con factura y `fiscal-invoice` omite sus 9 pruebas. En la copia, y sólo
 en ella, se vacían las fotos de producto que apuntan a un host externo y se archivan las campañas publicadas
 (`next/image` rechaza un host que no está en `NEXT_PUBLIC_IMAGE_HOSTS` y la portada cae). Una prueba omitida
-no cuenta como verde: la pasada completa son 194 y 0 omitidas.
+no cuenta como verde. Al 2026-11-25 la suite tiene 463 pruebas.
+Variables del backend de la pasada, además de las anteriores:
+- `E2E_DB_OK=<ruta exacta de la copia sqlite>`: sin ella, unas 15 especificaciones fallan al instante.
+- `DEFAULT_STOREFRONT_COMPANY_SLUG=black-dog-store`: con dos empresas activas, el catálogo público queda vacío.
+- `WHATSAPP_PROVIDER=fake`: **obligatoria**. Sin ella, «Probar conexión» de `integrations-console` llama a la Graph API de Meta.
+- `E2E_DJANGO_LOG` para `sales-email-03`.
+- `load_reference_catalog`, ejecutado una vez sobre la copia, para `catalog-presentation` y `catalog-imported-chips`.
+
+Las especificaciones de documentos (`document-design`, `document-preview*`) necesitan
+`E2E_API_BASE=http://localhost:3002/api`: con `127.0.0.1:8100` el navegador en `localhost` no recibe la cookie.
+
+Algunas exigen ajustes opuestos y no pasan todas en una misma corrida:
+- `session-idle`: `AUTH_SESSION_IDLE_SECONDS=60`.
+- `verification-code`: `REQUIRE_EMAIL_VERIFICATION=1`.
+- `sales-ux-02` C: `FISCAL_ENABLED` apagado.
+- `pos-receipt-options`: certificado de firma. No se usa, para no tocar SUNAT.
+
+Las pasadas deben partir de una copia nueva de la base: reutilizar la misma copia deja datos que rompen
+especificaciones que dependen del contenido (`pos-ticket`, `storefront-v3`, `staff-personnel`). `sembrar()` crea su
+empresa auxiliar una vez por proceso, así que dos especificaciones de distintas empresas en el mismo proceso chocan en
+el slug: se aíslan corriéndolas aparte (deuda E2E-HARNESS).
 Una pasada sólo vale si el equipo no se suspendió (`pmset -g log`), si no hubo login manual justo antes
 (límite 5/min) y si queda stock (cada pasada vende; reponer por `inventory-adjust`). Un fallo por límite de
 peticiones o stock se arregla aislando el test, no ignorando la pasada.
