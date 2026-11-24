@@ -106,6 +106,14 @@ class AuthorityTest(CommercialBase):
         self.assertEqual(self.preview(self.clerk, body).status_code, 403)
         self.assertEqual(self.snapshot(), before)
 
+    def test_a_draft_variant_is_received_and_its_preview_says_it_is_a_draft(self):
+        """STOCK-UX-WALK follow-up: the review warns from `draft_pending` in the line's commercial problems."""
+        Product.objects.filter(pk=self.used.pk).update(draft_origin=Product.DRAFT_ORIGIN_PALETTE, sale_enabled_at=None)
+        body = self.body(self.dev(self.used, self.used_unit('SEMI00045', IMEIS[11])))
+        [line] = self.preview(self.clerk, body, expect=200).json()['lines']
+        self.assertEqual(line['status'], 'ok')
+        self.assertIn('draft_pending', line['commercial']['problems'])
+
     def test_two_unpriced_devices_are_warned_in_the_plural(self):
         body = self.body(self.dev(self.used, self.used_unit('SEMI00043', IMEIS[9]), self.used_unit('SEMI00044', IMEIS[10])))
         [line] = self.preview(self.clerk, body, expect=200).json()['lines']

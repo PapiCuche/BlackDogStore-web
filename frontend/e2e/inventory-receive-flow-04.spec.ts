@@ -4,6 +4,7 @@ import { TAG } from "./inventory-first-support";
 import { sessionFor, limpiarRecepcion, recibos, serial } from "./inventory-receive-support";
 import { nextImei } from "./inventory-receive-list-support";
 import { FLOW_USERS, FLOW_PASSWORD, FLOW_MODEL, FLOW_VARIANTS, sembrarFlujo, equipos, entradas, type FlowSeed } from "./inventory-receive-flow-04-support";
+import { usedEntry } from "./used-units-support";
 
 /**
  * INV-RECEIVE-FLOW-04 — UN solo camino para registrar equipos propios de una lista, SIN MOCKS (navegador real + API
@@ -296,14 +297,14 @@ for (const env of ENVS) {
       await expect(page).toHaveURL(/\/admin\/inventory\/used/, { timeout: 60_000 });
       await usedRows(page, env, serial(`FA${env.code}`, 1).slice(0, -2));
       for (const d of list) {
-        const line = page.getByRole("row").filter({ hasText: d.serial });
+        const line = usedEntry(page, d.serial);
         await expect(line, `«Seminuevos» no muestra el equipo ${d.n}`).toHaveCount(1, { timeout: 30_000 });
         await expect(line).toContainText(soles(final[d.n - 1]));
       }
       await noOverflow(page, `${env.name} seminuevos`);
       await shot(page, env, "6-seminuevos");
       await page.getByLabel("Precio de venta").selectOption("no");
-      await expect(page.getByRole("row").filter({ hasText: serial(`FA${env.code}`, 1).slice(0, -2) })).toHaveCount(0, { timeout: 30_000 });
+      await expect(usedEntry(page, serial(`FA${env.code}`, 1).slice(0, -2))).toHaveCount(0, { timeout: 30_000 });
       await expectNoTraces(page, secrets, `${env.name} seminuevos`);
     } finally {
       await context.close().catch(() => undefined);
@@ -393,8 +394,8 @@ test("C · doble clic en «Confirmar recepción» registra una vez; el pendiente
     await expect(page.getByRole("heading", { name: "Seminuevos", exact: true })).toBeVisible({ timeout: 60_000 });
     expect(new URL(page.url()).searchParams.get("precio")).toBe("sin");
     await expect(page.getByLabel("Precio de venta")).toHaveValue("no");
-    await expect(page.getByRole("row").filter({ hasText: list[1].serial })).toContainText("Sin precio (pendiente)", { timeout: 30_000 });
-    await expect(page.getByRole("row").filter({ hasText: list[0].serial })).toHaveCount(0);
+    await expect(usedEntry(page, list[1].serial)).toContainText("Sin precio (pendiente)", { timeout: 30_000 });
+    await expect(usedEntry(page, list[0].serial)).toHaveCount(0);
     await expectNoTraces(page, secrets, "C seminuevos");
   } finally {
     await context.close().catch(() => undefined);
