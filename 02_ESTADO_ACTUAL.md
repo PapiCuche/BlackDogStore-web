@@ -3,9 +3,9 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-24 — VARIANT-SAFE-01 · PARCIAL (rama apilada sobre #403, sin fusionar ni desplegar) · migración `0188`
+## 2026-11-24 — VARIANT-SAFE-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0188`
 
-Eliminar, archivar y desactivar variantes sin perder datos. Rama `feat/variant-safe-01`, creada desde `feat/used-ready-01` (0187).
+Eliminar, archivar y desactivar variantes sin perder datos. Rama `feat/variant-safe-01`; `0188` depende de `0187_used_unit_readiness` (#403, ya en master).
 
 - **Eliminar:** `DELETE /api/admin/products/<pk>/` con `{reason, confirm_name}`; exige `products.manage` + `products.delete` (nueva, a quien tiene `company.manage`). Sólo si nada depende de la variante; sus opciones y códigos se borran explícitamente y la auditoría guarda la foto (nombre, clave, opciones, precio, códigos). La auditoría previa queda intacta (no tiene FK).
 - **Vista previa:** `GET …/deletion-check/` → `{deletable, archivable, blockers[{code,count,label}], stock, can_delete, can_archive}`; otra empresa = 404.
