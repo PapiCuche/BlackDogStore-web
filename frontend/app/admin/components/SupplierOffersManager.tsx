@@ -741,7 +741,7 @@ function ImportSection({
   // B0 review: the same rows under a later message date need the person's statement that the supplier re-sent them.
   const [sameRows, setSameRows] = useState<SameRowsApplied | null>(null);
   // SUPPLY-GUARDS-01: rows below their cost (or over a cost this person cannot see), and the person's confirmation.
-  const [marginRefused, setMarginRefused] = useState<{ rows: MarginReviewRow[]; withCost: boolean } | null>(null);
+  const [marginRefused, setMarginRefused] = useState<MarginRefusal | null>(null);
   const [confirmMargin, setConfirmMargin] = useState(false);
   const [marginReason, setMarginReason] = useState("");
   const [confirmNewDeclaration, setConfirmNewDeclaration] = useState(false);
@@ -825,8 +825,8 @@ function ImportSection({
         confirmNewDeclaration: Boolean(sameRows) && confirmNewDeclaration,
         newDeclarationNote: sameRows ? newDeclarationNote : undefined,
         snapshot: preview.snapshot ? { allMessagesIncluded: allIncluded, deactivations: preview.snapshot.deactivate_count } : undefined,
-        confirmBelowCost: margin.rows.length > 0 && confirmMargin,
-        belowCostReason: margin.rows.length > 0 && confirmMargin ? marginReason : undefined,
+        confirmBelowCost: marginFor(decision).rows.length > 0 && confirmMargin,
+        belowCostReason: marginFor(decision).rows.length > 0 && confirmMargin ? marginReason : undefined,
       }));
       setPreview(null);
       setFile(null);
@@ -857,7 +857,7 @@ function ImportSection({
         setError(err.message);
       } else if (err instanceof WeeklyImportError && err.code && MARGIN_CONFIRMATION_CODES.includes(err.code)) {
         // SUPPLY-GUARDS-01: found at apply (on what is written, under the lock): show the rows and ask.
-        setMarginRefused({ rows: err.marginRows, withCost: err.code === "below_cost_confirmation_required" });
+        setMarginRefused({ rows: err.marginRows, withCost: err.code === "below_cost_confirmation_required", decision });
         setConfirmMargin(false);
         setError(err.message);
       } else if (err instanceof WeeklyImportError && err.code === "price_confirmation_required") {
@@ -895,14 +895,20 @@ function ImportSection({
   const priceRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.price_change) : [];
   const reactivationRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.reactivation_requires_review) : [];
   const clearedRows = preview ? preview.rows.filter((row) => row.action === "update" && row.data.quantity_cleared) : [];
-  const margin = marginReview(preview, marginRefused);
+  const margin = marginReview(preview, marginRefused, "accept");
+  // Review of #402: kept prices are not written, so their rows need no confirmation (the server agrees).
+  const marginFor = (decision: PriceDecision | null) => (decision === "keep"
+    ? marginReview(preview, marginRefused, "keep") : margin);
+  const marginPending = (decision: PriceDecision | null) => {
+    const rows = marginFor(decision).rows;
+    return rows.length > 0 && !(confirmMargin && marginReasonReady(marginReason));
+  };
   // B0: every review the server would ask for, answered before «Aplicar» is offered.
   const reviewsPending = (Boolean(reapplied) && !appliedContent && !confirmReapply)
     || (Boolean(appliedContent) && !(confirmReapply && reapplyReason.trim()))
     || (reactivationRows.length > 0 && !confirmReactivate)
     || clearedRows.some((row) => !row.data.offer_id || !quantityDecisions[row.data.offer_id])
-    || (Boolean(sameRows) && !(confirmNewDeclaration && newDeclarationNote.trim()))
-    || (margin.rows.length > 0 && !(confirmMargin && marginReasonReady(marginReason)));
+    || (Boolean(sameRows) && !(confirmNewDeclaration && newDeclarationNote.trim()));
 
   return (
     <Panel
@@ -1303,7 +1309,7 @@ function ImportSection({
             ) : null}
             <button type="button" className={internalButtonClass} onClick={() => setPreview(null)} disabled={busy}>Descartar</button>
             {priceRows.length ? (
-              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || Boolean(outdated) || preview.rows_error > 0 || reviewsPending || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}>
+              <button type="button" className={internalButtonClass} onClick={() => void apply("keep")} disabled={busy || Boolean(outdated) || preview.rows_error > 0 || reviewsPending || marginPending("keep") || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}>
                 Aplicar sin cambiar precios
               </button>
             ) : null}
@@ -1312,6 +1318,7 @@ function ImportSection({
               className={internalPrimaryButtonClass}
               onClick={() => void apply(priceRows.length ? "accept" : null)}
               disabled={busy || Boolean(outdated) || preview.rows_error > 0 || (priceRows.length > 0 && !acceptPrices) || reviewsPending
+                || marginPending(priceRows.length ? "accept" : null)
                 || (Boolean(preview.snapshot) && (!(allIncluded && confirmOff) || Boolean(preview.snapshot?.looks_truncated)))}
             >
               {busy ? "Aplicando…" : "Aplicar cambios"}
@@ -1323,16 +1330,22 @@ function ImportSection({
   );
 }
 
+type MarginRefusal = { rows: MarginReviewRow[]; withCost: boolean; decision: PriceDecision | null };
+
 /**
- * SUPPLY-GUARDS-01 — the rows whose price needs `confirmBelowCost`: those the server refused at apply, else those
- * the preview marked. `withCost`: the server sent the amounts (`costs.view`); the screen never compares them itself.
+ * SUPPLY-GUARDS-01 — the rows whose price needs `confirmBelowCost` for `decision`: those the server refused at
+ * apply for that same decision, else those the preview marked. With `keep`, a row whose only margin change is
+ * the new price is left out: the price is not written (`supplier_offer_import._margin_rows` agrees). `withCost`:
+ * the server sent the amounts (`costs.view`); the screen never compares them itself.
  */
 function marginReview(
-  preview: WeeklyImportPreview | null, refused: { rows: MarginReviewRow[]; withCost: boolean } | null,
+  preview: WeeklyImportPreview | null, refused: MarginRefusal | null, decision: PriceDecision | null,
 ): { rows: MarginReviewRow[]; withCost: boolean } {
-  if (refused && refused.rows.length) return refused;
+  const keeping = decision === "keep";
+  if (refused && refused.rows.length && (refused.decision === "keep") === keeping) return refused;
   const rows = (preview?.rows ?? []).filter((row) => (row.action === "create" || row.action === "update")
-    && (row.data.below_cost || row.data.cost_unverified));
+    && (row.data.below_cost || row.data.cost_unverified)
+    && !(keeping && row.action === "update" && row.data.price_change && !(row.data.changes ?? []).includes("agreed_cost")));
   return {
     withCost: rows.some((row) => Boolean(row.data.below_cost)),
     rows: rows.map((row) => ({

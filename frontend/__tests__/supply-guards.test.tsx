@@ -208,6 +208,32 @@ describe('precio por debajo del costo: el Excel', () => {
     expect(within(shown).getByRole('button', { name: 'Aplicar cambios' })).toBeDisabled();
   });
 
+  it('«Aplicar sin cambiar precios» no pide la confirmación de un precio que no se escribe', async () => {
+    // Revisión del #402: con precios mantenidos el servidor no pregunta por esas filas; la pantalla tampoco.
+    preview = previewOf([importRow({
+      changes: ['commercial_price'], price_change: { before: '110.00', after: '60.00' },
+      below_cost: { commercial_price: '60.00', agreed_cost: '70.00' },
+    })]);
+    const shown = await upload();
+    expect(within(shown).getByRole('group', { name: 'Ofertas que se venderían a pérdida' })).toBeInTheDocument();
+    // Aceptar los precios nuevos sí lo pide.
+    fireEvent.click(within(shown).getByRole('checkbox', { name: /Acepto los precios nuevos/ }));
+    expect(within(shown).getByRole('button', { name: 'Aplicar cambios' })).toBeDisabled();
+    const keep = within(shown).getByRole('button', { name: 'Aplicar sin cambiar precios' });
+    expect(keep).toBeEnabled();
+    await act(async () => { fireEvent.click(keep); });
+    expect(applied()[0].body).toEqual({ keep_prices: true });
+  });
+
+  it('con precios mantenidos, una fila que cambia también el costo sigue pidiendo confirmación', async () => {
+    preview = previewOf([importRow({
+      changes: ['commercial_price', 'agreed_cost'], price_change: { before: '110.00', after: '60.00' },
+      below_cost: { commercial_price: '60.00', agreed_cost: '120.00' },
+    })]);
+    const shown = await upload();
+    expect(within(shown).getByRole('button', { name: 'Aplicar sin cambiar precios' })).toBeDisabled();
+  });
+
   it('una fila de un proveedor inactivo muestra el aviso del servidor', async () => {
     preview = previewOf([importRow({ supplier_inactive: true },
       ['El proveedor «Distribuidora Andina» está inactivo: la oferta se registra, pero no se vende hasta reactivarlo.'])]);
