@@ -187,7 +187,8 @@ vistas reales y permisos reales:
 8. la venta en caja de ese equipo exacto;
 9. un seminuevo pendiente, que no sale en la web, no entra al carrito y la caja rechaza (409);
 10. inspección, foto subida y confirmada y publicación, con lo que sale en la web (y no en la de otra empresa);
-11. la venta web del equipo exacto;
+11. la venta web del equipo exacto. La vista del checkout no se usa, porque abre el pago con el proveedor: sus
+    servicios crean el pedido y el pago se confirma con el `_confirm` real de una notificación ya verificada;
 12. el Kardex neto igual al stock de cada estante;
 13. el aislamiento entre sucursales y entre empresas.
 
@@ -203,8 +204,12 @@ dentro de la imagen sobre una **copia aislada**:
 
 - se niega si `SIM_ISOLATED_DB` no nombra la base conectada;
 - crea una empresa sintética única;
-- apaga SUNAT, el correo y WhatsApp;
-- deshace todo al terminar.
+- trae sus propios ajustes (`run_all`), así que corre igual dentro y fuera de las pruebas:
+  - guarda las fotos en una carpeta temporal que borra al terminar, nunca en el volumen de evidencias (deshacer la
+    base no borra un archivo);
+  - admite los dominios sintéticos;
+  - apaga SUNAT, el correo y WhatsApp;
+- deshace la base al terminar y comprueba que la carpeta temporal ya no existe.
 
 **Ensayo sobre una copia aislada** (opcional, con las plantillas ya llenas con datos reales o sintéticos). Nunca sobre
 producción:
