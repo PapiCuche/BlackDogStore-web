@@ -36,6 +36,52 @@ Regla nueva en `AGENTS.md` §10. Todo cambio productivo se hace con el GO exacto
 - Decisiones por confirmar con el propietario: las imágenes de la galería bloquean la eliminación (no se borran con la variante); los códigos de barras sí se borran con ella (quedan en la auditoría); un carrito con la variante bloquea; desarchivar la deja inactiva; eliminar/archivar sólo para variantes (producto con modelo).
 - Despliegue: la migración no cambia SQL de las FK (Django aplica `on_delete`); añade 3 columnas, 1 CHECK y la capacidad `products.delete`. Con `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`.
 
+## RELEASE R13 — candidata `f47bd477` PREPARADA Y ENSAYADA · **espera «GO despliegue f47bd47 prod-02»**
+
+Producción sigue en `16189e4`, con esquema `0186_label_printing`; nadie la ha tocado.
+
+**Candidata:** `master` `f47bd4772b1ec994295c3562d85a87c84777286d`. Contiene las olas 1, 2 y 3 del plan comercial y las guardas de reversión (#417).
+- Migraciones: `0187_used_unit_readiness`, `0188_variant_safe`, `0189_sales_quote`, `0190_supplier_margin`, `0191_trade_in_quote` y `0192_unit_photo_provenance`. Son lineales y aditivas.
+- La única diferencia bajo `deploy/` es `crontab.example`, que trae la línea `expire_sales_quotes`. Caddy y el enrutamiento del CRM son idénticos.
+- CI del #417 en verde sobre el SHA exacto. Revisión independiente con base real: sin hallazgos bloqueantes.
+
+**Imágenes candidatas** compiladas en prod-02 desde el SHA exacto:
+- `blackdog-backend:rc-f47bd47` = `sha256:5d6e8959ccd5…`
+- `blackdog-frontend:rc-f47bd47` = `sha256:8892639fe189…`
+
+**Ensayo integral sobre una copia aislada** (`db-20261124-110321`, sin salida a internet; todo bajo `prod_lock.sh`):
+- **Migraciones:** el plan son exactamente las seis, unos 29 s en un solo contenedor, sin esperas de candado.
+- **Datos históricos idénticos:** productos, stock (11 filas, 202 unidades), equipos con IMEI, serie, precio y costo, fotos, pedidos, pagos, notas de venta, movimientos y auditoría.
+- **Permisos nuevos:**
+  - Administrador: `products.delete`, `inventory.units.inspect` y `sales.quotes.*`.
+  - Ventas y venta-servicio-técnico-inventario: `sales.quotes.view` y `sales.quotes.manage`.
+- **Seminuevos existentes:** hay 1. Deja la web y la caja hasta que alguien lo inspeccione, confirme su foto y lo publique. Sigue en stock, con el mismo IMEI y el mismo precio.
+- **Pruebas sobre la copia:**
+  - humo profundo 32/32 con la imagen nueva y con la anterior sobre el esquema nuevo;
+  - reimpresión histórica sin errores;
+  - **20/20 pruebas funcionales**: recepción en caja, stock inicial en dos tandas sin compras, seminuevos, variantes, precio sugerido, cotizaciones con parte de pago, fotos reales por unidad y aislamiento con una segunda empresa;
+  - **441 pruebas** de 12 módulos dentro de la imagen;
+  - rutas del frontend en 200.
+- **Fotos:** el informe encuentra 40 enlaces externos y 38 fotos públicas sin licencia verificada; 2 variantes pasan a «Imagen pendiente».
+- **Vuelta atrás sólo de código** (`rollback_r13_code.sh`): funciona, pero antes hay que cancelar los tickets de cotización con `cancel_sales_quote_print_jobs --apply`. Después, el código anterior vuelve a ofrecer los seminuevos sólo por precio.
+- **Reversión del esquema:**
+  - **Con tickets de cotización:** se niega en la `0192` sin deshacer nada (copia idéntica). Si la vuelta atrás se detuvo a medio camino, se niega en la `0190`.
+  - **Sin tickets:** tras el `DELETE` documentado, que nunca es automático en producción, se completa en 44 s.
+  - Se pierden las cotizaciones, la parte de pago, el archivo de variantes, el margen, la inspección y publicación de los seminuevos y la confirmación de fotos. Lo demás queda idéntico.
+
+**Kit** en `backups/release-r13/` del servidor (y una copia local):
+- `d_deploy_r13.sh`, fijado al SHA y a las imágenes, con todas las guardas y siempre bajo el candado;
+- `rollback_r13_code.sh`;
+- `RUNBOOK-f47bd47-prod02.md`: pasos, conteos esperados, comprobaciones posteriores, vuelta atrás y tareas del propietario.
+
+**GO solicitado (exacto):** «GO despliegue f47bd47 prod-02».
+
+Después del despliegue, cada uno con su GO propio:
+- instalar en el cron la línea `expire_sales_quotes`;
+- inspeccionar, confirmar fotos y publicar los seminuevos;
+- «GO carga stock real prod-02», con los archivos reales y las plantillas de `docs/carga-stock-real.md`;
+- volver a preparar y ensayar sobre la nueva base los kits pendientes: normalización, muestras y producto 12.
+
 ## PLAN MAESTRO COMERCIAL 2026 — Olas 2 y 3 cerradas en `master` (sin desplegar)
 
 **Ninguna de estas olas está en producción**: prod-02 sigue en `16189e4`, con esquema `0186`. Desplegarlas requiere el ensayo de la release candidata y el GO exacto del propietario.

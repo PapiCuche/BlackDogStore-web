@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-25 — Release R13 preparada (`f47bd477`)
+
+**Fixed**
+- Las migraciones `0189`–`0192` se niegan a revertirse mientras exista un ticket de cotización, en lugar de quedarse a medias (#417).
+
+**Docs**
+- `docs/NEXT_ACTION.md`: release candidata, ensayo, vuelta atrás y GO solicitado.
+- `docs/despliegue-produccion.md` §7: redacción del paso 5.
+
 ## 2026-11-25 — Plan maestro comercial: olas 2 y 3 en `master`
 
 **Added**
