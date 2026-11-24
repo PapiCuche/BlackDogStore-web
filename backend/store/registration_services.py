@@ -517,6 +517,15 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
             'model_id': model.pk, 'condition_line': line, 'variant_key': device_catalog.variant_key(option_ids),
         })
         if existing is not None:
+            # VARIANT-SAFE-01 re-review — the existing variant LOCKED before any shelf (Product → shelf, `_receive` comes
+            # later) and its state re-read under that lock: an archive committed since the lookup refuses here.
+            existing = Product.objects.select_for_update(of=('self',)).get(pk=existing.pk)
+        if existing is not None and existing.archived_at is not None:
+            # VARIANT-SAFE-01: the guided registration never adds devices to an archived variant.
+            from .variant_lifecycle import archived_refusal
+
+            raise RegistrationError(archived_refusal(existing), step='model', field='options')
+        if existing is not None:
             product, created = existing, False
             warnings.append(
                 f'«{existing.name}» ya es esa variante de «{model.name}»: se le agregan los equipos y la oferta; '

@@ -864,7 +864,7 @@ ven ni se pueden confirmar (siguen en la tabla); las comisiones anuladas siguen 
 Antes de volver, apunta los reembolsos pendientes (Órdenes › Reembolso: pendiente) para
 seguirlos a mano. Deshacer `0137` (`migrate store 0136`) borraría los reembolsos registrados.
 
-**SALES-QUOTE-01 (`0187_sales_quote`, se renumera al fusionar): cotizaciones comerciales.** Aditiva: dos
+**SALES-QUOTE-01 (`0189_sales_quote`, sobre `0188_variant_safe`): cotizaciones comerciales.** Aditiva: dos
 tablas nuevas vacías (`store_salesquote`, `store_salesquoteitem`), `Order.source_quote` y `PrintJob.sales_quote`
 (nulas, `db_default` NULL), una opción más en dos listas de valores y la regla de destino de los trabajos de
 impresión reescrita como `print_job_target_matches_kind_v2` (toda fila que escribe la versión anterior la cumple).

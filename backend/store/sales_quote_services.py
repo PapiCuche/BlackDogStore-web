@@ -248,6 +248,29 @@ def _check_units(company, branch, lines: list[dict], products: dict) -> dict[int
     return units
 
 
+def check_offerable(company, product_ids) -> None:
+    """
+    VARIANT-SAFE-01: an archived variant (or one deactivated) is neither quoted nor sold from a quote. Said with
+    the catalogue's own sentence (`variant_lifecycle.archived_refusal`), 409, instead of the till's «not found».
+    Another company's id stays «not found» (the till's resolver answers it).
+    """
+    from .models import Product
+    from .variant_lifecycle import archived_refusal
+
+    ids = []
+    for raw in product_ids:
+        try:
+            ids.append(int(raw))
+        except (TypeError, ValueError):
+            continue
+    for product in Product.objects.filter(company=company, pk__in=ids, is_active=False).order_by('pk'):
+        refusal = archived_refusal(product)
+        if refusal:
+            raise QuoteConflict(refusal, code='variant_archived')
+        raise QuoteConflict(f'«{product.name}» está desactivado en el catálogo: no se cotiza ni se vende. '
+                            'Revisa la cotización sin esa línea, o reactívalo en Productos.', code='product_inactive')
+
+
 def price_lines(*, actor, company, branch, lines, customer_id=None, seller_id=None,
                 discount_type='', discount_value=None, discount_reason='',
                 may_assign_seller=False, may_apply_manual_discount=False, may_order_over_stock=False) -> dict:
@@ -255,6 +278,7 @@ def price_lines(*, actor, company, branch, lines, customer_id=None, seller_id=No
     Price `lines` exactly as the till would now (`build_pos_sale`, no unit identification, no cash),
     writing nothing. Raises `QuoteError` with the till's own words when the till would refuse.
     """
+    check_offerable(company, [line['product'] for line in lines])
     try:
         products = pos_services.resolve_pos_products(company, pos_services.normalize_items(_pos_items(lines)))
         _check_units(company, branch, lines, products)
@@ -841,6 +865,7 @@ def convert_quote(*, actor, company, quote, data, idempotency_key, request=None)
             branch = pos_services.resolve_pos_branch(actor, company, locked.branch_id)
         except pos_services.PosValidationError:
             raise QuotePermissionError('No tienes acceso a la sucursal de esta cotización.') from None
+        check_offerable(company, locked.items.values_list('product_id', flat=True))
         _check_quoted_units(locked)
         _check_customer_active(company, locked.customer_id)
         items = _sale_items(locked, _conversion_units(locked, data.get('units')))

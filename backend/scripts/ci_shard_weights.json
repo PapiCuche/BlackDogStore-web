@@ -73,6 +73,7 @@
   "store.test_supply_lock_scope.SupplyActionAgainstPaymentDeadlockTest",
   "store.test_supply_lock_scope.SupplyActionAgainstPaymentTest",
   "store.test_supply_reception.ReceiveAtTheSameInstantTest",
+  "store.test_variant_safe.DeleteAgainstAConcurrentInsertTest",
   "store.test_verification_code.ConcurrencyTest",
   "store.tests.C11IdempotencyRecoveryTest",
   "store.tests.C15InitialRaceTest",

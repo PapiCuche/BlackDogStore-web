@@ -544,7 +544,12 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
         }
         if copies[product.pk] > 1:
             entry['warnings'].append(f'«{product.name}» aparece en más de una línea: cada línea es un ingreso aparte.')
-        if not product.is_active:
+        if product.archived_at is not None:
+            # VARIANT-SAFE-01: nothing is received into an archived variant.
+            from .variant_lifecycle import archived_refusal
+
+            entry['errors'].append(archived_refusal(product))
+        elif not product.is_active:
             entry['errors'].append(f'«{product.name}» está desactivado: actívalo antes de recibirlo.')
         if normalised.get('entry_kind') == ENTRY_OPENING:
             # INV-OPENING-01 — `confirm` runs this again inside its transaction, so a shelf that got a history after
@@ -713,12 +718,13 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
 
     Returns `(record, trail)` — the record is ids and counts, never an identifier or an amount.
     """
+    # VARIANT-SAFE-01 review — every product of the receipt, first (Product → shelf, the order of every other door), and
+    # its state read again under that lock: an archive or a deactivation committed since the preview refuses here.
+    units_service.lock_products(resolved.products.values())
+    for product in resolved.products.values():
+        product.refresh_from_db(fields=['is_active', 'archived_at'])
     if normalised.get('entry_kind') == ENTRY_OPENING:
-        # INV-LOAD-01 review — the shelves first, so the opening check below is decided under their locks. Before
-        # them, the products this receipt switches to devices (Product → shelf, the order of every other door).
-        units_service.lock_products(product for product in resolved.products.values() if not product.is_serialized
-                       and any(line['kind'] == KIND_UNITS and line['product'] == product.pk
-                               for line in normalised['lines']))
+        # INV-LOAD-01 review — the shelves first, so the opening check below is decided under their locks.
         lock_shelves((resolved.branch, product) for product in resolved.products.values())
     verdicts = check(company, resolved, normalised)
     if not all(v['status'] == 'ok' for v in verdicts):

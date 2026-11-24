@@ -1,5 +1,5 @@
 """
-SALES-QUOTE-01 — commercial quotes (`SalesQuote`, `SalesQuoteItem`), in ONE self-contained node.
+SALES-QUOTE-01 — commercial quotes (`SalesQuote`, `SalesQuoteItem`), in ONE self-contained node (0189, after 0188_variant_safe).
 
 Schema, all additive: the two quote tables; `Order.source_quote` and `PrintJob.sales_quote` (nullable, `db_default`
 NULL, so the previous release keeps inserting orders and print jobs while this migrates); the `sales_quote` kind of
@@ -34,14 +34,15 @@ COUNTER_CAPABILITIES = ('sales.quotes.view', 'sales.quotes.manage')
 HOLDERS_OF = 'company.manage'
 COUNTER_HOLDERS_OF = 'sales.pos.use'
 
-#: `Administrador` immediately before this migration, FROZEN: where 0187_used_unit_readiness (USED-READY-01) left it.
+#: `Administrador` immediately before this migration, FROZEN: where 0188_variant_safe (VARIANT-SAFE-01) left it.
 ADMIN_PREVIOUS = frozenset({
     'accounting.export', 'accounting.view',
     'areas.manage', 'communications.manage', 'company.manage', 'company.view', 'costs.view',
     'finance.manage', 'finance.payments.record', 'finance.view',
     'inventory.adjust', 'inventory.counts.approve', 'inventory.labels.print', 'inventory.labels.sensitive',
     'inventory.reports', 'inventory.units.inspect', 'inventory.view',
-    'memberships.manage', 'memberships.view', 'products.manage', 'products.view', 'reports.view',
+    'memberships.manage', 'memberships.view', 'products.delete', 'products.manage', 'products.view',
+    'reports.view',
     'roles.manage', 'sales.analytics.view', 'sales.commissions.manage', 'sales.commissions.view',
     'sales.discounts.apply', 'sales.documents.send_copy', 'sales.fiscal.issue', 'sales.fiscal.view',
     'sales.notes.manage', 'sales.orders.manage', 'sales.orders.view', 'sales.pos.assign_seller', 'sales.pos.use',
@@ -79,7 +80,7 @@ def grant(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('store', '0187_used_unit_readiness'),
+        ('store', '0188_variant_safe'),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 

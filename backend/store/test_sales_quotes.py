@@ -147,7 +147,7 @@ class QuoteCapabilitiesTest(TestCase):
         from store.tests import _saas_company
 
         module = sales_quote_migration()
-        previous = importlib.import_module('store.migrations.0187_used_unit_readiness')
+        previous = importlib.import_module('store.migrations.0188_variant_safe')
         self.assertEqual(previous.ADMIN_PREVIOUS | set(previous.NEW_CAPABILITIES), module.ADMIN_PREVIOUS)
         self.assertEqual(module.ADMIN_PREVIOUS | set(module.NEW_CAPABILITIES), DEFAULT_ADMIN_CAPABILITY_CODES)
 
@@ -864,3 +864,34 @@ class QuoteConvertFollowUpTest(QuoteBase):
                            units={str(item): [{'id': str(quoted.pk), 'method': 'scanner'}]})
         self.assertEqual(res.status_code, 201, res.content)
         self.assertEqual(StockUnit.objects.get(pk=quoted.pk).status, 'sold')
+
+
+class QuoteArchivedVariantTest(QuoteBase):
+    """VARIANT-SAFE-01: an archived (or deactivated) variant is neither quoted nor sold from a quote."""
+
+    def archive(self, product):
+        Product.objects.filter(pk=product.pk).update(archived_at=timezone.now(), is_active=False,
+                                                     archive_reason='Ya no se vende')
+
+    def test_an_archived_variant_is_not_quoted(self):
+        self.archive(self.case)
+        res = self.client.post(URL, self.body(items=[{'product': self.case.pk, 'quantity': 1}]), format='json')
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'variant_archived'))
+        self.assertIn('archivada', res.json()['detail'])
+        self.assertFalse(SalesQuote.objects.exists())
+
+    def test_a_variant_archived_after_quoting_is_not_converted_nor_revised(self):
+        quote = self.approved()
+        self.archive(self.cable)
+        res = self.convert(quote['id'])
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'variant_archived'))
+        self.assertFalse(Order.objects.exists())
+        res = self.client.patch(f"{URL}{quote['id']}/", {'notes': 'x'}, format='json')
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'variant_archived'))
+
+    def test_a_deactivated_variant_is_said_plainly(self):
+        quote = self.approved()
+        Product.objects.filter(pk=self.cable.pk).update(is_active=False)
+        res = self.convert(quote['id'])
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'product_inactive'))
+        self.assertIn('Cable USB-C', res.json()['detail'])

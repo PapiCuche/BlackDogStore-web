@@ -85,6 +85,13 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
          'Consultar el catálogo interno.', STATUS_AVAILABLE),
     _cap('products.manage', 'products', 'Administrar productos',
          'Crear y editar productos y categorías.', STATUS_AVAILABLE),
+    # VARIANT-SAFE-01. Deleting a variant for good is a DESTRUCTIVE act and its own authority, on top of
+    # `products.manage` (both are required): whoever edits prices and options does not thereby erase rows.
+    # Migration 0188 grants it to the roles that hold `company.manage` (the administration preset), nobody else.
+    # Even with it, only a variant without history is deleted; with history it is archived.
+    _cap('products.delete', 'products', 'Eliminar variantes',
+         'Eliminar definitivamente una variante sin historial (con motivo y confirmación). Con historial, '
+         'sólo se archiva.', STATUS_ACTIVE),
 
     # --- inventory (ENFORCED from Phase 2D) ---
     #
