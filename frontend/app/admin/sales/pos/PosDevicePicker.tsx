@@ -13,6 +13,10 @@
  *   «Llegó el equipo»      el equipo se registra aquí mismo — IMEI 1, IMEI 2, serie, proveedor, costo (sólo con
  *                          permiso) y precio — y entra a la venta identificado. Si la combinación aún no es una
  *                          variante, el servidor la crea (habilitada para la tienda física, nunca publicada en la web).
+ *                          POS-ORDER-ARRIVAL-01: si un pedido pagado espera esa variante, primero se pregunta de quién
+ *                          es: «Es del pedido #N (cliente)» lo entrega a su pedido (no entra a esta venta); «Ingresar
+ *                          como stock» pide un motivo cuando el pedido espera en ESTA sucursal. Cómo se leyó el IMEI
+ *                          (lector o a mano) viaja con el equipo.
  *
  * El servidor decide todo otra vez; esto sólo evita ofrecer lo que va a negar (AGENTS §7).
  */
@@ -29,6 +33,7 @@ import {
   type PosConfigVariant,
   type PosModelConfigurations,
   type PosModelHit,
+  type PosPendingOrderLine,
   type PosProduct,
   type PosUnit,
 } from "../../lib/internal-api";
@@ -48,6 +53,7 @@ import {
   type ReceiveField,
   type ReceiveForm,
 } from "../../lib/pos-device-picker";
+import { newRhythm, rhythmChanged, rhythmKey, rhythmMethod, type EntryMethod } from "../../lib/unit-entry";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
 import { leadTimeText } from "./PosOnOrder";
 
@@ -58,11 +64,24 @@ function money(value: string | number) {
 
 const LABEL = "mb-1.5 block text-[11px] font-semibold uppercase tracking-widest text-muted";
 const EMPTY_FORM: ReceiveForm = { imei: "", imei2: "", serial: "", price: "", cost: "" };
+/** The server asks the same of a reason to take a device as stock over a waiting order. */
+const REASON_MIN = 5;
+const REASON_MAX = 500;
+
+type FormField = ReceiveField | "supplier" | "reason";
 
 /** What the server calls each field, as this form calls it. */
-const SERVER_FIELD: Record<string, ReceiveField | "supplier"> = {
+const SERVER_FIELD: Record<string, FormField> = {
   imei: "imei", imei2: "imei2", serial_number: "serial", price: "price", cost: "cost", supplier: "supplier",
+  reason: "reason",
 };
+
+/** Whose device it is: free stock, or the device a paid order waits for. */
+type Target = { kind: "stock" } | { kind: "order"; line: PosPendingOrderLine };
+
+function orderName(line: PosPendingOrderLine) {
+  return `#${line.order_number}${line.customer ? ` (${line.customer})` : ""}`;
+}
 
 function productOf(variant: PosConfigVariant): PosProduct {
   return {
@@ -79,7 +98,8 @@ export function PosDevicePicker({
   branch: number | null;
   onAddProduct: (product: PosProduct) => void;
   onAddOnOrder: (product: PosProduct) => void;
-  onReceived: (unit: PosUnit, product: PosProduct) => void;
+  /** `method`: how the device's IMEI was read in the form — the scanner or by hand. */
+  onReceived: (unit: PosUnit, product: PosProduct, method: EntryMethod) => void;
 }) {
   const panelId = useId();
   const [open, setOpen] = useState(false);
@@ -275,8 +295,17 @@ export function PosDevicePicker({
                     config={config}
                     optionIds={combination.option_ids}
                     variant={variant}
+                    pendingLines={combination.pending_order_lines ?? []}
                     onCancel={() => setReceiving(false)}
                     onDone={(result, sentFor) => {
+                      if (result.mode === "order") {
+                        // POS-ORDER-ARRIVAL-01: sold to its order on arrival — never into this sale, whatever branch.
+                        const where = result.branch && result.branch.id !== sentFor ? ` Entró en ${result.branch.name}.` : "";
+                        setReceiving(false);
+                        setNotice(`${result.product.name}: equipo entregado al pedido #${result.order?.id ?? ""}. No se agregó a esta venta.${where}`);
+                        setReloads((n) => n + 1);
+                        return;
+                      }
                       if (sentFor !== branchRef.current) {
                         // Re-review of #376: the device entered the shelf of the branch it was sent for. The till
                         // now sells from another one, so it never goes into this sale.
@@ -285,7 +314,7 @@ export function PosDevicePicker({
                       }
                       setReceiving(false);
                       setNotice(`${result.product.name}: equipo registrado y agregado a la venta.${result.warnings.length ? ` ${result.warnings.join(" ")}` : ""}`);
-                      onReceived(result.unit, result.product);
+                      onReceived(result.unit, result.product, result.method === "scanner" ? "scanner" : "manual");
                       setReloads((n) => n + 1);
                     }}
                   />
@@ -415,55 +444,81 @@ function ReceiveHint({ config, variant }: { config: PosModelConfigurations; vari
 }
 
 function ReceiveDeviceForm({
-  companyId, branch, config, optionIds, variant, onCancel, onDone,
+  companyId, branch, config, optionIds, variant, pendingLines, onCancel, onDone,
 }: {
   companyId: number | null;
   branch: number;
   config: PosModelConfigurations;
   optionIds: number[];
   variant: PosConfigVariant | null;
+  /** POS-ORDER-ARRIVAL-01: the paid orders that wait for a device of this combination. */
+  pendingLines: PosPendingOrderLine[];
   onCancel: () => void;
   /** `sentFor`: the branch the device was received at (the till's when the form was sent). */
   onDone: (result: Awaited<ReturnType<typeof posReceiveDevice>>, sentFor: number) => void;
 }) {
   const id = useId();
-  const priceEditable = !variant || config.can.set_price;
+  // What waits for this device: the configurations' lines, or the ones a 409 named (another till sold one meanwhile).
+  const [waiting, setWaiting] = useState<PosPendingOrderLine[]>(pendingLines);
+  // With an order waiting, the seller first says whose device it is; with none, it is stock.
+  const [target, setTarget] = useState<Target | null>(pendingLines.length ? null : { kind: "stock" });
+  const toOrder = target?.kind === "order" ? target.line : null;
+  // Stock over an order that waits HERE is refused by the server unless confirmed with a reason.
+  const needsReason = target?.kind === "stock" && waiting.some((line) => line.here);
+  const priceEditable = !toOrder && (!variant || config.can.set_price);
   const [form, setForm] = useState<ReceiveForm>({ ...EMPTY_FORM, price: variant && priceEditable ? variant.price : "" });
   const [supplier, setSupplier] = useState("");
-  const [errors, setErrors] = useState<Partial<Record<ReceiveField | "supplier", string>>>({});
+  const [reason, setReason] = useState("");
+  const [errors, setErrors] = useState<Partial<Record<FormField, string>>>({});
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // One key per device being registered: a retry after a failure or a timeout carries the SAME key, so the server
   // answers with the device it already registered instead of registering a second one.
   const keyRef = useRef<string | null>(newSaleKey());
   const imeiRef = useRef<HTMLInputElement | null>(null);
+  // How each identifier arrived, measured in its keys: a scanner writes in a burst (SERIAL-PICK's rule).
+  const rhythms = useRef({ imei: newRhythm(), serial: newRhythm() });
 
-  useEffect(() => { imeiRef.current?.focus(); }, []);
+  useEffect(() => { if (target) imeiRef.current?.focus(); }, [target]);
 
   const set = (field: ReceiveField) => (event: React.ChangeEvent<HTMLInputElement>) => {
     const value = event.target.value;
+    if (field === "imei" || field === "serial") rhythmChanged(rhythms.current[field], value);
     setForm((current) => ({ ...current, [field]: value }));
     setErrors((current) => ({ ...current, [field]: undefined }));
   };
 
   // A scanner ends the IMEI with Enter: that moves to the next field, it never sends a half-filled form.
-  const next = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== "Enter") return;
+  const next = (field: ReceiveField) => (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") {
+      if (field === "imei" || field === "serial") rhythmKey(rhythms.current[field], event.key, performance.now());
+      return;
+    }
     event.preventDefault();
     const fields = Array.from(event.currentTarget.form?.querySelectorAll<HTMLElement>("input, select") ?? []);
     fields[fields.indexOf(event.currentTarget) + 1]?.focus();
   };
 
   // The first field that is wrong takes the caret, so the person corrects it without hunting for it.
-  const focusFirst = (problems: Partial<Record<ReceiveField | "supplier", string>>) => {
-    const first = (["imei", "imei2", "serial", "supplier", "cost", "price"] as const).find((name) => problems[name]);
+  const focusFirst = (problems: Partial<Record<FormField, string>>) => {
+    const first = (["imei", "imei2", "serial", "supplier", "cost", "price", "reason"] as const).find((name) => problems[name]);
     if (first) document.getElementById(`${id}-${first}`)?.focus();
+  };
+
+  const choose = (value: Target | null) => {
+    setTarget(value);
+    setErrors({});
+    setFailure(null);
   };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
-    if (busy) return;
-    const problems = receiveProblems(form, { needsPrice: !variant });
+    if (busy || !target) return;
+    const problems: Partial<Record<FormField, string>> = receiveProblems(form, { needsPrice: !toOrder && !variant });
+    const why = reason.split(/\s+/).filter(Boolean).join(" ");
+    if (needsReason && why.length < REASON_MIN) {
+      problems.reason = `Escribe por qué entra como stock (al menos ${REASON_MIN} caracteres).`;
+    }
     setErrors(problems);
     setFailure(null);
     if (Object.keys(problems).length) {
@@ -474,14 +529,25 @@ function ReceiveDeviceForm({
       setFailure("Este navegador no puede generar una clave segura para registrar el equipo.");
       return;
     }
-    const body: Parameters<typeof posReceiveDevice>[2] = { model: config.model.id, option_ids: optionIds };
-    if (form.imei.trim()) body.imei = form.imei.trim();
+    const imei = form.imei.trim();
+    const serial = form.serial.trim();
+    const body: Parameters<typeof posReceiveDevice>[2] = toOrder
+      ? { order_item: toOrder.order_item }
+      : { model: config.model.id, option_ids: optionIds };
+    if (imei) body.imei = imei;
     if (form.imei2.trim()) body.imei2 = form.imei2.trim();
-    if (form.serial.trim()) body.serial_number = form.serial.trim();
+    if (serial) body.serial_number = serial;
     if (config.can.view_costs && form.cost.trim()) body.cost = form.cost.trim();
-    const price = form.price.trim();
-    if (priceEditable && price && (!variant || Number(price) !== Number(variant.price))) body.price = price;
-    if (supplier) body.supplier = Number(supplier);
+    if (!toOrder) {
+      const price = form.price.trim();
+      if (priceEditable && price && (!variant || Number(price) !== Number(variant.price))) body.price = price;
+      if (supplier) body.supplier = Number(supplier);
+      if (needsReason) {
+        body.confirm_stock = true;
+        body.reason = why;
+      }
+    }
+    body.method = imei ? rhythmMethod(rhythms.current.imei, imei) : rhythmMethod(rhythms.current.serial, serial);
     setBusy(true);
     try {
       const result = await posReceiveDevice(companyId, branch, body, keyRef.current);
@@ -493,6 +559,12 @@ function ReceiveDeviceForm({
         // the next try, and the seller checks the shelf first instead of registering the same device twice.
         keyRef.current = newSaleKey();
         setFailure("Este equipo pudo quedar registrado en un intento anterior: escanéalo en «Escanear código» antes de registrarlo otra vez.");
+      } else if (err instanceof PosDeviceReceiveError && err.code === "pending_order_line") {
+        // A paid order waits for this device (it may have been sold after the picker was read): ask again whose it
+        // is. Nothing was written, so the same key serves the next try.
+        setWaiting(err.lines);
+        setTarget(null);
+        setFailure(err.message);
       } else if (err instanceof PosDeviceReceiveError && SERVER_FIELD[err.field]) {
         const problems = { [SERVER_FIELD[err.field]]: err.message };
         setErrors(problems);
@@ -519,7 +591,7 @@ function ReceiveDeviceForm({
           className={`${internalInputClass} ${error ? "border-danger-border" : ""}`}
           value={form[name]}
           onChange={set(name)}
-          onKeyDown={next}
+          onKeyDown={next(name)}
           aria-invalid={error ? true : undefined}
           aria-describedby={describedBy}
           {...props}
@@ -530,15 +602,76 @@ function ReceiveDeviceForm({
     );
   };
 
+  const failureBox = failure
+    ? <p className="rounded-lg border border-danger-border bg-danger-surface px-3 py-2 text-sm text-danger" role="alert">{failure}</p>
+    : null;
+
+  if (!target) {
+    const canDeliver = Boolean(config.can.receive_on_order);
+    return (
+      <section aria-labelledby={`${id}-whose`} className="mt-4 space-y-3 border-t border-bd-border pt-4">
+        <p id={`${id}-whose`} className="text-sm font-semibold text-foreground">¿Es el equipo de un pedido?</p>
+        <p className="text-xs text-muted">
+          {waiting.length === 1 ? "Un pedido pagado espera" : `${waiting.length} pedidos pagados esperan`} un equipo de esta
+          variante. Si es el suyo, se entrega a su pedido y no entra a esta venta.
+        </p>
+        {failureBox}
+        <ul className="space-y-2">
+          {waiting.map((line) => (
+            <li key={line.order_item} className="flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+              {canDeliver && line.quantity === 1 ? (
+                <button type="button" className={internalPrimaryButtonClass} onClick={() => choose({ kind: "order", line })}>
+                  Es del pedido {orderName(line)}
+                </button>
+              ) : (
+                <span className="text-sm text-foreground">Pedido {orderName(line)}</span>
+              )}
+              <span className="min-w-0 break-words text-xs text-muted">
+                {line.quantity > 1 ? `Lleva ${line.quantity} equipos: recíbela desde el pedido. ` : ""}
+                {line.here ? "Se despacha desde esta sucursal." : `Se despacha desde ${line.branch.name || "otra sucursal"}.`}
+              </span>
+            </li>
+          ))}
+        </ul>
+        {!canDeliver ? (
+          <p className="text-xs text-muted">
+            Entregarlo a su pedido requiere «Mover inventario» y «Administrar pedidos»: pide a un usuario autorizado que lo reciba.
+          </p>
+        ) : null}
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className={internalButtonClass} onClick={() => choose({ kind: "stock" })}>
+            Ingresar como stock
+          </button>
+          <button type="button" onClick={onCancel} className={internalButtonClass}>Cancelar</button>
+        </div>
+      </section>
+    );
+  }
+
   return (
     <form onSubmit={submit} noValidate className="mt-4 space-y-3 border-t border-bd-border pt-4" aria-label="Llegó el equipo">
-      <p className="text-sm font-semibold text-foreground">Llegó el equipo</p>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-sm font-semibold text-foreground">
+          {toOrder ? `Llegó el equipo del pedido ${orderName(toOrder)}` : "Llegó el equipo"}
+        </p>
+        {waiting.length ? (
+          <button type="button" onClick={() => choose(null)} disabled={busy}
+            className="text-xs font-semibold text-muted underline-offset-4 hover:text-foreground hover:underline">
+            Cambiar
+          </button>
+        ) : null}
+      </div>
+      {toOrder ? (
+        <p className="text-xs text-muted">
+          Se registra y queda vendido a ese pedido{toOrder.here ? "" : `, en ${toOrder.branch.name || "su sucursal"}`}; no entra a esta venta.
+        </p>
+      ) : null}
       <div className="grid gap-3 sm:grid-cols-2">
         {field("imei", "IMEI 1", { inputMode: "numeric", placeholder: "15 dígitos", className: `${internalInputClass} font-mono ${errors.imei ? "border-danger-border" : ""}` })}
         {field("imei2", "IMEI 2 (si lo tiene)", { inputMode: "numeric", placeholder: "15 dígitos", className: `${internalInputClass} font-mono ${errors.imei2 ? "border-danger-border" : ""}` },
           "Segundo IMEI del mismo equipo: no es una segunda SIM física.")}
         {field("serial", "Serie (si la tiene)", { className: `${internalInputClass} font-mono uppercase ${errors.serial ? "border-danger-border" : ""}` })}
-        {config.can.choose_supplier ? (
+        {!toOrder && config.can.choose_supplier ? (
           config.suppliers?.length ? (
             <div>
               <label className={LABEL} htmlFor={`${id}-supplier`}>Proveedor (opcional)</label>
@@ -574,7 +707,7 @@ function ReceiveDeviceForm({
         {config.can.view_costs
           ? field("cost", "Costo unitario (opcional)", { inputMode: "decimal", placeholder: "p. ej. 3100.00", className: `${internalInputClass} font-mono` })
           : null}
-        {priceEditable ? (
+        {toOrder ? null : priceEditable ? (
           field("price", "Precio de venta", { inputMode: "decimal", placeholder: "p. ej. 3899.00", className: `${internalInputClass} font-mono ${errors.price ? "border-danger-border" : ""}` },
             variant ? "Cambiarlo cambia el precio de esta variante." : "Precio de la variante nueva en tienda física. No se publica en la web.")
         ) : variant ? (
@@ -584,10 +717,30 @@ function ReceiveDeviceForm({
           </div>
         ) : null}
       </div>
-      {failure ? <p className="rounded-lg border border-danger-border bg-danger-surface px-3 py-2 text-sm text-danger" role="alert">{failure}</p> : null}
+      {needsReason ? (
+        <div>
+          <label className={LABEL} htmlFor={`${id}-reason`}>Motivo para ingresarlo como stock</label>
+          <input
+            id={`${id}-reason`}
+            name="reason"
+            autoComplete="off"
+            maxLength={REASON_MAX}
+            className={`${internalInputClass} ${errors.reason ? "border-danger-border" : ""}`}
+            value={reason}
+            onChange={(e) => { setReason(e.target.value); setErrors((c) => ({ ...c, reason: undefined })); }}
+            aria-invalid={errors.reason ? true : undefined}
+            aria-describedby={`${id}-reason-hint${errors.reason ? ` ${id}-reason-error` : ""}`}
+          />
+          <p id={`${id}-reason-hint`} className="mt-1 text-[11px] text-muted">
+            Un pedido pagado espera esta variante en esta sucursal. El motivo queda registrado.
+          </p>
+          {errors.reason ? <p id={`${id}-reason-error`} className="mt-1 text-xs text-danger">{errors.reason}</p> : null}
+        </div>
+      ) : null}
+      {failureBox}
       <div className="flex flex-wrap gap-2">
         <button type="submit" disabled={busy} className={internalPrimaryButtonClass}>
-          {busy ? "Registrando…" : "Registrar y agregar a la venta"}
+          {busy ? "Registrando…" : toOrder ? `Registrar y entregar al pedido #${toOrder.order_number}` : "Registrar y agregar a la venta"}
         </button>
         <button type="button" onClick={onCancel} disabled={busy} className={internalButtonClass}>Cancelar</button>
       </div>
