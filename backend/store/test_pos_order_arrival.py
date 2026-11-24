@@ -14,11 +14,13 @@ Lo que estas pruebas fijan:
 
 Los nombres de prueba son inventados (AGENTS §2). IMEI sintéticos con dígito de control válido.
 """
+import time
 from datetime import timedelta
 from decimal import Decimal as D
+from threading import Event, Thread
 
-from django.db import connection
-from django.test import TestCase
+from django.db import connection, transaction
+from django.test import TestCase, TransactionTestCase
 from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
@@ -309,9 +311,60 @@ class EntryMethodTest(ArrivalShop, TestCase):
         record = AdminAuditLog.objects.filter(action='pos_device_received').order_by('-pk').first()
         self.assertEqual(record.metadata['record']['method'], 'scanner')
 
+    def test_a_caller_who_may_not_receive_is_403_before_any_400_about_the_method(self):
+        res = self.post(self.seller, self.body(method='telepathy'), key='m-4')
+        self.assertEqual((res.status_code, res.json()['code']), (403, 'receive_forbidden'), res.content)
+
     def test_an_unknown_method_is_400_and_writes_nothing(self):
         before = self.counts()
         res = self.post(self.manager, self.body(method='telepathy'), key='m-3')
         self.assertEqual((res.status_code, res.json()['field']), (400, 'method'), res.content)
         self.assertEqual(self.counts(), before)
 
+
+# ---------------------------------------------------------------------------
+# The guard and a delivery of the same line at the same instant
+# ---------------------------------------------------------------------------
+
+class GuardRaceTest(ArrivalShop, TransactionTestCase):
+    """
+    The plain-stock guard LOCKS the waiting lines it reads (`select_for_update`): a delivery of that line that is
+    mid-way waits for it, or it waits for the delivery and reads the line as it is once that commits.
+    """
+
+    HOLD = 0.6
+
+    def setUp(self):
+        self.build('poa-carrera')
+
+    def test_plain_stock_waits_for_a_delivery_in_flight_and_reads_the_line_after_it(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('needs PostgreSQL row locks')
+        line = self.pending()
+        locked, done = Event(), Event()
+
+        def deliver():
+            # What `receive_line` does under the order's lock: the line is taken and marked received; the commit
+            # comes a moment later.
+            try:
+                with transaction.atomic():
+                    OrderItem.objects.select_for_update().get(pk=line.pk)
+                    OrderItem.objects.filter(pk=line.pk).update(supply_status=OrderItem.SUPPLY_RECEIVED)
+                    locked.set()
+                    time.sleep(self.HOLD)
+                done.set()
+            finally:
+                connection.close()
+
+        thread = Thread(target=deliver)
+        thread.start()
+        self.assertTrue(locked.wait(10))
+        started = time.monotonic()
+        res = self.post(self.manager, self.existing_body(), key='race-1')
+        waited = time.monotonic() - started
+        thread.join()
+        # Without the lock the guard read the line as still pending (the delivery had not committed) and refused.
+        self.assertTrue(done.is_set())
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertGreaterEqual(waited, self.HOLD * 0.8)
+        self.assert_invariant()

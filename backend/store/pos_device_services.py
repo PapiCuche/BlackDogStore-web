@@ -189,12 +189,15 @@ def customer_hint(name) -> str:
     return f'{first} {words[-1][0].upper()}.' if len(words) > 1 else first
 
 
-def waiting_lines(company, actor, product_ids, *, branch=None):
+def waiting_lines(company, actor, product_ids, *, branch=None, lock=False):
     """
     The on-order lines that wait for a device: of `company`, of an order the caller may see (`visible_orders`), PAID,
     committed to a supplier and neither received nor failed (`supply_status='pending'` — exactly what
     `supply_services.receive_line` accepts), of an order with no standing return (`unit_identification.returning`),
     for `product_ids`; in `branch` (the order's dispatch branch) when given. Oldest first. One query, as values.
+
+    `lock` (inside the caller's transaction): the LINE rows only (`of=('self',)`), FOR UPDATE — see
+    `_refuse_over_waiting`.
     """
     from .tenancy import visible_orders
 
@@ -206,6 +209,8 @@ def waiting_lines(company, actor, product_ids, *, branch=None):
              .filter(~Exists(returns)))
     if branch is not None:
         lines = lines.filter(order__fulfillment_branch=branch)
+    if lock:
+        lines = lines.select_for_update(of=('self',))
     return (lines.order_by('order__created_at', 'pk')
             .values('pk', 'order_id', 'product_id', 'quantity', 'order__customer_name', 'order__created_at',
                     'order__fulfillment_branch_id', 'order__fulfillment_branch__name')[:MAX_PENDING_LINES])
@@ -548,8 +553,18 @@ def _refuse_over_waiting(company, actor, product, branch, confirmed: str | None)
     """
     POS-ORDER-ARRIVAL-01. A paid order waits here for a device of `product`: plain stock is refused (409, with the
     lines) unless confirmed with a reason. Returns the waiting lines (empty when none) for the audit.
+
+    RACES (owner: block them). The waiting lines are read FOR UPDATE, inside the receipt's transaction, the LINE rows
+    only. A delivery of one of them (`supply_services.receive_line`: the order, then its line) that is mid-way makes
+    this wait, and PostgreSQL re-reads the line once it commits: received, it no longer waits and the device enters
+    as stock; still pending (the delivery failed), it is refused. A delivery that starts after this read waits for the
+    receipt's commit. Nothing here locks an order, so the two never wait on each other in a cycle.
+    The window left: a line that is not pending YET — an order being paid (`commit_order_lines`) at the very same
+    instant — is not among the rows read, so a device can enter as stock just before that payment commits it. The
+    till cannot know of an order that is not paid yet.
     """
-    lines = [waiting_line_payload(row, branch) for row in waiting_lines(company, actor, [product.pk], branch=branch)]
+    lines = [waiting_line_payload(row, branch)
+             for row in waiting_lines(company, actor, [product.pk], branch=branch, lock=True)]
     if lines and confirmed is None:
         first = lines[0]
         who = f' ({first["customer"]})' if first['customer'] else ''
@@ -571,9 +586,9 @@ def receive(*, company, branch, body, actor, request=None, authority: Authority)
         raise QuickSaleError('Datos no válidos.')
     if body.get('order_item') not in (None, ''):
         return _receive_order_line(company=company, body=body, actor=actor, request=request, authority=authority)
-    method = _method(body)
     if not authority.receive:
         raise QuickSaleError(RECEIVE_FORBIDDEN, code='receive_forbidden', status=403)
+    method = _method(body)
     if body.get('line') not in (None, '', LINE):
         raise QuickSaleError('En caja se reciben equipos nuevos. Un seminuevo se registra con su ficha en '
                              'Inventario › Registrar artículo.', code='used_line', field='line')
