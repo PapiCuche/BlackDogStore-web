@@ -10,7 +10,9 @@ import { test, expect, type Page } from "@playwright/test";
  *   · se busca el modelo y se elige capacidad → color → SIM → región; el par imposible no se puede elegir;
  *   · «Llegó el equipo» registra un equipo de una combinación que aún no es variante (IMEI 1, IMEI 2, precio)
  *     sin abrir el panel; el equipo entra a la cesta identificado y se cobra;
- *   · el pedido guarda ESE equipo, identificado a mano por quien vendió.
+ *   · el pedido guarda ESE equipo, identificado a mano por quien vendió;
+ *   · POS-ORDER-ARRIVAL-01: con un pedido pagado esperando la variante existente, «Llegó el equipo» ofrece primero
+ *     «Es del pedido #N»; el equipo se entrega a ese pedido (línea recibida) y no entra a la venta de la caja.
  *
  * Con `E2E_SCREENSHOTS=<carpeta>` deja capturas a 1280 y 375 (fuera del repositorio).
  */
@@ -126,6 +128,66 @@ print('E2E_COUNT ' + json.dumps({
 }
 
 const SERIE = `F2Q${RUN.toUpperCase().slice(-7)}`;
+const DEL_PEDIDO = imei(31);
+
+/**
+ * POS-ORDER-ARRIVAL-01 — `pedir`: una venta de caja pagada con la variante existente BAJO PEDIDO (oferta vigente),
+ * cuya línea espera el equipo del proveedor; devuelve el pedido y su línea. `estadoLinea`: cómo está esa línea.
+ */
+function pedir(): { order: number; item: number } {
+  const codigo = `
+import json, os
+from datetime import timedelta
+from decimal import Decimal
+from django.contrib.auth import get_user_model
+from django.utils import timezone
+from store import pos_services, supply_services
+from store.models import Company, Product
+
+data = json.loads(os.environ['E2E_SEED'])
+actor = get_user_model().objects.get(username='dev_admin')
+company = Company.objects.get(slug='black-dog-store')
+branch = company.default_inventory_branch
+product = Product.objects.get(company=company, slug=data['slug'])
+Product.objects.filter(pk=product.pk).update(sale_mode=Product.SALE_MODE_STOCK_OR_ORDER)
+supplier = supply_services.create_supplier(company=company, name=data['supplier'] + ' (pedido)', actor=actor)
+today = timezone.localdate()
+supply_services.create_offer(company=company, supplier_id=supplier.pk, product_id=product.pk, agreed_cost='2500.00',
+                             commercial_price='3399.00', confirmed_quantity=3, valid_from=today,
+                             valid_until=today + timedelta(days=5), lead_time_days=2, may_view_costs=True)
+order, _ = pos_services.create_pos_sale(
+    actor=actor, company=company, branch=branch, terms_confirmed=True, idempotency_key='e2e-arrival-' + data['slug'],
+    amount_received=Decimal('99999'), may_order_over_stock=True,
+    items=[{'product': product.pk, 'quantity': 1, 'on_order': True, 'supply_reason': 'Prueba de navegador'}])
+line = order.items.get(product=product)
+print('E2E_ORDER ' + json.dumps({'order': order.pk, 'item': line.pk, 'status': line.supply_status}))
+`;
+  const out = execFileSync("python3", ["manage.py", "shell", "-c", codigo], {
+    cwd: BACKEND_DIR, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, E2E_SEED: JSON.stringify({ slug: `equipo-rapido-${RUN}`, supplier: PROVEEDOR }) },
+  }).toString();
+  const line = out.split("\n").find((row) => row.startsWith("E2E_ORDER "));
+  if (!line) throw new Error(`el pedido no se sembró: ${out.slice(-400)}`);
+  const seeded = JSON.parse(line.slice("E2E_ORDER ".length));
+  if (seeded.status !== "pending") throw new Error(`la línea bajo pedido no quedó comprometida: ${seeded.status}`);
+  return seeded;
+}
+
+function estadoLinea(item: number): { status: string; units: string[] } {
+  const codigo = `
+import json, os
+from store.models import OrderItem, OrderUnit
+line = OrderItem.objects.get(pk=int(os.environ['E2E_ITEM']))
+units = list(OrderUnit.objects.filter(order=line.order, product_id=line.product_id).values_list('unit__imei', flat=True))
+print('E2E_LINE ' + json.dumps({'status': line.supply_status, 'units': units}))
+`;
+  const out = execFileSync("python3", ["manage.py", "shell", "-c", codigo], {
+    cwd: BACKEND_DIR, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, E2E_ITEM: String(item) },
+  }).toString();
+  const line = out.split("\n").find((row) => row.startsWith("E2E_LINE "));
+  if (!line) throw new Error(`la línea no se leyó: ${out.slice(-400)}`);
+  return JSON.parse(line.slice("E2E_LINE ".length));
+}
 
 async function signIn(page: Page) {
   await page.goto("/auth", { waitUntil: "networkidle" });
@@ -253,6 +315,29 @@ test.describe("venta rápida de equipos en caja", () => {
     expect(despues.available).toBe(antes.available);
     expect(despues.shelf).toBe(antes.shelf);
     expect(despues.serial).toBe(SERIE);
+  });
+
+  test("POS-ORDER-ARRIVAL-01: el equipo que espera un pedido pagado se entrega a ese pedido", async ({ page }) => {
+    await page.setViewportSize({ width: 1280, height: 900 });
+    const { order, item } = pedir();
+    await signIn(page);
+    await abrirCaja(page);
+    await abrirModelo(page);
+    await elegir(page, PASO.capacity, "128 GB");
+    await elegir(page, PASO.color, "Grafito");
+    await elegir(page, PASO.sim, "eSIM");
+    await elegir(page, PASO.region, "Internacional");
+    await page.getByRole("button", { name: "Llegó el equipo" }).click();
+    // Primero, de quién es: el pedido que lo espera, o stock (que pediría un motivo).
+    await expect(page.getByRole("button", { name: "Ingresar como stock" })).toBeVisible();
+    await page.getByRole("button", { name: new RegExp(`Es del pedido #${order}\\b`) }).click();
+    await page.getByLabel("IMEI 1").fill(DEL_PEDIDO);
+    await captura(page, "1280-llego-del-pedido");
+    await page.getByRole("button", { name: `Registrar y entregar al pedido #${order}` }).click();
+    await expect(page.getByText(new RegExp(`entregado al pedido #${order}`))).toBeVisible({ timeout: 30_000 });
+    // No entra a la venta de la caja: el carrito no lo nombra.
+    await expect(page.getByText(new RegExp(`IMEI ${DEL_PEDIDO}`))).toHaveCount(0);
+    expect(estadoLinea(item)).toEqual({ status: "received", units: [DEL_PEDIDO] });
   });
 
   test("en un teléfono el selector y el formulario caben sin desborde", async ({ page }) => {

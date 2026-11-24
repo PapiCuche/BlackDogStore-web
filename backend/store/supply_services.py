@@ -848,7 +848,7 @@ def _received_units(order, line) -> list[dict]:
 
 
 @transaction.atomic
-def receive_line(line, *, actor, units=None, unit_cost=None, company=None, request=None) -> OrderItem:
+def receive_line(line, *, actor, units=None, unit_cost=None, company=None, request=None, method=None) -> OrderItem:
     """
     «Recibir del proveedor»: the goods of a committed line arrive, and leave
     with the order in the same transaction — an entry and the sale exit of
@@ -872,6 +872,10 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
         otherwise the source is 'agreed' and the real cost stays pending
         («si falta costo real → pendiente») until `record_real_cost`. The
         estimated margin keeps the agreed snapshot.
+
+    `method` (POS-ORDER-ARRIVAL-01): how the devices were read — the lector or
+    by hand (`unit_identification.METHODS`) — written on their `OrderUnit`. The
+    order screen does not say it: by hand.
 
     ONCE. A line already received answers `already_received` (the view: 409,
     with the devices it named), under the order's lock: two receptions at the
@@ -958,7 +962,7 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
                              else sum(costs, Decimal('0')) / len(costs))
             for unit in created:
                 if not OrderUnit.objects.filter(order=order, unit=unit).exists():
-                    unit_identification.record(order=order, unit=unit, method=unit_identification.MANUAL,
+                    unit_identification.record(order=order, unit=unit, method=method or unit_identification.MANUAL,
                                                actor=actor, request=request)
         else:
             if units:

@@ -12,6 +12,7 @@
 import { fetchWithAuth } from "../../lib/auth";
 import { API_BASE } from "../../lib/api";
 import type { ReceiptCoverage } from "../../lib/admin";
+import type { EntryMethod } from "./unit-entry";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -3618,7 +3619,28 @@ export type PosConfigVariant = {
   reference_cost?: string | null;
 };
 
-export type PosConfigCombination = { key: string; option_ids: number[]; variant: PosConfigVariant | null };
+/**
+ * POS-ORDER-ARRIVAL-01 — una línea pagada que espera un equipo del proveedor (comprometida, sin recibir ni cancelar).
+ * `customer` va enmascarado («Ana Q.»); `branch` es la sucursal que despacha el pedido y `here` si es la de la caja.
+ */
+export type PosPendingOrderLine = {
+  order_item: number;
+  order_id: number;
+  order_number: number;
+  quantity: number;
+  customer: string;
+  created_at: string | null;
+  branch: { id: number | null; name: string };
+  here: boolean;
+};
+
+export type PosConfigCombination = {
+  key: string;
+  option_ids: number[];
+  variant: PosConfigVariant | null;
+  /** Sólo para quien puede recibir en caja; vacía para los demás. */
+  pending_order_lines?: PosPendingOrderLine[];
+};
 
 export type PosModelConfigurations = {
   model: { id: number; name: string };
@@ -3635,47 +3657,70 @@ export type PosModelConfigurations = {
   can: {
     receive: boolean; create_variant: boolean; set_price: boolean; view_costs: boolean; choose_supplier: boolean;
     open_suppliers: boolean;
+    /** «Mover inventario» + «Administrar pedidos»: entregar el equipo que llegó a su pedido (POS-ORDER-ARRIVAL-01). */
+    receive_on_order?: boolean;
   };
   excluded_pairs?: number[][];
   /** A quien puede recibir, siempre (puede venir vacía): los proveedores activos de la empresa. */
   suppliers?: { id: number; name: string }[];
 };
 
+/**
+ * Como stock: `model` + `option_ids`. Para su pedido (POS-ORDER-ARRIVAL-01): `order_item`. Stock mientras un pedido
+ * pagado lo espera en esta sucursal: `confirm_stock` + `reason`. `method`: cómo se leyó el IMEI (lector o a mano).
+ */
 export type PosDeviceReceiveInput = {
-  model: number;
-  option_ids: number[];
+  model?: number;
+  option_ids?: number[];
+  order_item?: number;
   imei?: string;
   imei2?: string;
   serial_number?: string;
   supplier?: number | null;
   cost?: string;
   price?: string;
+  confirm_stock?: boolean;
+  reason?: string;
+  method?: EntryMethod;
 };
 
 export type PosDeviceReceived = {
   unit: PosUnit;
   product: PosProduct;
-  method: "manual";
+  method: EntryMethod;
   replayed: boolean;
+  /** `order`: el equipo quedó vendido a su pedido, no entra a esta venta. */
+  mode?: "stock" | "order";
+  order?: { id: number; item_id: number } | null;
+  /** La sucursal donde el equipo ENTRÓ (la del pedido, si fue para un pedido). */
+  branch?: { id: number; name: string };
   created_variant: boolean;
   price_changed: boolean;
   warnings: string[];
   supplier?: { id: number; name: string } | null;
 };
 
-/** El servidor no recibió el equipo: `field` dice qué campo; `unit`, qué equipo ya tiene ese IMEI. */
+/**
+ * El servidor no recibió el equipo: `field` dice qué campo; `unit`, qué equipo ya tiene ese IMEI; `lines`, los pedidos
+ * pagados que lo esperan (`pending_order_line`).
+ */
 export class PosDeviceReceiveError extends Error {
   code: string;
   field: string;
   status: number;
   unit: { id: number; label_code: string; product_name: string; status_label: string; branch_name: string } | null;
-  constructor(message: string, code: string, field: string, status: number, unit: PosDeviceReceiveError["unit"]) {
+  lines: PosPendingOrderLine[];
+  constructor(
+    message: string, code: string, field: string, status: number, unit: PosDeviceReceiveError["unit"],
+    lines: PosPendingOrderLine[] = [],
+  ) {
     super(message);
     this.name = "PosDeviceReceiveError";
     this.code = code;
     this.field = field;
     this.status = status;
     this.unit = unit;
+    this.lines = lines;
   }
 }
 
@@ -3715,7 +3760,7 @@ export async function posReceiveDevice(
   });
   if (res.ok) return res.json();
   const payload = (await res.json().catch(() => null)) as
-    | { detail?: string; code?: string; field?: string; unit?: PosDeviceReceiveError["unit"] }
+    | { detail?: string; code?: string; field?: string; unit?: PosDeviceReceiveError["unit"]; lines?: PosPendingOrderLine[] }
     | null;
   throw new PosDeviceReceiveError(
     payload?.detail ? String(payload.detail) : "No se pudo registrar el equipo.",
@@ -3723,5 +3768,6 @@ export async function posReceiveDevice(
     payload?.field ?? "",
     res.status,
     payload?.unit ?? null,
+    Array.isArray(payload?.lines) ? payload.lines : [],
   );
 }

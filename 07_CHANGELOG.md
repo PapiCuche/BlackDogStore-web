@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-23 — POS-ORDER-ARRIVAL-01: el equipo de un pedido pagado, en caja
+
+**Fixed**
+- «Llegó el equipo» ya no deja entrar como stock libre el equipo que espera un pedido pagado de esa sucursal: 409 `pending_order_line`, salvo confirmación con motivo, que queda auditada.
+- La respuesta de una línea bajo pedido recibida en caja nombra la sucursal donde entró el equipo, no la de la caja.
+- El equipo registrado en caja guarda si su IMEI se leyó con el lector o a mano.
+
+**Added**
+- `pending_order_lines` por combinación y `can.receive_on_order` en las configuraciones de la caja.
+- En la caja, «Es del pedido #N (cliente)» entrega el equipo a su pedido.
+
 ## 2026-11-23 — Coordinación de producción: un solo ejecutor
 
 **Added**
