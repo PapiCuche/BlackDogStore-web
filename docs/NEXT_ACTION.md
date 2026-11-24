@@ -69,7 +69,7 @@ Runbooks: `release-r131/RUNBOOK-bf6a330-prod02.md`, `release-r13-ops/RUNBOOK-r13
 
 ### Decisiones pendientes del propietario
 - ¿Columna «Precio de venta» en la plantilla de nuevos? Hoy un equipo nuevo se vende al precio de su variante.
-- Un seminuevo sin precio impide habilitar la venta de su variante y así bloquea a sus hermanos ya inspeccionados.
+- ~~Un seminuevo sin precio impide habilitar la venta de su variante~~: corregido en `fix/used-unit-own-gate` (USED-UNIT-OWN-GATE-01, PR abierto, sin fusionar ni desplegar).
 - Exportación con IMEI enmascarado y en el formato de las plantillas nuevas (hoy no existe).
 
 ## VARIANT-SAFE-01 — rama `feat/variant-safe-01` (migración `0188`, sobre `0187` ya en master); PR abierto, sin fusionar ni desplegar

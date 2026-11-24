@@ -3,6 +3,26 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — USED-UNIT-OWN-GATE-01: un seminuevo sin precio se bloquea sólo a sí mismo (rama `fix/used-unit-own-gate`, PR abierto, sin fusionar ni desplegar)
+
+Defecto del recorrido de UX: «Habilitar para la venta» (A1b-2) exigía precio en **todos** los equipos disponibles de
+una variante seminueva, así que un equipo sin precio impedía vender a sus hermanos ya inspeccionados y con precio.
+Causa: `device_catalog._draft_problems` usaba `all(has_usable_price(...))`. Sin migraciones.
+
+- **Habilitar:** basta con **un** equipo disponible con precio (`any`); sin ninguno sigue `no_price`, con un texto
+  propio de seminuevo. El precio del producto sigue sin contar.
+- **Caja:** `available` de un producto cobrado por equipo cuenta sólo los equipos de esa sucursal con precio e
+  inspección aprobada (`used_unit_services.till_sellable_units`); el equipo sin precio se rechaza por su nombre.
+- **Carrito y pago:** quitar el precio de un equipo apartado libera ese apartado al instante (con Kardex y
+  auditoría, `stock_unit_services.update_unit`); con el pedido ya creado, el pago no se abre (`unit_withdrawn`, 409) y,
+  si el dinero llega igual, el equipo no se vende y la línea queda marcada (`payment_refusal`).
+- **Apartado por cantidad:** el pago que aparta los más antiguos (seminuevo sin modelo) toma sólo equipos con precio e
+  inspección aprobada, y el checkout cuenta sólo esos.
+- **Recepción:** la línea con al menos un equipo con precio ya no queda «pendiente»; el aviso dice que los demás no
+  esperan.
+- **Pruebas:** `store.test_used_unit_own_gate` (17, con carreras reales en `SiblingRaceTest`, añadida a `flushing`) y
+  `test_receipt_commercial` actualizado.
+
 ## 2026-11-24 — POST-R13: sistema listo para recibir el inventario real (en `master` `bf6a3307`, sin desplegar)
 
 #420–#423 fusionados. Simulación del stock real 13/13 en CI, en local y sobre una copia aislada de producción. Candidata R13.1 `bf6a3307` (sólo código) ensayada; espera «GO despliegue bf6a330 prod-02». Kits de cron, normalización, muestras y producto 12 reensayados sobre R13. Detalle y GO en `docs/NEXT_ACTION.md`.

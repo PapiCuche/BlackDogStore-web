@@ -76,7 +76,9 @@ registra uno por uno**. El sistema no deja recibir una variante seminueva por ca
    - «Detalles para el comprador (opcional)»: lo que verá el cliente;
    - «Observaciones internas (opcional)»: lo que sólo ve el personal.
 4. «Precio de venta del equipo (S/, opcional)» sólo aparece si tienes «Administrar productos». Un seminuevo sin precio
-   queda «pendiente»: no se vende en caja ni en la web hasta que alguien le ponga precio.
+   queda «pendiente»: no se vende en caja ni en la web hasta que alguien le ponga precio. **Sólo ese equipo espera**:
+   los demás equipos de la misma variante que tengan precio e inspección aprobada se siguen vendiendo. Para habilitar
+   la venta de una variante seminueva nueva basta con que **un** equipo disponible tenga precio.
 5. Confirma la recepción. Al final verás «Completar … precios pendientes» si faltan precios. También se
    completan en «Equipos seminuevos».
 

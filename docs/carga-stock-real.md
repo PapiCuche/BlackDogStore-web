@@ -292,7 +292,21 @@ cada equipo:
 4. **Publicar** (permiso `products.manage`): sólo con precio, inspección aprobada y al menos una foto. Se puede
    despublicar en cualquier momento.
 
-En caja basta la inspección aprobada; en la web hacen falta las cuatro cosas.
+En caja hacen falta el precio y la inspección aprobada; en la web, las cuatro cosas.
+
+**Cada equipo responde por sí mismo** (USED-UNIT-OWN-GATE-01). Un seminuevo sin precio, sin inspección, sin foto o
+sin publicar no se vende **él**, y nada más: los otros equipos de la misma variante que cumplen todo se venden en
+caja, se ofrecen en la web y se pueden apartar en un carrito. En concreto:
+
+- «Habilitar para la venta» una variante seminueva creada desde la paleta pide **al menos un** equipo disponible con
+  precio, no un precio en cada equipo.
+- La caja cuenta como disponibles sólo los equipos con precio e inspección aprobada de esa sucursal, y rechaza por su
+  nombre el equipo sin precio.
+- Si se quita el precio de un equipo que un comprador tiene apartado, el apartado vuelve al estante en el acto (con
+  su línea de Kardex) y el pago no se abre; si el dinero llegara igual, ese equipo no se vende y la línea queda
+  marcada para revisión. Los apartados de sus hermanos no cambian.
+- Un pago web que aparta equipos por cantidad (un seminuevo sin modelo) toma sólo equipos con precio e inspección
+  aprobada, y el checkout cuenta sólo esos.
 
 ## 11. En producción (prod-02)
 
