@@ -374,13 +374,24 @@ export function tradeInDraftOf(block: QuoteTradeIn | null): QuoteTradeInDraft | 
 }
 
 const IDENTIFIER_LIKE = /\d{8,}/;
+/** A date as people write it (2024-03-15, 15/03/2024, 15-03-24): allowed, and set aside before counting. */
+const DATE_LIKE = new RegExp(
+  "(?<!\\d)(?:(?:19|20)\\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])"
+  + "|(?:0?[1-9]|[12]\\d|3[01])[-/.](?:0?[1-9]|1[0-2])[-/.](?:(?:19|20)\\d{2}|\\d{2}))(?!\\d)", "g");
+/** Up to three characters that are neither letters nor digits between two digits: «3567 / 8901», «12,345,678». */
+const DIGIT_SEPARATORS = /(?<=\d)[^\p{L}\p{N}]{1,3}(?=\d)/gu;
+
+/** Eight digits or more once dates are set aside and separators collapsed (the server's same rule). */
+export function looksLikeIdentifier(text: string): boolean {
+  return IDENTIFIER_LIKE.test(text.replace(DATE_LIKE, " fecha ").replace(DIGIT_SEPARATORS, ""));
+}
 
 /** Why the block cannot be saved yet ('' when it can). The server checks it all again. */
 export function tradeInProblem(block: QuoteTradeInDraft): string {
   if (!block.device_description.trim()) return "Describe el equipo ofrecido en parte de pago.";
   if (!block.condition) return "Indica el estado declarado del equipo ofrecido.";
   const texts = [block.device_description, block.capacity, block.color, block.accessories, block.valuation_notes];
-  if (texts.some((text) => IDENTIFIER_LIKE.test(text.replace(/(?<=\d)[\s.-]+(?=\d)/g, "")))) {
+  if (texts.some(looksLikeIdentifier)) {
     return "No escribas el IMEI completo ni números de documento: del IMEI sólo los últimos 4 dígitos.";
   }
   if (block.imei_last4.trim() && !/^\d{4}$/.test(block.imei_last4.trim())) {

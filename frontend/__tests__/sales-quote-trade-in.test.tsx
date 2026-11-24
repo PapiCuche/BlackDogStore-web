@@ -99,6 +99,16 @@ describe('API helpers', () => {
     expect(api.tradeInProblem({ ...base, imei_last4: '123' })).toMatch(/4 dígitos/);
     expect(api.tradeInProblem({ ...base, accessories: 'IMEI 3567 8901 2345 678' })).toMatch(/IMEI completo/);
     expect(api.tradeInProblem({ ...base, valuation_notes: 'DNI 45678912' })).toMatch(/IMEI completo/);
+    for (const text of ['1234/5678/9012/345', '1234_5678_9012_345', '1234,5678,9012,345', '1234\u20135678\u20139012\u2013345',
+      '3567\u00a08901\u00a02345\u00a0678', 'DNI 12,345,678', 'DNI 12.345.678', 'IMEI: 3567 / 8901 / 2345 / 678']) {
+      expect(api.looksLikeIdentifier(text)).toBe(true);
+      expect(api.tradeInProblem({ ...base, accessories: text })).toMatch(/IMEI completo/);
+    }
+    for (const text of ['Comprado el 2024-03-15', 'Comprado el 15/03/2024', 'Factura del 15-03-2024', 'Desde 1/3/24',
+      'Modelo 2023, 128 GB, 2 cables', 'Revisado 05/11/2026 por la tienda']) {
+      expect(api.looksLikeIdentifier(text)).toBe(false);
+      expect(api.tradeInProblem({ ...base, valuation_notes: text })).toBe('');
+    }
     const draft = { ...api.emptyDraft(CONTEXT, '2026-11-24'), lines: [LINE], trade_in: { ...base, condition: '' } };
     expect(api.draftProblem(draft, false)).toMatch(/estado/);
   });

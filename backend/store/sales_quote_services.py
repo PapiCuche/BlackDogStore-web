@@ -396,9 +396,19 @@ _TRADE_IN_TEXTS = (('device_description', 200, 'La descripción del equipo'), ('
                    ('color', 40, 'El color'), ('accessories', 200, 'Los accesorios'),
                    ('valuation_notes', 1000, 'Las notas de la valorización'))
 _MAX_MONEY = Decimal('9999999999.99')
-#: Eight digits or more in a row (spaces, dots or dashes between them included): an IMEI, a serial or a DNI.
-_DIGIT_SEPARATORS = re.compile(r'(?<=\d)[\s.\-]+(?=\d)')
+#: A date as people write it (2024-03-15, 15/03/2024, 15-03-24, 1.3.2024): allowed, and taken out before counting.
+_DATE_LIKE = re.compile(
+    r'(?<!\d)(?:(?:19|20)\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\d|3[01])'
+    r'|(?:0?[1-9]|[12]\d|3[01])[-/.](?:0?[1-9]|1[0-2])[-/.](?:(?:19|20)\d{2}|\d{2}))(?!\d)')
+#: Up to three characters that are neither letters nor digits between two digits (spaces of any kind, dots, commas,
+#: slashes, underscores, any dash): «3567 / 8901», «12,345,678» and «1234–5678» are one number.
+_DIGIT_SEPARATORS = re.compile(r'(?<=\d)[\W_]{1,3}(?=\d)')
 _IDENTIFIER_LIKE = re.compile(r'\d{8,}')
+
+
+def looks_like_identifier(text: str) -> bool:
+    """Eight digits or more once dates are set aside and separators collapsed: an IMEI, a serial or a DNI."""
+    return bool(_IDENTIFIER_LIKE.search(_DIGIT_SEPARATORS.sub('', _DATE_LIKE.sub(' fecha ', text or ''))))
 TRADE_IN_NO_IDENTIFIERS = ('No escribas el IMEI completo ni números de documento: del IMEI sólo se anotan los '
                            'últimos 4 dígitos.')
 TRADE_IN_EXCEEDS = 'trade_in_exceeds_total'
@@ -432,7 +442,7 @@ def _trade_in_spec(raw) -> dict | None:
     spec = {}
     for name, limit, label in _TRADE_IN_TEXTS:
         text = _text(raw.get(name), limit, label)
-        if _IDENTIFIER_LIKE.search(_DIGIT_SEPARATORS.sub('', text)):
+        if looks_like_identifier(text):
             raise QuoteError(TRADE_IN_NO_IDENTIFIERS, code='trade_in_identifier')
         spec[name] = text
     if not spec['device_description']:
@@ -482,8 +492,9 @@ def _check_trade_in_total(valuation, total) -> None:
     """D4 pending: the valuation never exceeds what is quoted (no negative balance, no change in kind)."""
     if valuation is not None and valuation > total:
         raise QuoteError(
-            f'La valorización del equipo ofrecido ({valuation:.2f}) no puede superar el total cotizado '
-            f'({total:.2f}): no hay saldo a favor del cliente mientras el propietario no decida otra cosa (D4).',
+            f'La valorización del equipo ofrecido ({valuation:.2f}) supera el total cotizado ({total:.2f}): '
+            'ajusta la valorización o quita el bloque de parte de pago. No hay saldo a favor del cliente mientras '
+            'el propietario no decida otra cosa (D4).',
             code=TRADE_IN_EXCEEDS)
 
 
@@ -651,8 +662,13 @@ def _locked(quote) -> SalesQuote:
 # Compose
 # ---------------------------------------------------------------------------
 
-def create_quote(*, actor, company, data, request=None) -> SalesQuote:
-    """A new draft, numbered from the company's `sales_quote` series. Nothing but the quote is written."""
+def create_quote(*, actor, company, data, request=None, trade_in_source=None) -> SalesQuote:
+    """
+    A new draft, numbered from the company's `sales_quote` series. Nothing but the quote is written.
+
+    `trade_in_source`: the part-exchange block a DUPLICATE copies. Copied unchanged, it keeps who valued the device
+    and when (the copier did not value it, and no new valuation is logged).
+    """
     from . import sequences
 
     _require(actor, company, CAP_MANAGE, 'No tienes permiso para elaborar cotizaciones.')
@@ -670,7 +686,7 @@ def create_quote(*, actor, company, data, request=None) -> SalesQuote:
         _audit(actor=actor, company=company, action='sales_quote_created', quote=quote, request=request,
                total=str(quote.total), lines=len(composed['priced']['lines']),
                discount_source=quote.discount_source)
-        _write_trade_in(actor=actor, company=company, quote=quote, composed=composed, before=None,
+        _write_trade_in(actor=actor, company=company, quote=quote, composed=composed, before=trade_in_source,
                         request=request)
     return quote
 
@@ -785,7 +801,8 @@ def duplicate_quote(*, actor, company, quote, request=None) -> SalesQuote:
     body['seller'] = None          # whoever copies it offers it
     # ONE transaction: the copy, its number, its origin and its audit happen together or not at all.
     with transaction.atomic():
-        copy = create_quote(actor=actor, company=company, data=body, request=None)
+        copy = create_quote(actor=actor, company=company, data=body, request=None,
+                            trade_in_source=trade_in_of(quote))
         SalesQuote.objects.filter(pk=copy.pk).update(origin=SalesQuote.ORIGIN_DUPLICATE, source_quote=quote)
         copy.refresh_from_db()
         _audit(actor=actor, company=company, action='sales_quote_duplicated', quote=copy, request=request,

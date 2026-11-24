@@ -129,6 +129,25 @@ class TradeInValuationTest(TradeInBase):
         # Blank is allowed: the device may be described without it.
         self.assertEqual(self.with_trade_in(imei_last4='')['trade_in']['imei_last4'], '')
 
+    def test_an_identifier_split_by_any_separator_is_still_refused(self):
+        for text in ('1234/5678/9012/345', '1234_5678_9012_345', '1234,5678,9012,345', '1234\u20135678\u20139012\u2013345',
+                     '3567 8901 2345 678', '3567\u00a08901\u00a02345\u00a0678', '35-67-89-01-23-45-67-8',
+                     'DNI 12,345,678', 'DNI 12.345.678', 'IMEI: 3567 / 8901 / 2345 / 678'):
+            for field in ('device_description', 'accessories', 'valuation_notes'):
+                with self.subTest(text=text, field=field):
+                    res = self.client.post(URL, self.body(**self.phone_body(trade_in=self.offered(**{field: text}))),
+                                           format='json')
+                    self.assertEqual((res.status_code, res.json().get('code')), (400, 'trade_in_identifier'),
+                                     res.content)
+        self.assertFalse(SalesQuoteTradeIn.objects.exists())
+
+    def test_dates_and_ordinary_text_are_allowed(self):
+        for text in ('Comprado el 2024-03-15', 'Comprado el 15/03/2024', 'Factura del 15-03-2024', 'Desde 1/3/24',
+                     'Modelo 2023, 128 GB, 2 cables', 'Revisado 05/11/2026 por la tienda'):
+            with self.subTest(text=text):
+                quote = self.with_trade_in(valuation_notes=text)
+                self.assertEqual(quote['trade_in']['valuation_notes'], text)
+
     def test_the_database_refuses_more_than_four_digits(self):
         quote = self.with_trade_in()
         for value in ('12ab', '123', '12345'):
@@ -223,6 +242,30 @@ class TradeInRevisionTest(TradeInBase):
         self.assertEqual((copy['trade_in']['estimated_valuation'], copy['trade_in']['device_description']),
                          ('1200.00', 'Equipo usado modelo anterior'))
         self.assertEqual(SalesQuoteTradeIn.objects.count(), 2)
+
+    def test_a_duplicate_keeps_who_valued_the_device_and_logs_no_new_valuation(self):
+        quote = self.with_trade_in()                       # valued by the counter (ip1_caja)
+        source = SalesQuoteTradeIn.objects.get(quote_id=quote['id'])
+        copy = self.act(quote['id'], 'duplicate', expect=201)        # duplicated by the supervisor
+        block = SalesQuoteTradeIn.objects.get(quote_id=copy['id'])
+        self.assertEqual((block.valued_by_id, block.valued_at), (source.valued_by_id, source.valued_at))
+        self.assertEqual(copy['trade_in']['valued_by'], 'ip1_caja')
+        self.assertEqual(AdminAuditLog.objects.filter(action='sales_quote_trade_in_valued').count(), 1)
+
+    def test_a_reprice_under_the_valuation_says_to_adjust_or_remove_the_block(self):
+        from store.models import Product
+
+        quote = self.with_trade_in(estimated_valuation='4500.00')
+        self.act(quote['id'], 'approve')
+        Product.objects.filter(pk=self.phone.pk).update(price='4000.00')
+        for res in (self.jefe.patch(f"{URL}{quote['id']}/", {'conditions': 'Revisión'}, format='json'),
+                    self.jefe.post(f"{URL}{quote['id']}/duplicate/", {}, format='json')):
+            with self.subTest(path=res.wsgi_request.path):
+                self.assertEqual((res.status_code, res.json()['code']), (400, 'trade_in_exceeds_total'), res.content)
+                detail = res.json()['detail'].lower()
+                self.assertIn('ajusta la valorización', detail)
+                self.assertIn('quita el bloque de parte de pago', detail)
+        self.assertEqual(SalesQuote.objects.count(), 1)
 
     def test_approving_rechecks_the_valuation_against_the_total(self):
         quote = self.with_trade_in(estimated_valuation='4500.00')
