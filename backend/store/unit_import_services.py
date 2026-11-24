@@ -293,7 +293,8 @@ NOT_IN_STOCK_TEMPLATES = {
 _TEMPLATE_SHEETS = {normalize_header(spec['sheet']): line for line, spec in STOCK_TEMPLATES.items()}
 
 #: A Luhn-valid synthetic IMEI for the example row (never a real device's). The row is skipped by its «Serie».
-_EXAMPLE_IMEI = '352819069999990'
+#: STOCK-REAL-READY: 3500000… so nobody mistakes it for a real device's (the old one began with a plausible TAC).
+_EXAMPLE_IMEI = '350000000000006'
 
 
 def clean_line_option(value) -> str:
