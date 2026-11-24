@@ -291,6 +291,17 @@ def opening_problem(branch, product) -> str:
     return ''
 
 
+def _lock_products(products) -> None:
+    """
+    INV-LOAD-01 re-review — hold the products an opening receipt will switch to devices, in pk order, BEFORE their
+    shelves: DEC-CATALOG-PALETTE-LOCK-01 is Product → shelf (registration, the POS, a purchase receipt), and
+    `set_serialized` would otherwise take the product after the shelf.
+    """
+    ids = sorted({product.pk for product in products})
+    if ids:
+        list(Product.objects.select_for_update().filter(pk__in=ids).order_by('pk').values_list('pk', flat=True))
+
+
 def lock_shelves(shelves) -> None:
     """
     INV-LOAD-01 review — hold every `(branch, product)` shelf an OPENING is about to write, creating the rows that do not
@@ -714,7 +725,11 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
     Returns `(record, trail)` — the record is ids and counts, never an identifier or an amount.
     """
     if normalised.get('entry_kind') == ENTRY_OPENING:
-        # INV-LOAD-01 review — the shelves first, so the opening check below is decided under their locks.
+        # INV-LOAD-01 review — the shelves first, so the opening check below is decided under their locks. Before
+        # them, the products this receipt switches to devices (Product → shelf, the order of every other door).
+        _lock_products(product for product in resolved.products.values() if not product.is_serialized
+                       and any(line['kind'] == KIND_UNITS and line['product'] == product.pk
+                               for line in normalised['lines']))
         lock_shelves((resolved.branch, product) for product in resolved.products.values())
     verdicts = check(company, resolved, normalised)
     if not all(v['status'] == 'ok' for v in verdicts):
@@ -954,9 +969,9 @@ def previous(company, actor, key):
 
 def is_busy(error) -> bool:
     """Whether a database error is a deadlock or a serialization failure: the other receipt won, retry."""
-    cause = getattr(error, '__cause__', None)
-    code = getattr(cause, 'pgcode', None) or getattr(cause, 'sqlstate', None)
-    return code in ('40P01', '40001')
+    from .db_busy import is_busy as busy
+
+    return busy(error)
 
 
 def lock(company_id, actor_id, key) -> None:

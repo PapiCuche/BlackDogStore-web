@@ -29,7 +29,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import availability_views as availability
-from . import cost_services, inventory_services, label_batches
+from . import cost_services, db_busy, inventory_services, label_batches
 from . import stock_unit_services as units
 from . import storefront_media, unit_media
 from .product_media import ProductMediaError
@@ -359,12 +359,9 @@ class StockUnitListView(APIView):
             return _refusal(exc)
         except OperationalError as exc:
             # A backstop: two entries waiting on each other's locks. Nothing was written; the person tries again.
-            from .receipt_services import is_busy
-
-            if not is_busy(exc):
+            if not db_busy.is_busy(exc):
                 raise
-            return Response({'detail': 'Otra operación estaba usando este stock. Vuelve a intentarlo.',
-                             'code': 'busy'}, status=status.HTTP_409_CONFLICT)
+            return db_busy.busy_response()
 
         # LABEL-A — the labels of what just entered; the screen says «Etiquetas listas para imprimir».
         batch = label_batches.create_for_movement(created.movement, units=created, actor=request.user)

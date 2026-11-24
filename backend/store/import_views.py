@@ -32,6 +32,7 @@ from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .db_busy import answers_busy
 from . import (
     cost_services,
     image_import_services,
@@ -665,6 +666,7 @@ class AdminUnitImportApplyView(APIView):
     throttle_classes = [AdminImportThrottle]
     http_method_names = ['post', 'options']
 
+    @answers_busy           # INV-LOAD-01 review: a deadlock with another entry is 409 `busy`, never a 500
     def post(self, request, pk):
         company, error = _context(request, CAP_STOCK)
         if error:

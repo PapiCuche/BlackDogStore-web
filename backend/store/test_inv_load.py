@@ -18,7 +18,7 @@ import datetime
 import io
 
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.test import TransactionTestCase
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 from openpyxl import Workbook, load_workbook
 
@@ -654,3 +654,104 @@ class OldHeadersTest(LoadBase):
         data = self.row_of(payload, 2)['data']
         self.assertNotIn('received_on', data)
         self.assertNotIn('notes', data)
+
+
+# ---------------------------------------------------------------------------
+# Re-review of #401 — product before shelf, and «busy» on every stock door
+# ---------------------------------------------------------------------------
+
+class OpeningReceiptLockOrderTest(ReceiptBase):
+    def test_a_product_switched_to_devices_is_locked_before_its_shelf(self):
+        # DEC-CATALOG-PALETTE-LOCK-01: Product → shelf, like registration, the POS and a purchase receipt.
+        from unittest import mock
+
+        sequence = []
+        lock, check = _record(sequence)
+        with lock, check, mock.patch.object(receipt_services, '_lock_products',
+                                            _Recorder(sequence, 'products', receipt_services._lock_products)):
+            self.confirm(self.costed, self.body(self.dev(self.case, receipt_unit('OPC-0001')), entry_kind='opening'),
+                         expect=201)
+        self.case.refresh_from_db()
+        self.assertTrue(self.case.is_serialized)
+        self.assertIn('products', sequence, sequence)
+        self.assertLess(sequence.index('products'), sequence.index('lock'), sequence)
+
+
+def _deadlock():
+    from django.db import OperationalError
+
+    class Deadlock(Exception):
+        pgcode = '40P01'
+
+    error = OperationalError('deadlock detected')
+    error.__cause__ = Deadlock()
+    return error
+
+
+class BusyIsA409Test(LoadBase):
+    def assert_busy(self, res):
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json().get('code'), 'busy')
+
+    def test_the_unit_import_apply(self):
+        from unittest import mock
+
+        payload = self.upload([self.phone_cells('BSY-0001')])
+        with mock.patch.object(unit_import, 'apply_units', side_effect=_deadlock()):
+            self.assert_busy(self.api.post(apply_url(payload['id'])))
+
+    def test_the_registration(self):
+        from unittest import mock
+
+        from store import registration_services
+        from store.test_registration import URL as REGISTER_URL
+
+        from rest_framework.test import APIClient
+
+        from store.tests import _p2d_member
+
+        user, _ = _p2d_member(self.company, 'bsy_registro', ['company.view', 'products.view', 'products.manage',
+                                                             'inventory.view', 'inventory.adjust'])
+        client = APIClient()
+        client.force_authenticate(user=user)
+        with mock.patch.object(registration_services, 'register', side_effect=_deadlock()):
+            self.assert_busy(client.post(REGISTER_URL, {'product': {'name': 'X'}}, format='json',
+                                           HTTP_IDEMPOTENCY_KEY='bsy-reg-1'))
+
+    def test_the_pos_device_receive(self):
+        from unittest import mock
+
+        from rest_framework.test import APIClient
+
+        from store import pos_device_services
+        from store.tests import _p2d_member
+
+        user, _ = _p2d_member(self.company, 'bsy_pos', ['company.view', 'sales.pos.use', 'products.view',
+                                                         'inventory.view', 'inventory.adjust'])
+        client = APIClient()
+        client.force_authenticate(user=user)
+        with mock.patch.object(pos_device_services, 'receive_once', side_effect=_deadlock()):
+            self.assert_busy(client.post(f'/api/admin/pos/devices/receive/?branch={self.branch_a.pk}', {'x': 1},
+                                         format='json', HTTP_IDEMPOTENCY_KEY='bsy-pos-1'))
+
+
+class BusySupplyReceiveTest(TestCase):
+    def test_the_supplier_line_reception(self):
+        from unittest import mock
+
+        from store import supply_services
+        from store.test_supply_reception import ReceptionShop, as_client
+
+        shop = ReceptionShop()
+        shop.build('bsy-sdf2')
+        shop.assertEqual = self.assertEqual
+        order = _paid(shop)
+        with mock.patch.object(supply_services, 'receive_line', side_effect=_deadlock()):
+            res = as_client(shop.staff).post(shop.url(order), {'units': [{'serial_number': 'BSY-0101'}]},
+                                             format='json')
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json().get('code'), 'busy')
+
+
+def _paid(shop):
+    return shop.paid_order(shop.watch, 1)

@@ -23,6 +23,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from . import pos_device_services as quick
+from .db_busy import answers_busy
 from .models import ProductModel
 from .pos_views import CAP_POS, _branch_or_error, _context
 from .throttles import AdminPosSaleThrottle, AdminPosThrottle
@@ -48,6 +49,7 @@ def _configurations(request, company, branch, pk) -> Response:
     return Response(quick.configurations(company, model, branch, quick.authority_for(request.user, company)))
 
 
+@answers_busy       # INV-LOAD-01 review: a deadlock with another entry is 409 `busy`, never a 500
 def _receive(request, company, branch) -> Response:
     key = (request.headers.get('Idempotency-Key') or '').strip()
     if not key:

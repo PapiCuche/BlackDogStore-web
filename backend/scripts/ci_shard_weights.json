@@ -33,6 +33,7 @@
   "store.test_image_import.TwoAppliesAtOnceTest",
   "store.test_import_preview_freshness.StockApplyInterleavingTest",
   "store.test_import_preview_freshness.StockApplyRaceTest",
+  "store.test_inv_load.OpeningRaceTest",
   "store.test_inventory_ai_adapter.ConcurrentQuotaTest",
   "store.test_inventory_receipts.IdentifierRaceTest",
   "store.test_inventory_receipts.ReadAfterCommitTest",
