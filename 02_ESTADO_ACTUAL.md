@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — NEW-TEMPLATE-PRICE: «Precio de venta» opcional en la plantilla de nuevos (rama `feat/new-template-price`, sin fusionar)
+
+Decisión del propietario: la plantilla «Stock de equipos nuevos» lleva «Precio de venta», opcional. Si difiere del
+precio de la variante, la vista previa avisa en la fila y propone el cambio por variante (precio actual, el del archivo,
+diferencia, equipos que entran y ya en stock, si se vende). Nunca se aplica solo: hace falta `products.manage` y una
+confirmación al registrar, atada a la vista previa (409 si el precio cambió entretanto). Dos precios para una variante
+no proponen nada. El costo nunca es precio. Sin migraciones. Procedimiento en `docs/carga-stock-real.md` §2.1, §5.1 y §7.
+
 ## 2026-11-24 — POST-R13: sistema listo para recibir el inventario real (en `master` `bf6a3307`, sin desplegar)
 
 #420–#423 fusionados. Simulación del stock real 13/13 en CI, en local y sobre una copia aislada de producción. Candidata R13.1 `bf6a3307` (sólo código) ensayada; espera «GO despliegue bf6a330 prod-02». Kits de cron, normalización, muestras y producto 12 reensayados sobre R13. Detalle y GO en `docs/NEXT_ACTION.md`.

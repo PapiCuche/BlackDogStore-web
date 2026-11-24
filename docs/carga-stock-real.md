@@ -27,6 +27,7 @@ Requisitos, en este orden:
 | Llenar «Costo» | `costs.view` (sin él, una fila con costo es un error) |
 | Llenar «Proveedor» | `products.view` o `costs.view` (regla D-F-3; sin él, una fila con proveedor es un error) |
 | «Precio de venta» y «Garantía (días)» de un seminuevo | `products.manage` (sin él, se ignoran con un aviso) |
+| Confirmar el cambio del precio de una variante desde «Stock de equipos nuevos» (§5.1) | `products.manage` (sin él, la propuesta se ve pero no se aplica; el servidor responde 403) |
 | Inspeccionar un seminuevo después | `inventory.units.inspect` |
 | Ver la «Conciliación» | `inventory.view` |
 
@@ -45,7 +46,8 @@ Reglas comunes:
 - **Una fila es un equipo físico.** Dos teléfonos iguales son dos filas. No hay columna de cantidad.
 - **La línea la fija la plantilla.** El nombre de la hoja dice qué carga: no lo cambies. Una fila cuya variante es de
   la otra línea es un error de esa fila. La plantilla de nuevos **rechaza el archivo entero** si le agregas una columna
-  de seminuevos («Garantía (días)», «Precio de venta», etc.).
+  de seminuevos («Garantía (días)», «Estado estético», «Salud de batería (%)», etc.). «Precio de venta» está en las
+  dos, con un sentido distinto en cada una (§2.1 y §2.2).
 - **La fila 2 es un ejemplo.** Su «Serie» empieza por `EJEMPLO`: no se carga aunque la dejes (la vista previa la
   muestra como «omitida»). Escribe tus equipos desde la fila 3.
 - **No cambies los encabezados.** Cada uno tiene una nota (pasa el ratón por encima) con lo que va debajo.
@@ -67,12 +69,21 @@ Reglas comunes:
 | Serie | Ver §3 | El número de serie del fabricante. |
 | Proveedor | No | Nombre o RUC, tal como está en Proveedores. |
 | Costo | No | Lo que costó ESE equipo, sin IGV ni moneda (1234.50). |
+| Precio de venta | No | El precio que esperas para la **variante**, mayor que cero (3499.90). Ver abajo. |
 | Fecha de ingreso | No | AAAA-MM-DD o DD/MM/AAAA. Vacía = hoy. Ni futura ni antes de 2000. |
 | Observaciones (notas internas) | No | Sólo las ve el personal. Hasta 300 caracteres. |
 
-**No lleva «Precio de venta».** Un equipo nuevo se vende al precio de su **variante** (Catálogo › Modelos), en caja y en
-la web. El importador ignora el precio de un equipo nuevo, así que la columna no se ofrece: cambiar el precio de una
-variante desde una carga de inventario cambiaría el de todos sus equipos con otra autoridad.
+**«Precio de venta» en equipos nuevos (decisión del propietario, 2026-11-24).** Un equipo nuevo se vende al precio de su
+**variante** (Catálogo › Modelos), en caja y en la web. La columna es opcional y **nunca cambia sola** ese precio:
+
+- Vacía: no se propone nada.
+- Igual al precio de la variante: no pasa nada.
+- Distinta: la fila sale con un aviso (variante, precio actual, precio del archivo y diferencia) y la vista previa
+  muestra una propuesta (§5.1). El precio sólo cambia si alguien con `products.manage` la marca y la confirma al
+  registrar.
+- Dos precios distintos para la misma variante en el archivo: no se propone ninguno.
+- Cero, negativo, con más de 2 decimales o ilegible: error de la fila.
+- El precio nunca se guarda en el equipo y **el costo nunca se usa como precio**.
 
 ### 2.2 Columnas de «Stock de seminuevos»
 
@@ -80,7 +91,7 @@ Las mismas de arriba, más:
 
 | Columna | Qué escribir |
 |---|---|
-| Precio de venta | El precio de ESE equipo, mayor que cero. Sin precio no se vende ni en caja ni en la web. |
+| Precio de venta | (Misma columna que en nuevos, otro sentido.) El precio de ESE equipo, mayor que cero. Sin precio no se vende ni en caja ni en la web. |
 | Estado estético | Uno de la escala de la empresa (por ejemplo «Excelente»). |
 | Salud de batería (%) | La salud MEDIDA, de 0 a 100. Vacía = «no informado». |
 | Estado funcional | «Sin fallas» o «Con fallas» (entonces llena «Defectos»). |
@@ -158,6 +169,22 @@ Kardex de cada equipo.
 
 Una vista previa caduca a los 60 minutos: si caducó, súbela otra vez.
 
+### 5.1 «Precios de venta del archivo» (sólo «Stock de equipos nuevos»)
+
+Si alguna fila trae un «Precio de venta» distinto del de su variante, la vista previa añade una tabla, una fila por
+variante:
+
+- precio actual («Sin precio» si la variante aún no lo tiene) y precio(s) del archivo;
+- diferencia;
+- equipos de esa variante que entran con el archivo y los que ya hay disponibles en tus sucursales;
+- si la variante se vende en la tienda, si no está publicada o si es un **borrador sin habilitar**;
+- la propuesta: «Actualizar el precio de la variante a S/ X».
+
+Sólo quien tiene `products.manage` ve la casilla. Sin ese permiso la propuesta se lee pero no se aplica. Con dos
+precios distintos para la misma variante no hay propuesta: corrige el archivo o cambia el precio en Catálogo › Modelos.
+
+Cambiar el precio de una variante **no la habilita para la venta ni la publica**: un borrador sigue siendo borrador.
+
 ## 6. Ensayo con datos sintéticos
 
 Antes de la carga real se ensaya el recorrido completo con datos **inventados** (IMEI sintéticos con dígito de
@@ -234,6 +261,19 @@ comprobar. La copia tiene datos personales de clientes: queda en el equipo de qu
 Con 0 errores y el resultado revisado, pulsa «Registrar N equipos». Entra **todo el archivo o nada**: si algo cambió
 desde la vista previa (otro registró el mismo IMEI, se desactivó una sucursal), no se carga ninguno y el mensaje dice la
 fila. Si la respuesta es «Otra operación estaba usando este stock. Vuelve a intentarlo», nada se escribió: reintenta.
+
+Si marcaste alguna propuesta de precio (§5.1), antes de registrar la pantalla pide confirmarla: lista cada variante con
+su precio actual y el nuevo. Al confirmar, los equipos y los precios se registran juntos, todo o nada. El servidor
+vuelve a comprobarlo:
+
+- sin `products.manage`: 403, no se registra nada;
+- un precio que no es el de la propuesta de esa vista previa: 400, no se registra nada;
+- si el precio de la variante cambió desde la vista previa: 409 («cambió desde la vista previa»), no se registra nada;
+  sube el archivo otra vez;
+- una carga ya registrada no vuelve a aplicar su propuesta.
+
+Cada precio cambiado queda en la auditoría como `product_updated`, con el precio anterior y el nuevo, `via:
+stock_import` y el número de la carga. La línea de la carga (`stock_units_import_applied`) dice cuántos precios cambió.
 
 Después de registrar aparecen:
 
@@ -329,6 +369,8 @@ Pasos, en `/srv/blackdogstore`:
 | Qué ves | Qué hacer |
 |---|---|
 | «La plantilla de equipos nuevos no lleva la columna…» | Quita esa columna o usa la plantilla de seminuevos. |
+| Aviso «Precio del archivo … distinto del de la variante» | No es un error: el precio no cambia. Si quieres cambiarlo, quien administra productos marca la propuesta y la confirma. |
+| «El precio de … cambió desde la vista previa» | Otro cambió el precio de la variante: nada se registró. Sube el archivo otra vez. |
 | «Este archivo es la plantilla de … y elegiste cargar …» | Sube la plantilla de la línea correcta. |
 | «… no tiene esa variante» | Crea la variante en Catálogo › Modelos (o corrige capacidad, color, SIM o versión). |
 | «Inventario inicial» rechazado por movimientos | Ese producto ya tuvo una venta, compra o traslado en esa sucursal: cárgalo como compra. |
