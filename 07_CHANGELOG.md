@@ -15,6 +15,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 **Changed**
 - Imágenes, carritos, reseñas, códigos, compatibilidades de accesorio y códigos de proveedor ya no se borran en cascada con un producto; un modelo con variantes no se puede borrar.
 - El admin de Django ya no borra productos.
+- Una variante archivada nunca recibe stock: ni por traslado pendiente, ni moviendo un equipo, ni por la carga de stock, la recepción o la caja.
 
 ## 2026-11-24 — USED-READY-01: un seminuevo se vende como ESE equipo (rama, sin desplegar)
 

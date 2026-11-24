@@ -13,6 +13,7 @@ Eliminar, archivar y desactivar variantes sin perder datos. Rama `feat/variant-s
 - **Sin cascadas:** `ProductImage`, `CartItem`, `Review`, `ProductBarcode`, `AccessoryCompatibility.accessory`, `SupplierProductRef` pasan a PROTECT; `Product.product_model` SET_NULL → PROTECT. `ProductVariantOption` sigue CASCADE a propósito (lo borra el servicio). Sin SQL: Django aplica `on_delete`.
 - **Guardia:** `test_variant_safe` falla si aparece una relación hacia `Product` sin clasificar en `variant_lifecycle.RELATIONS`. Admin de Django sin borrar productos.
 - **`ProductModel.is_active`** (db_default true): un modelo inactivo sale de la tienda pública.
+- **Revisión de #407:** archivar también se niega con stock por cantidad en traslado; un equipo no se mueve a una variante archivada (sí a una sólo desactivada); la carga de stock por Excel la rechaza al previsualizar y al aplicar (bajo el candado del producto); la recepción y «Llegó el equipo» deciden sobre la fila bloqueada; la propuesta de catálogo la muestra «archivada» y la cuenta.
 - **Panel:** en el editor del modelo, Desactivar/Activar, Archivar/Desarchivar y Eliminar (con `products.delete`), con diálogo que lee `deletion-check`.
 
 ## 2026-11-24 — USED-READY-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0187`
