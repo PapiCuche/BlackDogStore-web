@@ -153,6 +153,31 @@ describe('precio por debajo del costo: el formulario', () => {
   });
 });
 
+describe('precio por debajo del costo: el historial', () => {
+  it('la excepción viaja dentro de la fila «Modificada» y se muestra sólo si el servidor la manda', async () => {
+    const history = [
+      { action: 'supplier_offer_updated', at: '2026-11-23T10:00:00Z', actor: 'ana', metadata: {
+        changed: ['commercial_price'],
+        margin_exception: { verdict: 'below_cost', reason: 'Liquidación de stock', commercial_price: '60.00', agreed_cost: '70.00' },
+      } },
+      { action: 'supplier_offer_updated', at: '2026-11-22T10:00:00Z', actor: 'luis', metadata: { changed: ['commercial_price'] } },
+    ];
+    send.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/history/')) return reply({ results: history });
+      if (url.includes('/admin/suppliers/')) return reply({ count: 1, page: 1, page_size: 25, results: [SUPPLIER] });
+      if (url.includes('/admin/supplier-offers/')) return reply({ count: 1, page: 1, page_size: 25, results: [offerRow()] });
+      return reply({}, 404);
+    });
+    render(<SupplierOffersManager canManage canSeeCosts companyId={null} />);
+    const row = await screen.findByTestId('offer-row-31');
+    await act(async () => { fireEvent.click(within(row).getByRole('button', { name: /^Historial/ })); });
+    const panel = await screen.findByRole('region', { name: /Historial de la oferta/ });
+    expect(await within(panel).findByText(/Precio bajo el costo confirmado · Motivo: Liquidación de stock/)).toBeInTheDocument();
+    expect(within(panel).getAllByText(/Cambió: commercial_price/).length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe('precio por debajo del costo: el Excel', () => {
   async function upload() {
     render(<SupplierOffersManager canManage canSeeCosts={false} companyId={null} />);

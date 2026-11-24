@@ -431,12 +431,29 @@ function DeactivateForm({
   );
 }
 
+/**
+ * SUPPLY-GUARDS-01 — a confirmed margin exception travels inside the «Creada»/«Modificada» row, and only to
+ * `costs.view` (the server drops it for everybody else).
+ */
+const MARGIN_VERDICT_LABELS: Record<string, string> = {
+  below_cost: "Precio bajo el costo confirmado",
+  cost_unseen: "Precio confirmado sin ver el costo",
+};
+
+function marginDetail(meta: Record<string, unknown>): string {
+  const exception = meta.margin_exception;
+  if (!exception || typeof exception !== "object") return "";
+  const { verdict, reason } = exception as { verdict?: unknown; reason?: unknown };
+  const label = MARGIN_VERDICT_LABELS[String(verdict)] ?? "Excepción de margen confirmada";
+  return typeof reason === "string" && reason ? `${label} · Motivo: ${reason}` : label;
+}
+
 function historyDetail(entry: SupplierOfferHistoryEntry): string {
   const meta = entry.metadata ?? {};
   if (typeof meta.reason === "string" && meta.reason) return `Motivo: ${meta.reason}`;
   const changed = Array.isArray(meta.changed) ? meta.changed : Array.isArray(meta.fields) ? meta.fields : null;
-  if (changed && changed.length) return `Cambió: ${changed.map(String).join(", ")}`;
-  return "";
+  const parts = [changed && changed.length ? `Cambió: ${changed.map(String).join(", ")}` : "", marginDetail(meta)];
+  return parts.filter(Boolean).join(" · ");
 }
 
 function HistoryPanel({ offer, companyId, onClose }: { offer: SupplierOffer; companyId: number | null; onClose: () => void }) {

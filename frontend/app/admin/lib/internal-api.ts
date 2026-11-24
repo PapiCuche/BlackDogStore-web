@@ -3279,8 +3279,6 @@ export const SUPPLIER_OFFER_ACTION_LABELS: Record<string, string> = {
   supplier_offer_updated: "Modificada",
   supplier_offer_deactivated: "Desactivada",
   supplier_offer_expired: "Vencida",
-  supplier_offer_below_cost_confirmed: "Precio bajo el costo confirmado",
-  supplier_offer_cost_unseen_confirmed: "Precio confirmado sin ver el costo",
 };
 
 export type SupplierSettlementRow = {
