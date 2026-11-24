@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { test, expect, chromium, devices, type Browser, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import { RUN, sembrar, shell } from "./inventory-first-support";
 import { sessionFor, limpiarRecepcion } from "./inventory-receive-support";
+import { usedEntry } from "./used-units-support";
 import { RL_USERS, RL_PASSWORD, MODELS, sembrarLista, articulos, nextImei } from "./inventory-receive-list-support";
 
 /**
@@ -161,7 +162,7 @@ for (const env of ENVS) {
       // «Equipos seminuevos»: completa la batería; el precio es de sólo lectura y se dice por qué.
       await press(follow.getByRole("link", { name: "Completar datos y fotos" }), env.touch);
       await expect(page.getByRole("heading", { name: "Seminuevos", exact: true })).toBeVisible({ timeout: 60_000 });
-      const line = page.getByRole("row").filter({ hasText: serial });
+      const line = usedEntry(page, serial);
       await expect(line).toContainText("Sin precio (pendiente)");
       await expect(page.getByText(/puede ver los precios, no cambiarlos/)).toBeVisible();
       await press(button(page, `Editar ${serial}`), env.touch);
@@ -210,9 +211,9 @@ for (const env of ENVS) {
       await expect(page.getByRole("heading", { name: "Seminuevos", exact: true })).toBeVisible({ timeout: 60_000 });
       expect(new URL(page.url()).searchParams.get("precio")).toBe("sin");
       await expect(page.getByLabel("Precio de venta")).toHaveValue("no");
-      const line = page.getByRole("row").filter({ hasText: serials[1] });
+      const line = usedEntry(page, serials[1]);
       await expect(line).toContainText("Sin precio (pendiente)");
-      await expect(page.getByRole("row").filter({ hasText: serials[0] })).toHaveCount(0); // ya tiene precio
+      await expect(usedEntry(page, serials[0])).toHaveCount(0); // ya tiene precio
       await press(button(page, `Editar ${serials[1]}`), env.touch);
       const dialog = page.getByRole("dialog");
       await dialog.getByLabel(/Precio de venta \(S\/\)/).fill("0");

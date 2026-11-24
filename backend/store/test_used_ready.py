@@ -269,6 +269,23 @@ class PublicationApiTest(UsedShop, TestCase):
         self.assertEqual((res.status_code, res.json()['published_online']), (200, False))
         self.assertTrue(AdminAuditLog.objects.filter(action='stock_unit_unpublished').exists())
 
+    def test_each_decision_answers_with_what_the_web_now_says(self):
+        """
+        STOCK-UX-WALK — the ficha kept reading «el equipo no está publicado» right after «Publicar este equipo»:
+        only the list carried `web`. Inspection, photos and publication answer with it too.
+        """
+        units.update_unit(self.unit, sale_price='1800.00')
+        photo(self.unit)
+        res = _client(self.inspector).post(f'{UNITS}{self.unit.pk}/inspection/', {'decision': 'approved'}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertIn('unit_not_published', res.json()['web']['reasons'])
+        self.assertNotIn('not_inspected', res.json()['web']['reasons'])
+        res = self.publish(self.staff)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertNotIn('unit_not_published', res.json()['web']['reasons'])
+        res = self.publish(self.staff, False)
+        self.assertIn('unit_not_published', res.json()['web']['reasons'])
+
     def test_publishing_needs_products_manage(self):
         make_ready(self.unit, self.staff)
         res = self.publish(self.stocker, False)

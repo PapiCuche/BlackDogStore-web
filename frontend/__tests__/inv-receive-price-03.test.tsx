@@ -60,7 +60,7 @@ const writes = () => calls.filter((c) => c.method !== 'GET');
 
 async function open(props: Partial<React.ComponentProps<typeof UsedUnitsPanel>> = {}) {
   render(<UsedUnitsPanel branch="all" canEdit canSeeCost={false} {...props} />);
-  fireEvent.click(await screen.findByRole('button', { name: /^(Editar|Ver) SER123$/ }));
+  fireEvent.click(await within(await screen.findByTestId('used-units-table')).findByRole('button', { name: /^(Editar|Ver) SER123$/ }));
   return screen.getByRole('dialog', { name: 'Equipo X seminuevo' });
 }
 
@@ -203,10 +203,10 @@ describe('Equipos seminuevos · precio de venta', () => {
       { ...UNIT, id: 8, serial_number: 'SER124', sale_price: '1999.00', web: { offered: true, reasons: [] } },
     ];
     render(<UsedUnitsPanel branch="all" canEdit canSeeCost={false} />);
-    const first = (await screen.findByText('SER123')).closest('tr') as HTMLElement;
+    const first = (await within(await screen.findByTestId('used-units-table')).findByText('SER123')).closest('tr') as HTMLElement;
     expect(within(first).getByText('Sin precio (pendiente)')).toBeInTheDocument();
     expect(within(first).getByText(/No · no tiene precio de venta/)).toBeInTheDocument();
-    const second = screen.getByText('SER124').closest('tr') as HTMLElement;
+    const second = within(screen.getByTestId('used-units-table')).getByText('SER124').closest('tr') as HTMLElement;
     expect(within(second).getByText('S/ 1,999.00')).toBeInTheDocument();
     expect(within(second).getByText('Se ofrece')).toBeInTheDocument();
     expect(screen.queryByText(/Precio del producto/)).toBeNull();
@@ -215,7 +215,7 @@ describe('Equipos seminuevos · precio de venta', () => {
 
   it('el filtro «Sin precio» pregunta al servidor; un enlace llega con artículo y filtro puestos', async () => {
     render(<UsedUnitsPanel branch="all" canEdit canSeeCost={false} initialProduct="52" initialPriced="no" />);
-    await screen.findByText('SER123');
+    await within(await screen.findByTestId('used-units-table')).findByText('SER123');
     const first = calls.find((c) => c.url.includes('/inventory/units/'))!.url;
     expect(first).toContain('priced=no');
     expect(first).toContain('product=52');

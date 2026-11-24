@@ -142,10 +142,10 @@ async function toReview(page: Page) {
 /** Con una línea mala la revisión no anuncia totales (el servidor sólo cuenta las buenas: se leerían «0»). */
 async function expectNoZeroTotals(page: Page, bad: number) {
   await expect(page.getByRole("status").filter({ hasText: `No se puede confirmar todavía: corrige ${bad} ${bad === 1 ? "línea" : "líneas"}.` })).toBeVisible();
-  expect(await page.locator("main").innerText(), "con líneas con error no debe haber «Entrarán …»").not.toMatch(/Entrarán/);
+  expect(await page.locator("main").innerText(), "con líneas con error no debe haber «Entrarán …»").not.toMatch(/Entrar(á|án) /);
 }
 
-const summary = (page: Page) => page.getByRole("status").filter({ hasText: "Se prepararán" });
+const summary = (page: Page) => page.getByRole("status").filter({ hasText: /Se preparar(á|án) / });
 
 async function accept(page: Page) {
   await page.getByLabel(/Revisé los datos y quiero registrar/).check();

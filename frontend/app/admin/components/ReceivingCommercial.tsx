@@ -21,7 +21,12 @@ const PROBLEM_TEXT: Record<string, string> = {
   no_price: "su precio de venta",
   no_image: "una imagen",
   no_category: "una categoría",
+  draft_pending: "habilitar la variante para la venta",
 };
+
+/** STOCK-UX-WALK — a variant born from the palette that nobody enabled: received, but the till refuses it. */
+export const DRAFT_VARIANT_TEXT =
+  "Variante en borrador: se recibe, pero no se vende (ni en caja ni en línea) hasta habilitar la variante en Catálogo › Modelos.";
 
 export function destinationChain(line: PreviewLine, commercial: Commercial): string[] {
   const lineName = line.product.condition_line === "used" ? "Seminuevos" : "Nuevos";
@@ -70,6 +75,14 @@ export function ReceivingCommercial({ line, canViewProducts }: { line: PreviewLi
           : "Tiene su tarjeta propia en la tienda cuando se publica."}
       </p>
       <p className={`mt-1 ${commercial.state === "pending" ? "text-warning" : "text-foreground"}`}>{destinationState(commercial)}</p>
+      {commercial.problems.includes("draft_pending") ? (
+        <p
+          role="note" aria-label="Variante en borrador"
+          className="mt-2 rounded-lg border border-warning-border bg-warning-surface px-3 py-2 font-semibold text-foreground"
+        >
+          {DRAFT_VARIANT_TEXT}
+        </p>
+      ) : null}
       {!commercial.has_dispatch_branch ? (
         <p className="mt-1 text-warning">La empresa no tiene una sucursal de despacho definida: la tienda en línea no puede ofrecer nada hasta que se defina.</p>
       ) : !commercial.in_dispatch_branch ? (

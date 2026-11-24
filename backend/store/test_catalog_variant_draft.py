@@ -492,7 +492,8 @@ class BypassRoutesTest(DraftShop, TestCase):
         with self.assertRaises(pos_services.PosValidationError) as caught:
             pos_services.build_pos_sale(operator=self.staff, company=self.company, branch=self.branch,
                                         items=[{'product': self.product.pk, 'quantity': 1}], require_units=False)
-        self.assertIn('no encontrado', str(caught.exception))
+        # STOCK-UX-WALK: still refused; the till now says why (a draft of THIS company, never another's).
+        self.assertIn('variante en borrador, sin habilitar para la venta', str(caught.exception))
         used = self.priced(self.gb256, self.black, line=Product.CONDITION_USED, price='0.00')
         Product.objects.filter(pk=used.pk).update(is_serialized=True, requires_imei=True)
         used.refresh_from_db()
@@ -502,7 +503,7 @@ class BypassRoutesTest(DraftShop, TestCase):
             pos_services.build_pos_sale(operator=self.staff, company=self.company, branch=self.branch,
                                         items=[{'product': used.pk, 'quantity': 1, 'units': [_unit(unit)]}],
                                         validate_cash=False)
-        self.assertIn('no encontrado', str(caught.exception))
+        self.assertIn('variante en borrador, sin habilitar para la venta', str(caught.exception))
         # The historical used variant of the shop, at product price 0, still sells by unit (§D case 1).
         self.receive(self.used128, 1, cost='800.00', sale_price='1300.00')
         hist = approve(StockUnit.objects.get(product=self.used128))      # USED-READY-01: the till sells approved

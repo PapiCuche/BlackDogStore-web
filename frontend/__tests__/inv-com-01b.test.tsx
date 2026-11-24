@@ -120,3 +120,26 @@ describe('lo que dice el servidor de un precio o de los detalles, junto a su cam
     expect(out.L1.units.U1.row).toMatch(/otra cosa/);
   });
 });
+
+/**
+ * STOCK-UX-WALK follow-up — a line of a variant born from the palette and not enabled for sale (`draft_pending`, which
+ * the server already sends in `problems`) was received with only «Pendiente de completar para publicar.»: nothing
+ * said the till would refuse it. The review now warns, without blocking the reception.
+ */
+describe('variante en borrador', () => {
+  it('avisa que se recibe pero no se vende hasta habilitarla, sin bloquear', () => {
+    render(<ReceivingCommercial line={line({}, { problems: ['draft_pending'] })} canViewProducts />);
+    const note = screen.getByRole('note', { name: 'Variante en borrador' });
+    expect(note).toHaveTextContent(
+      'Variante en borrador: se recibe, pero no se vende (ni en caja ni en línea) hasta habilitar la variante en Catálogo › Modelos.');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+  it('el estado dice lo que falta en palabras, no lo calla', () => {
+    expect(destinationState(commercial({ problems: ['draft_pending'] })))
+      .toBe('Pendiente de completar para publicar: falta habilitar la variante para la venta. Mientras tanto es stock interno.');
+  });
+  it('sin borrador no hay aviso', () => {
+    render(<ReceivingCommercial line={line()} canViewProducts />);
+    expect(screen.queryByRole('note', { name: 'Variante en borrador' })).toBeNull();
+  });
+});

@@ -106,12 +106,30 @@ class AuthorityTest(CommercialBase):
         self.assertEqual(self.preview(self.clerk, body).status_code, 403)
         self.assertEqual(self.snapshot(), before)
 
+    def test_a_draft_variant_is_received_and_its_preview_says_it_is_a_draft(self):
+        """STOCK-UX-WALK follow-up: the review warns from `draft_pending` in the line's commercial problems."""
+        Product.objects.filter(pk=self.used.pk).update(draft_origin=Product.DRAFT_ORIGIN_PALETTE, sale_enabled_at=None)
+        body = self.body(self.dev(self.used, self.used_unit('SEMI00045', IMEIS[11])))
+        [line] = self.preview(self.clerk, body, expect=200).json()['lines']
+        self.assertEqual(line['status'], 'ok')
+        self.assertIn('draft_pending', line['commercial']['problems'])
+
+    def test_two_unpriced_devices_are_warned_in_the_plural(self):
+        body = self.body(self.dev(self.used, self.used_unit('SEMI00043', IMEIS[9]), self.used_unit('SEMI00044', IMEIS[10])))
+        [line] = self.preview(self.clerk, body, expect=200).json()['lines']
+        self.assertEqual(line['commercial']['units_unpriced'], 2)
+        self.assertIn('2 equipos sin precio propio: se reciben, pero no se venden en caja ni se ofrecen en línea hasta '
+                      'que alguien con permiso fije el precio.', line['warnings'])
+
     def test_without_authority_the_device_is_still_received_unpriced_and_the_preview_says_so(self):
         body = self.body(self.dev(self.used, self.used_unit('SEMI00042', IMEIS[8], public_notes='Caja original')))
         pre = self.preview(self.clerk, body, expect=200).json()
         [line] = pre['lines']
         self.assertEqual(line['commercial']['units_unpriced'], 1)
         self.assertTrue(any('sin precio propio' in w for w in line['warnings']))
+        # STOCK-UX-WALK: words agree with the count, and the till is named too (an unpriced device is not sold there).
+        self.assertIn('1 equipo sin precio propio: se recibe, pero no se vende en caja ni se ofrece en línea hasta que '
+                      'alguien con permiso fije el precio.', line['warnings'])
         res = self.confirm(self.clerk, body, expect=201).json()
         [created] = StockUnit.objects.filter(product=self.used)
         self.assertIsNone(created.sale_price)

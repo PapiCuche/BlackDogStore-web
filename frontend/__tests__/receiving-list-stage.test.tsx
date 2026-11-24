@@ -267,7 +267,7 @@ describe('el caso de los once seminuevos', () => {
     // Revisar y confirmar.
     await u.click(screen.getByRole('button', { name: /Siguiente: revisar/ }));
     await screen.findByRole('heading', { name: 'Revisa antes de registrar' });
-    await screen.findByText(/Entrarán 0 unidades por cantidad y 11 equipos identificados/);
+    await screen.findByText(/Entrarán 11 equipos identificados/);
     // La revisión muestra cada equipo con sus identificadores enmascarados, nunca completos.
     expect(screen.getAllByText('Ver los 3 equipos')).toHaveLength(1);
     const threeIphones = screen.getByRole('list', { name: 'Equipos de iPhone 13 128 GB Azul Seminuevo' });
