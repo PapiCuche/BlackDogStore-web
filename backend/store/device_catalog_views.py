@@ -12,7 +12,7 @@ or a product of another company answers 404, like one that does not exist.
 from __future__ import annotations
 
 from django.db import transaction
-from django.db.models import Count, Min
+from django.db.models import Count, Exists, Min, OuterRef, Prefetch, Q
 from rest_framework import permissions, serializers as drf_serializers, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -23,8 +23,8 @@ from .admin_views import (
     AdminProductWriteThrottle, _company_context, write_product_fields,
 )
 from .models import (
-    AdminAuditLog, CosmeticGrade, ModelOption, Product, ProductModel, StockUnit, StorefrontPageSettings,
-    VariantAttribute, VariantOption,
+    AdminAuditLog, CatalogAlias, CosmeticGrade, Product, ProductModel, ProductVariantOption, StockUnit,
+    StorefrontPageSettings, VariantAttribute, VariantOption,
 )
 from .tenancy import company_fulfillment_branch, company_storefront_products, resolve_storefront_company
 
@@ -41,6 +41,8 @@ _ERROR_STATUS = {
     'line_change_with_units': status.HTTP_409_CONFLICT,
     'variant_in_use': status.HTTP_409_CONFLICT,
     'variant_archived': status.HTTP_409_CONFLICT,
+    # CATALOG-ADMIN-UX-B: the pair to exclude is already a variant of the model (the body names them).
+    'exclusion_held_by_variants': status.HTTP_409_CONFLICT,
 }
 
 
@@ -195,10 +197,32 @@ def _attribute_payload(attribute):
     }
 
 
-def _model_payload(model, *, variants=False, has_palette=None):
+def _model_payload(model, *, variants=False, has_palette=None, counts=None):
     # A1: the palette, read once for the model and for each of its variants' status. A list passes
     # `has_palette` it computed for every model at once, and reads nothing more here.
+    # CATALOG-ADMIN-UX-B: a list passes `counts` too ({'variant_count', 'used_unit_count'}, read for every model at
+    # once); the detail reads its variants and their histories in a fixed number of queries, however many there are.
     palette = model_palette.palette_of(model) if (variants or has_palette is None) else {}
+    products = None
+    if variants:
+        # CATALOG-VARIANT-IMAGES: the count of pictures in the same query as the rows, not one per variant.
+        products = list(
+            model.variants.annotate(image_count=Count('images')).order_by('condition_line', 'pk')
+            .prefetch_related(Prefetch(
+                'variant_options',
+                queryset=ProductVariantOption.objects.select_related('attribute', 'option')
+                .order_by('attribute__sort_order', 'attribute__name'),
+            ))
+        )
+    if counts is None:
+        counts = {
+            'variant_count': len(products) if products is not None else model.variants.count(),
+            # The storefront's branch, like the availability the shop shows.
+            'used_unit_count': StockUnit.objects.filter(
+                product__product_model=model, product__condition_line=Product.CONDITION_USED,
+                status=StockUnit.Status.AVAILABLE, branch=company_fulfillment_branch(model.company),
+            ).count(),
+        }
     data = {
         'id': model.pk, 'name': model.name, 'slug': model.slug,
         'category_id': model.category_id, 'category_name': model.category.name if model.category_id else '',
@@ -208,22 +232,18 @@ def _model_payload(model, *, variants=False, has_palette=None):
         'is_featured': model.is_featured,
         # VARIANT-SAFE-01: a deactivated model is out of the public shop.
         'is_active': model.is_active,
-        'variant_count': model.variants.count(),
-        # The storefront's branch, like the availability the shop shows.
-        'used_unit_count': StockUnit.objects.filter(
-            product__product_model=model, product__condition_line=Product.CONDITION_USED,
-            status=StockUnit.Status.AVAILABLE, branch=company_fulfillment_branch(model.company),
-        ).count(),
+        'variant_count': counts['variant_count'],
+        'used_unit_count': counts['used_unit_count'],
         # A1: whether the model says which options it admits (the «Opciones de este modelo» screen).
         'has_palette': bool(palette) if has_palette is None else bool(has_palette),
     }
     if variants:
         rows = []
-        # CATALOG-VARIANT-IMAGES: the count of pictures in the same query as the rows, not one per variant.
-        for product in model.variants.annotate(image_count=Count('images')).order_by('condition_line', 'pk'):
-            history = device_catalog.variant_history(product)
-            links = list(product.variant_options.select_related('attribute', 'option')
-                         .order_by('attribute__sort_order', 'attribute__name'))
+        # CATALOG-ADMIN-UX-B: every variant's history in five aggregate queries, not seven per variant.
+        histories = device_catalog.variant_histories([product.pk for product in products])
+        for product in products:
+            history = histories[product.pk]
+            links = list(product.variant_options.all())
             rows.append({
                 'product_id': product.pk, 'name': product.name, 'slug': product.slug,
                 'condition_line': product.condition_line, 'price': str(product.price),
@@ -251,16 +271,126 @@ def _model_payload(model, *, variants=False, has_palette=None):
     return data
 
 
+#: CATALOG-ADMIN-UX-B — the most rows one page of the models list carries.
+MODEL_LIST_MAX_PAGE_SIZE = 100
+_TRUE, _FALSE = ('1', 'true', 'yes', 'si', 'sí'), ('0', 'false', 'no')
+
+
+def _bad_param(field, text):
+    return Response({'detail': text, 'code': 'invalid', 'field': field}, status=status.HTTP_400_BAD_REQUEST)
+
+
+def _positive(value):
+    text = str(value).strip()
+    return int(text) if model_palette.is_ascii_id(text) and int(text) > 0 else None
+
+
 class AdminModelListView(APIView):
+    """
+    GET  /api/admin/catalog/models/   the company's models
+    POST /api/admin/catalog/models/   create one (`products.manage`)
+
+    CATALOG-ADMIN-UX-B — the GET searches and filters ON THE SERVER, in a fixed number of queries however many
+    models and variants the company has:
+
+        search=<text>         the name (case and accents folded), the address (slug) or a supplier alias of the model
+        category=<id>|none    one of the company's categories, or the models without one
+        active=true|false     VARIANT-SAFE-01's «activo»
+        incomplete=1          with live variants incomplete or outside the palette
+        missing=1             with valid configurations still without a variant
+        no_palette=1          without a palette (they admit any option of the company)
+        page, page_size       a bounded page (at most 100); WITHOUT `page_size` every row comes, as always
+
+    Answers `results`, `count` (after every filter), `facets` (how many of the searched models each state flag
+    would keep) and, with `page_size`, `page` / `page_size`. Every row says its palette state too.
+    """
+
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         company, error = _view(request)
         if error:
             return error
-        models = ProductModel.objects.filter(company=company).select_related('category')
-        with_palette = set(ModelOption.objects.filter(company=company).values_list('model_id', flat=True).distinct())
-        return Response({'results': [_model_payload(model, has_palette=model.pk in with_palette) for model in models]})
+        params = request.query_params
+        models = ProductModel.objects.filter(company=company)
+        search = ' '.join(str(params.get('search') or '').split())[:100]
+        if search:
+            from .configuration_resolver import phrase_key
+
+            folded, key = device_catalog.normalize_model_name(search), phrase_key(search)
+            aliases = CatalogAlias.objects.filter(company=company, scope=CatalogAlias.SCOPE_MODEL, model=OuterRef('pk'))
+            match = Q(name__icontains=search) | Q(slug__icontains=search)
+            if folded:
+                match |= Q(normalized_name__contains=folded)
+            alias_match = Q(alias__icontains=search) | (Q(alias_key__contains=key) if key else Q())
+            models = models.filter(match | Exists(aliases.filter(alias_match)))
+        category = str(params.get('category') or '').strip()
+        if category == 'none':
+            models = models.filter(category__isnull=True)
+        elif category:
+            if _positive(category) is None:
+                return _bad_param('category', 'La categoría es un número o «none».')
+            models = models.filter(category_id=_positive(category))
+        active = str(params.get('active') or '').strip().lower()
+        if active in _TRUE:
+            models = models.filter(is_active=True)
+        elif active in _FALSE:
+            models = models.filter(is_active=False)
+        elif active:
+            return _bad_param('active', '«active» es true o false.')
+        page_size = page = None
+        if params.get('page_size') not in (None, ''):
+            page_size = _positive(params.get('page_size'))
+            if page_size is None:
+                return _bad_param('page_size', 'El tamaño de página es un número positivo.')
+            page_size = min(page_size, MODEL_LIST_MAX_PAGE_SIZE)
+            page = _positive(params.get('page') or 1)
+            if page is None:
+                return _bad_param('page', 'La página es un número positivo.')
+
+        states = model_palette.catalogue_states(company, models)
+        empty = {'has_palette': False, 'valid_without_variant': None, 'incomplete_variant_count': 0,
+                 'outside_variant_count': 0}
+        rows = list(models.select_related('category'))
+        flags = {
+            'incomplete': lambda s: s['incomplete_variant_count'] + s['outside_variant_count'] > 0,
+            'missing': lambda s: bool(s['valid_without_variant']),
+            'no_palette': lambda s: not s['has_palette'],
+        }
+        facets = {name: sum(1 for m in rows if test(states.get(m.pk, empty))) for name, test in flags.items()}
+        for name, test in flags.items():
+            if str(params.get(name) or '').strip().lower() in _TRUE:
+                rows = [m for m in rows if test(states.get(m.pk, empty))]
+        count = len(rows)
+        if page_size is not None:
+            rows = rows[(page - 1) * page_size:page * page_size]
+
+        variant_counts = dict(
+            Product.objects.filter(product_model__in=[m.pk for m in rows]).order_by().values('product_model')
+            .annotate(n=Count('pk')).values_list('product_model', 'n')
+        ) if rows else {}
+        branch = company_fulfillment_branch(company)
+        used_counts = dict(
+            StockUnit.objects.filter(
+                product__product_model__in=[m.pk for m in rows], product__condition_line=Product.CONDITION_USED,
+                status=StockUnit.Status.AVAILABLE, branch=branch,
+            ).order_by().values('product__product_model').annotate(n=Count('pk'))
+            .values_list('product__product_model', 'n')
+        ) if rows and branch is not None else {}
+        results = []
+        for model in rows:
+            state = states.get(model.pk, empty)
+            results.append({
+                **_model_payload(model, has_palette=state['has_palette'], counts={
+                    'variant_count': variant_counts.get(model.pk, 0), 'used_unit_count': used_counts.get(model.pk, 0)}),
+                'valid_without_variant': state['valid_without_variant'],
+                'incomplete_variant_count': state['incomplete_variant_count'],
+                'outside_variant_count': state['outside_variant_count'],
+            })
+        body = {'results': results, 'count': count, 'facets': facets}
+        if page_size is not None:
+            body.update(page=page, page_size=page_size)
+        return Response(body)
 
     def post(self, request):
         company, error = _manage(request)
@@ -476,6 +606,48 @@ class AdminModelPaletteView(APIView):
         except device_catalog.CatalogError as exc:
             return _error(exc)
         return Response(body)
+
+
+class AdminModelExclusionsView(APIView):
+    """
+    POST   /api/admin/catalog/models/<pk>/exclusions/   {"pairs": [[a, b], ...]} — these configurations do NOT exist
+    DELETE /api/admin/catalog/models/<pk>/exclusions/   {"pairs": [[a, b], ...]} — they exist again
+
+    CATALOG-ADMIN-UX-B — the panel's «Combinaciones que no existen» (a SIM type a region does not sell, say), on
+    `ModelOptionExclusion` (CATALOG-REFERENCE-01 · PR B): `products.manage`, audited with the company, under the
+    model's lock. Each pair is two options of the model's palette of two different attributes; an option of another
+    company refuses the whole call (404 `not_found`), a model of another company answers 404. Adding a pair that an
+    existing variant IS answers 409 `exclusion_held_by_variants` naming those variants, and nothing is written;
+    removing never invalidates a variant. Both answer the palette payload (as `PUT …/palette/`) plus `changed`.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_throttles(self):
+        return [AdminProductWriteThrottle()]
+
+    def _change(self, request, pk, write):
+        company, error = _manage(request)
+        if error:
+            return error
+        model = ProductModel.objects.filter(company=company, pk=pk).first()
+        if model is None:
+            return Response(_NOT_FOUND, status=status.HTTP_404_NOT_FOUND)
+        data = request.data if isinstance(request.data, dict) else {}
+        pairs = data.get('pairs')
+        if not isinstance(pairs, list) or not pairs:
+            return _bad_param('pairs', 'Indica los pares: una lista de dos opciones cada uno.')
+        try:
+            changed = write(model, pairs=pairs, actor=request.user, request=request)
+        except device_catalog.CatalogError as exc:
+            return _error(exc)
+        return Response({**model_palette.payload(model), 'changed': changed})
+
+    def post(self, request, pk):
+        return self._change(request, pk, lambda model, **kw: model_palette.add_exclusions(model, refuse_held=True, **kw))
+
+    def delete(self, request, pk):
+        return self._change(request, pk, model_palette.remove_exclusions)
 
 
 class AdminModelAccessoriesView(APIView):

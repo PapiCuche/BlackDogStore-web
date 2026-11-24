@@ -20,8 +20,9 @@ Rules, and where each is held:
                                                           `variant_status` REPORTS 'fuera_de_paleta'
   * catalogue changes never create stock                  nothing here touches `BranchStock`/units
   * two options of an EXCLUDED pair never go together     `check_variant` — `ModelOptionExclusion`
-    (CATALOG-REFERENCE-01 · PR B); a model without        (written only by `add_exclusions`); the
-    exclusions behaves exactly as before                  matrix leaves those combinations out
+    (CATALOG-REFERENCE-01 · PR B); a model without        (written only by `add_exclusions` and
+    exclusions behaves exactly as before                  `remove_exclusions`); the matrix leaves
+                                                          those combinations out
 
 What the admin screen reads (`payload`) is the cartesian product of the
 palette, each combination with its state (ADR §8.3): `variante_existente`,
@@ -522,13 +523,17 @@ def _clean_pairs(pairs) -> set[tuple[int, int]]:
 
 
 @transaction.atomic
-def add_exclusions(model, *, pairs, actor=None, request=None) -> dict:
+def add_exclusions(model, *, pairs, actor=None, request=None, refuse_held=False) -> dict:
     """
     CATALOG-REFERENCE-01 · PR B — ADD impossible pairs to `model` (nothing is ever taken out here). Each pair is two
     options of the model's PALETTE, of two different attributes, of the model's company (another company's option
     answers `not_found`, nothing written). Under the model's lock, like the palette. A pair already there is not
     written again; audited only when something was added. A variant that already is such a combination is left as
     it is (history is kept); new ones are refused by `check_variant`.
+
+    `refuse_held` (CATALOG-ADMIN-UX-B, the panel's «Combinaciones que no existen»): a person adding a pair that
+    a variant of the model already IS is told so instead — `ExclusionHeld` (409) names those variants and nothing
+    is written. The reference import keeps the default: it never rewrites what exists, it only reports it.
     """
     from .device_catalog import CatalogError, _audit
 
@@ -549,6 +554,12 @@ def add_exclusions(model, *, pairs, actor=None, request=None) -> dict:
             raise CatalogError('Un par son opciones de dos atributos distintos.', field='pairs')
     current = exclusions_of(model)
     to_add = sorted(pair for pair in wanted if frozenset(pair) not in current)
+    if refuse_held and to_add:
+        held = variants_holding(model, [frozenset(pair) for pair in to_add])
+        if held:
+            from .device_catalog import ExclusionHeld
+
+            raise ExclusionHeld(model, held)
     for first, second in to_add:
         ModelOptionExclusion.objects.create(company=company, model=model, option_a=options[first],
                                             option_b=options[second])
@@ -557,6 +568,52 @@ def add_exclusions(model, *, pairs, actor=None, request=None) -> dict:
                target_type='product_model', target_id=model.pk, model_name=model.name,
                added=[list(pair) for pair in to_add], total=len(current) + len(to_add))
     return {'added': len(to_add), 'total': len(current) + len(to_add)}
+
+
+def variants_holding(model, pairs) -> list[dict]:
+    """
+    CATALOG-ADMIN-UX-B — the variants of `model` (both lines, archived too: an archived row keeps its combination)
+    whose options hold one of `pairs` (frozensets of two option ids), by product id. Two queries.
+    """
+    if not pairs:
+        return []
+    options: dict[int, set[int]] = {}
+    for product_id, option_id in (ProductVariantOption.objects
+                                  .filter(product__product_model=model, company_id=model.company_id)
+                                  .values_list('product_id', 'option_id')):
+        options.setdefault(product_id, set()).add(option_id)
+    hit = sorted(pk for pk, ids in options.items() if any(pair <= ids for pair in pairs))
+    if not hit:
+        return []
+    return [{'product_id': pk, 'name': name, 'condition_line': line, 'archived': archived_at is not None}
+            for pk, name, line, archived_at in Product.objects.filter(pk__in=hit).order_by('pk')
+            .values_list('pk', 'name', 'condition_line', 'archived_at')]
+
+
+@transaction.atomic
+def remove_exclusions(model, *, pairs, actor=None, request=None) -> dict:
+    """
+    CATALOG-ADMIN-UX-B — take impossible pairs OUT of `model`: those combinations are offered again. Removing never
+    makes an existing variant impossible (it only admits more), so nothing is refused for that reason. A pair that is
+    not there is ignored; options of another company are never read (the rows are the model's own). Under the
+    model's lock, like every palette write; audited (with the company) only when something was removed.
+    """
+    from .device_catalog import _audit
+
+    wanted = _clean_pairs(pairs)
+    company = model.company
+    model = type(model).objects.select_for_update().get(pk=model.pk)
+    rows = ModelOptionExclusion.objects.filter(model=model, company=company)
+    gone = []
+    for first, second in sorted(wanted):
+        deleted, _ = rows.filter(option_a_id=first, option_b_id=second).delete()
+        if deleted:
+            gone.append([first, second])
+    total = rows.count()
+    if gone:
+        _audit('product_model_exclusions_removed', company=company, actor=actor, request=request,
+               target_type='product_model', target_id=model.pk, model_name=model.name, removed=gone, total=total)
+    return {'removed': len(gone), 'total': total}
 
 
 def _variant_rows(model):
@@ -591,6 +648,98 @@ def _variant_rows(model):
             'archived': product.archived_at is not None,
         })
     return rows
+
+
+def held_keys(variants, excluded) -> tuple[set, set, set, dict]:
+    """
+    The configurations the variants of a model hold, as `variant_key`s, from rows with `option_ids`, `status`,
+    `archived` and `condition_line`: (existing, archived-only, excluded, by line). Shared by the palette screen
+    (`payload`) and the models list (`catalogue_states`), so both count alike.
+    """
+    from .device_catalog import variant_key
+
+    complete = [r for r in variants if r['status'] == STATUS_EXISTING]
+    existing = {variant_key(r['option_ids']) for r in complete if not r['archived']}
+    # VARIANT-SAFE-01: configurations only archived variants hold: neither existing nor creatable.
+    archived = {variant_key(r['option_ids']) for r in complete if r['archived']} - existing
+    # Review of #371: a variant that already is an EXCLUDED combination is not one of the offered ones; it is counted
+    # apart (only for a model with exclusions), so `existing` + `valid_without_variant` = `combinations`.
+    excluded_keys = {variant_key(r['option_ids']) for r in complete
+                     if any(pair <= set(r['option_ids']) for pair in excluded)} if excluded else set()
+    by_line = {line: {variant_key(r['option_ids']) for r in complete if r['condition_line'] == line} - excluded_keys
+               for line, _label in Product.CONDITION_LINE_CHOICES}
+    return existing - excluded_keys, archived - excluded_keys, excluded_keys, by_line
+
+
+def combination_total(palette, excluded) -> int:
+    """
+    CATALOG-ADMIN-UX-B — how many configurations `palette` ({attribute: {option ids}}) makes once the `excluded`
+    pairs are taken out: the number `payload` reports, without building them. Only the attributes an exclusion
+    names are walked; the others multiply.
+    """
+    if not palette:
+        return 0
+    owner = {option_id: attribute_id for attribute_id, ids in palette.items() for option_id in ids}
+    pairs = [pair for pair in excluded
+             if all(pk in owner for pk in pair) and len({owner[pk] for pk in pair}) == 2]
+    involved = sorted({owner[pk] for pair in pairs for pk in pair})
+    rest = 1
+    for attribute_id, ids in palette.items():
+        if attribute_id not in involved:
+            rest *= len(ids)
+    if not pairs:
+        return rest
+    kept = sum(1 for combo in cartesian(*(sorted(palette[a]) for a in involved))
+               if not any(pair <= set(combo) for pair in pairs))
+    return kept * rest
+
+
+def catalogue_states(company, models) -> dict[int, dict]:
+    """
+    CATALOG-ADMIN-UX-B — for the models list: per model id, whether it has a palette, how many configurations are
+    still without a variant (None without a palette, as the palette screen counts them) and how many LIVE variants
+    stand incomplete or outside the palette (an archived one is history: nobody edits it). `models` is a queryset of
+    the company's models. FOUR queries whatever the number of models or variants.
+    """
+    palettes: dict[int, dict] = {}
+    for model_id, attribute_id, option_id in (ModelOption.objects.filter(company=company, model__in=models)
+                                              .values_list('model_id', 'option__attribute_id', 'option_id')):
+        palettes.setdefault(model_id, {}).setdefault(attribute_id, set()).add(option_id)
+    excluded: dict[int, set] = {}
+    for model_id, first, second in (ModelOptionExclusion.objects.filter(company=company, model__in=models)
+                                    .values_list('model_id', 'option_a_id', 'option_b_id')):
+        excluded.setdefault(model_id, set()).add(frozenset((first, second)))
+    rows: dict[int, dict] = {}
+    by_model: dict[int, list] = {}
+    for pk, model_id, line, archived_at in (Product.objects.filter(product_model__in=models)
+                                            .values_list('pk', 'product_model_id', 'condition_line', 'archived_at')):
+        row = {'option_ids': [], 'archived': archived_at is not None, 'condition_line': line}
+        rows[pk] = row
+        by_model.setdefault(model_id, []).append(row)
+    for product_id, option_id in (ProductVariantOption.objects
+                                  .filter(company=company, product__product_model__in=models)
+                                  .values_list('product_id', 'option_id')):
+        if product_id in rows:
+            rows[product_id]['option_ids'].append(option_id)
+    states = {}
+    for model_id in set(palettes) | set(by_model):
+        palette = palettes.get(model_id, {})
+        variants = by_model.get(model_id, [])
+        for row in variants:
+            row['status'] = variant_status(None, row['option_ids'], palette=palette)
+        live = [row for row in variants if not row['archived']]
+        valid = None
+        if palette:
+            pairs = excluded.get(model_id, set())
+            existing, archived, _excluded, _lines = held_keys(variants, pairs)
+            valid = max(combination_total(palette, pairs) - len(existing) - len(archived), 0)
+        states[model_id] = {
+            'has_palette': bool(palette),
+            'valid_without_variant': valid,
+            'incomplete_variant_count': sum(1 for row in live if row['status'] == STATUS_INCOMPLETE),
+            'outside_variant_count': sum(1 for row in live if row['status'] == STATUS_OUTSIDE),
+        }
+    return states
 
 
 def _needs_review(row) -> bool:
@@ -708,17 +857,7 @@ def payload(model) -> dict:
             combinations.append(_combination(key, ids, combo, labels, by_key))
 
     # Counted over the variants, not over the (possibly cut) list of combinations.
-    existing_keys = {variant_key(r['option_ids']) for r in variants
-                     if r['status'] == STATUS_EXISTING and not r['archived']}
-    # VARIANT-SAFE-01: configurations only archived variants hold: neither existing nor creatable.
-    archived_keys = {variant_key(r['option_ids']) for r in variants
-                     if r['status'] == STATUS_EXISTING and r['archived']} - existing_keys
-    # Review of #371: a variant that already is an EXCLUDED combination is not one of the offered ones; it is counted
-    # apart (only for a model with exclusions), so `existing` + `valid_without_variant` = `combinations`.
-    excluded_keys = {variant_key(r['option_ids']) for r in variants if r['status'] == STATUS_EXISTING
-                     and any(pair <= set(r['option_ids']) for pair in excluded)} if excluded else set()
-    existing_keys -= excluded_keys
-    archived_keys -= excluded_keys
+    existing_keys, archived_keys, excluded_keys, by_line = held_keys(variants, excluded)
     # A1b-2: the roles the company has attributes for that the palette does not cover (empty without a
     # palette: nothing is «missing» from a model that admits anything). In reading order.
     roles_missing = []
@@ -743,6 +882,10 @@ def payload(model) -> dict:
             'combinations': total,
             'existing': len(existing_keys),
             'valid_without_variant': max(total - len(existing_keys) - len(archived_keys), 0) if palette else 0,
+            # CATALOG-ADMIN-UX-B: «Crear variante» is per LINE — what each line still lacks (an archived row of
+            # that line holds its combination there too: it is never created a second time).
+            'valid_without_variant_by_line': {
+                line: max(total - len(keys), 0) if palette else 0 for line, keys in by_line.items()},
             'archived': len(archived_keys),
             'outside': sum(1 for r in variants if r['status'] == STATUS_OUTSIDE),
             'incomplete': sum(1 for r in variants if r['status'] == STATUS_INCOMPLETE),
