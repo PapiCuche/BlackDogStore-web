@@ -2866,6 +2866,8 @@ export type VariantBlocker = { code: string; count: number; label: string };
 /** What the shelves still hold of a variant: it is not archived while any of these is above zero. */
 export type VariantStockCounts = {
   available_units: number; reserved_units: number; in_transit_units: number; stock: number;
+  /** Stock counted by quantity on its way between two branches (absent from an older server). */
+  in_transit_quantity?: number;
 };
 
 /** `GET /api/admin/products/<pk>/deletion-check/`: what deleting or archiving would meet, and what the caller may do. */

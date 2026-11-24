@@ -142,7 +142,14 @@ def blockers(product) -> list[dict]:
 
 
 def stock_counts(product) -> dict:
-    """What still sits on a shelf: devices available, set aside or in transit, and quantities above zero."""
+    """
+    What still exists of the variant: devices available, set aside or in transit, quantities above zero on a shelf,
+    and quantities on their way between two branches (a dispatched transfer has left the source shelf and not reached
+    the destination yet — `stock_unit_services.holds_stock`'s reading). A device in transit is counted once, as a
+    device; `in_transit_quantity` is the stock counted by quantity.
+    """
+    from .models import StockTransfer, StockTransferItem
+
     units = StockUnit.objects.filter(product_id=product.pk)
     return {
         'available_units': units.filter(status=StockUnit.Status.AVAILABLE).count(),
@@ -150,6 +157,9 @@ def stock_counts(product) -> dict:
         'in_transit_units': units.filter(status=StockUnit.Status.IN_TRANSIT).count(),
         'stock': int(BranchStock.objects.filter(product_id=product.pk, quantity__gt=0)
                      .aggregate(n=Sum('quantity'))['n'] or 0),
+        'in_transit_quantity': 0 if product.is_serialized else int(
+            StockTransferItem.objects.filter(product_id=product.pk, transfer__status=StockTransfer.STATUS_IN_TRANSIT)
+            .aggregate(n=Sum('quantity'))['n'] or 0),
     }
 
 

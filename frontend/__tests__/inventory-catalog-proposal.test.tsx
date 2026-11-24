@@ -155,8 +155,9 @@ describe('el panel', () => {
   });
 
   it('una variante archivada se muestra como archivada, con el motivo, y no se ofrece (VARIANT-SAFE-01)', async () => {
-    const archived = { ...PROPOSAL, plan: { ...PROPOSAL.plan, variants: PROPOSAL.plan.variants.map(v => (v.ref === 'v3'
-      ? { ...v, status: 'archived' as const, archived: '«Teléfono X 128 GB Azul Seminuevo» está archivada.' } : v)) } };
+    const archived = { ...PROPOSAL, counts: { ...PROPOSAL.counts, variants_existing: 0, variants_archived: 1 },
+      plan: { ...PROPOSAL.plan, variants: PROPOSAL.plan.variants.map(v => (v.ref === 'v3'
+        ? { ...v, status: 'archived' as const, archived: '«Teléfono X 128 GB Azul Seminuevo» está archivada.' } : v)) } };
     send.mockImplementation(async (url) => (String(url).includes('/catalog-proposal/') ? reply(200, archived) : reply(404, {})));
     panel();
     await propose();
@@ -164,6 +165,7 @@ describe('el panel', () => {
     expect(within(list).getByText('(archivada)')).toBeInTheDocument();
     expect(within(list).getByRole('note')).toHaveTextContent('está archivada');
     expect(within(list).queryByLabelText('Crear la variante Teléfono X 128 GB Azul Seminuevo')).toBeNull();
+    expect(screen.getByText(/1 archivada\(s\), no se usan/)).toBeInTheDocument();
   });
 
   it('propone sin escribir y muestra la propuesta agrupada por modelo', async () => {

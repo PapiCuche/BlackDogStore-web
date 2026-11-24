@@ -628,6 +628,9 @@ def receive(*, company, branch, body, actor, request=None, authority: Authority)
         product = device_catalog.find_variant(company, spec)      # another till may have created it meanwhile
     price_changed = False
     if product is not None:
+        # VARIANT-SAFE-01 review: decided on the LOCKED row (Product first, DEC-CATALOG-PALETTE-LOCK-01), so an archive
+        # or a deactivation that commits meanwhile either waits for this reception or is seen by it.
+        product = Product.objects.select_for_update(of=('self',)).get(pk=product.pk)
         _usable(product)
         if body.get('price') not in (None, ''):
             price = _money(body.get('price'), 'price', 'el precio de venta')

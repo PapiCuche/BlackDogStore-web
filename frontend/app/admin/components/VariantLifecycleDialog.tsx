@@ -40,6 +40,7 @@ export function stockSentence(stock: VariantDeletionCheck["stock"]): string {
     stock.reserved_units ? plural(stock.reserved_units, "equipo apartado", "equipos apartados") : "",
     stock.in_transit_units ? plural(stock.in_transit_units, "equipo en tránsito", "equipos en tránsito") : "",
     stock.stock ? plural(stock.stock, "unidad en stock", "unidades en stock") : "",
+    stock.in_transit_quantity ? plural(stock.in_transit_quantity, "unidad en traslado", "unidades en traslado") : "",
   ].filter(Boolean);
   return parts.join(", ");
 }

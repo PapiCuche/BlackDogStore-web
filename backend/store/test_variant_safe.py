@@ -760,3 +760,98 @@ class ArchivedImportersTest(LifecycleShop, TestCase):
         self.assertEqual((config['status'], config['complete'], config['product_id']),
                          ('variante_archivada', False, None))
         self.assertEqual(res.json()['summary']['variante_archivada'], 1)
+
+
+# ---------------------------------------------------------------------------
+# Review of #407: an archived variant never ends up holding stock
+# ---------------------------------------------------------------------------
+
+class ArchivedNeverHoldsStockTest(LifecycleShop, TestCase):
+    def setUp(self):
+        self.build('vs-stock')
+
+    def counted(self, name='Teléfono X 256 GB Azul'):
+        """A variant counted by quantity (a palette draft, enabled and priced), with its generated code."""
+        product = self.priced()
+        Product.objects.filter(pk=product.pk).update(name=name)
+        product.refresh_from_db()
+        return product, ProductBarcode.objects.filter(product=product).values_list('code', flat=True).first()
+
+    def test_stock_counted_by_quantity_in_transit_refuses_the_archive(self):
+        product, _code = self.counted()
+        transfer = _row(StockTransfer, company=self.company, source_branch=self.branch,
+                        destination_branch=self.second_branch(), status=StockTransfer.STATUS_IN_TRANSIT)
+        _row(StockTransferItem, transfer=transfer, product=product, quantity=2)
+        res = self.archive(product)
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'stock_available'), res.content)
+        self.assertEqual(res.json()['stock']['in_transit_quantity'], 2)
+        self.assertFalse(self.check(product).json()['archivable'])
+
+    def test_a_device_is_never_moved_into_an_archived_variant(self):
+        from store import stock_unit_services
+
+        [unit] = self.receive(self.new128)
+        self.assertIn(self.new256, stock_unit_services.variant_targets(unit))
+        # Deactivated only: still a target (correcting which variant a device IS is a fact, not a sale).
+        Product.objects.filter(pk=self.new256.pk).update(is_active=False)
+        self.assertIn(self.new256, stock_unit_services.variant_targets(unit))
+        Product.objects.filter(pk=self.new256.pk).update(is_active=True)
+        self.assertEqual(self.archive(self.new256).status_code, 200)
+        self.assertNotIn(self.new256, stock_unit_services.variant_targets(unit))
+        with self.assertRaises(stock_unit_services.StockUnitError):
+            stock_unit_services.move_unit_to_variant(unit, product=Product.objects.get(pk=self.new256.pk),
+                                                     reason='Variante equivocada', actor=self.staff)
+        self.assertEqual(StockUnit.objects.get(pk=unit.pk).product_id, self.new128.pk)
+
+    def stock_file(self, product, code, quantity):
+        from store import stock_import_services
+        from store.models import BulkImportJob
+        from store.test_cost_imports import upload
+
+        return stock_import_services.preview_stock(
+            company=self.company, actor=self.staff, filename='stock.xlsx', mode=BulkImportJob.MODE_RECONCILE,
+            upload=upload(['ID', 'CODIGO', 'CODIGO EAN', 'NOMBRE', 'ALMACEN 1'],
+                          [['', '', code, product.name, quantity]], title='Inventario'),
+            branch_map={4: self.branch.pk})
+
+    def test_the_stock_file_refuses_an_archived_variant_in_preview_and_in_apply(self):
+        from store import stock_import_services
+
+        product, code = self.counted()
+        # Previewed while it was in use…
+        job = self.stock_file(product, code, 5)
+        self.assertEqual(job.rows_error, 0, list(job.rows.values_list('errors', flat=True)))
+        # …archived before it is applied: the apply re-reads it under the product lock and moves nothing.
+        self.assertEqual(self.archive(product).status_code, 200)
+        with self.assertRaises(stock_import_services.StockImportError) as caught:
+            stock_import_services.apply_stock(job=job, actor=self.staff)
+        self.assertIn('archivada', str(caught.exception))
+        self.assertFalse(BranchStock.objects.filter(product=product, quantity__gt=0).exists())
+        # A new preview says it per row.
+        job = self.stock_file(product, code, 5)
+        [row] = job.rows.all()
+        self.assertIn('archivada', ' '.join(row.errors))
+
+    def test_a_receipt_decided_on_a_stale_product_is_refused_under_the_lock(self):
+        from store import receipt_services as receipts
+
+        product, _code = self.counted()
+        normalised = receipts.normalise({'branch': self.branch.pk, 'supplier': None, 'document_ref': '',
+                                         'notes': '', 'lines': [{'kind': 'quantity', 'product': product.pk,
+                                                                 'quantity': 3, 'unit_cost': None}]},
+                                        may_view_costs=False)
+        resolved = receipts.resolve(self.company, normalised, branch=self.branch)   # read while in use
+        self.assertTrue(all(v['status'] == 'ok' for v in receipts.check(self.company, resolved, normalised)))
+        self.assertEqual(self.archive(product).status_code, 200)                    # archived meanwhile
+        with self.assertRaises(receipts.ReceiptInvalid):
+            receipts.confirm(company=self.company, resolved=resolved, normalised=normalised, actor=self.staff,
+                             key='vs-recepcion', stamp='vs')
+        self.assertFalse(BranchStock.objects.filter(product=product, quantity__gt=0).exists())
+
+    def test_the_till_decides_on_the_locked_row(self):
+        """`receive` re-reads the variant under its lock before `_usable` (an archive committed meanwhile)."""
+        import inspect
+
+        source = inspect.getsource(pos_device_services.receive)
+        lock = source.index("Product.objects.select_for_update(of=('self',)).get(pk=product.pk)")
+        self.assertLess(lock, source.index('_usable(product)'))

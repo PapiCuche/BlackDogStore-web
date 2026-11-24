@@ -923,8 +923,12 @@ def variant_targets(unit):
     product = unit.product
     if not product.product_model_id:
         return Product.objects.none()
+    # VARIANT-SAFE-01: never INTO an archived variant (it would hold stock that nothing sells, loads or archives).
+    # A merely deactivated one stays a target: correcting which variant a device IS is a fact about the device, and
+    # deactivation is a reversible sales decision that must not block it.
     return (Product.objects.filter(company_id=unit.company_id, product_model_id=product.product_model_id,
-                                   condition_line=product.condition_line, is_serialized=True)
+                                   condition_line=product.condition_line, is_serialized=True,
+                                   archived_at__isnull=True)
             .exclude(pk=product.pk).order_by('name', 'pk'))
 
 

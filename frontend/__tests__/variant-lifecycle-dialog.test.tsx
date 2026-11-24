@@ -136,4 +136,6 @@ test('the archived state reads «Archivada» in the matrix and the resolver', ()
   expect(RESOLVER_STATUS_LABELS.variante_archivada).toBe('Archivada');
   expect(stockSentence({ available_units: 0, reserved_units: 0, in_transit_units: 1, stock: 4 }))
     .toBe('1 equipo en tránsito, 4 unidades en stock');
+  expect(stockSentence({ available_units: 0, reserved_units: 0, in_transit_units: 0, stock: 0, in_transit_quantity: 3 }))
+    .toBe('3 unidades en traslado');
 });

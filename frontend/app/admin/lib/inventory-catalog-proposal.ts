@@ -54,6 +54,8 @@ export type PlanRow = { key: string; variant_ref: string | null; model_ref: stri
 export type ProposalCounts = {
   models_missing: number; models_existing: number; options_missing: number; options_existing: number;
   variants_missing: number; variants_existing: number; rows_resolved: number; rows_unresolved: number;
+  /** VARIANT-SAFE-01 (absent from an older server). */
+  variants_archived?: number;
 };
 export type Proposal = {
   plan: { models: PlanModel[]; options: PlanOption[]; variants: PlanVariant[] };

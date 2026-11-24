@@ -133,6 +133,7 @@ export function CatalogProposalPanel({ rows, companyId = null, allowed, onApplie
           <p role="status">
             {proposal!.counts.models_missing} modelo(s), {proposal!.counts.options_missing} opción(es) y{" "}
             {proposal!.counts.variants_missing} variante(s) por crear · {proposal!.counts.variants_existing} variante(s) ya existen
+            {proposal!.counts.variants_archived ? ` · ${proposal!.counts.variants_archived} archivada(s), no se usan` : ""}
             {skipped.length ? ` · ${skipped.length} fila(s) sin propuesta` : ""}
           </p>
           <label className="flex min-h-11 items-center gap-2 font-semibold">

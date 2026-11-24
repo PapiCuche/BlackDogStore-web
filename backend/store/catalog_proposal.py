@@ -424,6 +424,8 @@ class _Plan:
             'models_missing': n(self.models, 'missing'), 'models_existing': n(self.models, 'existing'),
             'options_missing': n(self.options, 'missing'), 'options_existing': n(self.options, 'existing'),
             'variants_missing': n(self.variants, 'missing'), 'variants_existing': n(self.variants, 'existing'),
+            # VARIANT-SAFE-01: variants a row IS but that are archived — shown, never approvable.
+            'variants_archived': n(self.variants, 'archived'),
             'rows_resolved': resolved, 'rows_unresolved': len(self.rows) - resolved,
         }
 
