@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — IMG-GATE-01 · la foto propia de una variante también necesita licencia verificada (PR abierto, sin fusionar ni desplegar)
+
+Rama `fix/img-gate-01`. **Sin migraciones.** Producción sin cambios.
+
+- **Regla (orden del propietario 2026-11-23, ahora también para variantes):** una VARIANTE de equipo (producto con modelo) muestra en la tienda su foto propia (galería o `image_url`) sólo si es un archivo subido por la empresa con la licencia verificada. Una URL externa no tiene licencia verificable: no se muestra. Si no hay, la foto verificada del acabado del MISMO color; si tampoco, «Imagen pendiente». Nunca la de otro color. Una sola regla (`device_catalog.variant_galleries`) para la página del modelo, `/api/products/` (catálogo, ficha `/product/<variante>`, JSON-LD y Open Graph), carrito, checkout, pedidos del comprador, líneas cerradas y la API v1. La caja no cambia: sus chips ya eran sólo de acabado verificado (#396).
+- **Productos sin modelo (accesorios, cables): SIN CAMBIOS.** No tienen acabado al que recurrir; ocultarlos al desplegar podría vaciar la tienda. Quedan listados en IMG-HEALTH como `unverified_public`. **Decisión del propietario pendiente.**
+- **Panel:** cada imagen de la galería de un producto dice su origen y si su licencia está verificada; «Registrar/Editar procedencia» y «Verificar licencia» usan el flujo de los acabados (`finish_media.apply_provenance`, `products.manage`, auditado con la empresa). En una variante: «No visible en la tienda hasta verificar la licencia».
+- **IMG-HEALTH (sólo lectura):** `manage.py report_image_health --company <slug>` (CSV; resumen por stderr) y «Salud de las imágenes» en Productos › Imágenes por reemplazar (`GET /api/admin/catalog/image-health/`, `products.view`, a demanda). Archivos rotos, enlaces externos por dominio, imágenes visibles sin licencia verificada, un archivo en dos colores de un modelo y variantes nuevas en venta con «Imagen pendiente». Nunca borra nada.
+- **`/product/<variante>`:** canónica `/modelo/<modelo>?variante=<slug de la variante>` (el parámetro existente lleva el slug, no el id); seminuevo: la página del modelo. «Ver todas las opciones» abre la variante elegida. Sin foto pública: «Imagen pendiente».
+- **Efecto al desplegar:** toda variante cuya única foto sea propia sin verificar o externa pasa a «Imagen pendiente» hasta verificarla. **El ensayo de la release debe contarlas** con `report_image_health` (`variants_hidden_by_gate` y filas `variant_without_photo`) antes del GO.
+- **Pruebas:** `test_img_gate` (38) y las suites afectadas; Jest `img-gate` (16). E2E `catalog-variant-images.spec.ts` actualizado (verifica las licencias antes de ir a la tienda), no ejecutado.
+
 ## 2026-11-24 — SUPPLY-WEEKLY-01 · semana de listas de proveedor, ofertas no mencionadas y combinación válida sin variante (rama, sin desplegar)
 
 Rama `feat/supply-weekly-01` sobre #402 (ya en `master`), PR abierto, **sin fusionar ni desplegar**, **sin migraciones**.
