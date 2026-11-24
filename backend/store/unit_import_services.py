@@ -344,7 +344,10 @@ def _stock_notes(line) -> dict:
 
 def _stock_example(line, branches) -> dict:
     """The example row: skipped at upload by its «Serie» (`EXAMPLE_SERIAL_PREFIX`), and it says so twice."""
-    row = {'branch': (list(branches) or ['Tienda principal'])[0], 'model': 'iPhone 16', 'capacity': '128 GB',
+    from .xlsx_reader import looks_like_formula
+
+    branch = next((name for name in branches if not looks_like_formula(name)), 'Tienda principal')
+    row = {'branch': branch, 'model': 'iPhone 16', 'capacity': '128 GB',
            'colour': 'Negro', 'imei': _EXAMPLE_IMEI, 'serial_number': f'{EXAMPLE_SERIAL_PREFIX}-BORRA-ESTA-FILA',
            'cost': 2500, 'received_on': '2026-01-15',
            'notes': 'FILA DE EJEMPLO: no se carga. Escribe tus equipos desde la fila 3.'}

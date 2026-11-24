@@ -70,6 +70,13 @@ def void_job(job, *, reason, actor=None, request=None):
         text = stock_unit_services.clean_reason(reason)
     except stock_unit_services.StockUnitError:
         raise BatchError('Escribe el motivo de la anulación de la carga.', field='reason') from None
+    # Each device's Kardex line reads «Anulación de ingreso (…): Carga #N: <motivo>»: the whole of it fits the line.
+    prefix = f'Carga #{job.pk}: '
+    kardex = f'Anulación de ingreso ({stock_unit_services.VOID_REASONS[BATCH_REASON_CODE]}): '
+    room = stock_unit_services.MAX_REASON - len(kardex) - len(prefix)
+    if len(text) > room:
+        raise BatchError(f'El motivo de la anulación admite hasta {room} caracteres.', field='reason')
+    line_reason = prefix + text
     unit_ids = (summary.get('applied') or {}).get('unit_ids')
     if unit_ids is None:
         raise BatchError(
@@ -103,7 +110,8 @@ def void_job(job, *, reason, actor=None, request=None):
             code=NOT_VOIDABLE, status=409, blocking=blocking,
         )
 
-    line_reason = f'Carga #{job.pk}: {text}'
+    # Products in id order, then shelves, then devices: each line updates its product row (`create_stock_movement`).
+    to_void.sort(key=lambda unit: (unit.product_id, unit.branch_id, unit.pk))
     for unit in to_void:
         try:
             stock_unit_services.void_unit(unit, reason=line_reason, reason_code=BATCH_REASON_CODE, actor=actor,

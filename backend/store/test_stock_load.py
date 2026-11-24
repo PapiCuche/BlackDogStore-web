@@ -232,6 +232,16 @@ class StockTemplateRegistryTest(LoadShop, TestCase):
         self.assertIn('Sucursal Norte', lists[branch_letter])
         self.assertGreater(sheet.column_dimensions['A'].width, 10)
 
+    def test_a_branch_named_like_a_formula_never_becomes_one_in_the_example_row(self):
+        from store.models import Branch
+
+        Branch.objects.filter(pk=self.branch.pk).update(name='=Centro')
+        Branch.objects.filter(pk=self.north.pk).update(is_active=False)
+        book = load_workbook(io.BytesIO(self.template('new').content))
+        example = book.worksheets[0]['A2']
+        self.assertNotEqual(example.data_type, 'f')
+        self.assertFalse(str(example.value).startswith('='))
+
     def test_the_branch_list_names_only_the_callers_branches(self):
         scoped, _ = _p2d_member(self.company, 'invload2_tpl_norte', [
             'company.view', 'inventory.view', 'inventory.adjust'], branches=[self.north])
@@ -505,6 +515,35 @@ class BatchVoidTest(LoadShop, TestCase):
         listed = self.loader_api.get('/api/admin/imports/', {'type': 'units'}).json()['results']
         self.assertNotIn('unit_ids', str(listed))
         self.assertIn('unit_ids', BulkImportJob.objects.get(pk=self.job['id']).summary['applied'])
+
+    def test_an_annulled_opening_load_can_be_loaded_again_as_opening(self):
+        opening = self.apply(self.preview('new', [self.new_row('VOID-OP-01', branch=self.north, capacity='256 GB')],
+                                          entry_kind='opening'))
+        self.void_job(opening['id'])
+        again = self.preview('new', [self.new_row('VOID-OP-02', branch=self.north, capacity='256 GB')],
+                             entry_kind='opening')
+        self.assertEqual(again['counts']['error'], 0, again['rows'])
+        self.apply(again)
+        # A sale still closes the opening, as before.
+        from store.tests import _c1_sale
+
+        cashier, _ = _p2d_member(self.company, 'invload2_void_caja', ['company.view', 'sales.pos.use'])
+        unit = StockUnit.objects.get(serial_number='VOID-OP-02')
+        _c1_sale(company=self.company, branch=self.north, actor=cashier, items=[
+            {'product': self.new256.pk, 'quantity': 1, 'units': [{'id': unit.pk, 'method': 'scanner'}]}])
+        closed = self.preview('new', [self.new_row('VOID-OP-03', branch=self.north, capacity='256 GB')],
+                              entry_kind='opening')
+        self.assertIn('inventario inicial', self.errors(closed)[3])
+
+    def void_job(self, job_id, reason='Error'):
+        response = self.loader_api.post(void_url(job_id), {'reason': reason}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+        return response.json()
+
+    def test_a_reason_too_long_once_prefixed_is_a_400_on_the_reason(self):
+        body = self.void(expect=400, reason='x' * 299)
+        self.assertEqual(body.get('field'), 'reason')
+        self.assertEqual(StockUnit.objects.filter(status=StockUnit.Status.VOIDED).count(), 0)
 
     def test_a_second_call_changes_nothing(self):
         self.void()
