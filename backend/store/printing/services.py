@@ -320,6 +320,35 @@ def enqueue_manual(*, order, printer, key: str, actor):
     )
 
 
+# -- cotizaciones (SALES-QUOTE-01) ------------------------------------------------
+
+def enqueue_quote_ticket(*, quote, printer, key: str, actor):
+    """
+    El ticket de 80 mm de una cotización comercial, pedido por una persona.
+
+    UNA COTIZACIÓN NO ES UNA VENTA: no hay pedido ni cobro que comprobar. Sólo va a una impresora de
+    tickets activa del local que cotizó. `key` (cabecera `Idempotency-Key`): un doble clic no imprime dos veces.
+    """
+    if printer.company_id != quote.company_id or not printer.is_active:
+        raise PrintError('Esa impresora no está disponible.')
+    if printer.role != Printer.Role.TICKET:
+        raise PrintError('Esa impresora es de etiquetas: un ticket va a una impresora de tickets.')
+    if quote.branch_id != printer.branch_id:
+        raise PrintError('Esa impresora es de otro local.')
+    key = (key or '').strip()
+    if not key:
+        raise PrintError('Falta la clave de idempotencia.')
+    stored = f'quote:{key}'[:120]
+    earlier = PrintJob.objects.filter(company=quote.company, idempotency_key=stored).first()
+    if earlier is not None and (earlier.sales_quote_id != quote.pk or earlier.printer_id != printer.pk):
+        raise PrintConflict('Esa clave ya se usó para otra impresión.')
+    return _get_or_create(
+        key=stored, company=quote.company, branch=printer.branch, printer=printer,
+        kind=PrintJob.Kind.SALES_QUOTE_TICKET, reason=PrintJob.Reason.MANUAL, sales_quote=quote,
+        requested_by=actor if getattr(actor, 'is_authenticated', False) else None,
+    )
+
+
 # -- etiquetas (LABEL-04) ----------------------------------------------------------
 
 def _label_key(prefix: str, size: str, part: int) -> str:
@@ -484,6 +513,15 @@ def claim_next(agent, connections=LEGACY_CONNECTIONS, printer_ids=None, kinds=()
                 job.last_error = 'Un ticket sólo se imprime en una impresora de tickets.'
                 job.save(update_fields=['status', 'last_error', 'updated_at'])
                 continue
+            elif job.kind == PrintJob.Kind.SALES_QUOTE_TICKET:
+                pass    # SALES-QUOTE-01: sin pedido; la cotización dice en el papel su estado
+            elif job.order is None:
+                # Un ticket sin pedido de un tipo que esta versión no conoce (p. ej. escrito por una
+                # versión posterior): se cancela en vez de romper la cola de todo el local.
+                job.status = PrintJob.Status.CANCELLED
+                job.last_error = 'Este ticket no tiene un pedido que imprimir en esta versión.'
+                job.save(update_fields=['status', 'last_error', 'updated_at'])
+                continue
             elif not _is_authoritative(job.order):
                 job.status = PrintJob.Status.CANCELLED
                 job.last_error = (
@@ -575,6 +613,10 @@ def render(job) -> bytes:
                'dots': escpos.printable_dots(printer.paper_width_mm, printer.print_width_dots)}
     if job.kind == PrintJob.Kind.FISCAL_TICKET:
         return escpos.fiscal_ticket(job.fiscal_document, **options)
+    if job.kind == PrintJob.Kind.SALES_QUOTE_TICKET:
+        from ..sales_quote_documents import escpos_ticket
+
+        return escpos_ticket(job.sales_quote, **options)
     return escpos.sales_note_ticket(job.sales_note, **options)
 
 
@@ -681,7 +723,7 @@ def _retry_locked(job, *, actor, confirm_not_printed):
         raise PrintError(
             'No se sabe si este ticket salió. Revisa el mostrador y confirma que NO salió '
             'antes de reenviarlo.')
-    if job.kind != PrintJob.Kind.LABEL_BATCH:
+    if job.kind not in (PrintJob.Kind.LABEL_BATCH, PrintJob.Kind.SALES_QUOTE_TICKET):
         if job.order.status == Order.Status.CANCELLED:
             raise PrintError(CANCELLED_REFUSAL)
         if _note_is_void(job):

@@ -65,6 +65,16 @@ class PosUnitNotInspectedError(PosValidationError):
     code = 'unit_not_inspected'
 
 
+class PosPromotionConflict(PosValidationError):
+    """
+    An automatic promotion applies and another discount was asked for: no stacking (v1). Still a
+    `PosValidationError` (the till answers 400 as before); SALES-QUOTE-01 tells it apart to say
+    «revise the quote without its discount».
+    """
+
+    code = 'promotion_conflict'
+
+
 class PosStockAvailableError(PosValidationError):
     """
     DC3 — «Bajo pedido» asked for a line this shelf covers. Answered 409
@@ -1251,7 +1261,7 @@ def build_pos_sale(
             # silent choice of one. Which promotion wins, whether they compound,
             # and what the floor is are business rules nobody has written down —
             # picking one here would bake an unexamined policy into a till.
-            raise PosValidationError(
+            raise PosPromotionConflict(
                 'La promoción automática no se combina con otros descuentos. '
                 'Quita el código o el descuento manual.'
             )

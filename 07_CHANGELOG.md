@@ -3,6 +3,53 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-24 — CATALOG-ADMIN-UX-B: el editor de modelos a escala (rama, sin desplegar)
+
+**Added**
+- Búsqueda (nombre, dirección, alias) y filtros (categoría, activo, variantes incompletas, combinaciones sin variante, sin paleta) de la lista de modelos en el servidor, con paginación opcional y el estado de la paleta en cada fila; el panel los guarda en la dirección.
+- `POST/DELETE /api/admin/catalog/models/<pk>/exclusions/` y el panel «Combinaciones que no existen».
+- «Crear variante» por línea (nuevo / seminuevo) y `valid_without_variant_by_line` en el resumen de la paleta.
+- Precio y publicación en la fila de cada variante; resumen de equipos y estado de imágenes.
+
+**Changed**
+- El detalle del modelo lee el historial de todas sus variantes de una vez: el número de consultas ya no crece con las variantes.
+- Un modelo sin paleta no crea variantes desde la paleta (409 `no_palette`); el editor lo avisa y pide confirmación para clasificar un producto.
+- Los colores de un modelo van primero en su paleta; los demás de la empresa, aparte.
+- `PUT /api/admin/products/<pk>/variant/` acepta `expected_model_id`, `expected_condition_line` y `expected_option_ids`: si la variante cambió, 409 `stale` y nada se escribe.
+
+## 2026-11-24 — SALES-QUOTE-01: cotizaciones comerciales (rama, sin fusionar ni desplegar)
+
+**Added**
+- Cotizaciones comerciales (`/admin/sales/quotes`): crear, editar un borrador, revisar lo ya ofrecido (la revisión anterior queda «Reemplazada»), duplicar, aprobar, marcar como enviada y registrar si el cliente aceptó o rechazó.
+- Numeración `COT-` por empresa, vigencia, condiciones comerciales impresas y notas internas que no se imprimen.
+- Convertir en venta desde la cotización, con las reglas de la caja y sin cobrar dos veces; si el precio cambió, se ven los dos totales y alguien decide.
+- PDF A4, PDF de 80 mm y ticket en la impresora térmica por la cola de impresión.
+- Capacidades `sales.quotes.view`, `sales.quotes.manage` y `sales.quotes.approve`; migración `0189_sales_quote`.
+- Comandos `expire_sales_quotes` (cron) y `cancel_sales_quote_print_jobs` (antes de volver atrás).
+
+**Changed**
+- La cola de impresión cancela un ticket sin pedido de un tipo que no conoce, en vez de detenerse.
+
+## 2026-11-24 — IMG-GATE-01: la foto propia de una variante necesita licencia verificada (PR abierto, sin fusionar)
+
+**Changed**
+- Una variante de equipo muestra en la tienda su foto propia sólo si es un archivo de la empresa con la licencia verificada; si no, la foto verificada del acabado de su color, o «Imagen pendiente». Una URL externa nunca se muestra en una variante. Vale para la página del modelo, el catálogo, `/product/<variante>`, JSON-LD, Open Graph, carrito, checkout, pedidos y la API v1.
+- `/product/<variante>` declara como canónica `/modelo/<modelo>?variante=<variante>` y su enlace «Ver todas las opciones» abre esa variante.
+- Los productos sin modelo no cambian (decisión del propietario pendiente; IMG-HEALTH los lista).
+- Revisión del #408:
+  - la portada de un modelo sin colores pasa por la misma licencia;
+  - JSON-LD y Open Graph sólo publican fotos propias no demostrativas;
+  - el sitemap no lista variantes en `/product/`;
+  - «exigir imagen para publicar» usa la regla de fotos públicas;
+  - pedidos y carrito leen las fotos en una sola consulta.
+
+**Added**
+- Galería de producto en el panel: origen, licencia verificada, «Registrar procedencia», «Verificar licencia» y el aviso «No visible en la tienda hasta verificar la licencia» en variantes.
+- `manage.py report_image_health --company <slug>` y «Salud de las imágenes» (`GET /api/admin/catalog/image-health/`): informe de sólo lectura, nunca borra.
+
+**Deploy**
+- Sin migraciones. Las variantes con sólo fotos propias sin verificar o externas pasan a «Imagen pendiente»: contarlas en el ensayo con `report_image_health`.
+
 ## 2026-11-24 — INV-LOAD-02: cargar el stock real con dos plantillas, comprobarlo y anular una carga (rama, sin desplegar)
 
 **Added**

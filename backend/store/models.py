@@ -660,6 +660,14 @@ class Order(models.Model):
     # of silently returning somebody else's sale.
     pos_idempotency_key = models.CharField(max_length=64, blank=True, default='')
     pos_request_fingerprint = models.CharField(max_length=64, blank=True, default='')
+    # SALES-QUOTE-01 — the commercial quote this sale was converted from. NULL for every other sale, and
+    # `db_default` NULL so the release before this column keeps inserting orders while it migrates. The
+    # quote is evidence of what was OFFERED; this sale is what was charged. SET_NULL: a sale never depends
+    # on its quote to exist.
+    source_quote = models.ForeignKey(
+        'SalesQuote', on_delete=models.SET_NULL, null=True, blank=True, db_default=None,
+        related_name='orders',
+    )
 
     # --- Commercial Phase C1.2: the enriched sale -------------------------
     #
@@ -4331,11 +4339,15 @@ class InternalSequence(models.Model):
     # FINANCE-OBLIGATIONS-01 — the internal, non-sensitive reference of an
     # obligation (`OB-000123`): the one a message may carry. Not a document.
     DOCUMENT_FINANCE_OBLIGATION = 'finance_obligation'
+    # SALES-QUOTE-01 — the commercial quote (`COT-000001`). Company scope; never
+    # an F or B prefix (see `clean`): a quote is not a payment receipt.
+    DOCUMENT_SALES_QUOTE = 'sales_quote'
     DOCUMENT_TYPE_CHOICES = [
         (DOCUMENT_SALES_NOTE, 'Nota de venta interna'),
         (DOCUMENT_REPAIR_ORDER, 'Orden de servicio técnico'),
         (DOCUMENT_PRODUCT_CODE, 'Código de producto'),
         (DOCUMENT_FINANCE_OBLIGATION, 'Obligación financiera'),
+        (DOCUMENT_SALES_QUOTE, 'Cotización comercial'),
     ]
 
     MIN_PADDING = 1
@@ -4454,6 +4466,14 @@ class InternalSequence(models.Model):
             from .document_legends import sales_note_prefix_error
 
             message = sales_note_prefix_error(self.prefix)
+            if message:
+                errors['prefix'] = [message]
+        # SALES-QUOTE-01: a quote is not a payment receipt either, so never F or B.
+        if (self.document_type == self.DOCUMENT_SALES_QUOTE and 'prefix' not in errors
+                and self.prefix != getattr(self, '_stored_prefix', object())):
+            from .document_legends import quote_prefix_error
+
+            message = quote_prefix_error(self.prefix)
             if message:
                 errors['prefix'] = [message]
         if self.document_type == self.DOCUMENT_PRODUCT_CODE and 'prefix' not in errors:
@@ -5500,6 +5520,304 @@ class AppliedPromotion(models.Model):
                 raise ValidationError('El pedido no pertenece a esta empresa.')
             if promotion_companies.get(row.promotion_id) != row.company_id:
                 raise ValidationError('La promoción no pertenece a esta empresa.')
+
+
+# =============================================================================
+# Commercial quotes — SALES-QUOTE-01
+# =============================================================================
+
+
+class SalesQuote(models.Model):
+    """
+    What the shop OFFERS a customer, at which price, until when. One revision of it.
+
+    NOT A SALE AND NOT A RECEIPT. A quote never charges, never moves stock, never
+    reserves a device and never numbers like a fiscal document: no payment field,
+    no Kardex row, no `Order` until somebody CONVERTS it, and then the sale is a
+    counter sale like any other (`pos_services.create_pos_sale`), charged at the
+    till's own rules, with its own receipt. The quote stays as evidence of what
+    was offered.
+
+    MONEY IS FROZEN HERE, priced by the till's own core (`build_pos_sale`) at
+    composition time: the same subtotal, promotions, manual discount and IGV
+    breakdown a sale of that basket would show at that moment. Conversion prices
+    again and refuses a different total unless somebody decides (see
+    `sales_quote_services.convert`).
+
+    REVISIONS, NOT EDITS. Only a draft is edited. Changing an approved, sent or
+    decided quote writes revision N+1 (same number) as a new draft and marks N
+    `superseded`: what a customer was shown survives next to what replaced it.
+    """
+
+    STATUS_DRAFT = 'draft'
+    STATUS_APPROVED = 'approved'
+    STATUS_SENT = 'sent'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_REJECTED = 'rejected'
+    STATUS_EXPIRED = 'expired'
+    STATUS_CONVERTED = 'converted'
+    STATUS_SUPERSEDED = 'superseded'
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, 'Borrador'),
+        (STATUS_APPROVED, 'Aprobada'),
+        (STATUS_SENT, 'Enviada'),
+        (STATUS_ACCEPTED, 'Aceptada'),
+        (STATUS_REJECTED, 'Rechazada'),
+        (STATUS_EXPIRED, 'Vencida'),
+        (STATUS_CONVERTED, 'Convertida en venta'),
+        (STATUS_SUPERSEDED, 'Reemplazada'),
+    ]
+    #: Offered to the customer and still answerable: these expire when their validity passes.
+    LIVE_STATUSES = frozenset({STATUS_APPROVED, STATUS_SENT, STATUS_ACCEPTED})
+    #: A new revision may be written from these (the old one becomes `superseded`).
+    REVISABLE_STATUSES = frozenset({STATUS_APPROVED, STATUS_SENT, STATUS_ACCEPTED, STATUS_REJECTED, STATUS_EXPIRED})
+
+    ORIGIN_NEW = 'new'
+    ORIGIN_REVISION = 'revision'
+    ORIGIN_DUPLICATE = 'duplicate'
+    ORIGIN_CHOICES = [
+        (ORIGIN_NEW, 'Nueva'),
+        (ORIGIN_REVISION, 'Revisión'),
+        (ORIGIN_DUPLICATE, 'Copia'),
+    ]
+
+    DISCOUNT_TYPE_CHOICES = [('', 'Sin descuento manual'), ('amount', 'Monto'), ('percent', 'Porcentaje')]
+
+    #: The columns that ARE the offer. Once a quote leaves DRAFT none of them changes again.
+    CONTENT_FIELDS = frozenset({
+        'company', 'company_id', 'branch', 'branch_id', 'customer', 'customer_id', 'customer_name',
+        'customer_document_type', 'customer_document_number', 'customer_phone', 'customer_email',
+        'seller', 'seller_id', 'seller_name_snapshot', 'number', 'sequence_value', 'revision',
+        'valid_until', 'conditions', 'currency', 'subtotal', 'discount_amount', 'discount_source',
+        'discount_type', 'discount_value', 'discount_reason', 'discount_authorized_by',
+        'discount_authorized_by_id', 'taxable_amount', 'tax_amount', 'tax_rate', 'tax_treatment', 'total',
+        'source_quote', 'source_quote_id', 'origin',
+    })
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='sales_quotes')
+    # The branch that offers (and later sells): prices, promotions and stock are read for it.
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='sales_quotes')
+
+    # The CRM record, when there is one; a prospect is quoted by name only.
+    customer = models.ForeignKey(
+        Customer, on_delete=models.SET_NULL, null=True, blank=True, related_name='sales_quotes')
+    # Who was quoted, frozen: a phone changed next month does not rewrite this paper.
+    customer_name = models.CharField(max_length=255, blank=True, default='')
+    customer_document_type = models.CharField(max_length=10, blank=True, default='')
+    customer_document_number = models.CharField(max_length=20, blank=True, default='')
+    customer_phone = models.CharField(max_length=30, blank=True, default='')
+    customer_email = models.EmailField(blank=True, default='')
+
+    # Who the sale will be credited to (POS rules: another person needs `sales.pos.assign_seller`).
+    seller = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='sales_quotes_sold')
+    seller_name_snapshot = models.CharField(max_length=150, blank=True, default='')
+
+    # `InternalSequence` kind `sales_quote`: allocated once, shared by every revision of the quote.
+    number = models.CharField(max_length=40)
+    sequence_value = models.PositiveBigIntegerField()
+    revision = models.PositiveIntegerField(default=1)
+    origin = models.CharField(max_length=10, choices=ORIGIN_CHOICES, default=ORIGIN_NEW)
+    # The revision this one replaced, or the quote it was copied from.
+    source_quote = models.ForeignKey(
+        'self', on_delete=models.PROTECT, null=True, blank=True, related_name='derived_quotes')
+
+    status = models.CharField(max_length=12, choices=STATUS_CHOICES, default=STATUS_DRAFT, db_index=True)
+    # The last day the offer holds (inclusive, in the shop's time zone).
+    valid_until = models.DateField()
+    # Printed: payment terms, delivery, warranty — what the customer is offered besides the lines.
+    conditions = models.TextField(max_length=2000, blank=True, default='')
+    # INTERNAL. Never printed, never sent.
+    notes = models.TextField(max_length=2000, blank=True, default='')
+
+    # --- money, frozen from the till's pricing (`build_pos_sale`) ---------------
+    currency = models.CharField(max_length=3, default='PEN')
+    subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    discount_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    discount_source = models.CharField(max_length=10, choices=DiscountSource.choices, default=DiscountSource.NONE)
+    # The manual discount AS TYPED (the till's `manual_discount_type` / `manual_discount_value`).
+    discount_type = models.CharField(max_length=8, choices=DISCOUNT_TYPE_CHOICES, blank=True, default='')
+    discount_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    discount_reason = models.CharField(max_length=200, blank=True, default='')
+    # Who decided a MANUAL discount (`sales.discounts.apply`). A promotion needs nobody.
+    discount_authorized_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    taxable_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    tax_amount = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+    tax_rate = models.DecimalField(max_digits=6, decimal_places=4, default=Decimal('0.0000'))
+    tax_treatment = models.CharField(max_length=16, blank=True, default='taxed')
+    total = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'))
+
+    # --- lifecycle --------------------------------------------------------------
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    approved_at = models.DateTimeField(null=True, blank=True)
+    sent_at = models.DateTimeField(null=True, blank=True)
+    # The customer's answer as staff recorded it: who wrote it and, when rejected, why.
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decision_note = models.CharField(max_length=300, blank=True, default='')
+    expired_at = models.DateTimeField(null=True, blank=True)
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    # The counter sale this quote became. SET_NULL: the quote is never what keeps a sale alive.
+    converted_order = models.ForeignKey(
+        Order, on_delete=models.SET_NULL, null=True, blank=True, related_name='converted_quotes')
+    converted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    converted_at = models.DateTimeField(null=True, blank=True)
+    # The Idempotency-Key the conversion used: a retry with it answers the same sale.
+    conversion_key = models.CharField(max_length=64, blank=True, default='')
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'number', 'revision'],
+                                    name='sales_quote_revision_unique'),
+            # ONE live revision per quote: every other one is `superseded`.
+            models.UniqueConstraint(fields=['company', 'number'],
+                                    condition=~models.Q(status='superseded'),
+                                    name='sales_quote_one_current_revision'),
+            models.CheckConstraint(condition=models.Q(total__gte=Decimal('0.00')),
+                                   name='sales_quote_total_non_negative'),
+            models.CheckConstraint(condition=models.Q(discount_amount__gte=Decimal('0.00')),
+                                   name='sales_quote_discount_non_negative'),
+            models.CheckConstraint(condition=models.Q(revision__gte=1), name='sales_quote_revision_positive'),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'number']),
+            models.Index(fields=['branch', 'created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.number} · rev. {self.revision}'
+
+    @property
+    def label(self) -> str:
+        """`COT-000012` for the first revision, `COT-000012-R2` after."""
+        return self.number if self.revision <= 1 else f'{self.number}-R{self.revision}'
+
+    @property
+    def is_editable(self) -> bool:
+        return self.status == self.STATUS_DRAFT
+
+    @property
+    def is_expired(self) -> bool:
+        """
+        DERIVED: the validity has passed and the offer was still live. Never written during a read;
+        `expire_sales_quotes` stamps it for reports (cron-friendly), and every transition asks this.
+        """
+        if self.status == self.STATUS_EXPIRED:
+            return True
+        if self.status not in self.LIVE_STATUSES or self.valid_until is None:
+            return False
+        return timezone.localdate() > self.valid_until
+
+    @property
+    def effective_status(self) -> str:
+        return self.STATUS_EXPIRED if self.is_expired else self.status
+
+    def clean(self):
+        from django.core.exceptions import ValidationError
+
+        errors = {}
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            errors['branch'] = ['La sucursal no pertenece a esta empresa.']
+        if self.customer_id and self.company_id and self.customer.company_id != self.company_id:
+            errors['customer'] = ['El cliente no pertenece a esta empresa.']
+        if self.source_quote_id and self.company_id and self.source_quote.company_id != self.company_id:
+            errors['source_quote'] = ['La cotización de origen es de otra empresa.']
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            stored = SalesQuote.objects.filter(pk=self.pk).values_list('status', flat=True).first()
+            # Out of DRAFT it is evidence: the services move its status and stamp its timestamps
+            # through `update_fields`; the offer itself is never rewritten.
+            if stored is not None and stored != self.STATUS_DRAFT:
+                allowed = set(kwargs.get('update_fields') or [])
+                if not allowed or (allowed & self.CONTENT_FIELDS):
+                    raise ValidationError(
+                        'Una cotización que ya salió de borrador no se modifica: crea una revisión.')
+        self.clean()
+        return super().save(*args, **kwargs)
+
+
+class SalesQuoteItem(models.Model):
+    """
+    One line of a quote, as the till would price it (`calculate_pos_totals`).
+
+    A product line, merged per product like a till's basket; a used device priced on its own is its own
+    line (quantity 1, its `stock_unit`). `stock_unit` NAMES a device; it never reserves it — another
+    sale may take it, and conversion then says so. Never a line discount: the till has none.
+    """
+
+    PRICED_BY_PRODUCT = 'product'
+    PRICED_BY_OFFER = 'offer'
+    PRICED_BY_UNIT = 'unit'
+    PRICED_BY_CHOICES = [(PRICED_BY_PRODUCT, 'Precio del producto'), (PRICED_BY_OFFER, 'Oferta de proveedor'),
+                         (PRICED_BY_UNIT, 'Precio del equipo')]
+
+    quote = models.ForeignKey(SalesQuote, on_delete=models.CASCADE, related_name='items')
+    product = models.ForeignKey(Product, on_delete=models.PROTECT, related_name='sales_quote_items')
+    stock_unit = models.ForeignKey(
+        'StockUnit', on_delete=models.PROTECT, null=True, blank=True, related_name='sales_quote_items')
+    # DC3 — offered «bajo pedido»: priced at the supplier offer, nothing on the shelf is named.
+    on_order = models.BooleanField(default=False)
+    supply_reason = models.CharField(max_length=200, blank=True, default='')
+    priced_by = models.CharField(max_length=8, choices=PRICED_BY_CHOICES, default=PRICED_BY_PRODUCT)
+
+    # What the line says, frozen (`order_line_snapshot`): name, variant options by role, code.
+    description = models.CharField(max_length=300)
+    variant_snapshot = models.JSONField(default=dict, blank=True)
+    code = models.CharField(max_length=64, blank=True, default='')
+
+    quantity = models.PositiveIntegerField()
+    unit_price = models.DecimalField(max_digits=12, decimal_places=2)
+    line_total = models.DecimalField(max_digits=12, decimal_places=2)
+    sort_order = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        ordering = ['sort_order', 'pk']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(quantity__gte=1), name='sales_quote_item_quantity_positive'),
+            models.CheckConstraint(condition=models.Q(unit_price__gte=Decimal('0.00')),
+                                   name='sales_quote_item_price_non_negative'),
+        ]
+        indexes = [models.Index(fields=['quote', 'sort_order'])]
+
+    def __str__(self):
+        return f'{self.description} × {self.quantity}'
+
+    def _quote_status(self):
+        return SalesQuote.objects.filter(pk=self.quote_id).values_list('status', flat=True).first()
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.quote_id and self._quote_status() not in (None, SalesQuote.STATUS_DRAFT):
+            raise ValidationError('Las líneas de una cotización que salió de borrador no se modifican.')
+        if self.quote_id and self.product_id and self.product.company_id != self.quote.company_id:
+            raise ValidationError('El producto no pertenece a esta empresa.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self._quote_status() not in (None, SalesQuote.STATUS_DRAFT):
+            raise ValidationError('Las líneas de una cotización que salió de borrador no se borran.')
+        return super().delete(*args, **kwargs)
 
 
 # =============================================================================
@@ -10350,6 +10668,8 @@ class PrintJob(models.Model):
         FISCAL_TICKET = 'fiscal_ticket', 'Comprobante electrónico (80 mm)'
         SALES_NOTE_TICKET = 'sales_note_ticket', 'Nota de venta (80 mm)'
         LABEL_BATCH = 'label_batch', 'Lote de etiquetas'
+        # SALES-QUOTE-01: a commercial quote on the roll. It has no order: a quote never charged anything.
+        SALES_QUOTE_TICKET = 'sales_quote_ticket', 'Cotización (80 mm)'
 
     class Status(models.TextChoices):
         PENDING = 'pending', 'En cola'
@@ -10380,6 +10700,10 @@ class PrintJob(models.Model):
         'FiscalDocument', on_delete=models.PROTECT, null=True, blank=True, related_name='print_jobs')
     sales_note = models.ForeignKey(
         'SalesNote', on_delete=models.PROTECT, null=True, blank=True, related_name='print_jobs')
+    # SALES-QUOTE-01: the quote a `sales_quote_ticket` prints (and nothing else carries one).
+    sales_quote = models.ForeignKey(
+        'SalesQuote', on_delete=models.PROTECT, null=True, blank=True, db_default=None,
+        related_name='print_jobs')
     idempotency_key = models.CharField(max_length=120)
     #: Identificador que no se repite entre bases de datos. El agente lo apunta
     #: en su diario: el número de fila sí se repite si la base se restaura o si
@@ -10416,12 +10740,15 @@ class PrintJob(models.Model):
             models.UniqueConstraint(
                 fields=['company', 'idempotency_key'], name='print_job_idempotency_per_company'),
             # LABEL-04: un ticket es de un pedido; un lote de etiquetas, de su lote.
+            # SALES-QUOTE-01: una cotización, de su cotización (sin pedido: no cobró nada).
             models.CheckConstraint(
                 condition=(models.Q(kind='label_batch') & models.Q(label_batch__isnull=False)
-                           & models.Q(order__isnull=True))
-                | (~models.Q(kind='label_batch') & models.Q(order__isnull=False)
-                   & models.Q(label_batch__isnull=True)),
-                name='print_job_target_matches_kind'),
+                           & models.Q(order__isnull=True) & models.Q(sales_quote__isnull=True))
+                | (models.Q(kind='sales_quote_ticket') & models.Q(sales_quote__isnull=False)
+                   & models.Q(order__isnull=True) & models.Q(label_batch__isnull=True))
+                | (~models.Q(kind__in=['label_batch', 'sales_quote_ticket']) & models.Q(order__isnull=False)
+                   & models.Q(label_batch__isnull=True) & models.Q(sales_quote__isnull=True)),
+                name='print_job_target_matches_kind_v2'),
         ]
         indexes = [models.Index(fields=['branch', 'status', 'id'])]
 

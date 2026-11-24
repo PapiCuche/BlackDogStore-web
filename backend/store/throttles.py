@@ -328,6 +328,16 @@ class AdminPosSaleThrottle(UserRateThrottle):
     scope = 'admin_pos_sale'
 
 
+class AdminSalesQuotesThrottle(UserRateThrottle):
+    """SALES-QUOTE-01 — reading quotes, searching products for one, downloading its papers."""
+    scope = 'admin_sales_quotes'
+
+
+class AdminSalesQuoteWriteThrottle(UserRateThrottle):
+    """SALES-QUOTE-01 — composing, moving and converting a quote: the till's write rate."""
+    scope = 'admin_sales_quote_write'
+
+
 class AdminSalesAnalyticsThrottle(UserRateThrottle):
     """Commercial dashboard and replenishment report."""
     scope = 'admin_sales_analytics'

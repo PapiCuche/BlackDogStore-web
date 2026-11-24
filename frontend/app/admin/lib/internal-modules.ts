@@ -237,9 +237,18 @@ export const INTERNAL_MODULES: InternalModule[] = [
     legacyRoles: ["sales", "admin", "superadmin"],
     status: "implemented",
   },
-  // NAV-SALES-01: already has its destination in Ventas. While pending (no screen, no `href`) the menu leaves it
-  // out; when SALES-QUOTE-01 gives it a page, an `href` and its capability, it appears there on its own.
-  { id: "sales.quotes", group: "sales", label: "Cotizaciones", description: "Cotizaciones a clientes.", status: "pending" },
+  {
+    // SALES-QUOTE-01: offers with price and validity. They never charge or move stock; converting one is a
+    // till sale (`sales.pos.use`, checked inside the screen and by the server). NAV-SALES-01 gave it its
+    // destination in Ventas; with its page, `href` and capability it now appears there.
+    id: "sales.quotes",
+    group: "sales",
+    label: "Cotizaciones",
+    description: "Cotizaciones a clientes: precio, vigencia, aprobación, PDF e impresión, y conversión en venta.",
+    href: "/admin/sales/quotes",
+    requiredCapabilities: ["sales.quotes.view"],
+    status: "implemented",
+  },
   {
     id: "sales.promotions",
     group: "sales",
@@ -991,7 +1000,7 @@ const m = (id: string, label?: string, caption?: string): DestinationMember => (
 // herramientas» carries `products.import`, and Compras › Proveedores carries `sales.availability`. Each module is a
 // member of one destination at most (a test checks it), so it is drawn once.
 const SIDEBAR_DESTINATIONS: Partial<Record<ModuleGroupId, Destination[]>> = {
-  // NAV-SALES-01 — by task: the till, the orders, the documents. «Cotizaciones» waits for its screen (pending);
+  // NAV-SALES-01 — by task: the till, the orders, the documents. «Cotizaciones» has its screen (SALES-QUOTE-01);
   // «Parte de pago» has no entry while the function is not approved.
   sales: [
     { id: "nav.sales.summary", label: "Resumen comercial", members: [m("sales.summary")] },

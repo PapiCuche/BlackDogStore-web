@@ -68,6 +68,8 @@ RELATIONS: dict[tuple[str, str], Relation] = {
     ('store.PromotionItem', 'product'): Relation(BLOCKER, 'promotion_items', 'Promociones o combos'),
     ('store.StorefrontCampaign', 'product'): Relation(BLOCKER, 'campaigns', 'Campañas de la tienda'),
     ('store.RepairQuoteItem', 'product'): Relation(BLOCKER, 'repair_quote_items', 'Presupuestos de reparación'),
+    # SALES-QUOTE-01: an offer made to a customer is history like a sale; the variant is archived, not deleted.
+    ('store.SalesQuoteItem', 'product'): Relation(BLOCKER, 'sales_quote_items', 'Cotizaciones comerciales'),
     ('store.PartUsage', 'product'): Relation(BLOCKER, 'part_usages', 'Repuestos usados en reparaciones'),
     ('store.SupplierOffer', 'product'): Relation(BLOCKER, 'supplier_offers', 'Ofertas de proveedores'),
     ('store.SupplierProductRef', 'product'): Relation(BLOCKER, 'supplier_refs', 'Códigos de proveedor vinculados'),

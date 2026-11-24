@@ -95,8 +95,16 @@ class SoldOutVariantTest(SoldOutShop, TestCase):
     def setUp(self):
         super().setUp()
         self.receive(self.new128, 1, cost='2500.00')
-        ProductImage.objects.create(company=self.company, product=self.new256,
-                                    image_url='/api/storefront/images/tx-256', is_primary=True)
+        # IMG-GATE-01: a variant's own picture is on the shop only as a managed file whose licence was verified.
+        from django.utils import timezone
+        from store.models import StorefrontImage
+
+        stored = StorefrontImage.objects.create(
+            company=self.company, public_id='5' * 32, storage_key='companies/x/storefront/tx-256.png',
+            mime_type='image/png', byte_size=1, width=1, height=1, source_kind=StorefrontImage.SOURCE_OWN_PHOTO,
+            license_verified_at=timezone.now())
+        self.photo = stored.url
+        ProductImage.objects.create(company=self.company, product=self.new256, image_url=self.photo, is_primary=True)
 
     def test_the_sold_out_variant_keeps_price_and_photos_and_says_none(self):
         body = self.detail().json()
@@ -104,7 +112,7 @@ class SoldOutVariantTest(SoldOutShop, TestCase):
         self.assertIsNotNone(row, 'a published sold-out variant stays on the model page')
         self.assertEqual((row['available'], row['availability'], row['on_order']), (False, 'none', None))
         self.assertEqual(row['price'], '3500.00')
-        self.assertEqual([image['url'] for image in row['images']], ['/api/storefront/images/tx-256'])
+        self.assertEqual([image['url'] for image in row['images']], [self.photo])
         self.assertFalse(body['sold_out'], 'the model still sells its 128 GB')
 
     def test_a_model_with_every_variant_sold_out_stays_listed_as_sold_out(self):

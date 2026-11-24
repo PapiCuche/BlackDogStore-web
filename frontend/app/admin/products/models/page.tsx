@@ -24,7 +24,8 @@ import type { AuthUser } from "../../../lib/auth";
 function ModelsContent({ user, access }: { user: AuthUser; access: InternalAccess }) {
   // NAV-SALES-01: «Productos › Colores» opens this page with `?seccion=colores`, also while it is already open. Once
   // the section has the focus the parameter leaves the address, so clicking «Colores» again is a new request.
-  const section = useMenuRequest(modelsAnchorFor, "/admin/products/models");
+  // CATALOG-ADMIN-UX-B: only `seccion` leaves the address; the list's search and filters stay in it.
+  const section = useMenuRequest(modelsAnchorFor, "/admin/products/models", "seccion");
   return (
     <AdminShell user={user}>
       <AddressQuery onChange={section.onQuery} />

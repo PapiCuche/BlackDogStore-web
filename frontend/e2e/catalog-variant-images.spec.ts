@@ -3,7 +3,8 @@
 // Entorno aislado de QA: siembra su propio modelo con dos variantes (un atributo propio con dos opciones) y un
 // usuario Administrador de prueba (contraseña generada en la corrida, nunca impresa). Sube por la interfaz, con
 // vista previa, un PNG con transparencia a la variante A y un JPEG a la variante B; elige la principal y la portada;
-// comprueba la base y la tienda (/modelo/<slug>) a 1280 y 390 px.
+// comprueba la base y la tienda (/modelo/<slug>) a 1280 y 390 px. IMG-GATE-01: verifica las licencias antes de ir a
+// la tienda (sin verificar, una foto propia de variante no se publica).
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -221,6 +222,17 @@ out({'a': rows(data['a']), 'b': rows(data['b']), 'cover': model.image_url,
   expect(db.cover).toBe(db.a[0].url);
   expect(db.a_url).toBe(db.a[1].url);
   expect(db.b_url).toBe(db.b[0].url);
+
+  // IMG-GATE-01: la foto propia de una variante llega a la tienda sólo con la licencia verificada. Aquí se registra
+  // directamente (el flujo «Registrar procedencia» → «Verificar licencia» del panel lo cubre Jest); sin ella la tienda
+  // mostraría «Imagen pendiente».
+  shell<Record<string, never>>(`
+from django.utils import timezone
+from store.models import StorefrontImage
+ids = [url.rstrip('/').rsplit('/', 1)[-1] for url in data['urls']]
+StorefrontImage.objects.filter(public_id__in=ids).update(source_kind='own_photo', license_verified_at=timezone.now())
+out({})
+`, { urls: [...db.a, ...db.b].map((row) => row.url) });
 
   // La tienda: la imagen sigue a la variante y empieza por la principal.
   const idA = publicIdOf(db.a[1].url);

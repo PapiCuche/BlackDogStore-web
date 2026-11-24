@@ -39,12 +39,14 @@ describe('Store', () => {
 });
 
 describe('Product', () => {
-  const base = { slug: 'funda-roja', name: 'Funda roja', price: '59.90', inventory: 3, image_url: '/media/f.png' };
+  // Review of #408: only the shop's own uploads are published as the product's picture (as `variantPictures`).
+  const PICTURE = `/api/storefront/images/${'f'.repeat(32)}`;
+  const base = { slug: 'funda-roja', name: 'Funda roja', price: '59.90', inventory: 3, image_url: PICTURE };
 
   it('con stock: InStock, precio propio en soles y URL canónica', () => {
     const data = productJsonLd(base, ORIGIN, 'Funda de silicona');
     expect(data).toMatchObject({
-      '@type': 'Product', name: 'Funda roja', description: 'Funda de silicona', image: [`${ORIGIN}/media/f.png`],
+      '@type': 'Product', name: 'Funda roja', description: 'Funda de silicona', image: [`${ORIGIN}${PICTURE}`],
       url: `${ORIGIN}/product/funda-roja`,
       offers: { '@type': 'Offer', price: '59.90', priceCurrency: 'PEN', availability: 'https://schema.org/InStock' },
     });

@@ -56028,6 +56028,11 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         # COMMERCE-ADMIN-UX-01 — «Consultar disponibilidad». Same authority as the
         # till (`pos_views._context`): `has_capability`, no legacy bridge.
         'sales/availability/page.tsx': ('sales.pos.use', frozenset()),
+        # SALES-QUOTE-01 — `/api/admin/sales/quotes/` (`sales_quote_views._company`): `has_capability`, no
+        # legacy bridge. The list and the detail read with `view`; composing a new one is `manage`.
+        'sales/quotes/page.tsx': ('sales.quotes.view', frozenset()),
+        'sales/quotes/[id]/page.tsx': ('sales.quotes.view', frozenset()),
+        'sales/quotes/new/page.tsx': ('sales.quotes.manage', frozenset()),
         # COMMERCE-ADMIN-UX-01 — «Registrar artículo» (the product form's
         # authority), «Publicación e-commerce» (the product list's) and «Stock y
         # disponibilidad» (the inventory's).
@@ -62942,12 +62947,17 @@ class SvcCollectPresetTest(TestCase):
         # …VARIANT-SAFE-01 (0188, `products.delete`) starts where USED-READY-01 ended…
         variant_safe = self.migration('0188_variant_safe')
         self.assertEqual(inspect_used.ADMIN_PREVIOUS | set(inspect_used.NEW_CAPABILITIES), variant_safe.ADMIN_PREVIOUS)
+        # …SALES-QUOTE-01 (`sales.quotes.*`) starts where VARIANT-SAFE-01 ended…
+        from store.test_sales_quotes import sales_quote_migration
+
+        quotes = sales_quote_migration()
+        self.assertEqual(variant_safe.ADMIN_PREVIOUS | set(variant_safe.NEW_CAPABILITIES), quotes.ADMIN_PREVIOUS)
         # …and THE TRIPWIRE: the last one ends at today's preset (the catalogue
         # minus the explicit grants). It fails when the catalogue grows, and the
         # node that grows it is the one that has to say what happens to this preset.
         from .capabilities import DEFAULT_ADMIN_CAPABILITY_CODES
         self.assertEqual(
-            variant_safe.ADMIN_PREVIOUS | set(variant_safe.NEW_CAPABILITIES),
+            quotes.ADMIN_PREVIOUS | set(quotes.NEW_CAPABILITIES),
             frozenset(DEFAULT_ADMIN_CAPABILITY_CODES),
         )
         self.assertTrue(DEFAULT_ADMIN_CAPABILITY_CODES <= ASSIGNABLE_CAPABILITY_CODES)

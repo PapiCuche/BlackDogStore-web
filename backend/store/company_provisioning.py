@@ -137,6 +137,9 @@ _SALES_CAPS = (
     # Comercial y caja
     'sales.orders.view', 'sales.orders.manage', 'sales.notes.manage',
     'sales.pos.use',
+    # SALES-QUOTE-01: quoting is counter work. NOT `sales.quotes.approve`: whoever
+    # composes an offer does not, by that alone, commit the shop to it.
+    'sales.quotes.view', 'sales.quotes.manage',
     # C2.2A.1. Ventas ES el mostrador, y quien atiende necesita saber si la
     # factura de un cliente ya salió. VER, no emitir: declarar algo ante SUNAT es
     # un acto con consecuencias tributarias, y darlo por defecto a todo el

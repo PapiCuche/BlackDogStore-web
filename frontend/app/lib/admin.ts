@@ -139,6 +139,19 @@ export type AdminProduct = {
   can_change_tracking?: boolean;
 };
 
+/** IMG-GATE-01 — de dónde sale el archivo de una imagen y si su licencia está verificada (la forma de los acabados). */
+export type AdminImageSource = {
+  kind: "own_photo" | "supplier_authorized" | "licensed_stock" | "demo" | "unknown";
+  kind_label: string;
+  url: string;
+  license: string;
+  attribution: string;
+  is_demo: boolean;
+  license_verified: boolean;
+  license_verified_at: string | null;
+  license_verified_by?: string | null;
+};
+
 /** Una imagen de la galería de un producto. */
 export type AdminProductImage = {
   id: number;
@@ -148,6 +161,23 @@ export type AdminProductImage = {
   sort_order: number;
   width: number;
   height: number;
+  /** IMG-GATE-01 (ausentes en un servidor anterior): procedencia y licencia del archivo. */
+  source?: AdminImageSource;
+  /** La de una variante de un modelo sólo se muestra en la tienda con la licencia verificada. */
+  requires_license?: boolean;
+  /** Si la tienda la muestra hoy. */
+  public?: boolean;
+};
+
+/** IMG-GATE-01 — lo que se puede cambiar de una imagen de la galería. */
+export type ProductImagePatch = {
+  alt_text?: string;
+  is_primary?: true;
+  license_verified?: boolean;
+  source_kind?: string;
+  license?: string;
+  source_url?: string;
+  attribution?: string;
 };
 
 /** Lo que el servidor acepta. Aquí sólo evita un viaje que acabaría en rechazo. */
@@ -185,7 +215,7 @@ export async function uploadProductImage(
 }
 
 export async function patchProductImage(
-  productId: number, imageId: number, data: { alt_text?: string; is_primary?: true },
+  productId: number, imageId: number, data: ProductImagePatch,
   companyId?: number | null,
 ): Promise<AdminProductImage> {
   const res = await fetchWithAuth(`${API_BASE}/admin/products/${productId}/images/${imageId}/${buildQs({ company: companyId ?? undefined })}`, {

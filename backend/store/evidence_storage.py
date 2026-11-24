@@ -200,3 +200,18 @@ def delete_quietly(key: str) -> bool:
             type(exc).__name__,
         )
         return False
+
+
+def exists(key: str, storage=None) -> bool | None:
+    """
+    IMG-HEALTH — whether the object is still in the storage: True, False, or None when the storage could not say
+    (a network or permission error). Read-only: one HEAD for S3, one `stat` on the filesystem. Never raises.
+    `storage`: a backend already built (`get_storage()`), for a caller that checks many objects.
+    """
+    if not key:
+        return False
+    try:
+        return bool((storage or get_storage()).exists(key))
+    except Exception as exc:
+        logger.warning('no se pudo comprobar un objeto (%s)', type(exc).__name__)
+        return None

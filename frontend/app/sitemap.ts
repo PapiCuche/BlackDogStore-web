@@ -33,7 +33,11 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   const modelBase = v4 ? "/v4/modelo" : "/modelo";
   if (!origin) return [];
   const [products, models] = await Promise.all([
-    slugs("/products/", (data) => (Array.isArray(data) ? data : [])),
+    // IMG-GATE-01 (review of #408): a device variant (`product_model` set) lives on its model's page, which is listed;
+    // its /product/ address declares that page as canonical, so it is not listed twice.
+    slugs("/products/", (data) => (Array.isArray(data)
+      ? data.filter((item) => !(item && typeof item === "object" && (item as { product_model?: unknown }).product_model))
+      : [])),
     slugs("/catalog/models/", (data) => {
       const results = (data as { results?: unknown })?.results;
       return Array.isArray(results) ? results : [];

@@ -99,9 +99,12 @@ test.beforeEach(async ({ context }) => {
 });
 
 const row = (page: Page) => page.getByRole("row").filter({ has: page.getByRole("link", { name: MODEL, exact: true }) });
+// CATALOG-ADMIN-UX-B: the list is paged (25) and searched by the server; this run's model is found by its name, as a
+// person would, through the address the search box keeps.
+const LIST = `/admin/products/models?buscar=${encodeURIComponent(MODEL)}`;
 
 test("1 · el listado tiene «Editar modelo» en la fila y abre ESE modelo, también con teclado", async ({ page }) => {
-  await page.goto("/admin/products/models", { waitUntil: "networkidle" });
+  await page.goto(LIST, { waitUntil: "networkidle" });
   // INV-GRADES-01 put the grade scale (with its own «Acciones» column) on the same page: the header is the models'.
   const models = page.getByRole("table").filter({ has: page.getByRole("link", { name: MODEL, exact: true }) });
   await expect(models.getByRole("columnheader", { name: "Acciones" })).toBeVisible();
@@ -115,7 +118,7 @@ test("1 · el listado tiene «Editar modelo» en la fila y abre ESE modelo, tamb
 });
 
 test("2 · editar el modelo persiste tras recargar, sin crear otro", async ({ page }) => {
-  await page.goto("/admin/products/models", { waitUntil: "networkidle" });
+  await page.goto(LIST, { waitUntil: "networkidle" });
   await row(page).getByRole("link", { name: `Editar modelo ${MODEL}` }).click();
   const form = page.getByRole("form", { name: "Editar modelo" });
   // Since R4.4 (#250) the description is a rich-text editor: its «Formato de la descripción» toolbar also
@@ -132,7 +135,7 @@ test("2 · editar el modelo persiste tras recargar, sin crear otro", async ({ pa
 });
 
 test("3 · con un atributo creado en su panel, la variante se edita en un solo guardado que persiste", async ({ page }) => {
-  await page.goto("/admin/products/models", { waitUntil: "networkidle" });
+  await page.goto(LIST, { waitUntil: "networkidle" });
   await row(page).getByRole("link", { name: `Gestionar variantes de ${MODEL}` }).click();
   await page.waitForURL(/#variantes$/);
   const variants = page.getByRole("region", { name: "Variantes" });
@@ -149,7 +152,7 @@ test("3 · con un atributo creado en su panel, la variante se edita en un solo g
   await block.getByRole("button", { name: "Agregar opción" }).click();
   await expect(block.getByText("256 GB")).toBeVisible();
 
-  await page.goto("/admin/products/models", { waitUntil: "networkidle" });
+  await page.goto(LIST, { waitUntil: "networkidle" });
   await row(page).getByRole("link", { name: `Gestionar variantes de ${MODEL}` }).click();
   await page.getByRole("button", { name: `Editar variante ${VARIANT}` }).click();
   const form = page.getByRole("form", { name: `Editar variante ${VARIANT}` });
@@ -177,7 +180,7 @@ test("3 · con un atributo creado en su panel, la variante se edita en un solo g
 
 test("4 · en el teléfono las acciones se ven y la página no se desborda", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/admin/products/models", { waitUntil: "networkidle" });
+  await page.goto(LIST, { waitUntil: "networkidle" });
   const edit = row(page).getByRole("link", { name: `Editar modelo ${MODEL}` });
   await edit.scrollIntoViewIfNeeded();
   await expect(edit).toBeVisible();

@@ -3,6 +3,54 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — CATALOG-ADMIN-UX-B · PARCIAL (PR abierto, sin fusionar ni desplegar) · sin migraciones
+
+El editor de modelos y variantes a escala. Rama `feat/catalog-admin-ux-b` sobre `master` con #407.
+
+- **Lista de modelos:** `GET /api/admin/catalog/models/` busca en el servidor (nombre sin mayúsculas ni tildes, dirección y alias de proveedor del modelo) y filtra por categoría (`category=<id>|none`), activo (`active=true|false`), variantes incompletas o fuera de paleta (`incomplete=1`, sólo variantes vivas), combinaciones válidas sin variante (`missing=1`) y sin paleta (`no_palette=1`). Paginación opcional (`page_size` ≤ 100); sin parámetros responde todas las filas como antes (otras pantallas la leen así). Trae `count` y `facets`. Número fijo de consultas (12 con 4 o con 12 modelos, probado).
+- **Panel de la lista:** buscador, categoría, estado y chips con su cuenta (teclado, `aria-pressed`), 25 por página, todo en la dirección (`?buscar=&categoria=&estado=&filtro=&pagina=`). Cada fila dice su paleta: «Sin paleta», «N variantes incompletas», «N combinaciones sin variante». El menú «Colores» sólo quita `seccion` y deja la búsqueda.
+- **Rendimiento del editor:** `device_catalog.variant_histories` lee el historial de todas las variantes con 5 consultas agregadas; `variant_history` pasa por ella (mismo resultado, probado). El detalle del modelo cuesta 16 consultas con 1 o con 30 variantes (antes 19 y 251).
+- **«Crear variante» por línea:** la tabla de configuraciones se lee por «Todas las líneas» (como antes) o por una línea; en una línea, lo que sólo existe en la otra aparece «Sin variante» y se crea ahí (formulario con la línea fija). El resumen trae `valid_without_variant_by_line`. Nace borrador, oculta y a 0,00, como siempre.
+- **Sin paleta:** `create_variant_product` responde 409 `no_palette` (decidido bajo el candado del modelo). Clasificar un producto existente («Agregar variante») sigue la regla A1 (un modelo sin paleta admite cualquier opción), pero el panel avisa arriba y pide confirmación explícita.
+- **Exclusiones:** `POST/DELETE /api/admin/catalog/models/<pk>/exclusions/` (`products.manage`, auditadas con empresa, por empresa, bajo el candado del modelo). Añadir un par que ya es una variante → 409 `exclusion_held_by_variants` con `variants`; quitar nunca invalida nada. Panel «Combinaciones que no existen» para añadir y quitar pares.
+- **Colores por modelo:** la matriz y «Crear variante» sólo usan la paleta del modelo (probado con dos modelos de colores distintos); en el selector, los colores del modelo van primero y los demás de la empresa aparte, con aviso.
+- **Fila de variante:** precio y publicación en la fila (por `PUT /api/admin/products/<pk>/variant/` con la identidad intacta y las reglas de publicación del servidor), equipos, apartados y pedidos por entregar bajo el stock, e «Sin imágenes» como estado.
+- **Revisión de #411:** el precio y «Publicar» de la fila mandan la identidad que leyeron (`expected_model_id`, `expected_condition_line`, `expected_option_ids`); el servidor la compara bajo el candado del producto y responde 409 `stale` sin escribir nada si otra persona cambió la variante (antes la reponía en silencio). Una página que ya no existe vuelve a la primera. La prueba del historial por lotes compara con el cuerpo anterior congelado (todos los estados de equipo y de pedido).
+- **Pruebas:** `store.test_catalog_admin_ux_b` (35) y suites de catálogo relacionadas (1483 en verde); Jest `catalog-admin-ux-b` (19) y suite completa. `e2e/catalog-editor.spec.ts` abre la lista con `?buscar=` (lista paginada); Playwright no se corrió.
+
+## 2026-11-24 — SALES-QUOTE-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0189_sales_quote`
+
+Cotizaciones comerciales, independientes de las de reparación. Sólo en la rama.
+
+- **Modelo:** `SalesQuote` y `SalesQuoteItem`; numeración propia `COT-` (`InternalSequence` `sales_quote`, nunca F ni B); revisiones que reemplazan sin reescribir (una sola vigente por número); copias; totales congelados con el desglose de IGV de la caja. `Order.source_quote` enlaza la venta.
+- **Precio:** lo calcula `pos_services.build_pos_sale` (mismos totales, promociones y reglas de descuento que la caja). Aprobar vuelve a calcular. Un descuento manual cubre las líneas y precios sobre los que se decidió: cambiarlos pide `sales.discounts.apply`.
+- **Nunca** cobra, mueve stock, aparta un equipo ni es un comprobante (pruebas de conteo de Kardex, pagos y pedidos).
+- **Convertir en venta:** es una venta de caja (`create_pos_sale`): `sales.pos.use`, `Idempotency-Key`, stock estricto, equipos identificados, regla USED-READY, 409 `price_changed` con los dos totales (cobrar el de hoy, o mantener el cotizado como descuento auditado con permiso).
+- **Papeles:** A4, PDF 80 mm y ESC/POS por la cola de impresión; «COTIZACIÓN» y «No es comprobante de pago.»; identidad, logo y diseño de la empresa; equipos enmascarados; vista previa en Ajustes › Documentos.
+- **Autoridad:** `sales.quotes.view` / `.manage` (Ventas y el rol legacy de ventas) y `.approve` (roles con `company.manage`).
+- **Panel:** Ventas › Cotizaciones (lista, editor, revisiones, conversión).
+- **Despliegue y vuelta atrás:** añadir `expire_sales_quotes` al crontab; antes de volver a una versión sin cotizaciones, `cancel_sales_quote_print_jobs --apply` (`docs/despliegue-produccion.md` §7).
+- **Pendiente:** TRADE-IN-QUOTE-00; decisiones del propietario listadas en el PR (precio cambiado, aprobación obligatoria, vigencia por defecto de 7 días).
+
+## 2026-11-24 — IMG-GATE-01 · la foto propia de una variante también necesita licencia verificada (PR abierto, sin fusionar ni desplegar)
+
+Rama `fix/img-gate-01`. **Sin migraciones.** Producción sin cambios.
+
+- **Regla (orden del propietario 2026-11-23, ahora también para variantes):** una VARIANTE de equipo (producto con modelo) muestra en la tienda su foto propia (galería o `image_url`) sólo si es un archivo subido por la empresa con la licencia verificada. Una URL externa no tiene licencia verificable: no se muestra. Si no hay, la foto verificada del acabado del MISMO color; si tampoco, «Imagen pendiente». Nunca la de otro color. Una sola regla (`device_catalog.variant_galleries`) para la página del modelo, `/api/products/` (catálogo, ficha `/product/<variante>`, JSON-LD y Open Graph), carrito, checkout, pedidos del comprador, líneas cerradas y la API v1. La caja no cambia: sus chips ya eran sólo de acabado verificado (#396).
+- **Productos sin modelo (accesorios, cables): SIN CAMBIOS.** No tienen acabado al que recurrir; ocultarlos al desplegar podría vaciar la tienda. Quedan listados en IMG-HEALTH como `unverified_public`. **Decisión del propietario pendiente.**
+- **Panel:** cada imagen de la galería de un producto dice su origen y si su licencia está verificada; «Registrar/Editar procedencia» y «Verificar licencia» usan el flujo de los acabados (`finish_media.apply_provenance`, `products.manage`, auditado con la empresa). En una variante: «No visible en la tienda hasta verificar la licencia».
+- **IMG-HEALTH (sólo lectura):** `manage.py report_image_health --company <slug>` (CSV; resumen por stderr) y «Salud de las imágenes» en Productos › Imágenes por reemplazar (`GET /api/admin/catalog/image-health/`, `products.view`, a demanda). Archivos rotos, enlaces externos por dominio, imágenes visibles sin licencia verificada, un archivo en dos colores de un modelo y variantes nuevas en venta con «Imagen pendiente». Nunca borra nada.
+- **`/product/<variante>`:** canónica `/modelo/<modelo>?variante=<slug de la variante>` (el parámetro existente lleva el slug, no el id); seminuevo: la página del modelo. «Ver todas las opciones» abre la variante elegida. Sin foto pública: «Imagen pendiente».
+- **Revisión del #408:**
+  - Los pedidos del comprador (web y v1) y el carrito leen las fotos de todas sus líneas en una sola consulta, sin una por línea.
+  - La portada que muestra la variante de un modelo sin colores también exige licencia verificada y lleva su marca de demostrativa real.
+  - `/api/products/` dice `is_demo` en cada foto. La ficha y la tarjeta rotulan «Imagen referencial». JSON-LD y Open Graph sólo publican fotos propias no demostrativas.
+  - IMG-HEALTH usa un solo cliente de almacenamiento. No consulta el almacenamiento con más de `IMAGE_HEALTH_MAX_STORAGE_CHECKS` archivos (2000). El endpoint tiene límite de peticiones.
+  - El sitemap ya no lista variantes en `/product/`. El `url` del JSON-LD de una variante es su canónica.
+  - Con «exigir imagen para publicar», una variante cuenta como «con imagen» sólo si la tienda puede mostrarla (`publication_problems` y `ready_to_publish`).
+- **Efecto al desplegar:** toda variante cuya única foto sea propia sin verificar o externa pasa a «Imagen pendiente» hasta verificarla. **El ensayo de la release debe contarlas** con `report_image_health` (`variants_hidden_by_gate` y filas `variant_without_photo`) antes del GO.
+- **Pruebas:** `test_img_gate` (51) y las suites afectadas; Jest `img-gate` (21), `seo-01` y `seo-02` actualizados. E2E `catalog-variant-images.spec.ts` actualizado (verifica las licencias antes de ir a la tienda), no ejecutado.
+
 ## 2026-11-24 — INV-LOAD-02 · plantillas del stock real, comprobación y anulación por lote (rama, sin desplegar)
 
 Rama `feat/inv-load-02`, PR abierto, **sin fusionar ni desplegar**, **sin migraciones**. Procedimiento: `docs/carga-stock-real.md`.

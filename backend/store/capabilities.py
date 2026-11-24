@@ -244,6 +244,20 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('sales.promotions.manage', 'sales', 'Administrar promociones',
          'Crear, editar y archivar promociones, combos y códigos.',
          STATUS_ACTIVE),
+    # SALES-QUOTE-01 — commercial quotes, three authorities. Reading what the shop
+    # offered is not composing an offer, and composing one is not committing the
+    # shop to it: `approve` is the second pair of eyes before a price leaves the
+    # counter. Converting into a sale is NOT a quote authority — it is a counter
+    # sale and asks `sales.pos.use` like any other (the till's own rules apply).
+    _cap('sales.quotes.view', 'sales', 'Ver cotizaciones',
+         'Consultar las cotizaciones comerciales y descargar o imprimir sus documentos.',
+         STATUS_ACTIVE),
+    _cap('sales.quotes.manage', 'sales', 'Elaborar cotizaciones',
+         'Crear, editar, duplicar y enviar cotizaciones, y registrar la respuesta del cliente.',
+         STATUS_ACTIVE),
+    _cap('sales.quotes.approve', 'sales', 'Aprobar cotizaciones',
+         'Aprobar una cotización antes de enviarla o convertirla en venta.',
+         STATUS_ACTIVE),
 
     # --- accounting (ACCOUNTING-02, `docs/adr-accounting.md` §6) ---
     # Read-only. `view` opens the three views with the buyer's document masked;
