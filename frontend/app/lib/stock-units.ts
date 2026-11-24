@@ -353,11 +353,15 @@ export const updateUnitPhoto = (
 export const reorderUnitPhotos = (id: number, order: number[]) =>
   post<StockUnit>(`/${id}/photos/order/`, { order });
 
-/** UNIT-PHOTO-02: a new file in the same place (order, primary, side). Its confirmation is cleared. */
+/**
+ * UNIT-PHOTO-02: a new file in the same place (order, primary, side). Its confirmation is cleared. The upload route
+ * with `replace` (as a finish image): no other address reads files.
+ */
 export function replaceUnitPhoto(id: number, photoId: number, file: File): Promise<StockUnit> {
   const form = new FormData();
   form.append("file", file);
-  return call<StockUnit>(`/${id}/photos/${photoId}/replace/`, { method: "POST", body: form });
+  form.append("replace", String(photoId));
+  return call<StockUnit>(`/${id}/photos/`, { method: "POST", body: form });
 }
 
 /**

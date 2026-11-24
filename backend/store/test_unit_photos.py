@@ -258,7 +258,9 @@ class PhotoApiTest(PhotoShop):
         self.assertEqual(self.attest(second.pk).status_code, 200)
         old_public_id = storefront_media.managed_public_id(second.image_url)
         _client(self.staff).patch(f'{UNITS}{self.unit.pk}/photos/{second.pk}/', {'is_primary': True}, format='json')
-        res = _client(self.staff).post(f'{UNITS}{self.unit.pk}/photos/{second.pk}/replace/', {'file': upload()},
+        # Through the upload route (as a finish image, #388): `replace=<photo id>`. Its request-limit tier is the
+        # upload's, so no new address needs a tier in the proxy.
+        res = _client(self.staff).post(f'{UNITS}{self.unit.pk}/photos/', {'file': upload(), 'replace': second.pk},
                                        format='multipart')
         self.assertEqual(res.status_code, 200, res.content)
         replaced = UnitPhoto.objects.get(pk=second.pk)
@@ -268,9 +270,18 @@ class PhotoApiTest(PhotoShop):
         self.assertFalse(StorefrontImage.objects.filter(public_id=old_public_id).exists())
         log = AdminAuditLog.objects.get(action='unit_photo_replaced', company=self.company)
         self.assertTrue(log.metadata['was_attested'])
-        missing = _client(self.staff).post(f'{UNITS}{self.unit.pk}/photos/999999/replace/', {'file': upload()},
+        missing = _client(self.staff).post(f'{UNITS}{self.unit.pk}/photos/', {'file': upload(), 'replace': 999999},
                                            format='multipart')
         self.assertEqual(missing.status_code, 404)
+        self.assertEqual(_client(self.staff).post(f'{UNITS}{self.unit.pk}/photos/{second.pk}/replace/',
+                                                  {'file': upload()}, format='multipart').status_code, 404)
+        # Replacing needs `inventory.adjust`, like uploading.
+        refused = _client(self.inspector).post(f'{UNITS}{self.unit.pk}/photos/', {'file': upload(),
+                                                                                  'replace': second.pk},
+                                               format='multipart')
+        self.assertEqual(refused.status_code, 403)
+        # A replacement never adds a photo.
+        self.assertEqual(UnitPhoto.objects.filter(unit=self.unit).count(), 2)
         self.assertEqual(first.pk, self.photos()[0].pk)
 
     def test_deleting_the_primary_promotes_the_next_and_releases_its_file(self):
@@ -471,7 +482,7 @@ class WebHoldReleaseTest(PhotoShop):
     def test_replacing_the_last_real_photo_releases_the_hold(self):
         photo = self.uploaded_and_attested()
         self.hold()
-        res = _client(self.staff).post(f'{UNITS}{self.unit.pk}/photos/{photo.pk}/replace/', {'file': upload()},
+        res = _client(self.staff).post(f'{UNITS}{self.unit.pk}/photos/', {'file': upload(), 'replace': photo.pk},
                                        format='multipart')
         self.assertEqual(res.status_code, 200, res.content)
         self.assert_released('unit_photo_replaced')

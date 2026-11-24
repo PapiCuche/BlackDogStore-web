@@ -86,8 +86,9 @@ describe('el gestor de fotos del panel', () => {
     expect(writes[1]).toEqual({ method: 'PATCH', path: '/admin/inventory/units/7/photos/2/', body: { is_primary: true } });
     const file = new File(['y'], 'nueva.png', { type: 'image/png' });
     await act(async () => { fireEvent.change(screen.getByTestId('unit-photo-replace-2'), { target: { files: [file] } }); });
-    expect(writes[2].path).toBe('/admin/inventory/units/7/photos/2/replace/');
+    expect(writes[2].path).toBe('/admin/inventory/units/7/photos/');
     expect((writes[2].body as FormData).get('file')).toBe(file);
+    expect((writes[2].body as FormData).get('replace')).toBe('2');
     expect(screen.getByRole('status')).toHaveTextContent('hay que confirmarla de nuevo');
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Eliminar foto 1 (Frontal)' })); });
     expect(writes[3]).toMatchObject({ method: 'DELETE', path: '/admin/inventory/units/7/photos/1/' });

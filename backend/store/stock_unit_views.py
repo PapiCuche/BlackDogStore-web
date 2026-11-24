@@ -740,6 +740,10 @@ class StockUnitPhotoListView(_UnitMixin, APIView):
     `inventory.adjust`, a used device in a branch the caller reaches (another company's: 404; a new device: 409
     `not_used_line`). Stored as the shop's own photo, NOT attested: it is not public until somebody with
     `inventory.units.inspect` confirms it (`…/attestation/`). The first photo is the primary. Audited.
+
+    `replace=<photo id>` (as a finish image, #388): a new FILE for that photo in the SAME place (order, primary, side);
+    it is not the file somebody confirmed, so its attestation is cleared; the old file goes if unused; 404 when the
+    photo is not this device's. Through this same route, so its request-limit tier is the upload's.
     """
 
     def post(self, request, pk):
@@ -751,9 +755,13 @@ class StockUnitPhotoListView(_UnitMixin, APIView):
             return Response({'detail': 'Adjunta una imagen.', 'field': 'file'}, status=status.HTTP_400_BAD_REQUEST)
         data = _body(request)
         try:
-            unit_media.add_photo(unit=unit, actor=request.user, uploaded=uploaded,
-                                 alt_text=data.get('alt_text') or '', view=data.get('view'),
-                                 defect_note=data.get('defect_note') or '', request=request)
+            if 'replace' in data:
+                unit_media.replace_photo(unit=unit, photo_id=data.get('replace'), actor=request.user,
+                                         uploaded=uploaded, request=request)
+            else:
+                unit_media.add_photo(unit=unit, actor=request.user, uploaded=uploaded,
+                                     alt_text=data.get('alt_text') or '', view=data.get('view'),
+                                     defect_note=data.get('defect_note') or '', request=request)
         except _PHOTO_ERRORS as exc:
             return _photo_refusal(exc)
         return self.answer(request, unit)
@@ -786,29 +794,6 @@ class StockUnitPhotoDetailView(_UnitMixin, APIView):
             return error
         try:
             unit_media.remove_photo(unit=unit, photo_id=photo_id, actor=request.user, request=request)
-        except _PHOTO_ERRORS as exc:
-            return _photo_refusal(exc)
-        return self.answer(request, unit)
-
-
-class StockUnitPhotoReplaceView(_UnitMixin, APIView):
-    """
-    POST …/units/<id>/photos/<photo_id>/replace/ — multipart `file`. UNIT-PHOTO-02.
-
-    A new file in the SAME place (order, primary, side). It is not the file somebody confirmed: its attestation is
-    cleared, so it leaves the shop until confirmed again. `inventory.adjust`. Audited.
-    """
-
-    def post(self, request, pk, photo_id):
-        unit, error = self.resolve(request, pk)
-        if error:
-            return error
-        uploaded = request.FILES.get('file')
-        if uploaded is None:
-            return Response({'detail': 'Adjunta una imagen.', 'field': 'file'}, status=status.HTTP_400_BAD_REQUEST)
-        try:
-            unit_media.replace_photo(unit=unit, photo_id=photo_id, actor=request.user, uploaded=uploaded,
-                                     request=request)
         except _PHOTO_ERRORS as exc:
             return _photo_refusal(exc)
         return self.answer(request, unit)
