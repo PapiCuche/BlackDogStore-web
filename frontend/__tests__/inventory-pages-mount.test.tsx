@@ -81,7 +81,16 @@ describe('Carga de stock', () => {
       .toMatch(/\/admin\/inventory\/export\/\?quantities=current&company=7$/);
     expect(within(old).getByRole('link', { name: 'En blanco, para conteo físico' })).toBeInTheDocument();
     // DC1: ajustar inventario ya no basta para ver el costo; `costs.view` sí.
-    expect(props('exportar')).toEqual({ companyId: 7, canCatalogue: false, canInventory: true, canSeeCost: false });
+    // STOCK-TEMPLATE-EXPORT: `canAdjust` (inventory.adjust) opens the downloads with whole IMEIs.
+    expect(props('exportar')).toEqual({
+      companyId: 7, canCatalogue: false, canInventory: true, canSeeCost: false, canAdjust: true,
+    });
+  });
+
+  it('STOCK-TEMPLATE-EXPORT: quien sólo consulta recibe `canAdjust` en falso (IMEI ocultos)', async () => {
+    member(['inventory.view']);
+    await act(async () => { render(<StockImportPage />); });
+    expect(props('exportar')).toMatchObject({ canInventory: true, canAdjust: false });
   });
 
   it('con `costs.view`, «Exportar» trae el costo', async () => {

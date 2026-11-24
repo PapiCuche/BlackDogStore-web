@@ -11,9 +11,10 @@ ella, la clave `cost` no está en la respuesta (no un `null`, que se lee como
 «sin costo»). Y cambiar el costo de un equipo existente también la exige:
 corregir una valorización a ciegas no es mover inventario.
 
-El IMEI completo NO cambia: es la regla del inventario para el personal
-(`stock_unit_views`, la descarga y el punto de venta lo muestran entero a
-quien opera el stock); sólo se enmascara hacia el cliente.
+El IMEI completo NO cambia en la tabla: es la regla del inventario para el
+personal (`stock_unit_views` y el punto de venta lo muestran entero a quien
+opera el stock); se enmascara hacia el cliente. Las DESCARGAS lo llevan entero
+sólo para `inventory.adjust` (STOCK-TEMPLATE-EXPORT, `test_stock_template_exports`).
 """
 import io
 
