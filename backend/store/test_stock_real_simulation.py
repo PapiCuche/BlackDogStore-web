@@ -32,26 +32,27 @@ import io
 import itertools
 import re
 from decimal import Decimal
+from types import SimpleNamespace
 
 from django.contrib.auth.models import User
 from django.core.cache import cache
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.db import transaction
 from django.db.models import Count, Sum
 from django.utils.text import slugify
 from rest_framework.test import APIClient
 
 from store import checkout_services, device_catalog, model_palette
-from store import inventory_services
 from store import stock_unit_services
 from store.company_provisioning import provision_company_access_defaults
 from store.device_identity import luhn_check_digit
 from store.models import (
     Branch, BranchStock, CartItem, Company, CompanyRole, Membership, MembershipBranchAccess,
-    MembershipRoleAssignment, Order, OrderUnit, Product, StockMovement, StockUnit, Supplier, UnitPhoto, UserProfile,
+    MembershipRoleAssignment, Order, OrderUnit, PaymentTransaction, Product, StockMovement, StockUnit, Supplier,
+    UnitPhoto, UserProfile,
 )
+from store.views import _SignedNotificationMixin
 
 XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 API = '/api/admin/inventory'
@@ -95,6 +96,7 @@ class StockRealSimulation:
         self._imei = (synthetic_imei(imei_base + n) for n in itertools.count(1))
         self.results = []
         self.scenario = ''
+        self.storage_root = ''
 
     # ------------------------------------------------------------------ checks and logging
     def check(self, condition, message):
@@ -192,6 +194,8 @@ class StockRealSimulation:
         # A second company, same catalogue names (its own rows): what it may see of the first is tested in 10 and 13.
         self.b = self.company('b', 'Tienda Simulación B')
         self.loader_b, self.api_b = self.member(self.b, 'cargador-b', LOADER_CAPS)
+        # B's inspector HOLDS `inventory.units.inspect`: a 403 would stop at the permission, never reach the tenant.
+        _inspector_b, self.inspector_api_b = self.member(self.b, 'inspector-b', INSPECTOR_CAPS)
         _model_b, _pro_b, _o_b, self.v_b = self.catalogue(self.b, self.loader_b)
         self.host_b = f'{self.b.slug}.{HOST_SUFFIX}'
         self.step(f'sucursales: «{self.main.name}» y «{self.north.name}»; variantes: '
@@ -350,9 +354,32 @@ class StockRealSimulation:
         self.log('    OK')
 
     def run_all(self):
-        self.build()
-        for number, (title, body) in enumerate(self.scenarios(), start=1):
-            self.run(number, title, body)
+        """
+        The thirteen scenarios under the driver's OWN settings, whoever runs it: photos go to a temporary folder that
+        is deleted at the end (never to the evidence volume — a rolled-back database does not take a file back), the
+        synthetic hosts are allowed, nothing redirects to https, and nothing leaves the machine (no SUNAT, e-mail or
+        WhatsApp).
+        """
+        import shutil
+        import tempfile
+
+        from django.conf import settings
+        from django.test.utils import override_settings
+
+        self.storage_root = tempfile.mkdtemp(prefix='sim-stock-real-')
+        try:
+            with override_settings(
+                    EVIDENCE_STORAGE_BACKEND='filesystem', EVIDENCE_STORAGE_ROOT=self.storage_root,
+                    ALLOWED_HOSTS=[*settings.ALLOWED_HOSTS, f'.{HOST_SUFFIX}', 'testserver'],
+                    SECURE_SSL_REDIRECT=False, FISCAL_ENABLED=False, WHATSAPP_PROVIDER='fake',
+                    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend'):
+                self.log(f'Fotos en una carpeta temporal ({self.storage_root}), que se borra al terminar; '
+                         f'SUNAT, correo y WhatsApp apagados.')
+                self.build()
+                for number, (title, body) in enumerate(self.scenarios(), start=1):
+                    self.run(number, title, body)
+        finally:
+            shutil.rmtree(self.storage_root, ignore_errors=True)
         return self.results
 
     def scenarios(self):
@@ -451,18 +478,19 @@ class StockRealSimulation:
 
     def s4_repeated_imei(self, before, result):
         existing = StockUnit.objects.get(company=self.a, serial_number='SIMN-0001').imei
+        another = StockUnit.objects.get(company=self.a, serial_number='SIMN-0002').imei
         twice = next(self._imei)
         rows = [self.new_row('SIMN-0301', **{'IMEI 1': twice}), self.new_row('SIMN-0302', **{'IMEI 1': twice}),
                 self.new_row('SIMN-0303', **{'IMEI 1': existing}),
-                self.new_row('SIMN-0304', **{'IMEI 2': existing}),
+                self.new_row('SIMN-0304', **{'IMEI 2': another}),
                 self.new_row('SIMN-0305', **{'IMEI 1': '350000000000001'})]   # bad check digit
         job = self.preview('new', self.filled('new', rows))
         errors = self.row_errors(job)
         self.check(job['counts']['create'] == 1 and len(errors) == 4, f'{job["counts"]} {errors}')
         self.check('repetido en el archivo (fila 3)' in errors[4], errors)
         self.check('ya está registrado en otro equipo' in errors[5], errors)
-        # The IMEI 2 of row 6 is the IMEI 1 of row 5 AND of a registered device: refused either way.
-        self.check(existing in errors[6], errors)
+        # As an IMEI 2 too: it is the IMEI 1 of another registered device.
+        self.check('ya está registrado en otro equipo' in errors[6] and another in errors[6], errors)
         self.check('dígito de control' in errors[7], errors)
         for row, text in sorted(errors.items()):
             self.step(f'fila {row}: {text[:100]}')
@@ -518,7 +546,8 @@ class StockRealSimulation:
         self.expect(before, stock={(self.main, self.v['new128']): 1}, kardex={StockMovement.PURCHASE_ENTRY: (1, 1)})
         # From now on, what arrives for this product at this branch is a purchase, not opening stock.
         job = self.preview('new', self.filled('new', [self.new_row('SIMN-0601')]))
-        self.check(job['counts']['error'] == 1, f'{job["counts"]}')
+        self.check(job['counts']['error'] == 1 and 'no es inventario inicial' in self.row_errors(job).get(3, ''),
+                   f'{job["counts"]} {self.row_errors(job)}')
         self.step(f'inventario inicial después de una compra: {self.row_errors(job)[3][:110]}')
 
     def s8_pos_sale(self, before, result):
@@ -600,21 +629,29 @@ class StockRealSimulation:
         held = public.post('/api/cart/add/', {'session_key': session, 'product': self.v['used128'].pk,
                                               'unit': str(self.web_unit.public_id)}, format='json')
         self.ok(held, 200, 'el comprador elige el equipo')
+        # The checkout VIEW is skipped: it opens a payment with the provider. Its services build the order, and the
+        # payment is confirmed by the real `_confirm` of a gateway notification that passed its checks.
+        branch = checkout_services.resolve_fulfillment_branch(self.a)
+        self.check(branch == self.main, f'sucursal de despacho de la web: {branch}')
         items = list(CartItem.objects.filter(session_key=session).select_related('product'))
-        lines = checkout_services.lines_from_cart(self.a, self.main, session, items)
-        subtotal = checkout_services.validate_lines_and_subtotal(self.main, lines)
+        lines = checkout_services.lines_from_cart(self.a, branch, session, items)
+        subtotal = checkout_services.validate_lines_and_subtotal(branch, lines)
         pricing = checkout_services.price_checkout(self.a, subtotal)
         order = checkout_services.create_pending_order(
-            company=self.a, branch=self.main, lines=lines, pricing=pricing,
+            company=self.a, branch=branch, lines=lines, pricing=pricing,
             details=checkout_services.CustomerDetails(
                 name='Cliente Sintético', email='cliente.sintetico@example.com', phone='900000000',
                 document_type='DNI', document_number='00000000', delivery_method='pickup', receipt_type='boleta',
                 accepted_terms=True, accepted_warranty_policy=True),
             cart_session_key=session)
-        # What the payment confirmation does with the stock (no payment provider is called).
-        with transaction.atomic():
-            inventory_services.record_sale_stock_movements(order)
-            Order.objects.filter(pk=order.pk).update(status=Order.Status.PAID, paid=True)
+        attempt = PaymentTransaction.objects.create(
+            order=order, provider='izipay', transaction_id=f'SIM{order.pk:015d}', amount=order.total, currency='PEN')
+        confirmed = _SignedNotificationMixin()._confirm(attempt, SimpleNamespace(
+            signed=True, response_code='00', pay_method='CARD', authorization_code='SIM', reference_number='SIM',
+            unique_id=f'SIM{attempt.pk}'))
+        order.refresh_from_db()
+        self.check((confirmed, order.paid, order.status) == ('paid', True, Order.Status.PAID),
+                   f'confirmación del pago: {confirmed} {order.status}')
         self.web_unit.refresh_from_db()
         line = order.items.get()
         self.check((self.web_unit.status, line.stock_unit_id, line.price) == ('sold', self.web_unit.pk,
@@ -677,8 +714,12 @@ class StockRealSimulation:
             self.check(api_b.get(f'{API}/{path}{self.q(b)}').status_code == 404, f'la empresa B ve {path}')
         self.check(api_b.patch(f'{API}/units/{self.received.pk}/{self.q(b)}', {'notes': 'x'}, format='json')
                    .status_code == 404, 'la empresa B edita un equipo de A')
-        self.check(api_b.post(f'{API}/units/{self.web_unit.pk}/inspection/{self.q(b)}', {'decision': 'approved'},
-                              format='json').status_code in (403, 404), 'la empresa B inspecciona un equipo de A')
+        pending_a = StockUnit.objects.get(company=self.a, serial_number='SIMU-0002')
+        inspected = self.inspector_api_b.post(f'{API}/units/{pending_a.pk}/inspection/{self.q(b)}',
+                                              {'decision': 'approved'}, format='json')
+        self.check(inspected.status_code == 404, f'un inspector de B inspecciona un equipo de A: {inspected.status_code}')
+        pending_a.refresh_from_db()
+        self.check(pending_a.inspection_status == 'pending', 'la inspección de B cambió un equipo de A')
         self.check(api_b.post(f'{API}/units/import/{self.first_new_job["id"]}/apply/{self.q(b)}').status_code == 404,
                    'la empresa B registra una carga de A')
         self.check(api_b.get(f'{API}/units/{self.q(b)}').json()['results'] == [], 'la empresa B ve equipos')
@@ -706,6 +747,7 @@ class StockRealSimulation:
 
 import sys  # noqa: E402
 import tempfile  # noqa: E402
+from pathlib import Path  # noqa: E402
 
 from django.test import TestCase, override_settings  # noqa: E402
 
@@ -719,17 +761,23 @@ class StockRealSimulationTest(TestCase):
     """The thirteen scenarios, in order, on one synthetic company (and a second one for isolation)."""
 
     def test_the_real_stock_journey(self):
+        """
+        The driver brings its own settings: run as in the production image (evidence storage pointing at the REAL
+        volume, no synthetic hosts allowed), it writes no photo there and leaves no folder of its own behind.
+        """
         lines = []
-        with tempfile.TemporaryDirectory(prefix='stock-real-sim-') as root, override_settings(
-                EVIDENCE_STORAGE_BACKEND='filesystem', EVIDENCE_STORAGE_ROOT=root,
-                ALLOWED_HOSTS=[f'.{HOST_SUFFIX}', 'testserver']):
+        with tempfile.TemporaryDirectory(prefix='stock-real-volume-') as volume, override_settings(
+                EVIDENCE_STORAGE_BACKEND='filesystem', EVIDENCE_STORAGE_ROOT=volume, ALLOWED_HOSTS=['testserver']):
             simulation = StockRealSimulation('simstock-test', log=lines.append)
             try:
                 results = simulation.run_all()
             finally:
                 if _verbose():
                     sys.stderr.write('\n' + '\n'.join(lines) + '\n')
+            self.assertEqual([path for path in Path(volume).rglob('*')], [], 'la simulación escribió en el volumen')
         self.assertEqual([r['n'] for r in results if r['ok']], list(range(1, 14)))
+        self.assertTrue(simulation.storage_root)
+        self.assertFalse(Path(simulation.storage_root).exists(), 'la carpeta temporal de fotos quedó')
 
 
 class TemplateExampleImeiTest(TestCase):
