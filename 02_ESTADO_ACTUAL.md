@@ -3,6 +3,14 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-25 — RELEASE R13 `f47bd477` preparada y ensayada (sin desplegar)
+
+La release incluye las olas 1 a 3 del plan comercial más las guardas de reversión (#417), con las migraciones `0187`–`0192`.
+
+El ensayo sobre una copia aislada de producción salió en verde: datos históricos idénticos, 20/20 pruebas funcionales, 441 pruebas en la imagen y vuelta atrás sólo de código correcta. La reversión del esquema con tickets de cotización se niega sin deshacer nada.
+
+El detalle y el GO están en `docs/NEXT_ACTION.md`. Producción sigue sin cambios.
+
 ## 2026-11-25 — PLAN MAESTRO COMERCIAL · Olas 2 y 3 cerradas en `master` (sin desplegar)
 
 Las olas 2 y 3 están fusionadas en `master` y producción sigue sin cambios (`16189e4`, esquema `0186`). La tabla de PR, SHA y migraciones está en `docs/NEXT_ACTION.md`.

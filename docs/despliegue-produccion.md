@@ -894,9 +894,9 @@ Da las capacidades `sales.quotes.*` a los roles existentes. Después de `migrate
    `deploy/backup.sh`).
 5. **Sólo si además hay que deshacer el esquema** (pierde datos: cotizaciones, parte de pago, archivo de variantes,
    márgenes, inspección y fotos confirmadas de seminuevos; ver el runbook de la release). La regla de impresión
-   anterior a `0189` no admite tickets de cotización, ni siquiera cancelados. Por eso `0192`, `0191`, `0190` y `0189` **se niegan a
-   volver atrás** mientras exista uno, antes de deshacer nada (ensayo R13). Lo mismo hacen `0190` y `0191`, así que
-   tampoco se pierde nada si una vuelta atrás se detuvo a medio camino. Bórralos primero y después revierte:
+   anterior a `0189` no admite tickets de cotización, ni siquiera cancelados. Por eso `0192`, `0191`, `0190` y
+   `0189` **se niegan a volver atrás** mientras exista uno, antes de deshacer nada (ensayo R13). Así tampoco se
+   pierde nada si una vuelta atrás se detuvo a medio camino. Bórralos primero y después revierte:
    ```sh
    $C exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "DELETE FROM store_printjob WHERE kind='"'"'sales_quote_ticket'"'"';"'
    $C run --rm --no-deps backend python manage.py migrate store 0186_label_printing
