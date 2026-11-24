@@ -9,6 +9,12 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Una variante de equipo muestra en la tienda su foto propia sólo si es un archivo de la empresa con la licencia verificada; si no, la foto verificada del acabado de su color, o «Imagen pendiente». Una URL externa nunca se muestra en una variante. Vale para la página del modelo, el catálogo, `/product/<variante>`, JSON-LD, Open Graph, carrito, checkout, pedidos y la API v1.
 - `/product/<variante>` declara como canónica `/modelo/<modelo>?variante=<variante>` y su enlace «Ver todas las opciones» abre esa variante.
 - Los productos sin modelo no cambian (decisión del propietario pendiente; IMG-HEALTH los lista).
+- Revisión del #408:
+  - la portada de un modelo sin colores pasa por la misma licencia;
+  - JSON-LD y Open Graph sólo publican fotos propias no demostrativas;
+  - el sitemap no lista variantes en `/product/`;
+  - «exigir imagen para publicar» usa la regla de fotos públicas;
+  - pedidos y carrito leen las fotos en una sola consulta.
 
 **Added**
 - Galería de producto en el panel: origen, licencia verificada, «Registrar procedencia», «Verificar licencia» y el aviso «No visible en la tienda hasta verificar la licencia» en variantes.
