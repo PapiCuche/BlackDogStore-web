@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-23 — INV-LOAD-01: cargar el stock real sin compras ficticias (PR abierto, sin fusionar)
+
+**Changed**
+- Inventario inicial por tandas: un producto en una sucursal admite otra carga de inventario inicial mientras su Kardex allí sólo tenga líneas de inventario inicial. Una venta, compra, traslado, corrección, baja o apartado lo cierra. Misma regla en «Recibir mercadería», la carga de equipos y «Registrar equipo».
+- Unas notas internas de equipo de más de 300 caracteres son un error claro (antes se recortaban en silencio).
+
+**Added**
+- Plantilla de equipos: «Proveedor» (nombre o RUC, sólo de la empresa), «Fecha de ingreso» (no futura, no antes de 2000; vacía = hoy), «Notas internas» y «Detalles para el comprador».
+- Previsualización de la carga de equipos: aviso de número de serie ya registrado en otro producto y simulación por sucursal × producto (antes → después) con movimientos por tipo.
+- «Registrar equipo»: tipo de ingreso (inventario inicial / compra), proveedor y fecha de ingreso opcionales.
+- Sin migraciones.
+
 ## 2026-11-23 — Coordinación de producción: un solo ejecutor
 
 **Added**

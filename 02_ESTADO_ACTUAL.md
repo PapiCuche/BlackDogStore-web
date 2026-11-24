@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-23 — INV-LOAD-01 · cargar el stock real de equipos sin compras ficticias · PR abierto, SIN FUSIONAR ni desplegar
+
+Rama `feat/inv-load-01`. Sin migraciones. Producción sin cambios.
+
+- **Inventario inicial por tandas** (`receipt_services.opening_problem`): se acepta otra carga inicial mientras el Kardex del producto en esa sucursal sólo tenga `initial_stock` y el stock coincida con su última línea. Cualquier otro movimiento lo cierra con el mensaje de siempre. Vale para la recepción, la carga de equipos y «Registrar equipo».
+- **Carga de equipos:** columnas «Proveedor», «Fecha de ingreso», «Notas internas» y «Detalles para el comprador». Un proveedor de otra empresa, desconocido o desactivado es error de la fila. El número de serie repetido en otro producto es aviso. La previsualización guarda en `summary.simulation` el antes → después por sucursal × producto y los movimientos por tipo, agrupados igual que el registro (`_reception_key`).
+- **«Registrar equipo»:** `entry_kind`, `supplier` y `received_on` en `POST /api/admin/inventory/units/`; la lista de proveedores sólo con `products.view`.
+- **Notas:** más de 300 caracteres es un error en `notes`, sin recorte.
+- **Exportación de equipos para recargar:** escribe «Fecha de ingreso», «Notas internas» y «Detalles para el comprador» (seminuevos); «Proveedor» queda vacío a propósito. El reporte no cambia.
+- Pruebas: `store.test_inv_load` y `__tests__/inv-load-01.test.tsx`. Playwright no se ejecutó (puertos compartidos).
+
 ## 2026-11-23 — P0 coordinación de producción · LABEL-04 con autorización no acreditada; un solo ejecutor; release del #396 ensayada · producción SIN CAMBIOS por mi parte
 
 Orden del propietario «P0 COORDINACIÓN DE PRODUCCIÓN Y CIERRE FASE 1.2». Mi sesión no cambió la base, los contenedores, el código ni el enrutamiento de producción. En prod-02, bajo el candado, sólo hizo backups, compiló las imágenes candidatas `rc-edbeeb0` y ensayó sobre copias aisladas; además dejó scripts del kit en `backups/` y `/tmp`.
