@@ -686,7 +686,13 @@ class AdminUnitImportPreviewView(APIView):
             )
         except (xlsx_reader.XlsxError, unit_import_services.UnitImportError) as exc:
             return _error(exc)
-        return Response(_job_payload(job, rows=True, include_cost=may_view_costs(request)), status=status.HTTP_201_CREATED)
+        from .device_catalog import user_may_manage_products
+
+        return Response({
+            **_job_payload(job, rows=True, include_cost=may_view_costs(request)),
+            # NEW-TEMPLATE-PRICE — whether THIS caller may confirm a variant price proposal (the apply asks again).
+            'can_update_prices': user_may_manage_products(request.user, company),
+        }, status=status.HTTP_201_CREATED)
 
 
 class AdminUnitImportApplyView(APIView):
@@ -707,9 +713,16 @@ class AdminUnitImportApplyView(APIView):
         if job is None or not _job_within_reach(request.user, company, job):
             return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
 
+        data = request.data if isinstance(request.data, dict) else {}
         try:
-            job, _changed = unit_import_services.apply_units(job=job, actor=request.user, request=request)
+            job, _changed = unit_import_services.apply_units(
+                job=job, actor=request.user, request=request,
+                # NEW-TEMPLATE-PRICE — the variant prices the person confirmed, checked against this job's proposals.
+                price_updates=data.get('price_updates'),
+            )
         except unit_import_services.UnitImportError as exc:
+            if exc.code == unit_import_services.PRICES_FORBIDDEN:
+                return _error(exc, code=status.HTTP_403_FORBIDDEN)
             return _error(exc)
         # LABEL-A — looked up by the job's key, so a repeated apply answers the same batches.
         failed = (job.summary or {}).get('applied', {}).get('label_failed', 0)
