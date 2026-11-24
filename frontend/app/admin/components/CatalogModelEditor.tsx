@@ -779,10 +779,22 @@ function EditVariantForm({
 /** A sale price as the server takes it: digits, and at most two decimals after a point or a comma. */
 const PRICE_TEXT = /^\d{1,8}([.,]\d{1,2})?$/;
 
-/** The variant's identity, unchanged: what the variant endpoint needs to save only its price or publication. */
-const sameIdentity = (variant: AdminModelVariant, modelId: number) => ({
-  model_id: modelId, condition_line: variant.condition_line, option_ids: variant.options.map((o) => o.option_id),
-});
+/**
+ * The variant's identity as this page READ it: what the variant endpoint needs to save only its price or publication,
+ * and (review of #411) the same values as `expected_*`, so a change somebody made meanwhile is answered 409 `stale`
+ * instead of being put back silently.
+ */
+const sameIdentity = (variant: AdminModelVariant, modelId: number) => {
+  const option_ids = variant.options.map((o) => o.option_id);
+  return {
+    model_id: modelId, condition_line: variant.condition_line, option_ids,
+    expected_model_id: modelId, expected_condition_line: variant.condition_line, expected_option_ids: option_ids,
+  };
+};
+
+/** What a row action says when the server answered that the variant changed under the page. */
+const STALE_ROW = "Otra persona cambió esta variante mientras la veías. No se guardó nada: la lista se volvió a cargar.";
+const isStale = (err: unknown) => err instanceof CatalogApiError && err.status === 409 && err.code === "stale";
 
 /**
  * CATALOG-ADMIN-UX-B — the price of a variant, changed on its row. Saved through the variant endpoint
@@ -790,7 +802,7 @@ const sameIdentity = (variant: AdminModelVariant, modelId: number) => ({
  * server applies the same rules as «Editar variante»: the identity is left alone and only the price moves.
  */
 function InlinePrice({
-  variant, modelId, companyId, shown, disabled, onSaved, onRefused,
+  variant, modelId, companyId, shown, disabled, onSaved, onRefused, onStale,
 }: {
   variant: AdminModelVariant;
   modelId: number;
@@ -800,6 +812,8 @@ function InlinePrice({
   disabled: boolean;
   onSaved: (text: string) => void;
   onRefused: (text: string) => void;
+  /** The variant changed under the page (409 `stale`): the page says so and reads the model again. */
+  onStale: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [value, setValue] = useState(variant.price);
@@ -828,6 +842,7 @@ function InlinePrice({
       setOpen(false);
       onSaved(`Precio de «${variant.name}» guardado.`);
     } catch (err) {
+      if (isStale(err)) { setOpen(false); onStale(); return; }
       const text = message(err, "No se pudo guardar el precio.");
       setError(text);
       onRefused(text);
@@ -1206,10 +1221,19 @@ export function CatalogModelEditor({
       await setProductVariant(variant.product_id, { ...sameIdentity(variant, modelId), is_published_online: next }, companyId);
       rowSaved(next ? `«${variant.name}» está publicada en la tienda.` : `«${variant.name}» ya no se muestra en la tienda.`);
     } catch (err) {
-      setRowAlert(message(err, next ? "No se pudo publicar la variante." : "No se pudo ocultar la variante."));
+      if (isStale(err)) rowStale();
+      else setRowAlert(message(err, next ? "No se pudo publicar la variante." : "No se pudo ocultar la variante."));
     } finally {
       setRowBusy(null);
     }
+  }
+
+  /** Review of #411: the variant changed under the page — nothing was written; said, and read again. */
+  function rowStale() {
+    setNotice(null);
+    setRowAlert(STALE_ROW);
+    load();
+    loadPalette();
   }
 
   function lifecycleDone(text: string) {
@@ -1614,6 +1638,7 @@ export function CatalogModelEditor({
                           disabled={enableBusy || rowBusy !== null}
                           onSaved={rowSaved}
                           onRefused={() => setNotice(null)}
+                          onStale={rowStale}
                         />
                       ) : cockpit.get(variant.product_id)?.draft_pending && cockpit.get(variant.product_id)?.price_set === false
                         ? "Sin precio" : formatSoles(variant.price)}

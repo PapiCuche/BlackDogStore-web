@@ -2931,6 +2931,11 @@ export function setProductVariant(
     model_id: number | null; condition_line: CatalogLine; option_ids: number[]; reason?: string;
     /** CATALOG-EDITOR-FIX-01: saved in the same transaction as the variant (all or nothing). */
     price?: string; is_published_online?: boolean;
+    /**
+     * CATALOG-ADMIN-UX-B review: the identity the caller read. The server compares it under the product's lock and
+     * answers 409 `stale` (nothing written) when somebody changed the variant meanwhile.
+     */
+    expected_model_id?: number | null; expected_condition_line?: CatalogLine; expected_option_ids?: number[];
   },
   companyId?: number | null,
 ): Promise<unknown> {

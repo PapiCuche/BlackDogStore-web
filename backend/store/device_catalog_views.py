@@ -615,10 +615,12 @@ class AdminModelExclusionsView(APIView):
 
     CATALOG-ADMIN-UX-B — the panel's «Combinaciones que no existen» (a SIM type a region does not sell, say), on
     `ModelOptionExclusion` (CATALOG-REFERENCE-01 · PR B): `products.manage`, audited with the company, under the
-    model's lock. Each pair is two options of the model's palette of two different attributes; an option of another
-    company refuses the whole call (404 `not_found`), a model of another company answers 404. Adding a pair that an
-    existing variant IS answers 409 `exclusion_held_by_variants` naming those variants, and nothing is written;
-    removing never invalidates a variant. Both answer the palette payload (as `PUT …/palette/`) plus `changed`.
+    model's lock; a model of another company answers 404. ADDING: each pair is two options of the model's palette of
+    two different attributes; an option of another company refuses the whole call (404 `not_found`), and a pair that
+    an existing variant IS answers 409 `exclusion_held_by_variants` naming those variants — nothing is written.
+    REMOVING deletes only this model's own rows: a pair it does not have (an unknown id, another company's option)
+    is simply not there and is ignored (`changed.removed` counts what went); it never invalidates a variant. Both
+    answer the palette payload (as `PUT …/palette/`) plus `changed`.
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -803,8 +805,22 @@ class AdminProductVariantView(APIView):
             return Response({'detail': 'option_ids debe ser una lista.', 'code': 'invalid'},
                             status=status.HTTP_400_BAD_REQUEST)
         fields = {key: request.data[key] for key in ('price', 'is_published_online') if key in request.data}
+        expected, refusal = _expected_identity(request.data)
+        if refusal:
+            return refusal
         try:
             with transaction.atomic():
+                if expected:
+                    # CATALOG-ADMIN-UX-B review: the identity the caller READ, compared under the product's lock (the
+                    # same row `set_variant` locks first): somebody changed it meanwhile → 409 `stale`, nothing written,
+                    # never their change silently put back.
+                    locked = Product.objects.select_for_update(of=('self',)).get(pk=product.pk)
+                    if any(current != expected[key] for key, current in (
+                            ('model_id', locked.product_model_id), ('condition_line', locked.condition_line),
+                            ('variant_key', locked.variant_key)) if key in expected):
+                        raise device_catalog.CatalogError(
+                            f'Otra persona acaba de cambiar «{locked.name}» (modelo, línea u opciones). No se guardó '
+                            'nada: vuelve a cargar el modelo.', field='product', code='stale')
                 product = device_catalog.set_variant(
                     product, model_id=request.data.get('model_id'),
                     condition_line=request.data.get('condition_line') or Product.CONDITION_NEW,
@@ -832,6 +848,34 @@ class AdminProductVariantView(APIView):
             'option_ids': [o.pk for o in device_catalog.variant_options_of(product)],
             'price': str(product.price), 'is_published_online': product.is_published_online,
         })
+
+
+def _expected_identity(data):
+    """
+    CATALOG-ADMIN-UX-B review — the optional `expected_model_id` (id or null), `expected_condition_line` and
+    `expected_option_ids` of `PUT …/variant/`: what the caller read. Returns ({'model_id', 'condition_line',
+    'variant_key'} of the ones sent, None) or (None, a 400). Absent, the PUT behaves as before.
+    """
+    data = data if isinstance(data, dict) else {}
+    expected = {}
+    if 'expected_model_id' in data:
+        value = data['expected_model_id']
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
+            return None, _bad_param('expected_model_id', 'expected_model_id es un id o null.')
+        expected['model_id'] = value
+    if 'expected_condition_line' in data:
+        if data['expected_condition_line'] not in dict(Product.CONDITION_LINE_CHOICES):
+            return None, _bad_param('expected_condition_line', 'Línea desconocida: nuevo o seminuevo.')
+        expected['condition_line'] = data['expected_condition_line']
+    if 'expected_option_ids' in data:
+        try:
+            ids = model_palette.clean_option_ids(data['expected_option_ids'], field='expected_option_ids')
+        except device_catalog.CatalogError as exc:
+            return None, _error(exc)
+        if not isinstance(data['expected_option_ids'], list):
+            return None, _bad_param('expected_option_ids', 'expected_option_ids debe ser una lista.')
+        expected['variant_key'] = device_catalog.variant_key(ids) if ids else ''
+    return expected, None
 
 
 def _validation_error(exc) -> Response:

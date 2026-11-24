@@ -184,6 +184,20 @@ describe('Productos › Modelos: búsqueda y filtros en el servidor', () => {
     await waitFor(() => expect(screen.getByRole('table')).not.toHaveTextContent('Equipo Uno'));
   });
 
+  it('una página que ya no existe (menos resultados) vuelve a la primera', async () => {
+    window.history.replaceState(null, '', '/admin/products/models?pagina=9');
+    routes({
+      'GET /admin/catalog/models/': ({ query }) => (new URLSearchParams(query).get('page') === '9'
+        ? reply({ results: [], count: 3, facets: {}, page: 9, page_size: 25 })
+        : reply({ results: [row(1, 'Equipo Uno')], count: 3, facets: {}, page: 1, page_size: 25 })),
+    });
+    render(<CatalogModelsManager canManage companyId={null} />);
+    expect(await screen.findByRole('link', { name: 'Equipo Uno' })).toBeInTheDocument();
+    expect(listReads().map((r) => new URLSearchParams(r.query).get('page'))).toEqual(['9', '1']);
+    expect(window.location.search).toBe('');
+    expect(screen.queryByText('Ningún modelo coincide con la búsqueda o los filtros.')).toBeNull();
+  });
+
   it('la dirección abre la lista ya filtrada', async () => {
     window.history.replaceState(null, '', '/admin/products/models?buscar=dos&filtro=sin-paleta');
     mockList();
@@ -351,12 +365,13 @@ describe('el editor del modelo', () => {
     }],
   };
 
-  function mountEditor(palette: AdminModelPalette = PALETTE) {
+  function mountEditor(palette: AdminModelPalette = PALETTE, extra: Parameters<typeof routes>[0] = {}) {
     routes({
       'GET /admin/catalog/models/5/': () => reply(MODEL),
       'GET /admin/catalog/models/5/palette/': () => reply(palette),
       'GET /admin/catalog/models/5/accessories/': () => reply({ model_id: 5, accessories: [] }),
       'PUT /admin/products/52/variant/': ({ body }) => reply({ product_id: 52, ...body }),
+      ...extra,
     });
     render(<CatalogModelEditor modelId={5} canManage companyId={null} />);
   }
@@ -377,7 +392,8 @@ describe('el editor del modelo', () => {
     fireEvent.change(field, { target: { value: '12,5' } });
     await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar' })); });
     expect(writes).toEqual([expect.objectContaining({ method: 'PUT', path: '/admin/products/52/variant/',
-      body: { model_id: 5, condition_line: 'new', option_ids: [11, 22, 31], price: '12.5' } })]);
+      body: { model_id: 5, condition_line: 'new', option_ids: [11, 22, 31], price: '12.5',
+        expected_model_id: 5, expected_condition_line: 'new', expected_option_ids: [11, 22, 31] } })]);
     expect(await screen.findByText('Precio de «Equipo Uno 128 GB Negro eSIM» guardado.')).toBeInTheDocument();
   });
 
@@ -401,7 +417,28 @@ describe('el editor del modelo', () => {
     const publish = await within(row).findByRole('button', { name: 'Publicar en la tienda Equipo Uno 128 GB Negro eSIM' });
     await act(async () => { fireEvent.click(publish); });
     expect(writes).toEqual([expect.objectContaining({ method: 'PUT', path: '/admin/products/52/variant/',
-      body: { model_id: 5, condition_line: 'new', option_ids: [11, 22, 31], is_published_online: true } })]);
+      body: { model_id: 5, condition_line: 'new', option_ids: [11, 22, 31], is_published_online: true,
+        expected_model_id: 5, expected_condition_line: 'new', expected_option_ids: [11, 22, 31] } })]);
+  });
+
+  it('si otra persona cambió la variante, el servidor responde 409 `stale`: se dice y se vuelve a leer', async () => {
+    mountEditor(PALETTE, {
+      'PUT /admin/products/52/variant/': () => reply(
+        { detail: 'Otra persona acaba de cambiar la variante.', code: 'stale', field: 'product' }, 409),
+    });
+    const region = await variantsRegion();
+    const modelReads = () => reads.filter((r) => r.path === '/admin/catalog/models/5/').length;
+    const before = modelReads();
+    const row = within(region).getByText('Equipo Uno 128 GB Negro eSIM', { selector: 'a' }).closest('tr')!;
+    await act(async () => { fireEvent.click(await within(row).findByRole('button', { name: /Publicar en la tienda/ })); });
+    expect(await screen.findByText(/Otra persona cambió esta variante mientras la veías/)).toBeInTheDocument();
+    await waitFor(() => expect(modelReads()).toBeGreaterThan(before));
+    fireEvent.click(within(region).getByRole('button', { name: 'Cambiar precio de Equipo Uno 128 GB Negro eSIM' }));
+    const form = within(region).getByRole('form', { name: 'Precio de Equipo Uno 128 GB Negro eSIM' });
+    fireEvent.change(within(form).getByRole('textbox'), { target: { value: '99' } });
+    await act(async () => { fireEvent.click(within(form).getByRole('button', { name: 'Guardar' })); });
+    expect(within(region).queryByRole('form', { name: 'Precio de Equipo Uno 128 GB Negro eSIM' })).toBeNull();
+    expect(screen.queryByText('Precio de «Equipo Uno 128 GB Negro eSIM» guardado.')).toBeNull();
   });
 
   it('un modelo sin paleta lo dice arriba y pide confirmación para clasificar un producto', async () => {

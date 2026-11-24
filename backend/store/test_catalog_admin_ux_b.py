@@ -24,6 +24,7 @@ from decimal import Decimal as D
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 
 from store import catalog_aliases, device_catalog, model_palette
 from store.models import (
@@ -38,6 +39,27 @@ def queries(callable_):
     with CaptureQueriesContext(connection) as ctx:
         result = callable_()
     return len(ctx.captured_queries), result
+
+
+def _history_before_the_batch(product):
+    """`device_catalog.variant_history` as it read ONE variant before CATALOG-ADMIN-UX-B: the reference, frozen."""
+    from django.db.models import Sum
+
+    from store.models import StockMovement
+
+    units = StockUnit.objects.filter(product_id=product.pk).exclude(status=StockUnit.Status.VOIDED)
+    items = OrderItem.objects.filter(product_id=product.pk)
+    return {
+        'sold': items.count(),
+        'units': units.exclude(status=StockUnit.Status.WRITTEN_OFF).count(),
+        'reserved': units.filter(status=StockUnit.Status.RESERVED).count(),
+        'stock': int(BranchStock.objects.filter(product_id=product.pk).aggregate(n=Sum('quantity'))['n'] or 0),
+        'moved': StockMovement.objects.filter(product_id=product.pk).exists(),
+        'open_orders': items.filter(order__status=Order.Status.PAID).exclude(
+            order__fulfillment_status__in=[Order.FulfillmentStatus.DELIVERED, Order.FulfillmentStatus.CANCELLED],
+        ).values('order_id').distinct().count(),
+        'conditions': sorted(set(units.exclude(status=StockUnit.Status.WRITTEN_OFF).values_list('condition', flat=True))),
+    }
 
 
 class _Shop(PaletteShop):
@@ -197,19 +219,37 @@ class EditorQueryCountTest(_Shop, TestCase):
         self.assertLessEqual(thirty, 25)
 
     def test_the_batch_history_is_the_history_of_each_variant(self):
-        new128, used128 = self.new128, self.used128
-        self.receive(used128, 2)
-        BranchStock.objects.update_or_create(branch=self.branch, product=new128, defaults={'quantity': 4})
-        unit = StockUnit.objects.filter(product=used128).order_by('pk').first()
-        StockUnit.objects.filter(pk=unit.pk).update(status='reserved')
-        order = _p3_order(self.company, status=Order.Status.PAID)
-        OrderItem.objects.create(order=order, product=new128, quantity=1, price=D('3000.00'))
-        ids = [new128.pk, used128.pk, self.new256.pk]
-        batch = device_catalog.variant_histories(ids)
-        for product in (new128, used128, self.new256):
-            self.assertEqual(batch[product.pk], device_catalog.variant_history(product), product.name)
-        self.assertEqual(batch[used128.pk]['reserved'], 1)
-        self.assertEqual(batch[new128.pk]['sold'], 1)
+        """
+        Review of #411: compared with the PER-VARIANT body as it was before the batch (frozen below), never with
+        `variant_history` itself (which now goes through the batch). Every unit status and condition, voided and
+        written-off units, every order status and fulfilment, and orders with several of the variants.
+        """
+        products = [self.new128, self.used128, self.new256]
+        statuses, conditions = list(StockUnit.Status.values), list(StockUnit.Condition.values)
+        for index, product in enumerate(products):
+            self.receive(product, len(statuses))
+            for n, unit in enumerate(StockUnit.objects.filter(product=product).order_by('pk')):
+                unit_status = statuses[(n + index) % len(statuses)]
+                extra = {'voided_at': timezone.now()} if unit_status == StockUnit.Status.VOIDED else {}
+                StockUnit.objects.filter(pk=unit.pk).update(
+                    status=unit_status, condition=conditions[(n + 2 * index) % len(conditions)], **extra)
+        BranchStock.objects.update_or_create(branch=self.branch, product=self.new128, defaults={'quantity': 4})
+        BranchStock.objects.update_or_create(branch=self.branch, product=self.new256, defaults={'quantity': 0})
+        fulfilments = list(Order.FulfillmentStatus.values)
+        for n, order_status in enumerate(Order.Status.values * 2):
+            order = _p3_order(self.company, status=order_status)
+            Order.objects.filter(pk=order.pk).update(fulfillment_status=fulfilments[n % len(fulfilments)])
+            for product in products[:1 + n % len(products)]:      # one, two or three variants per order
+                OrderItem.objects.create(order=order, product=product, quantity=1 + n % 3, price=D('1.00'))
+        batch = device_catalog.variant_histories([p.pk for p in products] + [987654321])
+        for product in products:
+            frozen = _history_before_the_batch(product)
+            self.assertEqual(batch[product.pk], frozen, product.name)
+            self.assertEqual(device_catalog.variant_history(product, lock=True), frozen, product.name)
+        self.assertTrue(any(batch[p.pk]['open_orders'] for p in products))
+        self.assertTrue(any(batch[p.pk]['reserved'] for p in products))
+        self.assertEqual(batch[987654321], {'sold': 0, 'units': 0, 'reserved': 0, 'stock': 0, 'moved': False,
+                                            'open_orders': 0, 'conditions': []})
 
     def test_the_payload_still_carries_each_variant_history_and_rules(self):
         self.receive(self.used128, 1)
@@ -372,3 +412,56 @@ class ColoursPerModelTest(_Shop, TestCase):
         second = self.api.get(f'/api/admin/catalog/models/{self.second.pk}/{self.q}').json()
         labels = {o['label'] for v in second['variants'] for o in v['options']}
         self.assertEqual(labels, {'128 GB', 'Rojo'})
+
+
+class InlineEditStaleTest(_Shop, TestCase):
+    """
+    Review of #411: the row's price and «Publicar» re-send the variant's identity as the editor READ it. Someone may
+    have changed the variant meanwhile: with `expected_*` the server compares under the product's lock and answers
+    409 `stale`, writing nothing — never silently putting back the old options, line or model.
+    """
+
+    def setUp(self):
+        self.build('ux-b-stale')
+        self.url = f'/api/admin/products/{self.new128.pk}/variant/{self.q}'
+        self.read = {'model_id': self.model.pk, 'condition_line': 'new', 'option_ids': [self.gb128.pk, self.black.pk]}
+
+    def inline(self, **fields):
+        return self.api.put(self.url, {**self.read, 'expected_model_id': self.read['model_id'],
+                                       'expected_condition_line': self.read['condition_line'],
+                                       'expected_option_ids': self.read['option_ids'], **fields}, format='json')
+
+    def test_a_current_editor_saves_the_price(self):
+        res = self.inline(price='2999.00')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual(Product.objects.get(pk=self.new128.pk).price, D('2999.00'))
+
+    def test_a_stale_editor_gets_409_and_nothing_is_written(self):
+        # Another person moved the variant to blue after this editor read it.
+        device_catalog.set_variant(self.new128, model_id=self.model.pk, condition_line='new',
+                                   option_ids=[self.gb128.pk, self.blue.pk])
+        before = Product.objects.get(pk=self.new128.pk)
+        res = self.inline(price='1.00', is_published_online=not before.is_published_online)
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'stale'))
+        after = Product.objects.get(pk=self.new128.pk)
+        self.assertEqual((after.price, after.is_published_online, after.variant_key),
+                         (before.price, before.is_published_online, before.variant_key))
+        self.assertEqual({o.pk for o in device_catalog.variant_options_of(after)}, {self.gb128.pk, self.blue.pk})
+
+    def test_a_changed_line_or_model_is_stale_too(self):
+        other = device_catalog.create_model(company=self.company, name='Equipo Otro')
+        device_catalog.set_variant(self.new128, model_id=other.pk, condition_line='new',
+                                   option_ids=[self.gb128.pk, self.black.pk])
+        res = self.inline(price='1.00')
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'stale'))
+        self.assertEqual(Product.objects.get(pk=self.new128.pk).product_model_id, other.pk)
+
+    def test_bad_expected_values_are_400(self):
+        for extra in ({'expected_option_ids': 'x'}, {'expected_model_id': 'abc'}, {'expected_condition_line': 'raro'}):
+            with self.subTest(extra):
+                self.assertEqual(self.inline(price='1.00', **extra).status_code, 400)
+        self.assertEqual(Product.objects.get(pk=self.new128.pk).price, D('3000.00'))
+
+    def test_without_expected_values_the_put_behaves_as_before(self):
+        res = self.api.put(self.url, {**self.read, 'price': '2500.00'}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)

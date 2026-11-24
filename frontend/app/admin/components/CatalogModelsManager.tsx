@@ -181,6 +181,11 @@ function ModelsSection({ canManage, companyId, onLoaded }: {
     fetchAdminCatalogModelPage(modelListQuery(query), companyId).then(
       (answer) => {
         if (mine !== request.current) return;
+        // Review of #411: a page past the end (fewer results since the address was written) goes back to the first.
+        if (answer.results.length === 0 && answer.count > 0 && query.page > 1) {
+          setQuery((current) => ({ ...current, page: 1 }));
+          return;
+        }
         setPage(answer); setError(null); setLoading(false); onLoadedRef.current?.();
       },
       (err) => {
