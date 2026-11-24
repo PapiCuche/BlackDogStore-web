@@ -132,7 +132,9 @@ class TradeInValuationTest(TradeInBase):
     def test_an_identifier_split_by_any_separator_is_still_refused(self):
         for text in ('1234/5678/9012/345', '1234_5678_9012_345', '1234,5678,9012,345', '1234\u20135678\u20139012\u2013345',
                      '3567 8901 2345 678', '3567\u00a08901\u00a02345\u00a0678', '35-67-89-01-23-45-67-8',
-                     'DNI 12,345,678', 'DNI 12.345.678', 'IMEI: 3567 / 8901 / 2345 / 678'):
+                     'DNI 12,345,678', 'DNI 12.345.678', 'IMEI: 3567 / 8901 / 2345 / 678',
+                     # A grouped number with neither currency nor decimals is not taken for an amount.
+                     '12,345,678', '12.345.678', 'S/ 356789012345678', '35678901234567.8'):
             for field in ('device_description', 'accessories', 'valuation_notes'):
                 with self.subTest(text=text, field=field):
                     res = self.client.post(URL, self.body(**self.phone_body(trade_in=self.offered(**{field: text}))),
@@ -143,7 +145,11 @@ class TradeInValuationTest(TradeInBase):
 
     def test_dates_and_ordinary_text_are_allowed(self):
         for text in ('Comprado el 2024-03-15', 'Comprado el 15/03/2024', 'Factura del 15-03-2024', 'Desde 1/3/24',
-                     'Modelo 2023, 128 GB, 2 cables', 'Revisado 05/11/2026 por la tienda'):
+                     'Modelo 2023, 128 GB, 2 cables', 'Revisado 05/11/2026 por la tienda',
+                     # Amounts: valuation notes are full of them.
+                     'S/ 1,200.00', '1.200,50', '4 500', '1,200.00 / 1,500.00', 'S/4500 - S/1200 = S/3300',
+                     'Pide S/. 1,500 y ofrecemos USD 300', '$ 1,200 o PEN 1 250', 'Entre 12,345,678.00 y 1,200.50',
+                     'Valorado 1,200.00 el 15/03/2024, revisado 2024-03-20 por S/ 1,150'):
             with self.subTest(text=text):
                 quote = self.with_trade_in(valuation_notes=text)
                 self.assertEqual(quote['trade_in']['valuation_notes'], text)

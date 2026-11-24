@@ -400,6 +400,15 @@ _MAX_MONEY = Decimal('9999999999.99')
 _DATE_LIKE = re.compile(
     r'(?<!\d)(?:(?:19|20)\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\d|3[01])'
     r'|(?:0?[1-9]|[12]\d|3[01])[-/.](?:0?[1-9]|1[0-2])[-/.](?:(?:19|20)\d{2}|\d{2}))(?!\d)')
+#: An amount as people write it, set aside before counting like a date. With a currency marker (S/, S/., PEN, USD,
+#: US$, $): a plain number of up to 7 digits or one grouped in threes («1,200», «1.200», «4 500»), decimals optional.
+#: Without one, only a number WITH decimals is an amount («1,200.00», «1.200,50», «4500.00»): a bare grouped number
+#: («12,345,678») may be a DNI and is still counted. Never more than 7 digits before the decimals unless grouped.
+_AMOUNT_NUMBER = r'(?:\d{1,3}(?:[,.\u00a0\u202f ]\d{3}){1,2}|\d{1,7})'
+_MONEY_LIKE = re.compile(
+    r'(?:(?:S/\.?|PEN|USD|US\$|\$)\s*' + _AMOUNT_NUMBER + r'(?:[.,]\d{1,2})?'
+    r'|(?<![\d.,])' + _AMOUNT_NUMBER + r'[.,]\d{1,2})(?!\d|[.,]\d)',
+    re.IGNORECASE)
 #: Up to three characters that are neither letters nor digits between two digits (spaces of any kind, dots, commas,
 #: slashes, underscores, any dash): «3567 / 8901», «12,345,678» and «1234–5678» are one number.
 _DIGIT_SEPARATORS = re.compile(r'(?<=\d)[\W_]{1,3}(?=\d)')
@@ -407,8 +416,11 @@ _IDENTIFIER_LIKE = re.compile(r'\d{8,}')
 
 
 def looks_like_identifier(text: str) -> bool:
-    """Eight digits or more once dates are set aside and separators collapsed: an IMEI, a serial or a DNI."""
-    return bool(_IDENTIFIER_LIKE.search(_DIGIT_SEPARATORS.sub('', _DATE_LIKE.sub(' fecha ', text or ''))))
+    """
+    Eight digits or more once dates and amounts are set aside and separators collapsed: an IMEI, a serial or a DNI.
+    """
+    plain = _MONEY_LIKE.sub(' importe ', _DATE_LIKE.sub(' fecha ', text or ''))
+    return bool(_IDENTIFIER_LIKE.search(_DIGIT_SEPARATORS.sub('', plain)))
 TRADE_IN_NO_IDENTIFIERS = ('No escribas el IMEI completo ni números de documento: del IMEI sólo se anotan los '
                            'últimos 4 dígitos.')
 TRADE_IN_EXCEEDS = 'trade_in_exceeds_total'

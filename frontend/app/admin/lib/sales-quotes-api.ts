@@ -378,12 +378,21 @@ const IDENTIFIER_LIKE = /\d{8,}/;
 const DATE_LIKE = new RegExp(
   "(?<!\\d)(?:(?:19|20)\\d{2}[-/.](?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\\d|3[01])"
   + "|(?:0?[1-9]|[12]\\d|3[01])[-/.](?:0?[1-9]|1[0-2])[-/.](?:(?:19|20)\\d{2}|\\d{2}))(?!\\d)", "g");
+/**
+ * An amount, set aside like a date (the server's same rule). With a currency marker (S/, S/., PEN, USD, US$, $): up to
+ * 7 digits, or grouped in threes, decimals optional. Without one, only a number WITH decimals: «12,345,678» may be a DNI.
+ */
+const AMOUNT_NUMBER = "(?:\\d{1,3}(?:[,.\\u00a0\\u202f ]\\d{3}){1,2}|\\d{1,7})";
+const MONEY_LIKE = new RegExp(
+  "(?:(?:S/\\.?|PEN|USD|US\\$|\\$)\\s*" + AMOUNT_NUMBER + "(?:[.,]\\d{1,2})?"
+  + "|(?<![\\d.,])" + AMOUNT_NUMBER + "[.,]\\d{1,2})(?!\\d|[.,]\\d)", "gi");
 /** Up to three characters that are neither letters nor digits between two digits: «3567 / 8901», «12,345,678». */
 const DIGIT_SEPARATORS = /(?<=\d)[^\p{L}\p{N}]{1,3}(?=\d)/gu;
 
-/** Eight digits or more once dates are set aside and separators collapsed (the server's same rule). */
+/** Eight digits or more once dates and amounts are set aside and separators collapsed (the server's same rule). */
 export function looksLikeIdentifier(text: string): boolean {
-  return IDENTIFIER_LIKE.test(text.replace(DATE_LIKE, " fecha ").replace(DIGIT_SEPARATORS, ""));
+  const plain = text.replace(DATE_LIKE, " fecha ").replace(MONEY_LIKE, " importe ");
+  return IDENTIFIER_LIKE.test(plain.replace(DIGIT_SEPARATORS, ""));
 }
 
 /** Why the block cannot be saved yet ('' when it can). The server checks it all again. */
