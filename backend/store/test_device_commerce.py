@@ -751,7 +751,9 @@ class TwoBuyersOneDeviceTest(TransactionTestCase):
 class ExcelColumnsTest(DeviceShop, TestCase):
     UNIT_HEADERS = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 2', 'Condición', 'Costo',
                     'Motivo / referencia', 'Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea',
-                    'Estado estético', 'Batería %', 'Precio de venta']
+                    'Estado estético', 'Batería %', 'Precio de venta',
+                    # INV-LOAD-01
+                    'Proveedor', 'Fecha de ingreso', 'Notas internas', 'Detalles para el comprador']
 
     def setUp(self):
         self.build()
