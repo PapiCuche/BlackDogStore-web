@@ -1,0 +1,5 @@
+# GD-001 — Propiedad de datos
+**APROBADO por propietario, 24-11-2026: permanente.** BlackDogStore Web es único maestro de inventario; Good Doggy es lector. No existe fase futura de escritura de inventario en esta integración.
+Prohibido modificar BranchStock, StockUnit, StockMovement, reservas, liberaciones, ajustes, salidas, entradas o cualquier operación directa o indirecta que los altere. No crear pedidos, cotizaciones, pagos, carrito ni acciones administrativas desde esta identidad. GET no implica pureza: prohibida limpieza de reservas disparada por consulta. Solo procesos autónomos existentes del maestro pueden liberar.
+Catálogo, precios, promociones, pedidos y reparaciones: proyección de lectura del sistema web; CRM conserva sus propios datos comerciales sin autoridad de mutación en Web. Vínculo de cliente no concede permisos de escritura. No sincronizar clientes ni datos privados sin acuerdo separado.
+Cambios de inventario solo por servicios existentes del maestro. Product.inventory es derivado. Los eventos son informativos; el acuse de entrega no modifica el dominio.
