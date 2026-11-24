@@ -803,3 +803,64 @@ class QuoteConvertEdgesTest(QuoteBase):
                 quotes.duplicate_quote(actor=self.staff, company=self.company, quote=SalesQuote.objects.get(pk=quote['id']))
         self.assertEqual((SalesQuote.objects.count(), InternalSequence.objects.get(
             company=self.company, document_type='sales_quote').next_value), before)
+
+
+class QuoteConvertFollowUpTest(QuoteBase):
+    """Re-verification of the review: a percent discount over a moved subtotal, and device ids as text."""
+
+    def percent_quote(self):
+        Product.objects.filter(pk=self.cable.pk).update(price=Decimal('50.00'))
+        quote = self.create(client=self.jefe, discount_type='percent', discount_value='10', discount_reason='Cliente')
+        self.act(quote['id'], 'approve')
+        Product.objects.filter(pk=self.cable.pk).update(price=Decimal('60.00'))
+        return quote
+
+    def test_todays_price_with_a_percent_discount_needs_the_cashiers_own_authority(self):
+        quote = self.percent_quote()
+        res = self.convert(quote['id'], price_decision='current', expected_total='108.00')
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'discount_needs_review'))
+        self.assertIn('revis', res.json()['detail'])
+        self.assertFalse(Order.objects.exists())
+
+    def test_a_cashier_who_may_discount_charges_it_and_answers_for_it(self):
+        quote = self.percent_quote()
+        res = self.convert(quote['id'], client=self.jefe, price_decision='current', expected_total='108.00')
+        self.assertEqual(res.status_code, 201, res.content)
+        order = Order.objects.get()
+        self.assertEqual((order.total, order.discount_amount, order.discount_authorized_by_id),
+                         (Decimal('108.00'), Decimal('12.00'), self.boss.pk))
+        cashier = self.only_caps('company.view', 'sales.pos.use', 'sales.quotes.view', 'sales.discounts.apply',
+                                 slug='sq-caja-dscto')
+        other = self.percent_quote()
+        res = self.convert(other['id'], client=cashier, key='sq-convert-0009', price_decision='current',
+                           expected_total='108.00')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(Order.objects.get(source_quote_id=other['id']).discount_authorized_by_id, self.staff.pk)
+
+    def test_an_amount_discount_keeps_the_quotes_authority_at_todays_price(self):
+        quote = self.create(client=self.jefe, discount_type='amount', discount_value='10', discount_reason='Cliente')
+        self.act(quote['id'], 'approve')
+        Product.objects.filter(pk=self.cable.pk).update(price=Decimal('60.00'))
+        res = self.convert(quote['id'], price_decision='current', expected_total='110.00')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(Order.objects.get().discount_authorized_by_id, self.boss.pk)
+
+    def test_the_quoted_device_named_as_text_is_still_the_quoted_device(self):
+        from store import stock_unit_services as units
+        from store.test_stock_units import IMEI_A
+        from store.used_unit_test_support import approve_all
+
+        used = Product.objects.create(
+            company=self.company, name='Equipo seminuevo', slug='equipo-seminuevo-c', price='0.00', inventory=0,
+            is_serialized=True, requires_imei=True, condition_line=Product.CONDITION_USED)
+        quoted, = approve_all(units.receive_units(
+            branch=self.branch_a, product=used, actor=self.staff, reason='Compra',
+            units=[{'serial_number': 'USADOSQ201', 'imei': IMEI_A, 'condition': 'used', 'sale_price': '1500.00'}]),
+            self.boss)
+        quote = self.create(items=[{'product': used.pk, 'quantity': 1, 'unit': quoted.pk}])
+        self.act(quote['id'], 'approve')
+        item = quote['items'][0]['id']
+        res = self.convert(quote['id'], amount_received='2000.00',
+                           units={str(item): [{'id': str(quoted.pk), 'method': 'scanner'}]})
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(StockUnit.objects.get(pk=quoted.pk).status, 'sold')

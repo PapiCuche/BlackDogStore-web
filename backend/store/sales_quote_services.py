@@ -764,6 +764,15 @@ def _conversion_units(quote, raw) -> dict[int, list[dict]]:
     return out
 
 
+def _as_id(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def _sale_items(quote, units: dict[int, list[dict]]) -> list[dict]:
     """The till's basket for a quote: its lines, the devices the cashier identified, the quoted used ones."""
     items = []
@@ -775,12 +784,13 @@ def _sale_items(quote, units: dict[int, list[dict]]) -> list[dict]:
                 entry['supply_reason'] = item.supply_reason
         named = units.get(item.pk)
         if named and item.stock_unit_id:
-            # The used device the customer was quoted IS the one sold: another one is another offer.
-            if [u.get('id') if isinstance(u, dict) else None for u in named] != [item.stock_unit_id]:
+            # The used device the customer was quoted IS the one sold: another one is another offer. Ids are
+            # compared as numbers (a client may send «12»), and the till receives them as numbers.
+            if [_as_id(u.get('id')) if isinstance(u, dict) else None for u in named] != [item.stock_unit_id]:
                 raise QuoteConflict(
                     f'«{item.description}»: se cotizó un equipo concreto y es ése el que se vende. Para vender '
                     'otro, revisa la cotización.', code='quoted_device')
-            entry['units'] = named
+            entry['units'] = [{**named[0], 'id': item.stock_unit_id}]
         elif named:
             entry['units'] = named
         elif item.stock_unit_id:
@@ -841,11 +851,23 @@ def convert_quote(*, actor, company, quote, data, idempotency_key, request=None)
         discount_value = locked.discount_value if manual else None
         discount_reason = locked.discount_reason if manual else ''
         may_discount = manual
+        # Who answers for the manual discount of the sale: the quote's authority while the discount the customer
+        # was quoted is what is charged; the cashier when it is a different amount (see below).
+        quoted_authority = manual
         expected = locked.total
         if decision == 'current':
             if data.get('expected_total') in (None, ''):
                 raise QuoteError('Indica el total actual que leíste para cobrar al precio de hoy.')
             expected = data.get('expected_total')
+            if manual and discount_type == 'percent' and _subtotal_now(
+                    actor=actor, company=company, quote=locked, branch=branch, items=items) != locked.subtotal:
+                # A percentage of a different subtotal is a different discount: the same rule as composing one.
+                if not has_capability(actor, company, CAP_DISCOUNTS):
+                    raise QuoteConflict(
+                        'Con los precios de hoy el descuento porcentual de la cotización es otro importe: cobrarlo '
+                        'necesita permiso de descuentos: revisa la cotización, o pide a quien tiene ese permiso que '
+                        'la convierta.', code='discount_needs_review')
+                quoted_authority = False
         elif decision == 'quoted':
             discount_type, discount_value, discount_reason = _keep_quoted_price(
                 actor=actor, company=company, quote=locked, branch=branch, items=items)
@@ -897,7 +919,7 @@ def convert_quote(*, actor, company, quote, data, idempotency_key, request=None)
             raise QuoteConflict('Esa clave ya se usó para otra venta.', code='idempotency_conflict',
                                 extra={'order_id': order.pk})
         link = {'source_quote': locked}
-        if manual and decision != 'quoted' and locked.discount_authorized_by_id:
+        if quoted_authority and decision != 'quoted' and locked.discount_authorized_by_id:
             # Who decided the discount the customer was quoted, not who rang it up.
             link['discount_authorized_by'] = locked.discount_authorized_by_id
         Order.objects.filter(pk=order.pk).update(**link)
@@ -913,6 +935,19 @@ def convert_quote(*, actor, company, quote, data, idempotency_key, request=None)
                order_id=order.pk, quoted_total=str(locked.total), charged_total=str(order.total),
                price_decision=decision or 'quoted_total')
     return order, True
+
+
+def _subtotal_now(*, actor, company, quote, branch, items) -> Decimal:
+    """The basket's subtotal at today's prices (the till's pricing, no discount, nothing written)."""
+    try:
+        now = pos_services.build_pos_sale(
+            operator=actor, company=company, branch=branch, items=items, customer=quote.customer_id,
+            seller_id=quote.seller_id, payment_method=PaymentMethod.CASH, may_assign_seller=True,
+            may_order_over_stock=has_capability(actor, company, CAP_ORDERS_MANAGE),
+            validate_cash=False, require_units=False)
+    except pos_services.PosError as exc:
+        raise _wrap_pos(exc) from None
+    return now['subtotal']
 
 
 def _may_keep_quoted(actor, company, quote, priced) -> bool:
