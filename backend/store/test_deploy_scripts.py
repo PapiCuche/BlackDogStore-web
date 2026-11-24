@@ -309,6 +309,55 @@ class HealthCheckTest(_Scripts):
         self.assertEqual(result.returncode, 1)
         self.assertIn('ATENCIÓN copia de seguridad: la última copia completa tiene más de 26 horas', result.stdout)
 
+    # -- SALES-QUOTE-01: the hourly `expire_sales_quotes` pass, watched once its crontab line writes its log ------
+
+    def quote_log(self, text, *, minutes_ago=0):
+        self.dest.mkdir(parents=True, exist_ok=True)
+        log = self.dest / 'expire_sales_quotes.log'
+        log.write_text(text)
+        if minutes_ago:
+            then = log.stat().st_mtime - minutes_ago * 60
+            os.utime(log, (then, then))
+        return log
+
+    def test_the_quote_pass_is_not_watched_until_its_log_exists(self):
+        result = self.healthy()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertNotIn('cotizaciones', result.stdout)
+
+    def test_a_recent_successful_quote_pass_is_all_right(self):
+        self.assertEqual(self.run_script(BACKUP).returncode, 0)
+        self.quote_log('Cotizaciones vencidas: 2\nCotizaciones vencidas: 0\n', minutes_ago=50)
+        result = self.run_script(HEALTH)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('OK    cotizaciones vencidas: pasada horaria al día (Cotizaciones vencidas: 0)', result.stdout)
+
+    def test_a_quote_pass_that_stopped_is_reported(self):
+        self.assertEqual(self.run_script(BACKUP).returncode, 0)
+        self.quote_log('Cotizaciones vencidas: 0\n', minutes_ago=180)
+        result = self.run_script(HEALTH)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('ATENCIÓN cotizaciones vencidas: ninguna pasada en más de 120 minutos', result.stdout)
+
+    def test_a_quote_pass_that_failed_is_reported_even_after_earlier_successes(self):
+        failures = (
+            'Traceback (most recent call last):\n  File "manage.py"\ndjango.db.utils.OperationalError: x\n',
+            'CommandError: Empresa no encontrada.\n',
+            'service "backend" is not running\n',
+        )
+        for failure in failures:
+            with self.subTest(failure=failure):
+                self.assertEqual(self.run_script(BACKUP).returncode, 0)
+                self.quote_log('Cotizaciones vencidas: 3\n' + failure)
+                result = self.run_script(HEALTH)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn('ATENCIÓN cotizaciones vencidas: la última pasada falló', result.stdout)
+        with self.subTest(failure='an empty log'):
+            self.quote_log('')
+            result = self.run_script(HEALTH)
+            self.assertEqual(result.returncode, 1, result.stdout)
+            self.assertIn('ATENCIÓN cotizaciones vencidas: la última pasada falló', result.stdout)
+
 
 @skipUnless(COMPOSE_FILE.exists(), 'docker-compose.prod.yml is not part of this checkout')
 class ComposeFileTest(SimpleTestCase):

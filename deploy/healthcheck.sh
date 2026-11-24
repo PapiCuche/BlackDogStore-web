@@ -15,6 +15,9 @@
 #     rechazadas, pagos esperando ni avisos de WhatsApp fallidos o atrasados
 #     (`python manage.py ops_status`);
 #   · la última copia de seguridad completa es reciente;
+#   · la pasada horaria de cotizaciones vencidas (`expire_sales_quotes`) corre y
+#     termina bien — sólo cuando su registro existe, es decir, desde que su línea
+#     del crontab está instalada;
 #   · queda espacio en disco.
 #
 # No arregla nada y no cambia nada: sólo mira.
@@ -25,6 +28,8 @@ COMPOSE="${COMPOSE:-docker compose -f docker-compose.prod.yml --env-file deploy/
 ENV_FILE="${ENV_FILE:-deploy/.env.production}"
 DEST="${BACKUP_DIR:-backups}"
 MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-26}"
+QUOTES_LOG="$DEST/expire_sales_quotes.log"
+QUOTES_MAX_AGE_MINUTES="${QUOTES_MAX_AGE_MINUTES:-120}"
 DISK_MAX_PERCENT="${DISK_MAX_PERCENT:-90}"
 # El valor puede venir entre comillas en el archivo de variables: Compose las quita, y aquí también.
 DOMAIN="${SITE_DOMAIN:-$(grep '^SITE_DOMAIN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- | tr -d "\"'\r ")}"
@@ -86,6 +91,20 @@ elif [ -n "$(find "$DEST/LAST_OK" -mmin +$((MAX_AGE_HOURS * 60)) 2>/dev/null)" ]
   bad "copia de seguridad: la última copia completa tiene más de $MAX_AGE_HOURS horas ($(cat "$DEST/LAST_OK"))"
 else
   ok "copia de seguridad ($(cat "$DEST/LAST_OK"))"
+fi
+
+# SALES-QUOTE-01. `expire_sales_quotes` corre cada hora y deja una línea por pasada en su registro; si termina bien,
+# la última línea es «Cotizaciones vencidas: <n>». Sin registro no se mira nada: hasta que se instala su línea del
+# crontab no hay pasada que vigilar (el panel ya muestra vencidas las cotizaciones aunque no corra).
+if [ -f "$QUOTES_LOG" ]; then
+  last=$(grep -v '^[[:space:]]*$' "$QUOTES_LOG" | tail -n 1)
+  if [ -n "$(find "$QUOTES_LOG" -mmin +"$QUOTES_MAX_AGE_MINUTES" 2>/dev/null)" ]; then
+    bad "cotizaciones vencidas: ninguna pasada en más de $QUOTES_MAX_AGE_MINUTES minutos (¿está la línea expire_sales_quotes en el crontab?)"
+  elif printf '%s\n' "$last" | grep -Eq '^Cotizaciones vencidas: [0-9]+$'; then
+    ok "cotizaciones vencidas: pasada horaria al día ($last)"
+  else
+    bad "cotizaciones vencidas: la última pasada falló (mira el final de $QUOTES_LOG)"
+  fi
 fi
 
 USED=$(df -P . 2>/dev/null | awk 'NR == 2 {gsub("%", "", $5); print $5}')

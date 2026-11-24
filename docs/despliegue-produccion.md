@@ -590,6 +590,40 @@ nunca recupera uno vencido (se borra al leerlo), y confirmar la recepción o pul
 
 Es idempotente y sólo imprime cuántos borró. No toca stock, equipos, Kardex ni etiquetas.
 
+### 6.1.3e Cotizaciones vencidas
+
+Una cotización aprobada, enviada o aceptada cuyo último día de vigencia ya pasó (hora de Lima) se **ve** «Vencida»
+y no se puede enviar, responder ni convertir aunque esta tarea no corra. La tarea sólo deja ese estado guardado
+(para los reportes y el filtro por estado), con una línea de auditoría `sales_quote_expired` por cotización. Una
+vez por hora:
+
+```
+41 * * * * cd /ruta/al/repositorio && mkdir -p backups && docker compose -f docker-compose.prod.yml --env-file deploy/.env.production exec -T backend python manage.py expire_sales_quotes >> backups/expire_sales_quotes.log 2>&1
+```
+
+- Imprime una sola línea por pasada: `Cotizaciones vencidas: <n>`. Si falla termina con error y lo último del
+  registro es el error; lo que ya marcó queda marcado (cada cotización es su propia transacción) y la pasada
+  siguiente termina el resto.
+- Es idempotente: una segunda pasada, o dos a la vez, no marca nada dos veces ni repite la auditoría. Nunca toca
+  borradores, rechazadas, convertidas ni reemplazadas, y **no borra nada**.
+- `--dry-run` sólo cuenta las que marcaría (`Cotizaciones por vencer: <n> …`); `--company <slug>`, sólo esa empresa.
+- `sh deploy/healthcheck.sh` la vigila **sólo cuando existe `backups/expire_sales_quotes.log`**: avisa si no hubo
+  pasada en 2 horas (`QUOTES_MAX_AGE_MINUTES`) o si la última no terminó con la línea de resumen.
+- **Un despliegue cerca del minuto :41.** Si un despliegue (o un `up -d`) recrea `backend` justo cuando toca la
+  pasada, esa hora el registro termina con algo como `service "backend" is not running` y el healthcheck dice
+  `ATENCIÓN cotizaciones vencidas: la última pasada falló` hasta el siguiente :41 (hasta 4 correos, y el postcheck
+  del despliegue sale con `healthcheck_rc=1`). No es un fallo de la tarea. Al terminar el despliegue, lanza una
+  pasada con la misma redirección; añade una línea de resumen y el aviso desaparece:
+  ```sh
+  $C exec -T backend python manage.py expire_sales_quotes >> backups/expire_sales_quotes.log 2>&1
+  ```
+  Los kits de despliegue muestran `healthcheck.sh | tail -N`, que puede dejar fuera ese aviso: busca las líneas
+  `ATENCIÓN` con `grep '^ATENCIÓN'`.
+- El registro crece una línea por hora (unos 250 KB al año): como los demás registros de tareas en `backups/`,
+  no necesita rotación.
+- Una cotización marcada «Vencida» no vuelve atrás: se renueva con «Revisar» (escribe la revisión siguiente con
+  vigencia nueva y deja la vencida como constancia).
+
 ### 6.1.4 Saber que algo va mal
 
 ```sh
@@ -620,6 +654,7 @@ sólo mira.
 | Lo configurado en el panel no se puede leer | Falta la clave raíz, o no es la que cifró lo guardado |
 | Una integración activa dejó de pasar su prueba | El resultado de la última «Probar la configuración en uso» |
 | Las copias dejaron de hacerse | `backups/LAST_OK` con más de 26 horas |
+| Las cotizaciones dejaron de marcarse vencidas | Sólo si existe `backups/expire_sales_quotes.log` (desde que su línea está en el `crontab`): sin pasada en 2 horas, o la última no terminó con «Cotizaciones vencidas: <n>» |
 | El disco se llena | Más del 90 % usado |
 
 Las de la aplicación (migraciones, pagos, WhatsApp e integraciones) las informa ella
@@ -879,7 +914,9 @@ Da las capacidades `sales.quotes.*` a los roles existentes. Después de `migrate
    $C exec -T backend python manage.py cancel_sales_quote_print_jobs           # cuenta
    $C exec -T backend python manage.py cancel_sales_quote_print_jobs --apply   # cancela
    ```
-2. **Quita del `crontab` la línea `expire_sales_quotes`**.
+2. **Quita del `crontab` la línea `expire_sales_quotes`** y renombra `backups/expire_sales_quotes.log` (por
+   ejemplo a `expire_sales_quotes.log.retirado-<fecha>`): mientras exista, `deploy/healthcheck.sh` espera una
+   pasada cada hora.
 3. `git checkout <commit anterior>` y `$C build`. **Justo antes de `$C up -d`, vuelve a ejecutar
    `cancel_sales_quote_print_jobs --apply`**: mientras compilabas, alguien pudo pedir otro ticket de cotización.
    Después, `$C up -d`. La migración **se deja aplicada**: la versión anterior no lee sus tablas ni sus columnas.

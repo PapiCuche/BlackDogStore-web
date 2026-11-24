@@ -904,26 +904,31 @@ def decide_quote(*, actor, company, quote, accepted: bool, note: str = '', reque
     return locked
 
 
-def expire_due(*, company=None, today: date | None = None) -> int:
+def expire_due(*, company=None, today: date | None = None, dry_run: bool = False) -> int:
     """
     Stamp `expired` on every live quote whose validity has passed. Idempotent and cron-friendly
     (`manage.py expire_sales_quotes`): reads never write, so this is the only writer of the state.
+    `dry_run` only counts them.
     """
     today = today or timezone.localdate()
     due = SalesQuote.objects.filter(status__in=SalesQuote.LIVE_STATUSES, valid_until__lt=today)
     if company is not None:
         due = due.filter(company=company)
+    if dry_run:
+        return due.count()
     count = 0
     for quote_id in list(due.values_list('pk', flat=True)):
         with transaction.atomic():
             locked = SalesQuote.objects.select_for_update().filter(pk=quote_id).first()
             if locked is None or locked.status not in SalesQuote.LIVE_STATUSES or locked.valid_until >= today:
                 continue
+            previous_status = locked.status
             locked.status = SalesQuote.STATUS_EXPIRED
             locked.expired_at = timezone.now()
             locked.save(update_fields=['status', 'expired_at', 'updated_at'])
+            # `previous_status`: what it was before, so a pass that ran on a wrong clock can be undone exactly.
             _audit(actor=None, company=locked.company, action='sales_quote_expired', quote=locked,
-                   valid_until=locked.valid_until.isoformat())
+                   valid_until=locked.valid_until.isoformat(), previous_status=previous_status)
             count += 1
     return count
 
