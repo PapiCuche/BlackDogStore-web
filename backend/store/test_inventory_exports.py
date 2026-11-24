@@ -806,10 +806,11 @@ class UnitsExportTest(_Base):
         dc2 = [None] * 9
         # INV-LOAD-01: «Proveedor» empty on purpose, the day each came in, no notes.
         load = [None, timezone.localdate().isoformat(), None, None]
+        used = [None] * 4        # USED-READY-01: warranty, functional state, defects, accessories
         self.assertEqual(rows, [
-            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0001', IMEI_A, None, 'Nuevo', 3800, None, *dc2, *load],
-            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0002', IMEI_B, None, 'Usado', None, None, *dc2, *load],
-            ['TEL-X', 'Teléfono X', 'Norte', 'SER-0003', IMEI_C, IMEI_D, 'Caja abierta', 3650.5, None, *dc2, *load],
+            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0001', IMEI_A, None, 'Nuevo', 3800, None, *dc2, *load, *used],
+            ['TEL-X', 'Teléfono X', 'Centro', 'SER-0002', IMEI_B, None, 'Usado', None, None, *dc2, *load, *used],
+            ['TEL-X', 'Teléfono X', 'Norte', 'SER-0003', IMEI_C, IMEI_D, 'Caja abierta', 3650.5, None, *dc2, *load, *used],
         ])
 
     def test_serials_and_imeis_are_text(self):
@@ -968,14 +969,18 @@ class DeviceCommerceRoundTripTest(_Base):
         self.used = self.product('Teléfono X usado', 'telefono-x-usado', '1.00', self.phones,
                                  is_serialized=True, requires_imei=True)
         self.code(self.used, 'TEL-X-U')
-        device_catalog.set_variant(self.used, model_id=self.model.pk, condition_line=Product.CONDITION_USED,
-                                   option_ids=[self.gb128.pk, blue.pk])
+        self.used = device_catalog.set_variant(self.used, model_id=self.model.pk,
+                                               condition_line=Product.CONDITION_USED,
+                                               option_ids=[self.gb128.pk, blue.pk])
         Product.objects.filter(pk=self.phone.pk).update(reference_cost=Decimal('3700.00'))
         self.receive(self.centro, {
             'serial_number': 'SER-U001', 'imei': imei('35693803564390'), 'condition': 'used', 'cost': '1200.00',
             'cosmetic_grade': self.grade.pk, 'battery_health': 88, 'sale_price': '1899.90',
             # INV-LOAD-01 — written back under «Notas internas» and «Detalles para el comprador».
             'notes': 'Caja original', 'public_notes': 'Sin rayones',
+            # USED-READY-01 — the four optional columns of a used device, written back under their headers.
+            'warranty_days': 90, 'functional_state': 'with_faults', 'defects': 'Botón lateral duro',
+            'accessories': 'Caja',
         }, product=self.used)
 
     def links(self):

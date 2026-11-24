@@ -31,7 +31,7 @@ from rest_framework.views import APIView
 from . import availability_views as availability
 from . import cost_services, db_busy, inventory_services, label_batches
 from . import stock_unit_services as units
-from . import storefront_media, unit_media
+from . import storefront_media, unit_media, used_unit_services
 from .product_media import ProductMediaError
 from .inventory_services import InventoryError
 from .admin_views import CAP_PRODUCTS_MANAGE, CAP_PRODUCTS_VIEW, _LEGACY_MANAGE_CATALOG_ROLES, _LEGACY_VIEW_CATALOG_ROLES
@@ -93,6 +93,17 @@ def unit_payload(unit, *, include_cost: bool = False, include_supplier: bool = F
         'held_online': bool(unit.hold_key),
         'hold_until': unit.hold_until if unit.hold_key else None,
         'photos': [unit_media.payload(photo) for photo in unit.photos.all()],
+        # USED-READY-01 — the inspection and the publication of THIS device, and what the buyer is told about it.
+        'inspection_status': unit.inspection_status,
+        'inspection_label': unit.get_inspection_status_display(),
+        'inspection_note': unit.inspection_note,
+        'inspected_at': unit.inspected_at,
+        'published_online': unit.published_online,
+        'published_at': unit.published_at,
+        'warranty_days': unit.warranty_days,
+        'functional_state': unit.functional_state,
+        'defects': unit.defects,
+        'accessories': unit.accessories,
     }
     if not include_cost:
         del payload['cost']
@@ -107,16 +118,16 @@ def web_status(unit, *, dispatch) -> dict:
     INV-RECEIVE-PRICE-03 — whether the online shop offers THIS device right now, and every reason it does not.
 
     The same conditions as `device_catalog.offered_units` plus the two the model page adds (the variant and its
-    model published): available, on the dispatch branch, and — a used device — with a price greater than zero.
-    Codes, never amounts: the screen words them. Read only; nothing here publishes anything.
+    model published): available, on the dispatch branch, and — a used device — ready for the web
+    (`used_unit_services.web_problems`: a price greater than zero, its inspection approved, itself published and a
+    real photo). Codes, never amounts: the screen words them. Read only; nothing here publishes anything.
     """
     product = unit.product
     model = product.product_model if product.product_model_id else None
     reasons = []
     if unit.status != StockUnit.Status.AVAILABLE:
         reasons.append('not_available')
-    if product.condition_line == Product.CONDITION_USED and not units.has_usable_price(unit.sale_price):
-        reasons.append('no_price')
+    reasons += used_unit_services.web_problems(unit)
     if dispatch is None:
         reasons.append('no_dispatch_branch')
     elif unit.branch_id != dispatch.pk:
@@ -239,6 +250,13 @@ class StockUnitListView(APIView):
                 Product.objects.filter(company=company), model_id=model_id, option_ids=option_ids,
             ).values('pk'))
 
+        inspection = (params.get('inspection') or '').strip()
+        if inspection:
+            # USED-READY-01 — «Pendientes de inspección», «Rechazados».
+            if inspection not in StockUnit.Inspection.values:
+                return Response({'detail': 'Parámetro "inspection" inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+            rows = rows.filter(inspection_status=inspection)
+
         priced = (params.get('priced') or '').strip()
         if priced:
             # INV-RECEIVE-PRICE-03 — «Sin precio»: the used devices nobody has priced yet (a zero is no price).
@@ -282,6 +300,10 @@ class StockUnitListView(APIView):
             ],
             'statuses': [{'value': v, 'label': label} for v, label in StockUnit.Status.choices],
             'conditions': [{'value': v, 'label': label} for v, label in StockUnit.Condition.choices],
+            'inspections': [{'value': v, 'label': label} for v, label in StockUnit.Inspection.choices],
+            'functional_states': [{'value': v, 'label': label} for v, label in StockUnit.FunctionalState.choices],
+            # Whether this caller may approve or reject an inspection (the panel shows the buttons only then).
+            'can_inspect': may_inspect(request),
             **meta,
         })
 
@@ -515,6 +537,8 @@ class StockUnitDetailView(_UnitMixin, APIView):
         data = request.data if isinstance(request.data, dict) else {}
         fields = {k: data[k] for k in (
             'condition', 'cost', 'notes', 'battery_health', 'cosmetic_grade', 'public_notes', 'sale_price',
+            # USED-READY-01 — never `inspection_status` nor `published_online`: each has its own door.
+            *units.USED_ONLY_FIELDS,
         ) if k in data}
         if 'cost' in fields and not may_view_costs(request):
             return Response(
@@ -528,6 +552,13 @@ class StockUnitDetailView(_UnitMixin, APIView):
             # not the stockroom's: the same authority as a product's price.
             return Response(
                 {'detail': 'No tienes permiso para cambiar precios de venta.', 'field': 'sale_price',
+                 'code': PRICES_FORBIDDEN},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if 'warranty_days' in fields and not may_manage_products(request):
+            # USED-READY-01 — the warranty is a commercial promise to the buyer: the price's authority.
+            return Response(
+                {'detail': 'No tienes permiso para cambiar la garantía de un equipo.', 'field': 'warranty_days',
                  'code': PRICES_FORBIDDEN},
                 status=status.HTTP_403_FORBIDDEN,
             )
@@ -566,6 +597,77 @@ class StockUnitActionView(_UnitMixin, APIView):
                 units.void_unit(unit, reason=reason, reason_code=code, actor=request.user, request=request)
             else:
                 units.return_unit(unit, reason=reason, actor=request.user, request=request)
+        except InventoryError as exc:
+            return _refusal(exc)
+        return self.answer(request, unit)
+
+
+CAP_UNITS_INSPECT = 'inventory.units.inspect'
+#: A pre-SaaS operator who may approve an inspection: who ran the business (the preset gets it by 0187).
+_LEGACY_INSPECT_ROLES = _LEGACY_MANAGE_CATALOG_ROLES
+
+
+def may_inspect(request) -> bool:
+    """Whether this caller may approve or reject the inspection of a used device in the company it acts on."""
+    _company, error = _company_context(request, CAP_UNITS_INSPECT, _LEGACY_INSPECT_ROLES)
+    return error is None
+
+
+def _not_ready(exc) -> Response:
+    return Response({'detail': str(exc), 'code': exc.code, 'reasons': exc.reasons}, status=status.HTTP_409_CONFLICT)
+
+
+class StockUnitInspectionView(_UnitMixin, APIView):
+    """
+    USED-READY-01 — POST …/units/<id>/inspection/  {decision: approved|rejected, note}
+
+    `inventory.units.inspect`, in a branch the caller reaches; another company's device is a 404. A rejection needs
+    its note and takes the device off the web. Audited.
+    """
+
+    def post(self, request, pk):
+        company, error = _company_context(request, CAP_UNITS_INSPECT, _LEGACY_INSPECT_ROLES)
+        if error:
+            return error
+        unit = StockUnit.objects.filter(
+            company=company, pk=pk, branch__in=visible_branches(request.user, company),
+        ).select_related('product', 'branch').first()
+        if unit is None:
+            return Response({'detail': NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            used_unit_services.set_inspection(unit, decision=data.get('decision'), note=data.get('note'),
+                                              actor=request.user, request=request)
+        except InventoryError as exc:
+            return _refusal(exc)
+        return self.answer(request, unit)
+
+
+class StockUnitPublicationView(_UnitMixin, APIView):
+    """
+    USED-READY-01 — POST …/units/<id>/publication/  {published: true|false}
+
+    The device ITSELF on the web: `inventory.adjust` (its ficha, in a branch the caller reaches) and
+    `products.manage` (the catalogue's decision, like its price). Publishing is refused with 409 and every reason
+    (`no_price`, `not_inspected`, `inspection_rejected`, `no_photo`, `not_in_stock`). Audited.
+    """
+
+    def post(self, request, pk):
+        unit, error = self.resolve(request, pk)
+        if error:
+            return error
+        if not may_manage_products(request):
+            return Response(
+                {'detail': 'Sólo quien gestiona productos publica o retira un equipo de la tienda en línea.',
+                 'code': PRICES_FORBIDDEN},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            used_unit_services.set_publication(unit, published=data.get('published'), actor=request.user,
+                                               request=request)
+        except used_unit_services.NotReadyToPublish as exc:
+            return _not_ready(exc)
         except InventoryError as exc:
             return _refusal(exc)
         return self.answer(request, unit)

@@ -3,9 +3,10 @@
 /**
  * Inventario › Seminuevos — DEVICE-COMMERCE-01 · DC2, INV-RECEIVE-PRICE-03.
  *
- * `inventory.view` para llegar, como «Equipos». Tres autoridades separadas (`lib/used-units-access.ts`), que el
- * servidor comprueba otra vez: datos y fotos del equipo con `inventory.adjust`; su precio de venta con
- * `products.manage` (y `inventory.adjust`, porque vive en la ficha del equipo); el costo sólo con `costs.view`.
+ * `inventory.view` para llegar, como «Equipos». Autoridades separadas (`lib/used-units-access.ts`), que el
+ * servidor comprueba otra vez: datos y fotos del equipo con `inventory.adjust`; su precio de venta, su garantía y su
+ * publicación en línea con `products.manage` (y `inventory.adjust`, porque viven en la ficha del equipo); su
+ * inspección con `inventory.units.inspect` (USED-READY-01); el costo sólo con `costs.view`.
  *
  * `?product=<id>&precio=sin` llega desde el resumen de una recepción: los equipos de ese artículo sin precio.
  */
@@ -53,6 +54,7 @@ function UsedContent({ user, access }: { user: AuthUser; access: InternalAccess 
             canManagePrice={can.canManagePrice}
             canManageProducts={can.canManageProducts}
             canSeeCost={can.canSeeCost}
+            canInspect={can.canInspect}
             initialProduct={filters.product}
             initialPriced={filters.priced}
           />

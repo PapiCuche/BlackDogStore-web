@@ -25,6 +25,7 @@ from store.serializers import ProductSerializer
 from store.test_device_commerce import DeviceShop, _client
 from store.test_supplier_offers import SupplyShop
 from store.tests import _p2d_branch, _p2d_member, _p3_company, _prod
+from store.used_unit_test_support import approve, approve_all, ready_used  # noqa: F401
 
 D = Decimal
 PICTURE = 'https://imagenes.example.test/producto.png'
@@ -203,7 +204,7 @@ class PreviewUsedUnitsTest(TestCase):
     def test_units_without_a_price_are_listed_with_their_reason(self):
         priced, bare = self.shop.receive(self.shop.used128, 2)
         from store import stock_unit_services as units
-        units.update_unit(priced, sale_price='2000.00', battery_health=90)
+        ready_used(priced, sale_price='2000.00', battery_health=90)
         body = self.preview(self.shop.used128)
         rows = {r['label_code']: r for r in body['offered_units']}
         self.assertEqual(len(rows), 2)

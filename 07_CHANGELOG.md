@@ -11,6 +11,20 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - La vista previa de una lista parcial nombra las ofertas vigentes que no menciona, sólo como información.
 - Una fila del Excel que es una combinación válida sin variante lo dice (`combinacion_valida_sin_variante`) y ofrece «Crear variante».
 
+## 2026-11-24 — USED-READY-01: un seminuevo se vende como ESE equipo (rama, sin desplegar)
+
+**Added**
+- Por equipo seminuevo: inspección (pendiente, aprobada o rechazada, con nota, quién y cuándo), publicación propia, garantía en días, estado funcional, defectos y accesorios. Migración `0187_used_unit_readiness` (aditiva).
+- Garantía por defecto de seminuevos configurable por empresa (`used_warranty_days`); vacía = sólo el texto de la política.
+- Capacidad `inventory.units.inspect`, otorgada a los roles con `company.manage`.
+- Rutas `POST …/units/<id>/inspection/` y `…/publication/`, auditadas; columnas opcionales en la plantilla de equipos.
+
+**Changed**
+- La web ofrece un seminuevo sólo disponible, con precio, inspección aprobada, publicado y con al menos una foto real.
+- Caja, búsqueda del cajero, entrega de pedidos y el escritor único de stock rechazan un seminuevo sin inspección aprobada (409 `unit_not_inspected`).
+- Ningún seminuevo existente se publica ni se aprueba solo: tras el despliegue todos salen de la web y de la caja hasta inspeccionarlos.
+- Un equipo devuelto vuelve a inspección.
+
 ## 2026-11-23 — INV-LOAD-01: cargar el stock real sin compras ficticias (PR abierto, sin fusionar)
 
 **Changed**

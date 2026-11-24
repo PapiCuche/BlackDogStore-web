@@ -15,6 +15,17 @@ Rama `feat/supply-weekly-01` sobre #402 (ya en `master`), PR abierto, **sin fusi
 - **Revisión de #405:** «retirado» sólo si el par estaba en la lista anterior o se desactivó/venció desde la semana anterior; lo apagado antes es «inactivo» (estado, no cambio). Los cambios usan los valores APLICADOS (precio o cantidad mantenidos no cuentan). La fila muestra la oferta que escribió la lista de la semana. Semana fuera de 2000–2100 → 400. Una fila con claves en desacuerdo menciona sus variantes; un trabajo aplicado ya no devuelve `unmentioned`. Las dos pestañas quedan montadas (la vista previa no se pierde); Inicio/Fin en las pestañas.
 - **Pruebas:** `test_supply_weekly` (22) y suites de ofertas/guardas/catálogo relacionadas; Jest `supply-weekly` (11).
 
+## 2026-11-24 — USED-READY-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0187`
+
+Un seminuevo es un equipo con su inspección, su publicación, sus fotos reales y su garantía. Sólo en la rama `feat/used-ready-01`.
+
+- **Web:** sólo disponible, con precio > 0, inspección aprobada, publicado y con ≥ 1 foto real (`used_unit_services.web_ready_q`; la foto se lee al consultar).
+- **Caja y rutas internas:** sin inspección aprobada no se vende ni se entrega (409 `unit_not_inspected`). La publicación no se pide en caja.
+- **Autoridad:** inspeccionar = `inventory.units.inspect` (nueva, a quien tiene `company.manage`); publicar = `products.manage`; todo auditado.
+- **Importación y recepción:** nunca inspeccionan ni publican. Un equipo devuelto vuelve a pendiente.
+- **Migración `0187`:** aditiva, sin aprobar ni publicar nada histórico (orden del propietario). Tras desplegar, TODOS los seminuevos existentes salen de la web y de la caja hasta inspeccionarlos; el ensayo de la release debe contarlos. Stock sin cambios.
+- **Pendiente:** UNIT-PHOTO-02 (procedencia de las fotos) endurece `real_photos`/`used_unit_publish_blockers`.
+
 ## 2026-11-23 — INV-LOAD-01 · cargar el stock real de equipos sin compras ficticias · PR abierto, SIN FUSIONAR ni desplegar
 
 Rama `feat/inv-load-01`. Sin migraciones. Producción sin cambios.
