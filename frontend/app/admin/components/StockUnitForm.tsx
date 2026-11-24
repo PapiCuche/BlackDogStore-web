@@ -23,9 +23,10 @@ import { useEffect, useId, useRef, useState } from "react";
 import { fetchAdminProductDetail } from "@/app/lib/admin";
 import {
   receiveStockUnits, setProductTracking, StockUnitApiError,
-  type NewUnit, type Option, type UnitField,
+  type NewUnit, type Option, type UnitEntryKind, type UnitField,
 } from "@/app/lib/stock-units";
 
+import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
 import { excludedCondition, lineCondition } from "../lib/inventory-receipts";
 import { preferredBranch, rememberBranch } from "../lib/last-branch";
 import { ErrorBox } from "./InventoryUi";
@@ -46,6 +47,22 @@ export type UnitSaved = {
 };
 
 const plural = (n: number) => (n === 1 ? "1 equipo" : `${n} equipos`);
+
+/** INV-LOAD-01 — the entry types this form offers: the stock the shop already had, or a purchase (the default). */
+const ENTRY_TYPES: { value: UnitEntryKind; label: string }[] = [
+  { value: "opening", label: "Inventario inicial" },
+  { value: "purchase", label: "Compra" },
+];
+
+/** The supplier pages read for the picker (25 each): past it the form says the list is partial. */
+const SUPPLIER_PAGES = 4;
+
+/** Today in the browser's calendar, AAAA-MM-DD: the latest entry date the picker offers (the server checks again). */
+function todayIso(): string {
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
 
 /** An input with its label and, when the server points at it, its error. */
 function Input({
@@ -85,7 +102,8 @@ function Input({
 }
 
 export function StockUnitForm({
-  branch, branches, conditions, canChangeTracking, canSeeCost = false, initialProductId = null, onSaved, onClose,
+  branch, branches, conditions, canChangeTracking, canSeeCost = false, canSeeSuppliers = false, initialProductId = null,
+  onSaved, onClose,
 }: {
   /** The branch in view; "all" when the screen shows every branch the caller reaches. */
   branch: number | "all" | undefined;
@@ -99,6 +117,11 @@ export function StockUnitForm({
    * the screen says so.
    */
   canSeeCost?: boolean;
+  /**
+   * INV-LOAD-01 — `products.view`: the supplier list is offered (the same rule as «Recibir mercadería»). Without it the
+   * form neither loads nor sends a supplier.
+   */
+  canSeeSuppliers?: boolean;
   /** `?product=<id>` of «Recibir mercadería»: the product the form opens with. */
   initialProductId?: number | null;
   /** A device (or several) entered the inventory: the caller refreshes its table. */
@@ -116,6 +139,12 @@ export function StockUnitForm({
   const [chosenCondition, setCondition] = useState<string | null>(null);
   const [cost, setCost] = useState("");
   const [reason, setReason] = useState("");
+  // INV-LOAD-01 — what the entry IS, who sold it and when it came in. Purchase and today unless the person says so.
+  const [entryKind, setEntryKind] = useState<UnitEntryKind>("purchase");
+  const [supplier, setSupplier] = useState("");
+  const [receivedOn, setReceivedOn] = useState("");
+  const [suppliers, setSuppliers] = useState<SupplierRow[]>([]);
+  const [supplierNote, setSupplierNote] = useState("");
   const [rows, setRows] = useState<Row[]>([{ ...BLANK }]);
   const [several, setSeveral] = useState(false);
   const [cellular, setCellular] = useState(false);
@@ -134,6 +163,32 @@ export function StockUnitForm({
     );
     return () => { cancelled = true; };
   }, [initialProductId]);
+
+  // Supplier list: optional help, never a reason to stop (as in «Recibir mercadería»).
+  useEffect(() => {
+    if (!canSeeSuppliers) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const all: SupplierRow[] = [];
+        let total = 0;
+        for (let page = 1; page <= SUPPLIER_PAGES; page += 1) {
+          const answer = await fetchSuppliers({ active: "true", page });
+          if (cancelled) return;
+          all.push(...answer.results);
+          total = answer.count;
+          if (answer.results.length === 0 || all.length >= total) break;
+        }
+        setSuppliers(all);
+        if (all.length < total) {
+          setSupplierNote(`Se muestran los primeros ${all.length} de ${total} proveedores.`);
+        }
+      } catch {
+        if (!cancelled) setSupplierNote("No se pudo cargar la lista de proveedores. Puedes seguir sin elegir uno.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [canSeeSuppliers]);
 
   // The server's own answer when the API gives it; else the rule it applies
   // (only a product with no stock), which the server checks again anyway.
@@ -188,7 +243,13 @@ export function StockUnitForm({
       ...(canSeeCost ? { cost: cost.trim() } : {}),
     }));
     try {
-      const response = await receiveStockUnits({ product_id: product.id, branch: Number(branchId), reason: reason.trim(), units });
+      const response = await receiveStockUnits({
+        product_id: product.id, branch: Number(branchId), reason: reason.trim(), units,
+        // INV-LOAD-01 — only what the person chose: the server's defaults (purchase, no supplier, today) stand otherwise.
+        ...(entryKind === "opening" ? { entry_kind: entryKind } : {}),
+        ...(canSeeSuppliers && supplier ? { supplier: Number(supplier) } : {}),
+        ...(receivedOn ? { received_on: receivedOn } : {}),
+      });
       rememberBranch(Number(branchId));
       const saved = units.map((unit) => ({ serial: unit.serial_number, imei: unit.imei }));
       onSaved(
@@ -226,7 +287,8 @@ export function StockUnitForm({
 
   const imeiLabel = !product || needsImei ? "IMEI *" : "IMEI (opcional para este producto)";
   // A refusal on a field the form does not show (the cost, for who cannot set one) is said at the top.
-  const general = problem && (problem.field === null || problem.field === "condition" || (problem.field === "cost" && !canSeeCost))
+  const general = problem && (problem.field === null || problem.field === "condition" || problem.field === "notes"
+    || (problem.field === "cost" && !canSeeCost) || (problem.field === "supplier" && !canSeeSuppliers))
     ? problem.message : null;
 
   return (
@@ -334,6 +396,56 @@ export function StockUnitForm({
           </fieldset>
         ) : <div key={index}>{fields}</div>;
       })}
+
+      {/* INV-LOAD-01 — what these devices ARE in the Kardex, who sold them and when they came in. */}
+      <div className="grid gap-4 md:grid-cols-3">
+        <fieldset className="md:col-span-3">
+          <legend className="block text-xs font-semibold text-foreground">Tipo de ingreso</legend>
+          <div className="mt-1.5 flex flex-wrap gap-4 text-sm text-foreground">
+            {ENTRY_TYPES.map((kind) => (
+              <label key={kind.value} className="flex items-center gap-2">
+                <input
+                  type="radio" name="unit-entry-kind" value={kind.value} disabled={working}
+                  checked={entryKind === kind.value} onChange={() => setEntryKind(kind.value)}
+                  className="h-4 w-4 accent-[var(--primary)]"
+                />
+                {kind.label}
+              </label>
+            ))}
+          </div>
+          <p className="mt-1 text-xs text-muted">
+            {entryKind === "opening"
+              ? "Equipos que ya tenías. Se pueden registrar en varias tandas mientras el producto no tenga otros movimientos (ventas, compras, traslados) en esta sucursal."
+              : "Equipos que llegan comprados. Quedan como compra en el Kardex."}
+          </p>
+          {errorFor("entry_kind") ? <p role="alert" className="mt-1 text-xs text-danger">{errorFor("entry_kind")}</p> : null}
+        </fieldset>
+        {canSeeSuppliers ? (
+          <div>
+            <label htmlFor="unit-supplier" className="block text-xs font-semibold text-foreground">Proveedor (opcional)</label>
+            <select
+              id="unit-supplier" value={supplier} disabled={working}
+              onChange={(e) => setSupplier(e.target.value)} className={`mt-1.5 ${internalInputClass}`}
+            >
+              <option value="">Sin proveedor</option>
+              {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            {supplierNote ? <p role="status" className="mt-1 text-xs text-warning">{supplierNote}</p> : null}
+          </div>
+        ) : null}
+        <div>
+          <label htmlFor="unit-received-on" className="block text-xs font-semibold text-foreground">Fecha de ingreso (opcional)</label>
+          <input
+            id="unit-received-on" type="date" value={receivedOn} max={todayIso()} min="2000-01-01" disabled={working}
+            onChange={(e) => setReceivedOn(e.target.value)}
+            aria-invalid={errorFor("received_on") ? true : undefined}
+            aria-describedby="unit-received-on-help"
+            className={`mt-1.5 ${internalInputClass} ${errorFor("received_on") ? "border-danger" : ""}`}
+          />
+          <p id="unit-received-on-help" className="mt-1 text-xs text-muted">Vacía = hoy.</p>
+          {errorFor("received_on") ? <p role="alert" className="mt-1 text-xs text-danger">{errorFor("received_on")}</p> : null}
+        </div>
+      </div>
 
       <div className="grid gap-4 md:grid-cols-2">
         {canSeeCost ? (

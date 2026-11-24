@@ -210,7 +210,8 @@ def _unit(raw, where: str, *, may_view_costs: bool, may_set_prices: bool = False
     condition = _text(raw.get('condition'), f'{where}.condition', limit=20)
     if condition:
         row['condition'] = condition
-    notes = _text(raw.get('notes'), f'{where}.notes', limit=2000)
+    # INV-LOAD-01 — the device's notes hold `MAX_NOTES` characters: more is refused here, never cut further on.
+    notes = _text(raw.get('notes'), f'{where}.notes', limit=units_service.MAX_NOTES)
     if notes:
         row['notes'] = notes
 
@@ -270,14 +271,21 @@ def movement_type_for(normalised: dict) -> str:
 
 def opening_problem(branch, product) -> str:
     """
-    Why `product` cannot take an OPENING count in `branch`, or ''. Opening stock says nothing was on that shelf before:
-    the same rule the stock import enforces (§31). A shelf with any Kardex history, or holding stock that no Kardex line
-    explains, is not an opening.
+    Why `product` cannot take an OPENING count in `branch`, or ''. Opening stock says nothing but the opening was on
+    that shelf before: the same rule the stock import enforces (§31), widened by INV-LOAD-01 so a shop can load what
+    it already had IN SEVERAL BATCHES (several files, or a receipt and then a file) without a fictitious purchase.
+
+    A shelf whose Kardex holds ONLY opening lines (INITIAL_STOCK) still takes one more. Any other line — a sale, a
+    purchase, a transfer, a correction, a write-off, a hold — closes the opening for good. A shelf holding stock that no
+    Kardex line explains (no line at all, or a quantity the last opening line does not account for) is not an opening.
     """
-    if StockMovement.objects.filter(branch=branch, product=product).exists():
+    lines = StockMovement.objects.filter(branch=branch, product=product)
+    if lines.exclude(movement_type=StockMovement.INITIAL_STOCK).exists():
         return (f'«{product.name}» ya tiene movimientos en {branch.name}: no es inventario inicial. Regístralo como '
                 'compra.')
-    if BranchStock.objects.filter(branch=branch, product=product, quantity__gt=0).exists():
+    shelf = BranchStock.objects.filter(branch=branch, product=product).values_list('quantity', flat=True).first() or 0
+    last = lines.order_by('-pk').values_list('stock_after', flat=True).first()
+    if shelf > 0 and shelf != (last or 0):
         return (f'«{product.name}» ya tiene stock en {branch.name} sin un movimiento que lo explique: no se puede '
                 'declarar como inventario inicial. Regístralo como compra o corrige su stock.')
     return ''

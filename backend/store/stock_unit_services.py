@@ -20,6 +20,7 @@ two operations on the same shelf queue instead of deadlocking.
 """
 from __future__ import annotations
 
+import datetime
 import hashlib
 import re
 from decimal import Decimal, InvalidOperation
@@ -36,6 +37,11 @@ from .models import AdminAuditLog, BranchStock, Product, StockMovement, StockUni
 
 MAX_BATCH = 200
 MAX_REASON = 300
+#: INV-LOAD-01 — `StockUnit.notes` holds 300 characters. More is refused with this sentence, never cut in silence.
+MAX_NOTES = 300
+NOTES_TOO_LONG = f'Las notas internas del equipo admiten hasta {MAX_NOTES} caracteres.'
+#: INV-LOAD-01 — the oldest entry date a person may state: older is a typo («1920»), not stock.
+OLDEST_ENTRY = datetime.date(2000, 1, 1)
 
 
 class StockUnitError(InventoryError):
@@ -244,6 +250,62 @@ def clean_grade(company, value):
     return found
 
 
+def clean_notes(value) -> str:
+    """INV-LOAD-01 — a device's internal notes, whitespace collapsed. Too long is an error on `notes`, never a cut."""
+    text = ' '.join(str(value or '').split())
+    if len(text) > MAX_NOTES:
+        raise StockUnitError(NOTES_TOO_LONG, field='notes')
+    return text
+
+
+_DAY_FORMATS = ('%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y', '%d.%m.%Y')
+
+
+def clean_received_on(value) -> datetime.date | None:
+    """
+    INV-LOAD-01 — the day a device entered the shop, as a person states it: a date (or the date of a datetime), or a
+    text «AAAA-MM-DD» / «DD/MM/AAAA». Empty is None (today). Never in the future, never before `OLDEST_ENTRY`.
+    """
+    if value in (None, ''):
+        return None
+    if isinstance(value, datetime.datetime):
+        day = (timezone.localtime(value) if timezone.is_aware(value) else value).date()
+    elif isinstance(value, datetime.date):
+        day = value
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        # An Excel date cell arrives as its ISO text, with a time: «2026-10-01T00:00:00».
+        text = re.split(r'[T ]', text, maxsplit=1)[0]
+        day = None
+        for pattern in _DAY_FORMATS:
+            try:
+                day = datetime.datetime.strptime(text, pattern).date()
+                break
+            except ValueError:
+                continue
+        if day is None:
+            raise StockUnitError('Fecha de ingreso no válida: escríbela como AAAA-MM-DD o DD/MM/AAAA.',
+                                 field='received_on')
+    else:
+        raise StockUnitError('Fecha de ingreso no válida.', field='received_on')
+    if day > timezone.localdate():
+        raise StockUnitError('La fecha de ingreso no puede ser futura.', field='received_on')
+    if day < OLDEST_ENTRY:
+        raise StockUnitError(
+            f'La fecha de ingreso no puede ser anterior al {OLDEST_ENTRY.strftime("%d/%m/%Y")}.',
+            field='received_on')
+    return day
+
+
+def received_at_for(day) -> datetime.datetime:
+    """The moment stored for a device that entered on `day`: now for today (or none), else that day at noon."""
+    if day is None or day == timezone.localdate():
+        return timezone.now()
+    return timezone.make_aware(datetime.datetime.combine(day, datetime.time(12, 0)))
+
+
 def clean_public_notes(value) -> str:
     text = ' '.join(str(value or '').split())
     if len(text) > 500:
@@ -306,7 +368,7 @@ def _clean_row(product, row: dict) -> dict:
         'imei2': imei2 or None,
         'condition': _condition(row.get('condition')),
         'cost': _money(row.get('cost'), 'El costo', 'cost'),
-        'notes': ' '.join(str(row.get('notes') or '').split())[:300],
+        'notes': clean_notes(row.get('notes')),
     }
     # DC2 — what the shop tells buyers about the device. Optional, and only
     # present in the result when the row brought it (an old caller's rows are
@@ -506,7 +568,8 @@ class ReceivedUnits(list):
 
 @transaction.atomic
 def receive_units(*, branch, product, units, actor=None, reason: str = '',
-                  movement_type: str = StockMovement.PURCHASE_ENTRY, request=None, supplier=None) -> ReceivedUnits:
+                  movement_type: str = StockMovement.PURCHASE_ENTRY, request=None, supplier=None,
+                  received_on=None) -> ReceivedUnits:
     """
     Units arrive. ALL OF THEM OR NONE: one bad line refuses the batch, and the
     error names the line.
@@ -515,6 +578,9 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
 
     `supplier` (CATALOG-REFERENCE-01 · PR F, D-F-3): who sold the batch, written on every unit. Only a supplier
     of the branch's company; one of another company is refused like one that does not exist.
+
+    `received_on` (INV-LOAD-01): the day the batch entered the shop, when it is not today — the real stock of a shop
+    that starts here came in long ago. Validated by `clean_received_on` (never future, never before 2000).
     """
     if product.company_id != branch.company_id:
         raise StockUnitError('El producto no pertenece a la empresa de esta sucursal.')
@@ -531,6 +597,7 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
                              StockMovement.MANUAL_ENTRY):
         raise StockUnitError('Tipo de entrada no válido para equipos.')
     reason = _reason(reason)
+    received_at = received_at_for(clean_received_on(received_on))
 
     # First every row is CLEANED (pure reads), so that the identifiers of the whole batch can be locked
     # before any of them is looked up; the verdicts are then given in row order, exactly as before.
@@ -565,13 +632,12 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
         seen_imeis.update(imeis)
         cleaned_rows.append(cleaned)
 
-    now = timezone.now()
     try:
         with transaction.atomic():
             created = [
                 StockUnit.objects.create(
                     company_id=branch.company_id, branch=branch, product=product,
-                    status=StockUnit.Status.AVAILABLE, received_at=now, created_by=actor, supplier=supplier,
+                    status=StockUnit.Status.AVAILABLE, received_at=received_at, created_by=actor, supplier=supplier,
                     **cleaned,
                 )
                 for cleaned in cleaned_rows
@@ -968,7 +1034,7 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
             locked.cost = cost
             changed.append('cost')
     if 'notes' in fields:
-        locked.notes = ' '.join(str(fields['notes'] or '').split())[:300]
+        locked.notes = clean_notes(fields['notes'])
         changed.append('notes')
     # DC2 — what the shop says about this device.
     if 'battery_health' in fields:

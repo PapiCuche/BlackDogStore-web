@@ -112,7 +112,10 @@ export type NewUnit = {
 };
 
 /** The inputs of a device the server can point at. */
-export type UnitField = "serial_number" | "imei" | "imei2" | "condition" | "cost" | "reason" | "cost_reason";
+export type UnitField =
+  | "serial_number" | "imei" | "imei2" | "condition" | "cost" | "reason" | "cost_reason"
+  // INV-LOAD-01 — what the entry is, who sold it and when it came in.
+  | "entry_kind" | "supplier" | "received_on" | "notes";
 
 /**
  * A refusal. `line` is the 1-based device of a batch the server turned down and
@@ -202,8 +205,16 @@ export const setProductTracking = (productId: number, body: { is_serialized: boo
     `/products/${productId}/serialization/`, body,
   );
 
+/**
+ * INV-LOAD-01 — `entry_kind`: «purchase» (the default) or «opening», the stock the shop already had (only while that
+ * product's Kardex in that branch holds nothing but opening lines). `supplier` and `received_on` (AAAA-MM-DD, never
+ * future) are optional.
+ */
+export type UnitEntryKind = "purchase" | "opening";
+
 export const receiveStockUnits = (body: {
   product_id: number; branch: number; reason: string; units: NewUnit[];
+  entry_kind?: UnitEntryKind; supplier?: number | null; received_on?: string;
 }) => post<{ results: StockUnit[] }>("/", body);
 
 /** DC2: change a device's listing (battery, grade, public notes, its own price). */
@@ -276,7 +287,33 @@ export type UnitImportRow = {
     condition?: string;
     cost?: string;
     reason?: string;
+    /** INV-LOAD-01 */
+    supplier?: string;
+    received_on?: string;
+    notes?: string;
+    public_notes?: string;
   };
+};
+
+/** INV-LOAD-01 — one shelf (branch × product) before and after the file, as the server simulated it. */
+export type UnitImportShelf = {
+  branch_id: number;
+  branch: string;
+  product_id: number;
+  product: string;
+  adds: number;
+  units_before: number;
+  units_after: number;
+  stock_before: number;
+  stock_after: number;
+};
+
+/** INV-LOAD-01 — what registering the file would do, read from the shop as it is now. */
+export type UnitImportSimulation = {
+  entry_type: "initial_stock" | "purchase_entry";
+  movements: { initial_stock: number; purchase_entry: number };
+  units: { initial_stock: number; purchase_entry: number };
+  shelves: UnitImportShelf[];
 };
 
 /** A staged upload, as the server describes it. Nothing here is computed in the browser. */
@@ -291,6 +328,8 @@ export type UnitImportJob = {
     /** Rows that carry an IMEI under a product not marked «lleva IMEI». Kept, and said. */
     imei_on_unmarked_products?: number;
     applied?: { units: number; movements: number; imei_on_unmarked_products?: number };
+    /** INV-LOAD-01 — absent in a job previewed before it. */
+    simulation?: UnitImportSimulation;
   };
   is_applicable: boolean;
   rows?: UnitImportRow[];

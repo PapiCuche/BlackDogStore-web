@@ -37,7 +37,7 @@ from .import_exports import _autosize, _header_row, _workbook, report_sheet_refu
 from .import_formats import SERIAL_HEADERS, counts_stock, normalize_header
 from .import_services import CatalogueIndex, _safe_filename, _sha256
 from .models import (
-    AdminAuditLog, Branch, BulkImportJob, BulkImportRow, Product, StockMovement, StockUnit,
+    AdminAuditLog, Branch, BranchStock, BulkImportJob, BulkImportRow, Product, StockMovement, StockUnit, Supplier,
 )
 
 TEMPLATE_FILENAME = 'carga-masiva-equipos.xlsx'
@@ -53,7 +53,9 @@ HEADERS = ['Código', 'Producto', 'Sucursal', 'Número de serie', 'IMEI', 'IMEI 
            # DC2 — optional, after everything else so older files keep their columns. A1b added «SIM» and
            # «Región» after «Color», optional too: columns are read by header, never by position.
            'Modelo', 'Capacidad', 'Color', 'SIM', 'Región', 'Línea', 'Estado estético', 'Batería %',
-           'Precio de venta']
+           'Precio de venta',
+           # INV-LOAD-01 — optional, at the end too: who sold it, when it entered, and two kinds of notes.
+           'Proveedor', 'Fecha de ingreso', 'Notas internas', 'Detalles para el comprador']
 
 #: field -> the headers it answers to, already folded by `normalize_header`.
 _ALIASES = {
@@ -80,6 +82,11 @@ _ALIASES = {
     'grade': ('estado estetico', 'estado cosmetico', 'grado estetico'),
     'battery': ('bateria', 'bateria porcentaje', 'salud de bateria', 'salud de la bateria'),
     'sale_price': ('precio de venta', 'precio venta'),
+    # INV-LOAD-01.
+    'supplier': ('proveedor', 'proveedor nombre o ruc', 'ruc del proveedor', 'ruc proveedor'),
+    'received_on': ('fecha de ingreso', 'fecha ingreso', 'fecha de entrada', 'fecha de compra', 'fecha'),
+    'notes': ('notas internas', 'nota interna', 'notas', 'observaciones'),
+    'public_notes': ('detalles para el comprador', 'detalles comprador', 'detalles del equipo', 'notas publicas'),
 }
 #: A header that says HOW MANY refuses the file: «Cantidad», «Cantidad inicial»,
 #: «Stock inicial - Almacén 1», «Nº de unidades». What counts stock is decided in
@@ -156,6 +163,19 @@ def _header_notes() -> dict:
             'Sólo para seminuevos: el precio de ESTE equipo en la tienda. Un seminuevo sin precio no se '
             'ofrece en línea. Un equipo nuevo se vende al precio de su variante.'
         ),
+        'Proveedor': (
+            'Opcional: quien te vendió el equipo, con su nombre o su RUC tal como está en Proveedores. '
+            'Un proveedor que no existe en tu empresa es un error de la fila.'
+        ),
+        'Fecha de ingreso': (
+            'Opcional: el día en que el equipo entró a la tienda (AAAA-MM-DD o DD/MM/AAAA). '
+            'Vacía = hoy. No puede ser futura ni anterior al año 2000.'
+        ),
+        'Notas internas': f'Opcional: sólo las ve el personal. Hasta {stock_unit_services.MAX_NOTES} caracteres.',
+        'Detalles para el comprador': (
+            'Opcional, sólo para seminuevos: lo que el comprador lee del equipo (rayones, accesorios). '
+            'Hasta 500 caracteres.'
+        ),
     }
 
 
@@ -181,7 +201,7 @@ def template_bytes(branches=()) -> bytes:
     _header_row(sheet, HEADERS)
     header_notes(sheet, _header_notes())
     sheet.freeze_panes = 'A2'
-    _autosize(sheet, [20, 43, 25, 27, 22, 22, 23, 18, 48, 30, 16, 16, 14, 12, 16, 20, 14, 18])
+    _autosize(sheet, [20, 43, 25, 27, 22, 22, 23, 18, 48, 30, 16, 16, 14, 12, 16, 20, 14, 18, 28, 18, 36, 40])
     text_columns(sheet, ('A', 'D', 'E', 'F'))
 
     from openpyxl.utils import get_column_letter
@@ -191,6 +211,7 @@ def template_bytes(branches=()) -> bytes:
 
     # By header, never by letter: A1b moved «Línea» and what follows it two columns to the right.
     number_columns(sheet, (column('Costo'), column('Batería %'), column('Precio de venta')))
+    text_columns(sheet, (column('Proveedor'),))     # a RUC is a code: its digits are kept as typed
     add_cell_list(sheet, column('Línea'), cell_list(['Nuevo', 'Seminuevo']))
     add_cell_list(sheet, 'C', cell_list(branches))
     add_cell_list(sheet, 'G', cell_list(label for _value, label in StockUnit.Condition.choices))
@@ -304,6 +325,102 @@ def _entry_kind(value) -> str:
     return value
 
 
+def _folded(text) -> str:
+    return ' '.join(str(text or '').split()).lower()
+
+
+class _SupplierIndex:
+    """
+    INV-LOAD-01 — «Proveedor» as a person writes it: the supplier's name (case and spaces aside) or its document
+    number (RUC/DNI). Only `company`'s suppliers are read, so one of another company is simply not found.
+    """
+
+    def __init__(self, company):
+        self.by_name, self.by_document = {}, {}
+        for supplier in Supplier.objects.filter(company=company).order_by('pk'):
+            self.by_name.setdefault(_folded(supplier.name), supplier)
+            document = ''.join(supplier.document_number.split())
+            if document:
+                self.by_document.setdefault(document, supplier)
+
+    def find(self, text) -> tuple:
+        """(supplier, '') or (None, the row's error)."""
+        supplier = self.by_name.get(_folded(text)) or self.by_document.get(''.join(str(text).split()))
+        if supplier is None:
+            return None, (f'No existe el proveedor «{str(text)[:60]}» en esta empresa. Escríbelo como está en '
+                          f'Proveedores (nombre o RUC) o déjalo vacío.')
+        if not supplier.is_active:
+            return None, f'El proveedor «{supplier.name}» está desactivado: actívalo o déjalo vacío.'
+        return supplier, ''
+
+
+def _reception_key(values: dict) -> tuple:
+    """
+    One reception per (branch, product, document, supplier, entry day): a Kardex line a person can read, and one
+    supplier and one date per `receive_units` call. The preview's simulation and the apply group by THIS key, so the
+    movements the preview announces are the movements the apply writes.
+    """
+    return (values.get('branch_id') or 0, values.get('product_id') or 0, values.get('reason') or '',
+            values.get('supplier_id') or 0, values.get('received_on') or '')
+
+
+def _chunks(count: int) -> int:
+    return -(-count // stock_unit_services.MAX_BATCH)
+
+
+def simulate(company, staged: list[dict], *, entry_kind: str) -> dict:
+    """
+    INV-LOAD-01 — what the file would do if it were registered now: per branch × product, the available devices and the
+    shelf quantity before and after, and how many Kardex lines of each type it writes. Reads only.
+
+    Built from the rows that WILL be registered, grouped exactly as `apply_units` groups them (`_reception_key`,
+    `MAX_BATCH`): the test suite holds the two to the same numbers.
+    """
+    movement_type = StockMovement.INITIAL_STOCK if entry_kind == ENTRY_OPENING else StockMovement.PURCHASE_ENTRY
+    receptions: dict[tuple, int] = {}
+    shelves: dict[tuple, int] = {}
+    names: dict[tuple, tuple] = {}
+    for values in staged:
+        receptions[_reception_key(values)] = receptions.get(_reception_key(values), 0) + 1
+        shelf = (values.get('branch_id'), values.get('product_id'))
+        shelves[shelf] = shelves.get(shelf, 0) + 1
+        names.setdefault(shelf, (values.get('branch') or '', values.get('name') or ''))
+
+    branch_ids = {branch for branch, _ in shelves}
+    product_ids = {product for _, product in shelves}
+    stock = {
+        (row['branch_id'], row['product_id']): row['quantity']
+        for row in BranchStock.objects.filter(
+            branch__company=company, branch_id__in=branch_ids, product_id__in=product_ids,
+        ).values('branch_id', 'product_id', 'quantity')
+    }
+    available: dict[tuple, int] = {}
+    for branch_id, product_id in StockUnit.objects.filter(
+            company=company, status=StockUnit.Status.AVAILABLE, branch_id__in=branch_ids,
+            product_id__in=product_ids).values_list('branch_id', 'product_id'):
+        available[(branch_id, product_id)] = available.get((branch_id, product_id), 0) + 1
+
+    rows = []
+    for (branch_id, product_id), adds in sorted(shelves.items(), key=lambda item: (names[item[0]], item[0])):
+        units_before = available.get((branch_id, product_id), 0)
+        stock_before = stock.get((branch_id, product_id), 0)
+        rows.append({
+            'branch_id': branch_id, 'branch': names[(branch_id, product_id)][0],
+            'product_id': product_id, 'product': names[(branch_id, product_id)][1],
+            'adds': adds, 'units_before': units_before, 'units_after': units_before + adds,
+            'stock_before': stock_before, 'stock_after': stock_before + adds,
+        })
+    movements = sum(_chunks(count) for count in receptions.values())
+    other = (StockMovement.PURCHASE_ENTRY if movement_type == StockMovement.INITIAL_STOCK
+             else StockMovement.INITIAL_STOCK)
+    return {
+        'entry_type': movement_type,
+        'movements': {movement_type: movements, other: 0},
+        'units': {movement_type: len(staged), other: 0},
+        'shelves': rows,
+    }
+
+
 def _opening_problem(branch, product) -> str:
     # INV-OPENING-01 — the same rule as «Recibir mercadería» (lazy import: receipt_services imports this module's peers).
     from .receipt_services import opening_problem
@@ -361,6 +478,13 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     # DC1 — a SOLD device is history: its sale was valued at its cost.
     sold_serials = set(StockUnit.objects.filter(
         company=company, status=StockUnit.Status.SOLD).values_list('product_id', 'serial_number'))
+    # INV-SERIAL-01 / INV-LOAD-01 — a serial already on ANOTHER product of the company: a warning, as in the receipt.
+    serial_products: dict[str, dict[int, str]] = {}
+    for serial, product_pk, product_name in live_units.exclude(serial_number__isnull=True).exclude(
+            serial_number='').values_list('serial_number', 'product_id', 'product__name'):
+        serial_products.setdefault(serial, {})[product_pk] = product_name
+    # INV-LOAD-01 — «Proveedor» by name or RUC, only among THIS company's suppliers.
+    suppliers = _SupplierIndex(company)
     in_stock_imeis = set()
     for imei, imei2 in live_units.filter(
         Q(imei__isnull=False) | Q(imei2__isnull=False),
@@ -381,6 +505,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     seen_serials: dict[tuple[int, str], int] = {}
     unmarked = 0
     seen_imeis: dict[str, int] = {}
+    seen_serial_products: dict[str, dict[int, str]] = {}
     branch_ids = set()
 
     def stage(row_number, action, *, key='', data=None, errors=None, warnings=None):
@@ -511,6 +636,28 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
             errors.append(ZERO_PRICE)
             sale_price = ''
 
+        # INV-LOAD-01 — the buyer reads details only of a used device; a new one is described by its variant.
+        public_notes = fields['public_notes']
+        if public_notes and product is not None and product.condition_line != 'used':
+            warnings.append('Detalles para el comprador ignorados: sólo se indican en equipos seminuevos.')
+            public_notes = ''
+
+        # INV-LOAD-01 — who sold it and when it entered.
+        if fields['supplier']:
+            supplier, problem = suppliers.find(fields['supplier'])
+            if problem:
+                errors.append(problem)
+            else:
+                data.update(supplier_id=supplier.pk, supplier=supplier.name)
+        try:
+            # A date cell arrives as its ISO text (`xlsx_reader.normalize_scalar`); a typed one as written.
+            received_on = stock_unit_services.clean_received_on(fields['received_on'])
+        except stock_unit_services.StockUnitError as exc:
+            errors.append(str(exc))
+        else:
+            if received_on is not None:
+                data['received_on'] = received_on.isoformat()
+
         # COST-WRITE-AUTHORITY — without `costs.view` a filled «Costo» is an error of the row, the same
         # sentence whatever it says: the value is not read, and a file with errors registers nothing.
         cost_cell = fields['cost']
@@ -530,6 +677,8 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                     # DC2 — optional; cleaned by the same rules as the screen.
                     'battery_health': fields['battery'], 'cosmetic_grade': fields['grade'],
                     'sale_price': sale_price,
+                    # INV-LOAD-01 — cleaned by the same rules as the screen: too long is an error, never a cut.
+                    'notes': fields['notes'], 'public_notes': public_notes,
                 })
             except stock_unit_services.StockUnitError as exc:
                 # B1-0b-1: a cost that cannot be read may repeat the cell («7,391» es ambiguo…). The prefix lets
@@ -575,6 +724,18 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                 elif value in in_stock_imeis:
                     errors.append(f'El IMEI {value} ya está registrado en otro equipo de la empresa.')
             if cleaned['serial_number']:
+                # INV-SERIAL-01 — the same serial on ANOTHER product (in stock, or earlier in this file): a WARNING.
+                # The database keys a serial per product; a device without an IMEI could enter twice under two
+                # variants, and only the person can tell whether it is the same device.
+                serial = cleaned['serial_number']
+                elsewhere = [name for pk, name in serial_products.get(serial, {}).items() if pk != product.pk]
+                in_file = [name for pk, name in seen_serial_products.get(serial, {}).items() if pk != product.pk]
+                if elsewhere:
+                    warnings.append(f'Ese número de serie ya está registrado en «{elsewhere[0]}». Si es el mismo '
+                                    f'equipo, no lo cargues otra vez.')
+                elif in_file:
+                    warnings.append(f'Ese número de serie aparece también en «{in_file[0]}» en este archivo.')
+                seen_serial_products.setdefault(serial, {})[product.pk] = product.name
                 seen_serials.setdefault(serial_key, row_number)
             for value in imeis:
                 seen_imeis.setdefault(value, row_number)
@@ -593,6 +754,10 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                 data['cosmetic_grade_label'] = cleaned['cosmetic_grade'].label
             if cleaned.get('sale_price') is not None:
                 data['sale_price'] = str(cleaned['sale_price'])
+            if cleaned.get('notes'):
+                data['notes'] = cleaned['notes']
+            if cleaned.get('public_notes'):
+                data['public_notes'] = cleaned['public_notes']
         else:
             data.update(serial_number=fields['serial_number'][:64])
 
@@ -612,6 +777,8 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         unmarked += imei_unmarked            # only the rows that will be registered
 
     BulkImportRow.objects.bulk_create(staged, batch_size=500)
+    simulation = simulate(company, [row.normalized_data for row in staged if row.action == BulkImportRow.CREATE],
+                          entry_kind=entry_kind)
     job.rows_total = len(staged)
     job.rows_create = counts['create']
     job.rows_skip = counts['skip']
@@ -619,7 +786,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     job.mapping_snapshot = {**job.mapping_snapshot, 'branch_ids': sorted(branch_ids)}
     # How many rows carried an IMEI under a product not marked as carrying one:
     # kept, said on each row, and counted here so the load's audit line can say it.
-    job.summary = {'units': counts['create'], 'imei_on_unmarked_products': unmarked}
+    job.summary = {'units': counts['create'], 'imei_on_unmarked_products': unmarked, 'simulation': simulation}
     job.save(update_fields=['rows_total', 'rows_create', 'rows_skip', 'rows_error',
                             'mapping_snapshot', 'summary'])
     return job
@@ -672,15 +839,17 @@ def apply_units(*, job, actor, request=None):
         company=job.company, is_active=True, pk__in={data(r).get('branch_id') for r in rows})}
     products = {p.pk: p for p in Product.objects.filter(
         company=job.company, pk__in={data(r).get('product_id') for r in rows})}
+    # INV-LOAD-01 — the suppliers named by the file, still this company's and still active.
+    suppliers = {s.pk: s for s in Supplier.objects.filter(
+        company=job.company, is_active=True, pk__in={data(r).get('supplier_id') for r in rows} - {None})}
 
     # One reception per (branch, product, document): a Kardex line a person can
     # read. Sorted, so two uploads at once take their locks in the same order.
     groups: OrderedDict[tuple, list] = OrderedDict()
-    for row in sorted(rows, key=lambda r: (
-        data(r).get('branch_id') or 0, data(r).get('product_id') or 0, data(r).get('reason') or '', r.row_number,
-    )):
+    for row in sorted(rows, key=lambda r: (_reception_key(data(r)), r.row_number)):
         values = data(row)
-        if branches.get(values.get('branch_id')) is None or products.get(values.get('product_id')) is None:
+        if branches.get(values.get('branch_id')) is None or products.get(values.get('product_id')) is None or (
+                values.get('supplier_id') and suppliers.get(values['supplier_id']) is None):
             raise UnitImportError(
                 f'El catálogo o las sucursales cambiaron desde la previsualización (fila {row.row_number}). '
                 f'Vuelve a subir el archivo.'
@@ -701,22 +870,20 @@ def apply_units(*, job, actor, request=None):
                 f'No se cargó ningún equipo: el catálogo cambió desde la previsualización (fila {row.row_number}). '
                 f'{problem[1]} Vuelve a subir el archivo.'
             )
-        groups.setdefault(
-            (values['branch_id'], values['product_id'], values.get('reason') or ''), [],
-        ).append(row)
+        groups.setdefault(_reception_key(values), []).append(row)
 
     # INV-OPENING-01 — a job staged before the option has none: a purchase, as it was.
     opening = (job.options_snapshot or {}).get('entry_kind') == ENTRY_OPENING
     movement_type = StockMovement.INITIAL_STOCK if opening else StockMovement.PURCHASE_ENTRY
     if opening:
-        for branch_id, product_id, _reason in groups:
+        for branch_id, product_id in {(key[0], key[1]) for key in groups}:
             problem = _opening_problem(branches[branch_id], products[product_id])
             if problem:
                 raise UnitImportError(f'No se cargó ningún equipo: el estante cambió desde la previsualización. {problem}')
 
     registered, movements, unmarked = 0, 0, 0
     received_units = []
-    for (branch_id, product_id, reason), members in groups.items():
+    for (branch_id, product_id, reason, supplier_id, received_on), members in groups.items():
         for start in range(0, len(members), stock_unit_services.MAX_BATCH):
             chunk = members[start:start + stock_unit_services.MAX_BATCH]
             try:
@@ -730,8 +897,11 @@ def apply_units(*, job, actor, request=None):
                         'battery_health': data(row).get('battery_health'),
                         'cosmetic_grade': data(row).get('cosmetic_grade'),
                         'sale_price': data(row).get('sale_price'),
+                        # INV-LOAD-01 — absent in a job staged before them: nothing, as before.
+                        'notes': data(row).get('notes'), 'public_notes': data(row).get('public_notes'),
                     } for row in chunk],
                     actor=actor, reason=reason, movement_type=movement_type, request=request,
+                    supplier=suppliers.get(supplier_id), received_on=received_on or None,
                 )
             except stock_unit_services.StockUnitError as exc:
                 where = (
