@@ -57,6 +57,7 @@
   "store.test_repair_payment_integrity.KeyRaceAcrossRepairsTest",
   "store.test_repair_payment_integrity.ReversalAgainstDeliveryTest",
   "store.test_sales_note_control.VoidAtTheSameInstantTest",
+  "store.test_sales_quote_expiry.ExpiryRaceTest",
   "store.test_set_serialized_atomic.SetSerializedOwnsItsTransactionTest",
   "store.test_stock_units.ConcurrentSaleTest",
   "store.test_supplier_offer_reimport_race.ApplyAgainstPaymentTest",

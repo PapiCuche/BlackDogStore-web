@@ -1,10 +1,14 @@
 """
-SALES-QUOTE-01 — `manage.py expire_sales_quotes [--company <slug>]`
+SALES-QUOTE-01 — `manage.py expire_sales_quotes [--company <slug>] [--dry-run]`
 
 Stamps `expired` on every approved, sent or accepted quote whose validity ended before today (the
 shop's time zone). Idempotent: run it from cron as often as wanted. The panel never needs it — a
 quote past its validity already reads as «Vencida» and cannot be sent, answered or converted — it
 only makes the stored state (and reports) say so, with an audit entry per quote.
+
+One line per run, for its log (`backups/expire_sales_quotes.log`, which `deploy/healthcheck.sh` reads):
+`Cotizaciones vencidas: <n>`. A failure exits non-zero; each quote is its own transaction, so what was stamped
+before it stays stamped and the next pass finishes the rest. `--dry-run` counts and writes nothing.
 """
 from django.core.management.base import BaseCommand, CommandError
 
@@ -17,6 +21,7 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--company', help='Sólo esta empresa (slug).')
+        parser.add_argument('--dry-run', action='store_true', help='Cuenta las que vencería y no escribe nada.')
 
     def handle(self, *args, **options):
         company = None
@@ -24,5 +29,9 @@ class Command(BaseCommand):
             company = Company.objects.filter(slug=options['company']).first()
             if company is None:
                 raise CommandError('Empresa no encontrada.')
+        if options.get('dry_run'):
+            count = expire_due(company=company, dry_run=True)
+            self.stdout.write(f'Cotizaciones por vencer: {count} (--dry-run: no se escribió nada)')
+            return
         count = expire_due(company=company)
         self.stdout.write(f'Cotizaciones vencidas: {count}')
