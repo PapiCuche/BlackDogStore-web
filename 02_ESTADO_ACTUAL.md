@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — UNIT-PHOTO-02 · PARCIAL (rama `feat/unit-photo-02`, sin PR, sin fusionar ni desplegar) · migración `0192_unit_photo_provenance`
+
+Fotos reales de cada seminuevo. Sólo en la rama.
+
+- **Regla del propietario:** la foto de un seminuevo es del equipo EXACTO; nunca una genérica presentada como el equipo. Una foto cuenta (web, publicación, carrito, pedido) sólo si está **confirmada** («Confirmo que esta foto es de este equipo exacto») y su archivo es una **foto propia de la misma empresa con la licencia verificada**. La confirmación ES la verificación: marca el archivo `own_photo` + verificado por la misma persona (`finish_media.apply_provenance`), auditado con la empresa. Retirarla retira las dos cosas. Una sola definición: `unit_media.public_photos_q`, leída por `used_unit_services.real_photos` / `real_photos_q` / `used_unit_publish_blockers`.
+- **Publicar sin foto real:** 409 con `no_photo` (ninguna foto) o `photo_not_attested` (fotos sin confirmar). Un equipo publicado cuyas fotos dejan de estar confirmadas sale de la web en el acto, sin despublicarse.
+- **Modelo (0192, aditiva):** `UnitPhoto.view` (principal, frontal, posterior, laterales, bordes, defecto, otra), `defect_note` (obligatoria en un defecto), `is_primary` (una por equipo: índice único parcial), `attested_by`/`attested_at`. La migración marca como principal la primera foto de cada equipo y no confirma ninguna.
+- **API (`/api/admin/inventory/units/<id>/photos/…`):** subir con su lado (`inventory.adjust`), editar lado/principal (PATCH), `order/`, `<foto>/replace/` (mismo lugar, orden y principal; la confirmación se borra), borrar (la siguiente pasa a principal) y `<foto>/attestation/` (**`inventory.units.inspect`**: quien inspecciona tiene el equipo en la mano). Todo auditado con la empresa; otra empresa 404; un equipo nuevo 409 `not_used_line`. Tope por equipo: 12 (`UNIT_PHOTO_MAX_PER_UNIT`).
+- **Tienda:** la tarjeta y la galería muestran sólo fotos confirmadas, la principal primero, con su lado («Frontal», «Defecto: …»). La línea del carrito y la del pedido (API) de un seminuevo muestran la foto principal de ESE equipo (`image_scope: unit`) o nada: «Sin fotos de este equipo». `/api/products/` ya no da a una variante seminueva la foto del catálogo ni la del acabado. La página de pedidos web no muestra imágenes (sin cambio).
+- **Panel (Inventario › Seminuevos):** gestor de fotos por equipo: subir con lado, Subir/Bajar (teclado) o arrastrar, «Hacer principal», «Reemplazar», «Eliminar», casilla de confirmación (sólo con «Inspeccionar seminuevos») y si cada foto se muestra en la tienda. La columna «Fotos» dice confirmadas/todas.
+- **Fuera de este PR:** quitar el fondo (el propietario aprueba antes una herramienta). Sin dependencias nuevas.
+- **Efecto al desplegar:** todo seminuevo publicado cuyas fotos no estén confirmadas **sale de la web** hasta confirmar una (sigue publicado; no se mueve stock). **El ensayo de la release debe contarlos** con `manage.py unit_photo_report [--company <slug>] [--format json]` (sólo lectura: `published_leaving_the_web`, `photos_waiting_attestation`) antes del GO.
+- **Pruebas:** `store.test_unit_photos` (21) y las suites afectadas (ayudantes de prueba con foto real confirmada); Jest `unit-photo-02` (12) y los afectados.
+- **Decisiones del propietario por confirmar:** listadas en el informe del PR (permiso de la confirmación, regla estricta al desplegar, tope de 12, `/api/products/` de una variante seminueva sin imagen).
+
 ## 2026-11-24 — SALES-QUOTE-01 · PARCIAL (PR abierto, sin fusionar ni desplegar) · migración `0189_sales_quote`
 
 Cotizaciones comerciales, independientes de las de reparación. Sólo en la rama.

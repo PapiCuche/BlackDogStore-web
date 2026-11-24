@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-24 — UNIT-PHOTO-02: fotos reales de cada seminuevo (rama, sin PR ni despliegue)
+
+**Added**
+- Cada foto de un seminuevo dice qué lado muestra (principal, frontal, posterior, laterales, bordes, defecto con su descripción, otra); una es la principal.
+- Confirmación «Confirmo que esta foto es de este equipo exacto» (permiso «Inspeccionar seminuevos»): marca el archivo como foto propia verificada; auditada.
+- Ordenar, elegir la principal, reemplazar en el mismo lugar y eliminar fotos desde Inventario › Seminuevos, con teclado o arrastrando.
+- `manage.py unit_photo_report` (sólo lectura) para el ensayo de la release.
+- Migración `0192_unit_photo_provenance`.
+
+**Changed**
+- Sólo cuentan las fotos confirmadas: sin ellas un seminuevo no se publica (`photo_not_attested`) ni se ofrece en la web.
+- La tarjeta, la galería, el carrito y la línea del pedido de un seminuevo muestran sólo fotos de ESE equipo, o «Sin fotos de este equipo»; nunca la foto del catálogo ni la del acabado.
+
 ## 2026-11-24 — SALES-QUOTE-01: cotizaciones comerciales (rama, sin fusionar ni desplegar)
 
 **Added**
