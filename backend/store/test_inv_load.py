@@ -667,8 +667,8 @@ class OpeningReceiptLockOrderTest(ReceiptBase):
 
         sequence = []
         lock, check = _record(sequence)
-        with lock, check, mock.patch.object(receipt_services, '_lock_products',
-                                            _Recorder(sequence, 'products', receipt_services._lock_products)):
+        with lock, check, mock.patch.object(units, 'lock_products',
+                                            _Recorder(sequence, 'products', units.lock_products)):
             self.confirm(self.costed, self.body(self.dev(self.case, receipt_unit('OPC-0001')), entry_kind='opening'),
                          expect=201)
         self.case.refresh_from_db()

@@ -499,6 +499,17 @@ def holds_stock(product) -> bool:
         product=product, transfer__status=StockTransfer.STATUS_IN_TRANSIT).exists()
 
 
+def lock_products(products) -> None:
+    """
+    INV-LOAD-01 re-review — hold `products` (pk order) before any of their shelves, for a caller that will switch them
+    with `set_serialized` after locking shelves: DEC-CATALOG-PALETTE-LOCK-01 is Product → shelf (registration, the POS,
+    a purchase receipt). Must run inside the caller's transaction.
+    """
+    ids = sorted({product.pk for product in products})
+    if ids:
+        list(Product.objects.select_for_update().filter(pk__in=ids).order_by('pk').values_list('pk', flat=True))
+
+
 @transaction.atomic
 def set_serialized(product, *, serialized: bool, requires_imei: bool | None = None,
                    actor=None, request=None) -> Product:

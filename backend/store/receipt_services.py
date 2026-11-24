@@ -291,17 +291,6 @@ def opening_problem(branch, product) -> str:
     return ''
 
 
-def _lock_products(products) -> None:
-    """
-    INV-LOAD-01 re-review — hold the products an opening receipt will switch to devices, in pk order, BEFORE their
-    shelves: DEC-CATALOG-PALETTE-LOCK-01 is Product → shelf (registration, the POS, a purchase receipt), and
-    `set_serialized` would otherwise take the product after the shelf.
-    """
-    ids = sorted({product.pk for product in products})
-    if ids:
-        list(Product.objects.select_for_update().filter(pk__in=ids).order_by('pk').values_list('pk', flat=True))
-
-
 def lock_shelves(shelves) -> None:
     """
     INV-LOAD-01 review — hold every `(branch, product)` shelf an OPENING is about to write, creating the rows that do not
@@ -727,7 +716,7 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
     if normalised.get('entry_kind') == ENTRY_OPENING:
         # INV-LOAD-01 review — the shelves first, so the opening check below is decided under their locks. Before
         # them, the products this receipt switches to devices (Product → shelf, the order of every other door).
-        _lock_products(product for product in resolved.products.values() if not product.is_serialized
+        units_service.lock_products(product for product in resolved.products.values() if not product.is_serialized
                        and any(line['kind'] == KIND_UNITS and line['product'] == product.pk
                                for line in normalised['lines']))
         lock_shelves((resolved.branch, product) for product in resolved.products.values())
