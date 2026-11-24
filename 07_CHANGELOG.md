@@ -13,6 +13,20 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 **Unchanged**
 - Ningún precio cambia solo: ni el de la oferta, ni el publicado de la variante. La importación aplica los precios del archivo con las mismas decisiones y confirmaciones.
 
+## 2026-11-24 — CATALOG-ADMIN-UX-B: el editor de modelos a escala (rama, sin desplegar)
+
+**Added**
+- Búsqueda (nombre, dirección, alias) y filtros (categoría, activo, variantes incompletas, combinaciones sin variante, sin paleta) de la lista de modelos en el servidor, con paginación opcional y el estado de la paleta en cada fila; el panel los guarda en la dirección.
+- `POST/DELETE /api/admin/catalog/models/<pk>/exclusions/` y el panel «Combinaciones que no existen».
+- «Crear variante» por línea (nuevo / seminuevo) y `valid_without_variant_by_line` en el resumen de la paleta.
+- Precio y publicación en la fila de cada variante; resumen de equipos y estado de imágenes.
+
+**Changed**
+- El detalle del modelo lee el historial de todas sus variantes de una vez: el número de consultas ya no crece con las variantes.
+- Un modelo sin paleta no crea variantes desde la paleta (409 `no_palette`); el editor lo avisa y pide confirmación para clasificar un producto.
+- Los colores de un modelo van primero en su paleta; los demás de la empresa, aparte.
+- `PUT /api/admin/products/<pk>/variant/` acepta `expected_model_id`, `expected_condition_line` y `expected_option_ids`: si la variante cambió, 409 `stale` y nada se escribe.
+
 ## 2026-11-24 — SALES-QUOTE-01: cotizaciones comerciales (rama, sin fusionar ni desplegar)
 
 **Added**
