@@ -1,6 +1,7 @@
 # TRADE-IN-01 · Decisiones que necesita el propietario
 
-Estado: **PROPUESTA — nada implementado.** Resume lo que hay que decidir antes de construir «equipo recibido como parte
+Estado: **PROPUESTA — nada de TRADE-IN-01 implementado.** (TRADE-IN-QUOTE-00 sólo añade una valoración referencial en
+la cotización; ver «Qué implementa TRADE-IN-QUOTE-00».) Resume lo que hay que decidir antes de construir «equipo recibido como parte
 de pago». El diseño completo y la evidencia están en [adr-trade-in.md](adr-trade-in.md). Esto **no es asesoría
 tributaria ni legal**: lo marcado «contador» o «legal» debe validarlo esa persona antes de tocar boletas, facturas, IGV
 o la emisión electrónica. Ninguna de estas decisiones cambia hoy la facturación ni SUNAT.
@@ -137,9 +138,42 @@ Si el propietario y el contador aceptan las recomendaciones de arriba, el día a
 7. El comprobante: nota de venta interna con el bloque «Parte de pago» (equipo enmascarado, valorización, crédito, dinero y saldo) y, mientras SUNAT esté apagado, **sin emitir** boleta ni factura (D1-C); cuando el contador decida, comprobante por el valor total (D1-A). La compra del usado se sustenta como determine el contador (D2).
 8. Si luego se cancela o se devuelve la venta: se devuelve el equipo recibido si sigue en la tienda y el dinero cobrado (D8-a); si el equipo ya se movió, la cancelación se bloquea y se resuelve a mano con rastro. La comisión sigue calculándose como hoy (D11-a).
 
+## Qué implementa TRADE-IN-QUOTE-00 (y qué no)
+
+TRADE-IN-QUOTE-00 (rama `feat/trade-in-quote-00`, migración `0191_trade_in_quote`; **PARCIAL** hasta fusionar) es
+lo único permitido mientras D1–D12 sigan pendientes (plan maestro comercial §H): una **valoración referencial y no
+vinculante dentro de una cotización comercial**. No decide ninguna de las doce preguntas de arriba.
+
+**Implementa:**
+- Un bloque opcional por cotización (`SalesQuoteTradeIn`): equipo descrito en texto, capacidad, color, estado y batería
+  **declarados**, accesorios, **sólo los últimos 4 dígitos del IMEI**, precio que pide el cliente (interno, no se
+  imprime), valorización estimada, notas (internas), quién y cuándo valorizó.
+- El saldo estimado (total cotizado − valorización) se **muestra**; no se guarda ni se cobra. Ejemplo: equipo nuevo
+  S/ 4 500, usado valorizado en S/ 1 200, saldo propuesto S/ 3 300.
+- La valorización no puede superar el total cotizado (se rechaza con un mensaje claro). Es la opción más prudente
+  mientras **D4** no se decida; no la decide.
+- Fija el bloque quien elabora cotizaciones (`sales.quotes.manage`) y lo aprueba, con el resto de la cotización,
+  quien aprueba cotizaciones (`sales.quotes.approve`). **No** crea `sales.tradein.value` ni `sales.tradein.approve`:
+  eso sigue siendo **D7**.
+- Las revisiones y las copias llevan el bloque; cambiarlo en una cotización ya ofrecida crea una revisión.
+- A4, 80 mm y ESC/POS imprimen «Equipo ofrecido en parte de pago (referencial)», «Valorización estimada», «Saldo
+  estimado a pagar» y «Valorización referencial sujeta a inspección; no es crédito, pago ni compra. No es comprobante
+  de pago.». La cotización es una propuesta: no prueba que la tienda adquirió el equipo ni sustituye un comprobante.
+
+**No implementa (sigue BLOQUEADO por D1–D12):**
+- Ningún crédito en la venta: al convertir la cotización, la venta se cobra **completa**, igual que sin bloque, y el
+  diálogo lo avisa («La parte de pago aún no se puede aplicar: la venta se cobra completa»).
+- Ningún `manual_discount`, valor de `PaymentMethod`, campo en `Order`, movimiento de stock, unidad, compra,
+  documento de compra, cambio de boleta/factura/IGV/XML ni devolución. Hay pruebas guardianas que fallan si alguien
+  los añade sin pasar por TRADE-IN-01B/01C.
+- Ningún dato de identidad: ni DNI, ni IMEI completo, ni fotos, ni consulta de IMEI (**D6**, **D10**). Un texto con
+  ocho o más dígitos se rechaza, aunque vayan separados (espacios, puntos, comas, barras, guiones); las fechas y los
+  importes (con moneda o con decimales) se permiten; «DNI 12,345,678» se sigue rechazando.
+
 ## Estado
 
-**TRADE-IN-01 sigue en PROPUESTA y BLOQUEADO POR DECISIÓN.** TRADE-IN-01B (recepción y valorización) no se construye mientras no estén aprobadas D2, D3, D6, D7, D9 y D10; TRADE-IN-01C (crédito en caja, documentos y reversión) tampoco mientras no lo estén D1, D4, D5, D8 y D11. La caja anuncia «Equipo como parte de pago» **deshabilitado** (SALES-UX-02): no registra ningún crédito, ningún stock ni ningún pago.
+**TRADE-IN-01 sigue en PROPUESTA y BLOQUEADO POR DECISIÓN.** (TRADE-IN-QUOTE-00, arriba, es sólo la valoración
+referencial en la cotización y no cambia esta lista.) TRADE-IN-01B (recepción y valorización) no se construye mientras no estén aprobadas D2, D3, D6, D7, D9 y D10; TRADE-IN-01C (crédito en caja, documentos y reversión) tampoco mientras no lo estén D1, D4, D5, D8 y D11. La caja anuncia «Equipo como parte de pago» **deshabilitado** (SALES-UX-02): no registra ningún crédito, ningún stock ni ningún pago.
 
 ## Orden en que conviene decidir
 
@@ -149,4 +183,5 @@ Si el propietario y el contador aceptan las recomendaciones de arriba, el día a
 4. **D4, D5, D8, D11, D12** — condicionan la caja, el crédito y las devoluciones (TRADE-IN-01C).
 
 TRADE-IN-01B no se construye sin D2, D3, D6, D7, D9 y D10. TRADE-IN-01C no, sin D1, D4, D5, D8 y D11. Hasta entonces
-no hay migración ni cambio de caja por este tema.
+no hay migración ni cambio de caja por este tema (la de TRADE-IN-QUOTE-00 sólo guarda la valoración referencial de la
+cotización).

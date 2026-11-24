@@ -9,6 +9,9 @@
  *
  * La clave de idempotencia se crea al abrir y se reutiliza en cada reintento: un doble clic o una respuesta
  * perdida nunca cobran dos veces.
+ *
+ * TRADE-IN-QUOTE-00: si la cotización trae un equipo ofrecido en parte de pago, aquí sólo se AVISA. La parte de pago
+ * aún no se aplica (decisiones D1–D12 pendientes): la venta se cobra completa y la cotización conserva el bloque.
  */
 import { useId, useMemo, useRef, useState } from "react";
 import { posUnitLookup } from "../../lib/internal-api";
@@ -18,6 +21,7 @@ import {
   linesNeedingDevices,
   newQuoteKey,
   priceChangedOf,
+  TRADE_IN_NOT_APPLIED,
   type ConvertResult,
   type PriceChanged,
   type QuoteContext,
@@ -124,6 +128,17 @@ export function QuoteConvertDialog({
           Se cobra ahora, en {quote.branch_name}, y se descuenta el stock como en la caja. Total cotizado:{" "}
           <span className="font-semibold text-foreground tabular-nums">{formatMoney(quote.total, quote.currency)}</span>
         </p>
+
+        {quote.trade_in ? (
+          <div role="note" className="mt-4 space-y-1 rounded-xl border border-warning-border bg-warning-surface p-4 text-sm">
+            <p className="font-semibold">{TRADE_IN_NOT_APPLIED}.</p>
+            <p>
+              El cliente ofreció {quote.trade_in.device_description} con una valorización referencial de{" "}
+              <span className="tabular-nums">{formatMoney(quote.trade_in.estimated_valuation, quote.currency)}</span>. No se descuenta:
+              se cobra el total de la venta y el equipo no se recibe ni entra al stock.
+            </p>
+          </div>
+        ) : null}
 
         {priceChange ? (
           <div role="alert" className="mt-4 space-y-3 rounded-xl border border-warning-border bg-warning-surface p-4 text-sm">

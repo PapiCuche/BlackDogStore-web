@@ -12,6 +12,10 @@ AUTHORITY
 A manual discount still needs `sales.discounts.apply` and another seller `sales.pos.assign_seller`,
 exactly as at the till (403 otherwise).
 
+TRADE-IN-QUOTE-00. The optional `trade_in` block (the device the customer offers in part-exchange) is part of
+the draft: set with `sales.quotes.manage`, approved with the rest of the quote by `sales.quotes.approve`, read
+with `sales.quotes.view`. Its `estimated_balance` is computed on each read; nothing charges it.
+
 TENANT AND BRANCH. The company is resolved on the server; a quote of another company, or of a
 branch the caller does not reach, answers like one that does not exist (404). Writes are throttled
 like the till's sales; every transition leaves an `AdminAuditLog` with the company.
@@ -121,6 +125,28 @@ def quote_row(quote) -> dict:
     }
 
 
+def trade_in_payload(quote) -> dict | None:
+    """The part-exchange block, referential: the valuation and the balance it would leave, never applied."""
+    block = quotes.trade_in_of(quote)
+    if block is None:
+        return None
+    return {
+        'device_description': block.device_description, 'capacity': block.capacity, 'color': block.color,
+        'condition': block.condition,
+        'condition_label': dict(block.CONDITION_CHOICES).get(block.condition, block.condition),
+        'battery_health': block.battery_health, 'accessories': block.accessories,
+        'imei_last4': block.imei_last4,
+        'customer_asking_price': (str(block.customer_asking_price)
+                                  if block.customer_asking_price is not None else None),
+        'estimated_valuation': str(block.estimated_valuation),
+        'estimated_balance': str(quote.total - block.estimated_valuation),
+        'valuation_notes': block.valuation_notes,
+        'valued_by': _person(block.valued_by), 'valued_at': block.valued_at,
+        # Never applied to a sale while D1–D12 are pending: conversion charges the full total.
+        'applicable': False,
+    }
+
+
 def quote_detail(user, company, quote) -> dict:
     items = list(quote.items.select_related('stock_unit').order_by('sort_order', 'pk'))
     return {
@@ -160,6 +186,7 @@ def quote_detail(user, company, quote) -> dict:
             'id': row.pk, 'revision': row.revision, 'label': row.label, 'status': row.effective_status,
             'total': str(row.total), 'created_at': row.created_at,
         } for row in quotes.history(quote).filter(branch__in=visible_branches(user, company))],
+        'trade_in': trade_in_payload(quote),
         'actions': _actions(user, company, quote),
     }
 

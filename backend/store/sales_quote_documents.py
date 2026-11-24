@@ -19,6 +19,11 @@ over everything else the paper prints.
 WHAT THE CUSTOMER MAY SEE, ONLY. Never the internal notes, never a cost, never a full IMEI or
 serial: a quoted device is written masked.
 
+TRADE-IN-QUOTE-00. A quote with a device offered in part-exchange prints it in its OWN block under the totals
+(«Equipo ofrecido en parte de pago (referencial)»): the device as described, the last four digits of its IMEI
+masked, the estimated valuation and the estimated balance, and `TRADE_IN_QUOTE_LEGEND`. The quote's totals, IGV
+and «TOTAL COTIZADO» are not touched by it. What the customer asked and the valuer's notes never print.
+
 `build_context` reads the database; `quote_document`, `ticket_pdf_from_ctx` and
 `escpos_from_ctx` are PURE, so the document preview draws a made-up quote with them.
 """
@@ -29,7 +34,13 @@ from decimal import Decimal
 
 from . import device_identity
 from . import document_style as style
-from .document_legends import SALES_QUOTE_LEGEND, SALES_QUOTE_LEGEND_DETAIL, SALES_QUOTE_TITLE
+from .document_legends import (
+    SALES_QUOTE_LEGEND,
+    SALES_QUOTE_LEGEND_DETAIL,
+    SALES_QUOTE_TITLE,
+    TRADE_IN_QUOTE_HEADING,
+    TRADE_IN_QUOTE_LEGEND,
+)
 
 UNIT_LABEL = 'UND'
 CONDITIONS_HEADING = 'CONDICIONES COMERCIALES'
@@ -62,6 +73,43 @@ def variant_details(variant: dict | None) -> str:
     if variant.get('grade'):
         parts.append(f"Grado {variant['grade']}")
     return ' · '.join(parts)
+
+
+TRADE_IN_VALUATION_LABEL = 'Valorización estimada'
+TRADE_IN_BALANCE_LABEL = 'Saldo estimado a pagar'
+
+
+def trade_in_context(quote) -> dict | None:
+    """The part-exchange block as the paper shows it, or None. Plain data; never the asked price or the notes."""
+    from .models import SalesQuoteTradeIn
+
+    block = SalesQuoteTradeIn.objects.filter(quote_id=quote.pk).first()
+    if block is None:
+        return None
+    return {
+        'rows': [
+            ('Equipo', block.device_description),
+            ('Capacidad', block.capacity),
+            ('Color', block.color),
+            ('Estado declarado', dict(block.CONDITION_CHOICES).get(block.condition, block.condition)),
+            ('Batería', f'{block.battery_health} %' if block.battery_health is not None else ''),
+            ('Accesorios', block.accessories),
+            # Only the last four digits are ever stored: asterisks stand for the rest.
+            ('IMEI', f'****{block.imei_last4}' if block.imei_last4 else ''),
+        ],
+        'valuation': block.estimated_valuation,
+        'balance': quote.total - block.estimated_valuation,
+    }
+
+
+def _trade_in_figures(ctx) -> list[tuple[str, str]]:
+    trade_in = ctx['trade_in']
+    symbol = ctx['tax']['symbol']
+    return [
+        ('Total cotizado', style.money(symbol, ctx['tax']['total'])),
+        (TRADE_IN_VALUATION_LABEL, f"- {style.money(symbol, trade_in['valuation'])}"),
+        (TRADE_IN_BALANCE_LABEL, style.money(symbol, trade_in['balance'])),
+    ]
 
 
 def filename(quote, kind: str = 'a4') -> str:
@@ -126,6 +174,7 @@ def build_context(quote) -> dict:
                            else 'Descuento promocional' if quote.discount_source == 'promotion' else 'Descuento'),
         'conditions': quote.conditions,
         'stamp': STAMPS.get(quote.effective_status, ''),
+        'trade_in': trade_in_context(quote),
     }
 
 
@@ -190,6 +239,10 @@ def quote_document(ctx: dict) -> dict:
         'total': style.money(tax['symbol'], tax['total']),
         'total_label': 'TOTAL COTIZADO',
         'legal': SALES_QUOTE_LEGEND,
+        'sections': ([{
+            'heading': TRADE_IN_QUOTE_HEADING, 'rows': ctx['trade_in']['rows'],
+            'figures': _trade_in_figures(ctx), 'legend': TRADE_IN_QUOTE_LEGEND,
+        }] if ctx.get('trade_in') else []),
         'notes': ctx['conditions'],
         'notes_heading': CONDITIONS_HEADING,
         'footnotes': [SALES_QUOTE_LEGEND_DETAIL],
@@ -258,6 +311,15 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float, 
     for label, value in _totals(ctx):
         cur.row(label, value, size=7.5)
     cur.row('TOTAL', f"{money} {Decimal(tax['total']):.2f}", size=10.5, bold=True)
+    if ctx.get('trade_in'):
+        cur.rule()
+        cur.line(TRADE_IN_QUOTE_HEADING, size=7.5, bold=True)
+        for label, value in ctx['trade_in']['rows']:
+            if value:
+                cur.line(f'{label}: {value}', size=6.5)
+        for label, value in _trade_in_figures(ctx):
+            cur.row(label, value, size=7.5, bold=label == TRADE_IN_BALANCE_LABEL)
+        cur.line(TRADE_IN_QUOTE_LEGEND, size=6.5, bold=True)
     if ctx['conditions']:
         cur.rule()
         cur.line('Condiciones comerciales', size=7, bold=True)
@@ -367,6 +429,15 @@ def escpos_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str = 'cp8
     for label, value in _totals(ctx):
         r.row(label, value)
     r.row('TOTAL', f"{money} {Decimal(tax['total']):.2f}", bold=True, large=design.emphasize_total)
+    if ctx.get('trade_in'):
+        r.rule()
+        r.line(TRADE_IN_QUOTE_HEADING, bold=True)
+        for label, value in ctx['trade_in']['rows']:
+            if value:
+                r.line(f'{label}: {value}')
+        for label, value in _trade_in_figures(ctx):
+            r.row(label, value, bold=label == TRADE_IN_BALANCE_LABEL)
+        r.line(TRADE_IN_QUOTE_LEGEND, bold=True)
     if ctx['conditions']:
         r.rule()
         r.line('Condiciones comerciales', bold=True)

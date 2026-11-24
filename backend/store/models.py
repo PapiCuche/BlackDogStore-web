@@ -5847,6 +5847,100 @@ class SalesQuoteItem(models.Model):
         return super().delete(*args, **kwargs)
 
 
+class SalesQuoteTradeIn(models.Model):
+    """
+    TRADE-IN-QUOTE-00 — the device a customer OFFERS in part-exchange, valued for reference inside a quote.
+
+    NON-BINDING AND SEPARATE. The quote's lines, discount, IGV and total are the sale's; this is a different
+    fact: what the shop thinks the customer's device is worth, subject to inspection. It is never a
+    `manual_discount`, never a payment, never a purchase and never stock. The proposed balance
+    (`estimated_balance` = quote total − valuation) is COMPUTED, never stored, and nothing reads it to charge.
+    Converting the quote charges the sale in full; this block stays with the quote as history. Applying it to a
+    sale is TRADE-IN-01B/01C (docs/adr-trade-in.md), blocked until the owner decides D1–D12.
+
+    NO IDENTITY. At most the last four digits of the IMEI (the database refuses more); never a DNI, a photo or
+    a full serial (D6/D10 pending). The device is described as text: it may be a model the catalogue lacks.
+
+    Like the quote's lines, it is part of the offer: written only while the quote is a draft; an offered quote
+    is changed by a revision, which copies it.
+    """
+
+    CONDITION_LIKE_NEW = 'like_new'
+    CONDITION_GOOD = 'good'
+    CONDITION_FAIR = 'fair'
+    CONDITION_DAMAGED = 'damaged'
+    CONDITION_NOT_WORKING = 'not_working'
+    CONDITION_CHOICES = [
+        (CONDITION_LIKE_NEW, 'Como nuevo'),
+        (CONDITION_GOOD, 'Buen estado'),
+        (CONDITION_FAIR, 'Con detalles de uso'),
+        (CONDITION_DAMAGED, 'Con daños'),
+        (CONDITION_NOT_WORKING, 'No funciona'),
+    ]
+
+    # CASCADE from the quote only: a revision's block lives and dies with that revision.
+    quote = models.OneToOneField(SalesQuote, on_delete=models.CASCADE, related_name='trade_in')
+    # As the customer and the valuer describe it (model, generation): free text, never an identifier.
+    device_description = models.CharField(max_length=200)
+    capacity = models.CharField(max_length=40, blank=True, default='')
+    color = models.CharField(max_length=40, blank=True, default='')
+    # DECLARED by the customer / seen at the counter, before any technical inspection.
+    condition = models.CharField(max_length=12, choices=CONDITION_CHOICES)
+    battery_health = models.PositiveSmallIntegerField(null=True, blank=True)
+    accessories = models.CharField(max_length=200, blank=True, default='')
+    # The LAST FOUR digits only, to tell two devices apart on the paper. Never the IMEI.
+    imei_last4 = models.CharField(max_length=4, blank=True, default='')
+    # INTERNAL: what the customer asked for the device. Never printed.
+    customer_asking_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    # The shop's referential valuation. Not a cost, not a credit, not a price.
+    estimated_valuation = models.DecimalField(max_digits=12, decimal_places=2)
+    # INTERNAL: why that valuation. Never printed.
+    valuation_notes = models.TextField(max_length=1000, blank=True, default='')
+    valued_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    valued_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(estimated_valuation__gte=Decimal('0.00')),
+                                   name='sales_quote_trade_in_valuation_non_negative'),
+            models.CheckConstraint(condition=models.Q(customer_asking_price__isnull=True)
+                                   | models.Q(customer_asking_price__gte=Decimal('0.00')),
+                                   name='sales_quote_trade_in_asking_non_negative'),
+            models.CheckConstraint(condition=models.Q(battery_health__isnull=True)
+                                   | models.Q(battery_health__lte=100),
+                                   name='sales_quote_trade_in_battery_percent'),
+            models.CheckConstraint(condition=models.Q(imei_last4='') | models.Q(imei_last4__regex=r'^[0-9]{4}$'),
+                                   name='sales_quote_trade_in_imei_last4_only'),
+        ]
+
+    def __str__(self):
+        return f'{self.device_description} · {self.estimated_valuation}'
+
+    @property
+    def estimated_balance(self) -> Decimal:
+        """What the customer would pay on top of the device, IF it were applied. Computed, never stored."""
+        return self.quote.total - self.estimated_valuation
+
+    def _quote_status(self):
+        return SalesQuote.objects.filter(pk=self.quote_id).values_list('status', flat=True).first()
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.quote_id and self._quote_status() not in (None, SalesQuote.STATUS_DRAFT):
+            raise ValidationError('La parte de pago de una cotización que salió de borrador no se modifica: '
+                                  'crea una revisión.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self._quote_status() not in (None, SalesQuote.STATUS_DRAFT):
+            raise ValidationError('La parte de pago de una cotización que salió de borrador no se borra.')
+        return super().delete(*args, **kwargs)
+
+
 # =============================================================================
 # Bulk import — Commercial Phase C1.4
 # =============================================================================

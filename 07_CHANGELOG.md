@@ -3,6 +3,17 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-24 — TRADE-IN-QUOTE-00: equipo ofrecido en parte de pago, referencial, en la cotización (rama, sin fusionar ni desplegar)
+
+**Added**
+- Bloque opcional «Equipo ofrecido en parte de pago (referencial)» en las cotizaciones: equipo, capacidad, color, estado y batería declarados, accesorios, últimos 4 dígitos del IMEI, precio que pide el cliente (interno), valorización estimada y notas (internas).
+- Saldo estimado a pagar (total cotizado − valorización), sólo mostrado: no cambia el total, el IGV ni la venta.
+- El bloque se imprime en A4, 80 mm y ESC/POS con la leyenda «Valorización referencial sujeta a inspección; no es crédito, pago ni compra. No es comprobante de pago.»
+- Migración `0191_trade_in_quote` (una tabla nueva, aditiva).
+
+**Changed**
+- Convertir en venta una cotización con parte de pago avisa que la parte de pago aún no se aplica; la venta se cobra completa.
+
 ## 2026-11-24 — SUPPLY-MARGIN-01: precio sugerido de las ofertas de proveedor (rama, sin fusionar ni desplegar)
 
 **Added**
