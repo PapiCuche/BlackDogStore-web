@@ -105,7 +105,9 @@ const LIST = `/admin/products/models?buscar=${encodeURIComponent(MODEL)}`;
 
 test("1 · el listado tiene «Editar modelo» en la fila y abre ESE modelo, también con teclado", async ({ page }) => {
   await page.goto(LIST, { waitUntil: "networkidle" });
-  await expect(page.getByRole("columnheader", { name: "Acciones" })).toBeVisible();
+  // INV-GRADES-01 put the grade scale (with its own «Acciones» column) on the same page: the header is the models'.
+  const models = page.getByRole("table").filter({ has: page.getByRole("link", { name: MODEL, exact: true }) });
+  await expect(models.getByRole("columnheader", { name: "Acciones" })).toBeVisible();
   const edit = row(page).getByRole("link", { name: `Editar modelo ${MODEL}` });
   await expect(edit).toBeVisible();
   await edit.focus();

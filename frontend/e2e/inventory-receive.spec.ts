@@ -125,9 +125,10 @@ type Dev = { serial: string; imei?: string; imei2?: string; condition?: string }
 
 /** Llena el equipo número `i` (0-based) de una tarjeta; el primero ya existe, los demás se agregan. */
 async function fillUnit(card: Locator, i: number, dev: Dev) {
-  if ((await card.getByLabel("Número de serie *").count()) <= i) await card.getByRole("button", { name: "Agregar otro equipo" }).click();
-  const at = (label: string) => card.getByLabel(label, { exact: true }).nth(i);
-  await at("Número de serie *").fill(dev.serial);
+  // SERIAL-OPTIONAL-01: a product that requires an IMEI labels it «Número de serie (opcional con IMEI)».
+  const serials = card.getByLabel(/^Número de serie( \*| \(opcional con IMEI\))$/);
+  if ((await serials.count()) <= i) await card.getByRole("button", { name: "Agregar otro equipo" }).click();
+  await serials.nth(i).fill(dev.serial);
   if (dev.imei !== undefined) await card.locator('[data-field="imei"]').nth(i).fill(dev.imei);
   if (dev.imei2 !== undefined) await card.locator('[data-field="imei2"]').nth(i).fill(dev.imei2);
   if (dev.condition) await card.getByLabel("Estado del equipo").nth(i).selectOption({ label: dev.condition });

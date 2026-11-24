@@ -139,7 +139,8 @@ test("a · 10 filas con 3 errores: vista previa con errores, CSV, historial sin 
   expect(csv.headers()["content-type"]).toContain("text/csv");
   const texto = await csv.text();
   expect(texto).toContain("Falta el nombre del producto.");
-  expect(texto).toContain("El precio no es un número.");
+  // B1-0b-2 (money_input): «doce soles» names a currency, and the uploads never convert one.
+  expect(texto).toContain("las cargas no convierten monedas");
 
   // El historial se refresca tras la vista previa, sin recargar…
   const filename = path.basename(conErrores);

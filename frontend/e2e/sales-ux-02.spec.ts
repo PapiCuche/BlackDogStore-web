@@ -43,7 +43,11 @@ for u in data['units']:
     row = {'serial_number': u['serial'], 'imei': u['imei'], 'condition': 'used', 'sale_price': u['price'], 'cost': u['cost']}
     if u['serial'].endswith('1'): row['battery_health'] = 91
     rows.append(row)
-stock_unit_services.receive_units(branch=branch, product=phone, actor=actor, reason='Prueba de navegador', units=rows)
+received = stock_unit_services.receive_units(branch=branch, product=phone, actor=actor, reason='Prueba de navegador', units=rows)
+# USED-READY-01: the till sells a used device once its inspection is approved.
+from store import used_unit_services
+for unit in received:
+    used_unit_services.set_inspection(unit, decision='approved', actor=actor)
 case = Product.objects.create(company=company, name=data['case'], slug=data['case'].lower().replace(' ', '-'),
                               price=Decimal('49.90'), inventory=0, is_active=True, is_published_online=False)
 inventory_services.create_stock_movement(branch=branch, product_id=case.pk, movement_type=StockMovement.INITIAL_STOCK,
