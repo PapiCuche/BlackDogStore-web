@@ -657,7 +657,7 @@ export function UsedUnitsPanel({
   return (
     <Panel
       title="Equipos seminuevos"
-      description="Cada fila es un equipo. Se vende en caja con precio e inspección aprobada; en línea, además, publicado y con al menos una foto real confirmada como de ese equipo. La batería, el estado, la garantía, los defectos y los accesorios completan lo que ve el comprador."
+      description="Cada equipo aparece por separado. Se vende en caja con precio e inspección aprobada; en línea, además, publicado y con al menos una foto real confirmada como de ese equipo. La batería, el estado, la garantía, los defectos y los accesorios completan lo que ve el comprador."
     >
       <form
         className="mb-4 grid gap-3 md:grid-cols-[minmax(0,1fr)_12rem_12rem_12rem_auto]"

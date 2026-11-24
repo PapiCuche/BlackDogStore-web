@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { test, expect, chromium, devices, type Browser, type BrowserContext, type Locator, type Page } from "@playwright/test";
 import { RUN, sembrar, shell } from "./inventory-first-support";
 import { sessionFor, limpiarRecepcion } from "./inventory-receive-support";
+import { usedEntry } from "./used-units-support";
 import { RL_USERS, RL_PASSWORD, MODELS, sembrarLista, articulos, nextImei } from "./inventory-receive-list-support";
 
 /**
@@ -55,9 +56,6 @@ const press = async (target: Locator, touch: boolean) => {
   if (touch) await target.tap({ timeout: 30_000 }); else await target.click({ timeout: 30_000 });
 };
 const button = (page: Page, name: string | RegExp) => page.getByRole("button", { name });
-/** One device in «Equipos seminuevos»: its table row from `md`, its card below (only the visible one has a role). */
-const usedEntry = (page: Page, text: string) => page.getByTestId("used-units-table").getByRole("row")
-  .or(page.getByTestId("used-units-cards").getByRole("listitem")).filter({ hasText: text });
 
 async function noOverflow(page: Page, where: string) {
   const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
