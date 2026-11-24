@@ -19,7 +19,7 @@ Two questions a seller asks at the counter, and the services that already answer
                                      `registration_services.register` (variant + `receive_units` + Kardex + label,
                                      in one transaction). An on-order line goes through `supply_services.receive_line`
                                      (entry + exit to its order + `OrderUnit`). The till then names the device in the
-                                     sale like any other (SERIAL-PICK: `OrderUnit`, `method='manual'`).
+                                     sale like any other (SERIAL-PICK: `OrderUnit`, with the method it was read by).
 
 DECISIONS (ADR §4.5):
   * D-F-1 — a variant created here is enabled for the shop (`draft_origin=''`, like «Registrar artículo») and NEVER
@@ -29,6 +29,16 @@ DECISIONS (ADR §4.5):
     artículo» asks); a cost needs `costs.view`; a price change needs `products.manage`. A seller without them still
     reads the picker and sells what exists, and is told to ask an authorised user.
   * D-F-3 — the device keeps its supplier (`StockUnit.supplier`), shown only to who sees suppliers or costs.
+
+POS-ORDER-ARRIVAL-01 — a device a paid order is waiting for (an on-order line, committed and not yet received) is
+that order's, not free stock:
+  * `configurations` lists, on each combination, the lines of the caller's visible orders that wait for one
+    (`pending_order_lines`, the customer masked) — to whoever may receive at the till;
+  * «Llegó el equipo» as plain stock while such a line waits for that variant in THIS branch answers 409
+    `pending_order_line` with the lines, unless the body says `confirm_stock: true` and a `reason`, which is audited
+    (`pos_device_received_over_pending_order`). With `order_item` the device goes to its order (ADR D-F-9, revised);
+  * the answer names the branch where the device ENTERED (an order's is its dispatch branch) and how it was read
+    (`method`: the scanner or by hand).
 
 The idempotency trail is the audit line (`pos_device_received`): key, fingerprint, and a RECORD of ids and flags —
 never an IMEI, a serial or an amount.
@@ -40,16 +50,22 @@ from dataclasses import asdict, dataclass
 from itertools import product as cartesian
 
 from django.db import connection, transaction
-from django.db.models import Count, Q, Sum
+from django.db.models import Count, Exists, OuterRef, Q, Sum
 
 from . import device_catalog, device_identity, finish_media, inventory_services, model_palette, pos_payloads, supply_services
 from . import registration_services as registration
 from .models import (
-    AdminAuditLog, BranchStock, ModelOption, OrderItem, OrderUnit, Product, ProductModel, ProductVariantOption,
-    StockMovement, StockUnit, Supplier, VariantAttribute, VariantOption,
+    AdminAuditLog, Branch, BranchStock, ModelOption, Order, OrderItem, OrderReturn, OrderUnit, Product, ProductModel,
+    ProductVariantOption, StockMovement, StockUnit, Supplier, VariantAttribute, VariantOption,
 )
 
 AUDIT_ACTION = 'pos_device_received'
+#: POS-ORDER-ARRIVAL-01: a device received as plain stock although a paid order of that variant waited here.
+OVER_PENDING_AUDIT_ACTION = 'pos_device_received_over_pending_order'
+#: The reason that confirms it — the length every other «why» of the panel asks.
+REASON_MIN, REASON_MAX = 5, 500
+#: At most this many waiting lines travel with a model's configurations (oldest first).
+MAX_PENDING_LINES = 200
 #: What the Kardex line of a device received at the till says.
 REASON = 'Caja: llegó el equipo'
 LINE = Product.CONDITION_NEW
@@ -100,9 +116,8 @@ class Authority:
     receive_on_order: bool   # inventory.adjust + sales.orders.manage (the order screen's «Recibir»)
 
     def can(self) -> dict:
-        flags = asdict(self)
-        flags.pop('receive_on_order')
-        return flags
+        # POS-ORDER-ARRIVAL-01: `receive_on_order` travels too — the till offers «Es del pedido» only to who may.
+        return asdict(self)
 
 
 def _holds(user, company, capability, legacy_roles) -> bool:
@@ -165,6 +180,49 @@ def search_models(company, branch, term) -> list[dict]:
              'available': int(stock.get(m.pk) or 0)} for m in models]
 
 
+def customer_hint(name) -> str:
+    """«Ana María Quispe» → «Ana Q.»: enough to say «this is Ana's order» at a counter a customer may see."""
+    words = str(name or '').split()
+    if not words:
+        return ''
+    first = words[0][:40]
+    return f'{first} {words[-1][0].upper()}.' if len(words) > 1 else first
+
+
+def waiting_lines(company, actor, product_ids, *, branch=None):
+    """
+    The on-order lines that wait for a device: of `company`, of an order the caller may see (`visible_orders`), PAID,
+    committed to a supplier and neither received nor failed (`supply_status='pending'` — exactly what
+    `supply_services.receive_line` accepts), of an order with no standing return (`unit_identification.returning`),
+    for `product_ids`; in `branch` (the order's dispatch branch) when given. Oldest first. One query, as values.
+    """
+    from .tenancy import visible_orders
+
+    returns = OrderReturn.objects.filter(order_id=OuterRef('order_id')).exclude(status=OrderReturn.STATUS_WITHDRAWN)
+    lines = (OrderItem.objects
+             .filter(order__company=company, order__in=visible_orders(actor, company),
+                     order__status=Order.Status.PAID, supply_origin=OrderItem.SUPPLY_SUPPLIER,
+                     supply_status=OrderItem.SUPPLY_PENDING, product_id__in=list(product_ids))
+             .filter(~Exists(returns)))
+    if branch is not None:
+        lines = lines.filter(order__fulfillment_branch=branch)
+    return (lines.order_by('order__created_at', 'pk')
+            .values('pk', 'order_id', 'product_id', 'quantity', 'order__customer_name', 'order__created_at',
+                    'order__fulfillment_branch_id', 'order__fulfillment_branch__name')[:MAX_PENDING_LINES])
+
+
+def waiting_line_payload(row, branch) -> dict:
+    """One waiting line as the till shows it: the order, the masked customer, where it is dispatched from."""
+    created = row['order__created_at']
+    return {
+        'order_item': row['pk'], 'order_id': row['order_id'], 'order_number': row['order_id'],
+        'quantity': row['quantity'], 'customer': customer_hint(row['order__customer_name']),
+        'created_at': created.isoformat() if created else None,
+        'branch': {'id': row['order__fulfillment_branch_id'], 'name': row['order__fulfillment_branch__name'] or ''},
+        'here': row['order__fulfillment_branch_id'] == branch.pk,
+    }
+
+
 def _variant_payload(product, available: int, authority: Authority) -> dict:
     pending = product.is_pending_draft
     payload = {
@@ -180,12 +238,16 @@ def _variant_payload(product, available: int, authority: Authority) -> dict:
     return payload
 
 
-def configurations(company, model, branch, authority: Authority) -> dict:
+def configurations(company, model, branch, authority: Authority, *, actor=None) -> dict:
     """
     What the till's picker reads for `model`: the roles in reading order, each with its options in the company's
     order and whether it VARIES (one option: the picker does not ask); every combination the palette admits minus
     the excluded pairs, with the variant that is it, or null. A model without a palette offers only the variants it
     already has (a combination nobody admitted is not created at the counter).
+
+    POS-ORDER-ARRIVAL-01: each combination carries `pending_order_lines` — the paid orders that wait for a device of
+    its variant (`waiting_lines`, within what `actor` may see) — filled only for who may receive at the till; empty
+    for everybody else, who reaches no «Llegó el equipo».
     """
     palette = model_palette.palette_of(model)
     attributes = sorted(VariantAttribute.objects.filter(company_id=company.pk).prefetch_related('options'),
@@ -198,6 +260,10 @@ def configurations(company, model, branch, authority: Authority) -> dict:
     by_key = {device_catalog.variant_key(links.get(p.pk, [])): p for p in variants}
     stock = dict(BranchStock.objects.filter(branch=branch, product__in=variants)
                  .values_list('product_id', 'quantity'))
+    waiting: dict[int, list[dict]] = {}
+    if authority.receive and actor is not None and variants:
+        for row in waiting_lines(company, actor, [p.pk for p in variants]):
+            waiting.setdefault(row['product_id'], []).append(waiting_line_payload(row, branch))
 
     if palette:
         allowed = palette
@@ -264,7 +330,8 @@ def configurations(company, model, branch, authority: Authority) -> dict:
         product = by_key.get(key)
         rows.append({'key': key, 'option_ids': ids,
                      'variant': None if product is None else _variant_payload(product, int(stock.get(product.pk) or 0),
-                                                                             authority)})
+                                                                             authority),
+                     'pending_order_lines': [] if product is None else waiting.get(product.pk, [])})
     answer = {
         'model': {'id': model.pk, 'name': model.name},
         'line': LINE,
@@ -449,6 +516,51 @@ def _registration_error(company, exc: registration.RegistrationError, row, produ
     return QuickSaleError(exc.detail, code=exc.code, field=field, status=exc.status)
 
 
+def _method(body) -> str:
+    """How the device was read: `scanner` only when the till says so; by hand otherwise (the default)."""
+    from . import unit_identification
+
+    raw = body.get('method')
+    if raw in (None, ''):
+        return unit_identification.MANUAL
+    if raw not in unit_identification.METHODS:
+        raise QuickSaleError('Indica si el equipo se leyó con el lector o se escribió a mano.', code='invalid_method',
+                             field='method')
+    return raw
+
+
+def _confirmation(body) -> str | None:
+    """The reason that confirms plain stock over a waiting order — or None when the body does not confirm."""
+    if body.get('confirm_stock') is not True:
+        return None
+    raw = body.get('reason')
+    text = ' '.join(raw.split()) if isinstance(raw, str) else ''
+    if len(text) < REASON_MIN:
+        raise QuickSaleError(f'Escribe por qué entra como stock (al menos {REASON_MIN} caracteres).',
+                             code='reason_required', field='reason')
+    if len(text) > REASON_MAX:
+        raise QuickSaleError(f'El motivo no puede pasar de {REASON_MAX} caracteres.', code='reason_too_long',
+                             field='reason')
+    return text
+
+
+def _refuse_over_waiting(company, actor, product, branch, confirmed: str | None) -> list[dict]:
+    """
+    POS-ORDER-ARRIVAL-01. A paid order waits here for a device of `product`: plain stock is refused (409, with the
+    lines) unless confirmed with a reason. Returns the waiting lines (empty when none) for the audit.
+    """
+    lines = [waiting_line_payload(row, branch) for row in waiting_lines(company, actor, [product.pk], branch=branch)]
+    if lines and confirmed is None:
+        first = lines[0]
+        who = f' ({first["customer"]})' if first['customer'] else ''
+        more = f' y {len(lines) - 1} más' if len(lines) > 1 else ''
+        raise QuickSaleError(
+            f'Hay un pedido pagado que espera este equipo en esta sucursal: pedido #{first["order_number"]}{who}{more}. '
+            'Entrégalo a su pedido, o confirma que entra como stock e indica el motivo.',
+            code='pending_order_line', status=409, extra={'lines': lines})
+    return lines
+
+
 def receive(*, company, branch, body, actor, request=None, authority: Authority) -> dict:
     """
     «Llegó el equipo». All of it or none of it — the caller holds the transaction. Returns the RECORD.
@@ -459,6 +571,7 @@ def receive(*, company, branch, body, actor, request=None, authority: Authority)
         raise QuickSaleError('Datos no válidos.')
     if body.get('order_item') not in (None, ''):
         return _receive_order_line(company=company, body=body, actor=actor, request=request, authority=authority)
+    method = _method(body)
     if not authority.receive:
         raise QuickSaleError(RECEIVE_FORBIDDEN, code='receive_forbidden', status=403)
     if body.get('line') not in (None, '', LINE):
@@ -483,6 +596,7 @@ def receive(*, company, branch, body, actor, request=None, authority: Authority)
     row = _device(body)
     _refuse_cost(body, authority)
     supplier = _supplier(company, body, authority)
+    confirmed = _confirmation(body)
 
     palette = model_palette.palette_of(model)
     spec, product = _resolve(company, model, options, palette)
@@ -504,6 +618,7 @@ def receive(*, company, branch, body, actor, request=None, authority: Authority)
     duplicate = _duplicate(company, row, product)
     if duplicate is not None:
         raise duplicate
+    waiting = [] if product is None else _refuse_over_waiting(company, actor, product, branch, confirmed)
 
     if price_changed:
         # Lock order: the product first (DEC-CATALOG-PALETTE-LOCK-01), then the shelf the reception writes.
@@ -539,12 +654,22 @@ def receive(*, company, branch, body, actor, request=None, authority: Authority)
         )
     except registration.RegistrationError as exc:
         raise _registration_error(company, exc, row, product) from None
+    unit_id = record['unit_ids'][0]
+    if waiting:
+        # Ids and the reason, never the customer: the log is read by more people.
+        AdminAuditLog.log(
+            actor=actor, action=OVER_PENDING_AUDIT_ACTION, target_type='stock_unit', target_id=unit_id,
+            request=request, company=company,
+            metadata={'reason': confirmed, 'product_id': record['product_id'], 'branch_id': branch.pk,
+                      'order_item_ids': [line['order_item'] for line in waiting],
+                      'order_ids': [line['order_id'] for line in waiting]})
     return {
         'mode': 'stock', 'branch_id': branch.pk, 'model_id': model.pk,
         'product_id': record['product_id'], 'product_created': record['product_created'],
-        'unit_id': record['unit_ids'][0], 'movement_ids': record['movement_ids'],
+        'unit_id': unit_id, 'movement_ids': record['movement_ids'],
         'label_batch_ids': record['label_batch_ids'], 'supplier_id': supplier.pk if supplier else None,
-        'price_changed': price_changed, 'order_id': None, 'order_item_id': None,
+        'price_changed': price_changed, 'order_id': None, 'order_item_id': None, 'method': method,
+        'over_pending_order_items': [line['order_item'] for line in waiting],
     }
 
 
@@ -563,6 +688,7 @@ def _receive_order_line(*, company, body, actor, request, authority) -> dict:
         raise QuickSaleError('Línea de pedido no encontrada.', code='not_found', field='order_item', status=404)
     if line.quantity != 1:
         raise QuickSaleError('Esta línea lleva varios equipos: recíbela desde el pedido.', field='order_item')
+    method = _method(body)
     row = _device(body)
     _refuse_cost(body, authority)
     duplicate = _duplicate(company, row, line.product)
@@ -572,7 +698,8 @@ def _receive_order_line(*, company, body, actor, request, authority) -> dict:
     if body.get('cost') not in (None, ''):
         unit_row['cost'] = body.get('cost')
     try:
-        supply_services.receive_line(line, actor=actor, units=[unit_row], company=company, request=request)
+        supply_services.receive_line(line, actor=actor, units=[unit_row], company=company, request=request,
+                                     method=method)
     except supply_services.SupplyError as exc:
         if getattr(exc, 'unit_field', '') in ('imei', 'imei2', 'serial_number'):
             found = _duplicate(company, row, line.product)
@@ -592,18 +719,26 @@ def _receive_order_line(*, company, body, actor, request, authority) -> dict:
         'movement_ids': list(StockMovement.objects.filter(order=line.order, product_id=line.product_id)
                              .order_by('pk').values_list('pk', flat=True)),
         'label_batch_ids': [], 'supplier_id': unit.supplier_id, 'price_changed': False,
-        'order_id': line.order_id, 'order_item_id': line.pk,
+        'order_id': line.order_id, 'order_item_id': line.pk, 'method': method,
     }
 
 
 def present(company, branch, record: dict, *, authority: Authority, replayed: bool = False) -> dict:
-    """The answer for a record — the device and its product as the till's unit lookup shows them (never a cost)."""
+    """
+    The answer for a record — the device and its product as the till's unit lookup shows them (never a cost).
+
+    POS-ORDER-ARRIVAL-01: read at the branch where the device ENTERED (`record['branch_id']`: the till's for plain
+    stock, the order's dispatch branch for an order line), which the answer names; and with the method it was read
+    by (a record written before this said nothing: by hand).
+    """
     from . import unit_identification
 
     unit = StockUnit.objects.select_related('product', 'cosmetic_grade', 'supplier').get(
         company=company, pk=record['unit_id'])
-    answer = pos_payloads.unit_lookup_payload(unit, branch, unit_identification.MANUAL)
+    entered = Branch.objects.filter(company=company, pk=record.get('branch_id')).first() or branch
+    answer = pos_payloads.unit_lookup_payload(unit, entered, record.get('method') or unit_identification.MANUAL)
     answer.update({
+        'branch': {'id': entered.pk, 'name': entered.name},
         'replayed': replayed,
         'mode': record['mode'],
         'created_variant': bool(record['product_created']),
