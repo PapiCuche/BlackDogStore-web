@@ -115,7 +115,7 @@ Ya existen los destinos de Productos y de Inventario. Faltan dos cosas:
 
 Las migraciones van en serie: un solo PR con migración en curso a la vez, en el orden 0187, 0188… Los PR sin migración pueden avanzar en paralelo.
 
-**Ola 1: seguridad del dato y carga real (prioridad del propietario)**
+**Ola 1: seguridad del dato y carga real (prioridad del propietario) — FUSIONADA el 2026-11-24 (#400 `1ce08caa`, #401 `ca719bde`, #402 `b47c2da1`, #403 `40be4fe7`), sin desplegar**
 1. **INV-LOAD-01**: inventario inicial por tandas sin compras ficticias; proveedor, fecha de ingreso y notas en la carga y en «Registrar equipo»; aviso de serie en otra variante; simulación de stock antes y después en la vista previa. Sin migración.
 2. **POS-ORDER-ARRIVAL-01**: «Llegó el equipo» ofrece primero la línea de pedido pendiente y responde 409 si hay pedidos sin atender. Sin migración.
 3. **SUPPLY-GUARDS-01**: estado real de las ofertas de proveedores inactivos y aviso de precio menor que el costo. Sin migración.

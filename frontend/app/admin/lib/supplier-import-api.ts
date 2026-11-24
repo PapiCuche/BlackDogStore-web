@@ -76,7 +76,39 @@ export type WeeklyImportRow = Omit<SupplierImportRow, "data"> & {
     cost_unverified?: boolean;
     /** SUPPLY-GUARDS-01: the row's supplier is inactive — recorded, it sells nothing. */
     supplier_inactive?: boolean;
+    /** Why a row is an error, when the server names it (`overlaps_running`, `combinacion_valida_sin_variante`…). */
+    error_code?: string;
+    /**
+     * SUPPLY-WEEKLY-01: the row's model and options are ONE whole combination of the palette and no variant is it
+     * yet — what «Crear variante» needs (`createModelVariant`). The row stays an error until it exists.
+     */
+    variant_proposal?: VariantProposal;
   };
+};
+
+/** SUPPLY-WEEKLY-01 — `combinacion_valida_sin_variante`: the variant a person may create as a pending draft. */
+export type VariantProposal = {
+  status: "combinacion_valida_sin_variante";
+  model_id: number;
+  model_name: string;
+  condition_line: "new" | "used";
+  option_ids: number[];
+  labels: string[];
+};
+
+/**
+ * SUPPLY-WEEKLY-01 (ADR §8.4) — a running offer of a supplier the PARTIAL list names that the list does not
+ * mention. Information only: a partial list never switches anything off.
+ */
+export type UnmentionedOffer = {
+  offer_id: number;
+  supplier_id: number;
+  supplier_name: string;
+  product_id: number;
+  product_name: string;
+  commercial_price: string;
+  available: number | null;
+  valid_until: string;
 };
 
 /**
@@ -124,6 +156,9 @@ export type WeeklyImportPreview = Omit<SupplierImportPreview, "rows"> & {
   rows: WeeklyImportRow[];
   /** INV-SNAPSHOT-01: present only for a complete list — what would be switched off on confirmation. */
   snapshot?: SnapshotPreview;
+  /** SUPPLY-WEEKLY-01: a partial list's unmentioned running offers (at most 200; the count says all). */
+  unmentioned?: UnmentionedOffer[];
+  unmentioned_count?: number;
   /** INV-SWITCH-01: what the server decided about AI for this import. Absent on an older server. */
   ai?: ImportAIDecision;
 };
