@@ -242,6 +242,9 @@ test.describe("dos cargas, cada una con su plantilla de una hoja", () => {
     const sucursal = opciones(forma.lists["C2:C501"])[0];
     expect(sucursal, "la plantilla lista las sucursales de quien carga").toBeTruthy();
 
+    // INV-LOAD-02: the screen never guesses the line of the file. These products are of the new line.
+    await page.getByRole("radio", { name: "Nuevos", exact: true }).check();
+
     // La plantilla tal como se descarga no registra nada. Se espera a que la pantalla diga
     // qué encontró —cero equipos— y sólo entonces se mira que no ofrezca registrar.
     await page.getByLabel("Archivo de equipos (.xlsx)").setInputFiles(archivo);
@@ -287,6 +290,7 @@ test.describe("dos cargas, cada una con su plantilla de una hoja", () => {
 
     // Un IMEI bajo un producto no marcado «lleva IMEI»: se avisa arriba y en la fila, y se guarda.
     await page.goto("/admin/inventory/units/import", { waitUntil: "networkidle" });
+    await page.getByRole("radio", { name: "Nuevos", exact: true }).check();
     const conImei = `POR${RUN}B`.toUpperCase();
     const suImei = imei(24);
     await page.getByLabel("Archivo de equipos (.xlsx)").setInputFiles(

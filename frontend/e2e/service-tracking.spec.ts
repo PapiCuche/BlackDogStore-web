@@ -297,6 +297,8 @@ test("«Cargar desde Excel»: una fila es un equipo, se ensaya antes y entra tod
 
     await page.getByLabel("Sucursal para las filas sin sucursal").selectOption({ index: 1 });
     await page.getByLabel("Motivo para las filas sin motivo").fill(`${MARK} compra de ${RUN}`);
+    // INV-LOAD-02: the screen never guesses the line of the file. This product is of the new line.
+    await page.getByRole("radio", { name: "Nuevos", exact: true }).check();
 
     // --- un archivo con una fila mala no se puede registrar -------------------
     await page.getByLabel("Archivo de equipos (.xlsx)").setInputFiles(
