@@ -11,12 +11,13 @@ Rama `feat/inv-load-02`, PR abierto, **sin fusionar ni desplegar**, **sin migrac
 - **Nuevos sin «Precio de venta»:** el importador lo ignora en un equipo nuevo (se vende al precio de la variante); no se ofrece. Decisión a confirmar por el propietario.
 - **Registro:** guarda `summary.applied.unit_ids` y el estante justo después (`applied.shelves`).
 - **Anulación por lote:** `POST …/units/import/<id>/void/ {reason}` — `void_unit` sobre cada equipo de la carga; todo o nada (409 `batch_not_voidable` con los equipos por código de etiqueta), motivo obligatorio, auditado con empresa, idempotente. Una carga anterior sin `unit_ids` → 409 `batch_unknown_units`.
+- **Inventario inicial tras anular:** la anulación de un ingreso de inventario inicial (`CORRECTION_NEGATIVE` de `stock_unit_void` que apunta a un `INITIAL_STOCK` del estante) ya no cierra el inventario inicial (`receipt_services._closes_the_opening`); cualquier otra línea sí. Decisión a confirmar por el propietario.
 - **Antes/después:** `GET …/units/import/<id>/report/?as=csv|xlsx`.
 - **Comprobación:** `manage.py check_unit_stock [--company]` (sólo lectura; 0 cuadra, 2 diferencias) y `GET /api/admin/inventory/units/reconciliation/` («Conciliación», `inventory.view`, sucursales del usuario).
 - **busy:** `inventory-adjust` y la aplicación de la carga de stock por cantidad responden 409 `busy` ante un bloqueo mutuo.
 - **Asistente:** reconoce las dos plantillas por su hoja.
 - **Panel:** botones de las dos plantillas, «Antes y después», «Anular esta carga» (también en «Cargas registradas»), «Conciliación de equipos». Las respuestas no llevan `unit_ids`.
-- **Pruebas:** `test_stock_load` (44, incluido el ensayo completo con datos sintéticos, una venta de un nuevo y de dos seminuevos); Jest `stock-unit-import`, `unit-stock-reconciliation`, `recent-unit-loads`.
+- **Pruebas:** `test_stock_load` (47, incluido el ensayo completo con datos sintéticos, una venta de un nuevo y de dos seminuevos); Jest `stock-unit-import`, `unit-stock-reconciliation`, `recent-unit-loads`.
 
 ## 2026-11-24 — SUPPLY-WEEKLY-01 · semana de listas de proveedor, ofertas no mencionadas y combinación válida sin variante (rama, sin desplegar)
 

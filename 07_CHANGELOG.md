@@ -16,6 +16,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - La plantilla de nuevos rechaza columnas de seminuevos; una fila de la otra línea es error de la fila.
 - «Inventario-adjust» y la carga de stock por cantidad responden 409 `busy` ante un bloqueo mutuo.
 - El asistente de importación reconoce las dos plantillas.
+- Anular un ingreso de inventario inicial ya no cierra el inventario inicial de ese estante.
 
 ## 2026-11-24 — SUPPLY-WEEKLY-01: la semana de las listas de proveedor
 

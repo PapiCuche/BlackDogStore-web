@@ -111,7 +111,8 @@ Al subir el archivo eliges el «Tipo de ingreso»:
 - **«Inventario inicial»**: lo que la tienda ya tenía. Es el caso del stock real. Queda en el Kardex como inventario
   inicial, sin compra ficticia. Se puede cargar **por tandas** (varios archivos) mientras el producto, en esa
   sucursal, sólo tenga líneas de inventario inicial. Una venta, una compra o un traslado lo cierran: desde ahí, lo
-  que llegue es compra.
+  que llegue es compra. Anular un ingreso de inventario inicial (un equipo o una carga entera) **no** lo cierra: el
+  archivo corregido se vuelve a cargar como inventario inicial.
 - **«Compra a proveedor»**: mercadería que llega comprada.
 
 Escribe también el «Motivo para las filas sin motivo», por ejemplo «Inventario inicial diciembre 2026». Queda en el
