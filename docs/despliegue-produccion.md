@@ -892,6 +892,14 @@ Da las capacidades `sales.quotes.*` a los roles existentes. Después de `migrate
    Es la misma sentencia que `UPDATE store_printjob SET status='cancelled' WHERE kind='sales_quote_ticket' AND
    status IN ('pending','printing');`, escrita para que el usuario y la base los lea el propio contenedor (como en
    `deploy/backup.sh`).
+5. **Sólo si además hay que deshacer el esquema** (pierde datos: cotizaciones, parte de pago, archivo de variantes,
+   márgenes, inspección y fotos confirmadas de seminuevos; ver el runbook de la release). La regla de impresión
+   anterior a `0189` no admite tickets de cotización, ni siquiera cancelados. Por eso `0192` y `0189` **se niegan a
+   volver atrás** mientras exista uno, antes de deshacer nada (ensayo R13). Bórralos primero y después revierte:
+   ```sh
+   $C exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "DELETE FROM store_printjob WHERE kind='"'"'sales_quote_ticket'"'"';"'
+   $C run --rm --no-deps backend python manage.py migrate store 0186_label_printing
+   ```
 
 **Si `migrate` se detiene con «REGISTER-RACE-01: N correo(s) tienen más de una cuenta»**
 no ha cambiado nada: la regla de «un correo, una cuenta» no se puede crear mientras haya

@@ -428,7 +428,8 @@ class MigrationTest(TestCase):
         [constraint] = [op for op in operations if isinstance(op, migrations.AddConstraint)]
         self.assertEqual(constraint.constraint.name, 'unit_photo_one_primary_per_unit')
         runs = [op.code.__name__ for op in operations if isinstance(op, migrations.RunPython)]
-        self.assertEqual(runs, ['first_photo_is_primary'])
+        # The data step, then the reverse guard (R13: no reverse while quote tickets exist; forward is a no-op).
+        self.assertEqual(runs, ['first_photo_is_primary', 'noop'])
 
     def test_the_first_photo_of_each_device_becomes_its_primary_and_nothing_is_attested(self):
         from importlib import import_module

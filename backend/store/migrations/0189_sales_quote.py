@@ -77,6 +77,19 @@ def grant(apps, schema_editor):
         print(f'\n  SALES-QUOTE-01 — cotizaciones otorgadas a {extended} rol(es)')
 
 
+
+def refuse_reverse_with_quote_tickets(apps, schema_editor):
+    """Reverse guard: the pre-0189 print-job check refuses any `sales_quote_ticket` row, so going back with one
+    would stop halfway (rehearsal R13). Refuse BEFORE anything is undone and name the fix."""
+    PrintJob = apps.get_model('store', 'PrintJob')
+    tickets = PrintJob.objects.filter(kind='sales_quote_ticket').count()
+    if tickets:
+        raise RuntimeError(
+            f'0189: hay {tickets} trabajo(s) de impresión de cotizaciones (incluidos los cancelados). '
+            f"Antes de volver atrás: DELETE FROM store_printjob WHERE kind='sales_quote_ticket'; "
+            f'(docs/despliegue-produccion.md §7).')
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -297,4 +310,6 @@ class Migration(migrations.Migration):
             constraint=models.CheckConstraint(condition=models.Q(('unit_price__gte', Decimal('0.00'))), name='sales_quote_item_price_non_negative'),
         ),
         migrations.RunPython(grant, migrations.RunPython.noop),
+        # Last: on reverse it runs FIRST, before any data is undone.
+        migrations.RunPython(migrations.RunPython.noop, refuse_reverse_with_quote_tickets),
     ]
