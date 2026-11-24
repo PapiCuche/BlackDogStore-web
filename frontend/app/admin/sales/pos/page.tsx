@@ -1161,8 +1161,9 @@ function PosContent({ ctx, deviceRequest }: { ctx: InternalContext; deviceReques
               branch={branch}
               onAddProduct={(p) => { addProduct(p); focusScan(); }}
               onAddOnOrder={(p) => { addOnOrder(p); focusScan(); }}
-              onReceived={(unit, product) => {
-                addUnit(unit, product, "manual");
+              onReceived={(unit, product, method) => {
+                // POS-ORDER-ARRIVAL-01: as the form read it — the scanner or by hand.
+                addUnit(unit, product, method);
                 notifyStockChanged();
               }}
               focusRequested={deviceWanted}
