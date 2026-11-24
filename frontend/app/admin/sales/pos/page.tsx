@@ -45,6 +45,7 @@ import { notifyStockChanged } from "../../../lib/stock-events";
 import Link from "next/link";
 import { PosReceiptSelector, isSelectable } from "./PosReceiptSelector";
 import { PosSaleSteps } from "./PosSaleSteps";
+import { PosSoldUnits } from "./PosSoldUnits";
 import { PosReviewPanel } from "./PosReviewPanel";
 import { PosNewCustomerDialog } from "./PosNewCustomerDialog";
 import { saleSteps, type StepId } from "../../lib/pos-steps";
@@ -780,13 +781,7 @@ function PosContent({ ctx, deviceRequest, deviceWanted, onDeviceHandled }: {
             <p>Cliente: {done.customer || "Sin identificar"}</p>
             <p>Vendedor: {done.seller || "—"}</p>
             <p>Sucursal: {done.branch.name}</p>
-            {done.items.flatMap((item) =>
-              (item.units ?? []).map((sold) => (
-                <p key={`${item.product}-${sold.serial_number}-${sold.imei}`} className="break-all">
-                  {item.name}: <span className="font-mono">{unitLabel(sold)}</span>
-                </p>
-              )),
-            )}
+            <PosSoldUnits items={done.items} />
             <p className="pt-2">Subtotal: {money(done.subtotal)}</p>
             {Number(done.discount) > 0 ? (
               <p>
