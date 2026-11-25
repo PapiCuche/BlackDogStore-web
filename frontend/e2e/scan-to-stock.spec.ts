@@ -73,8 +73,10 @@ def opt(attribute, label, swatch=''):
 
 cap, col = attr('capacity', 'Capacidad'), attr('color', 'Color', 'color')
 g128, grafito = opt(cap, '128 GB'), opt(col, 'Grafito', '#3B3B3D')
+# SELECTOR-UX-01 · C: a second capacity and colour (no variant), so the configurator has steps to ask.
+g256, plata = opt(cap, '256 GB'), opt(col, 'Plata', '#C0C0C0')
 model = device_catalog.create_model(company=company, name=data['name'])
-model_palette.set_palette(model, option_ids=[g128.pk, grafito.pk], actor=actor)
+model_palette.set_palette(model, option_ids=[g128.pk, grafito.pk, g256.pk, plata.pk], actor=actor)
 new = Product.objects.create(company=company, name=data['name'] + ' 128 GB Grafito', slug=data['slug'] + '-n',
                              price=Decimal('3299.00'), inventory=0, is_active=True, is_serialized=True,
                              requires_imei=True, is_published_online=False)
@@ -162,6 +164,11 @@ test.describe("registrar equipo por escaneo", () => {
 
     await leer(page, CAJA);
     await expect(page.getByTestId("scan-intake-variant")).toContainText(`${MODELO} 128 GB Grafito`, { timeout: 20_000 });
+    // SELECTOR-UX-01 · C: the box code chose the variant ON the configurator (the till's chips).
+    const configurador = page.getByRole("group", { name: "Configuración del equipo" });
+    await expect(configurador.getByRole("radiogroup", { name: "Capacidad" }).getByRole("radio", { name: /128 GB/ })).toBeChecked();
+    await expect(configurador.getByRole("radiogroup", { name: "Color" }).getByRole("radio", { name: /Grafito/ })).toBeChecked();
+    await captura(page, "scan-to-stock-1280-configurador");
     await expect(page.getByTestId("scan-intake-expected")).toContainText("IMEI 1");
 
     await leer(page, EID);
@@ -219,10 +226,17 @@ test.describe("registrar equipo por escaneo", () => {
     await signIn(page);
     await abrir(page);
     await sinDesborde(page);
-    await page.getByRole("button", { name: "Seminuevo" }).click();
+    // SELECTOR-UX-01 · C: the model on the configurator first (new line, the till's chips at 390), then «Seminuevo».
     await page.getByTestId("scan-intake-model").fill(MODELO);
     await page.getByRole("button", { name: MODELO, exact: true }).click();
-    await page.getByLabel(new RegExp(`${MODELO} 128 GB Grafito seminuevo`)).check();
+    const configurador = page.getByRole("group", { name: "Configuración del equipo" });
+    await expect(configurador.getByRole("radiogroup", { name: "Capacidad" })).toBeVisible();
+    await sinDesborde(page);
+    await captura(page, "scan-to-stock-390-configurador");
+    await page.getByRole("button", { name: "Seminuevo" }).click();
+    // SELECTOR-UX-01 · C: the used line on the configurator — its only variant is chosen by itself.
+    await expect(page.getByTestId("scan-intake-used-variant")).toContainText(`${MODELO} 128 GB Grafito seminuevo`);
+    await captura(page, "scan-to-stock-390-configurador-seminuevo");
     await leer(page, USADO);
     await expect(page.getByTestId("scan-intake-value-imei")).toHaveText(USADO);
     await page.getByTestId("scan-intake-battery").fill("88");

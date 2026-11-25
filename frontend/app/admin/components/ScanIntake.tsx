@@ -21,13 +21,15 @@ import { NextStepBar, extractLabelBatch } from "./NextStepBar";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
 import type { PosModelHit, PosPendingOrderLine } from "../lib/internal-api";
 import {
-  NO_OPTION, autoFill, chosenCombination, optionState, pickOption, stepsToAsk, type Picked,
+  NO_OPTION, autoFill, chosenCombination, isOptional, optionState, pickOption, stepsToAsk, type Picked,
 } from "../lib/pos-device-picker";
+import { optionState as configuratorOptionState } from "../lib/device-configurator";
+import { ConfiguratorStep } from "./DeviceConfigurator";
 import {
   CHOICE_LABEL, EMPTY_IDENTIFIERS, ReadQueue, SLOT_LABEL, ScanIntakeError, applyOutcome, decide, expectedSlot,
   isTerminator, readTerminator, reviewProblems, saveTerminator, scanCheck, scanConfigurations, scanModelSearch,
-  scanReceive, type Choice, type Identifiers, type ScanConfigurations, type ScanProduct, type ScanReceived, type Slot,
-  type Terminator,
+  scanReceive, pickOfVariant, usedSpace, type Choice, type Identifiers, type ScanConfigurations, type ScanProduct,
+  type ScanReceived, type Slot, type Terminator,
 } from "../lib/scan-intake";
 import { newRhythm, resetRhythm, rhythmChanged, rhythmKey, rhythmMethod, type EntryMethod } from "../lib/unit-entry";
 import { useCosmeticGrades } from "../lib/use-cosmetic-grades";
@@ -77,6 +79,8 @@ export function ScanIntake({
   const [config, setConfig] = useState<ScanConfigurations | null>(null);
   const [picked, setPicked] = useState<Picked>({});
   const [usedVariantId, setUsedVariantId] = useState<number | null>(null);
+  /** SELECTOR-UX-01 · C: the steps chosen on the used line's configurator while no variant is reached yet. */
+  const [usedPicked, setUsedPicked] = useState<Picked>({});
   const [ids, setIds] = useState<Identifiers>(EMPTY_IDENTIFIERS);
   const idsRef = useRef<Identifiers>(EMPTY_IDENTIFIERS);
   const [methods, setMethods] = useState<Partial<Record<Slot, EntryMethod>>>({});
@@ -132,6 +136,8 @@ export function ScanIntake({
   const can = config?.can;
   const combination = config && condition === "new" ? chosenCombination(config, picked) : null;
   const usedVariant = config?.used_variants.find((v) => v.id === usedVariantId) ?? null;
+  const used = useMemo(() => (config ? usedSpace(config) : null), [config]);
+  const usedShown: Picked = used && usedVariant ? pickOfVariant(used, usedVariant) : usedPicked;
   const variantProductId = condition === "new" ? combination?.variant?.product_id ?? null : usedVariant?.id ?? null;
   const variantChosen = condition === "new" ? Boolean(combination) : Boolean(usedVariant);
   const requiresImei = condition === "new" ? combination?.variant?.requires_imei ?? true : usedVariant?.requires_imei ?? true;
@@ -190,6 +196,7 @@ export function ScanIntake({
       if (preset && preset.condition_line === "used") {
         setCondition("used");
         setUsedVariantId(preset.id);
+        setUsedPicked({});
       } else if (preset) {
         setCondition("new");
         const next: Picked = {};
@@ -201,6 +208,7 @@ export function ScanIntake({
       } else {
         setPicked(autoFill(data, {}));
         setUsedVariantId(data.used_variants.length === 1 ? data.used_variants[0].id : null);
+        setUsedPicked({});
       }
     } catch (err) {
       if (request === configRequest.current) say("error", err instanceof Error ? err.message : "No se pudo leer el modelo.");
@@ -393,7 +401,13 @@ export function ScanIntake({
   // (another screen, a reset) never navigates.
   const guardSeq = useRef(0);
   const guardCleanup = useRef<(() => void) | null>(null);
-  const startHistoryGuard = useCallback(() => {
+  // SELECTOR-UX-01 · C (final review of #437): a guard never navigates once the screen is gone, and a guard is never
+  // pushed while an earlier guard's own `back()` is still on its way (it would be left as a forward entry).
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+  const traversal = useRef<Promise<void> | null>(null);
+  const startHistoryGuard = useCallback(async () => {
+    if (traversal.current) await traversal.current;
     const id = ++guardSeq.current;
     const here = window.location.href;
     const guard = { ...(window.history.state ?? {}), scanIntakeGuard: id };
@@ -409,7 +423,20 @@ export function ScanIntake({
     return () => {
       window.removeEventListener("popstate", onBack);
       guardCleanup.current = null;
-      if ((window.history.state as { scanIntakeGuard?: number } | null)?.scanIntakeGuard === id) window.history.back();
+      if (!mounted.current) return;
+      if ((window.history.state as { scanIntakeGuard?: number } | null)?.scanIntakeGuard !== id) return;
+      traversal.current = new Promise<void>((resolve) => {
+        const landed = () => {
+          window.removeEventListener("popstate", landed);
+          window.clearTimeout(timer);
+          traversal.current = null;
+          resolve();
+        };
+        // A browser that never answers the traversal does not hold the next registration for long.
+        const timer = window.setTimeout(landed, 1000);
+        window.addEventListener("popstate", landed);
+      });
+      window.history.back();
     };
   }, [say]);
   useEffect(() => () => guardCleanup.current?.(), []);
@@ -463,7 +490,7 @@ export function ScanIntake({
       configRequest.current += 1;
       setConfig(null);
       setPicked({});
-      setUsedVariantId(null);
+      setUsedVariantId(null); setUsedPicked({});
       setModelQuery("");
     } else if (config && branchId) {
       // Same model and variant; fresh stock and waiting orders — unless another model is asked for meanwhile (F4).
@@ -546,7 +573,7 @@ export function ScanIntake({
     }
     setSubmitting(true);
     setError(null);
-    const endGuard = startHistoryGuard();
+    const endGuard = await startHistoryGuard();
     const born = generation.current;
     try {
       const sent = JSON.stringify(body);
@@ -678,7 +705,7 @@ export function ScanIntake({
                   // G4: another model by hand — reads and configuration requests on their way are for the old one.
                   newGeneration();
                   configRequest.current += 1;
-                  setConfig(null); setPicked({}); setUsedVariantId(null);
+                  setConfig(null); setPicked({}); setUsedVariantId(null); setUsedPicked({});
                 }
               }}
             />
@@ -697,27 +724,25 @@ export function ScanIntake({
 
           {config && condition === "new" ? (
             <div className="space-y-3">
-              {stepsToAsk(config).map((attribute) => (
-                <fieldset key={attribute.id} className="space-y-1">
-                  <legend className="text-sm font-semibold">{attribute.name}</legend>
-                  <div className="flex flex-wrap gap-2">
-                    {attribute.options.map((option) => {
-                      const state = optionState(config, picked, attribute.id, option.id);
-                      const on = picked[attribute.id] === option.id;
-                      return (
-                        <button
-                          key={option.id} type="button" disabled={!state.possible} aria-pressed={on}
-                          className={`${on ? internalPrimaryButtonClass : internalButtonClass} min-h-11`}
-                          onClick={() => { newGeneration(); setPicked(autoFill(config, pickOption(config, picked, attribute.id, option.id))); setOrderChoice(null); setServerLines([]); }}
-                        >
-                          {option.label}
-                        </button>
-                      );
-                    })}
-                    {picked[attribute.id] === NO_OPTION ? <span className="text-xs text-muted">Sin {attribute.name.toLowerCase()}</span> : null}
-                  </div>
-                </fieldset>
-              ))}
+              {/* SELECTOR-UX-01 · C: THE device configurator (the till's chips), single mode. */}
+              <div role="group" aria-label="Configuración del equipo" className="space-y-3">
+                {stepsToAsk(config).map((attribute) => (
+                  <ConfiguratorStep
+                    key={attribute.id}
+                    name={`${scanId}-attribute-${attribute.id}`}
+                    attribute={attribute}
+                    extraOptions={isOptional(config, attribute.id) ? [{ id: NO_OPTION, label: `Sin ${attribute.name}`, swatch_hex: "" }] : []}
+                    isChecked={(optionId) => picked[attribute.id] === optionId}
+                    stateOf={(optionId) => optionState(config, picked, attribute.id, optionId)}
+                    onToggle={(optionId) => {
+                      newGeneration();
+                      setPicked(autoFill(config, pickOption(config, picked, attribute.id, optionId)));
+                      setOrderChoice(null);
+                      setServerLines([]);
+                    }}
+                  />
+                ))}
+              </div>
               {combination ? (
                 <p className="text-sm" data-testid="scan-intake-variant">
                   {combination.variant
@@ -728,7 +753,42 @@ export function ScanIntake({
             </div>
           ) : null}
 
-          {config && condition === "used" ? (
+          {config && condition === "used" && used ? (
+            <div className="space-y-3">
+              {/* SELECTOR-UX-01 · C: the same configurator over the used variants that exist (none is created here). */}
+              <div role="group" aria-label="Configuración del equipo" className="space-y-3">
+                {stepsToAsk(used).map((attribute) => (
+                  <ConfiguratorStep
+                    key={attribute.id}
+                    name={`${scanId}-used-attribute-${attribute.id}`}
+                    attribute={attribute}
+                    isChecked={(optionId) => usedShown[attribute.id] === optionId}
+                    stateOf={(optionId) => configuratorOptionState(used, usedShown, attribute.id, optionId)}
+                    onToggle={(optionId) => {
+                      newGeneration();
+                      const next = autoFill(used, pickOption(used, usedShown, attribute.id, optionId));
+                      const reached = chosenCombination(used, next);
+                      setUsedPicked(next);
+                      setUsedVariantId(reached ? reached.variant.id : null);
+                    }}
+                    unavailableText="no hay una variante de seminuevos así"
+                  />
+                ))}
+              </div>
+              <p className="text-sm" data-testid="scan-intake-used-variant">
+                {usedVariant
+                  ? <>Variante: <strong>{usedVariant.name}</strong>{usedVariant.pending_draft ? " · borrador" : ""}</>
+                  : "Elige la configuración del equipo: sólo se ofrecen las variantes de seminuevos que existen."}
+              </p>
+              {config.used_variants.some((variant) => !variant.is_serialized) ? (
+                <p className="text-xs text-muted">
+                  {`Sin control por serie (no se registran aquí): ${config.used_variants.filter((variant) => !variant.is_serialized).map((variant) => variant.name).join(", ")}.`}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {config && condition === "used" && !used ? (
             config.used_variants.length ? (
               <fieldset className="space-y-1">
                 <legend className="text-sm font-semibold">Variante de seminuevos</legend>
