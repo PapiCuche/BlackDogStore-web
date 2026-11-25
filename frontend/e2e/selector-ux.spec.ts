@@ -67,7 +67,7 @@ tenant(data['other'], data['other_name'])
 supplier = Supplier.objects.create(company=company, name='Proveedor Sel ' + data['tag'])
 user = User.objects.create_user(username=data['user'], password=data['password'])
 role = CompanyRole.objects.create(company=company, name='Rol ' + data['user'], slug=data['user'].replace('_', '-'),
-                                  capabilities=['company.view', 'products.view', 'products.manage', 'costs.view'])
+                                  capabilities=['company.view', 'products.view', 'products.manage', 'costs.view', 'inventory.view', 'inventory.adjust'])
 membership = Membership.objects.create(user=user, company=company, role='customer', is_active=True,
                                        branch_access_mode=Membership.ACCESS_MODE_ALL)
 MembershipRoleAssignment.objects.create(membership=membership, role=role, is_active=True)
@@ -81,6 +81,28 @@ from store.models import Product, SupplierOffer
 out({'products': Product.objects.filter(company__slug=data['s']).count(),
      'offers': SupplierOffer.objects.filter(supplier__company__slug=data['s']).count()})
 `, { s: SLUG });
+}
+
+function equipos() {
+  return shell<{ products: number; units: string[]; movements: number }>(`
+from store.models import Product, StockMovement, StockUnit
+products = Product.objects.filter(company__slug=data['s'])
+out({'products': products.count(),
+     'units': sorted(u.product.name for u in StockUnit.objects.filter(product__company__slug=data['s']).select_related('product')),
+     'movements': StockMovement.objects.filter(product__company__slug=data['s']).count()})
+`, { s: SLUG });
+}
+
+/** A synthetic IMEI (14 invented digits + Luhn check digit): never a real device. */
+function syntheticImei(seed: number): string {
+  const body = `35${String(Date.now()).slice(-8)}${String(seed).padStart(4, "0")}`;
+  let total = 0;
+  for (let index = 0; index < body.length; index += 1) {
+    let digit = Number(body[body.length - 1 - index]);
+    if (index % 2 === 0) { digit *= 2; if (digit > 9) digit -= 9; }
+    total += digit;
+  }
+  return body + String((10 - (total % 10)) % 10);
 }
 
 function desactivar() {
@@ -240,4 +262,69 @@ test("teléfono 390: el selector cabe, se usa con el teclado y no desborda", asy
   await expectNoOverflow(page);
   await selectorOf(page, 1).screenshot({ path: path.join(SHOTS, "mobile-390-selector.png") });
   await context.close();
+});
+
+test("«Registrar artículo»: el mismo configurador en modo único, y «Registrar otro igual» sin repetir IMEI (1280 y 390)", async ({ browser }) => {
+  test.setTimeout(240_000);
+  const before = equipos();
+  const { context, page } = await session(browser);
+  await page.goto("/admin/products/register", { waitUntil: "networkidle" });
+  await page.getByRole("radio", { name: /Equipo nuevo/ }).click();
+  await page.getByRole("button", { name: "Continuar" }).click();
+  const palette = page.waitForResponse((res) => /\/palette\/?$/.test(new URL(res.url()).pathname) && res.status() !== 308);
+  await page.getByLabel("Modelo").selectOption({ label: "Equipo Sel" });
+  expect((await palette).status()).toBe(200);
+  const config = page.getByRole("group", { name: "Configuración del equipo" });
+  await expect(config).toBeVisible();
+  await expect(config.getByRole("radio", { name: /Rosa/ })).toHaveCount(0);
+  const pickChip = (group: string, name: string) => config.getByRole("radiogroup", { name: group }).locator("label").filter({ hasText: name }).click();
+  await pickChip("Capacidad", "128 GB");
+  await pickChip("Color", "Verde");
+  // Verde · Chip is excluded: Chip is off and eSIM, the only way out, is chosen by itself.
+  await expect(config.getByRole("radiogroup", { name: "Tipo de SIM" }).getByRole("radio", { name: /Chip/ })).toBeDisabled();
+  await expect(config.getByRole("radiogroup", { name: "Tipo de SIM" }).getByRole("radio", { name: /eSIM/ })).toBeChecked();
+  await expect(config).toContainText("Configuración nueva");
+  await pickChip("Color", "Negro");
+  await pickChip("Tipo de SIM", "eSIM");
+  await expect(config).toContainText(`Ya existe: ${SEED.existing}`);
+  await config.screenshot({ path: path.join(SHOTS, "desktop-1280-registro-configurador.png") });
+  await page.getByLabel(/^Nombre/).fill("Equipo Sel");
+  await page.getByLabel(/^Precio de venta/).fill("3000");
+  await page.getByRole("button", { name: "Continuar" }).click();
+
+  const first = syntheticImei(1);
+  const second = syntheticImei(2);
+  for (const imei of [first, second]) {
+    await page.getByLabel(/^IMEI 1$/).fill(imei);
+    await page.getByRole("button", { name: "Revisar" }).click();
+    await page.getByRole("button", { name: "Registrar artículo" }).click();
+    await expect(page.getByRole("heading", { name: "Artículo registrado" })).toBeVisible({ timeout: 30_000 });
+    if (imei === first) {
+      await page.getByRole("button", { name: "Registrar otro igual" }).click();
+      await expect(page.getByLabel(/^IMEI 1$/)).toHaveValue("");
+    }
+  }
+  const after = equipos();
+  // Both devices went into the EXISTING variant: no product created, one movement per device.
+  expect(after.products).toBe(before.products);
+  expect(after.units).toEqual([...before.units, SEED.existing, SEED.existing].sort());
+  expect(after.movements - before.movements).toBe(2);
+  await expectNoOverflow(page);
+  await context.close();
+
+  const phone = await session(browser, { width: 390, height: 844 });
+  await phone.page.goto("/admin/products/register", { waitUntil: "networkidle" });
+  await phone.page.getByRole("radio", { name: /Equipo seminuevo/ }).click();
+  await phone.page.getByRole("button", { name: "Continuar" }).click();
+  await phone.page.getByLabel("Modelo").selectOption({ label: "Equipo Sel" });
+  const usedConfig = phone.page.getByRole("group", { name: "Configuración del equipo" });
+  await expect(usedConfig).toBeVisible();
+  await usedConfig.getByRole("radiogroup", { name: "Capacidad" }).locator("label").filter({ hasText: "128 GB" }).click();
+  await usedConfig.getByRole("radiogroup", { name: "Color" }).locator("label").filter({ hasText: "Negro" }).click();
+  await usedConfig.getByRole("radiogroup", { name: "Tipo de SIM" }).locator("label").filter({ hasText: "eSIM" }).click();
+  // A used device looks at the used line: the new variant is not «already there».
+  await expect(usedConfig).toContainText("Configuración nueva");
+  await expectNoOverflow(phone.page);
+  await usedConfig.screenshot({ path: path.join(SHOTS, "mobile-390-registro-seminuevo.png") });
+  await phone.context.close();
 });

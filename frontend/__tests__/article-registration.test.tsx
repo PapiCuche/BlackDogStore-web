@@ -38,6 +38,7 @@ jest.mock('@/app/admin/lib/internal-api', () => ({
   fetchCatalogAttributes: jest.fn(),
   fetchCosmeticGrades: jest.fn(),
   fetchSuppliers: jest.fn(),
+  fetchModelPalette: jest.fn(),
 }));
 jest.mock('@/app/lib/stock-units', () => ({
   ...jest.requireActual('@/app/lib/stock-units'),
@@ -91,6 +92,11 @@ beforeEach(() => {
     { id: 4, name: 'Mayorista Lima', document_type: '', document_number: '', contact_name: '', phone: '', email: '',
       notes: '', is_active: true, offer_count: 0 },
   ] } as unknown as Awaited<ReturnType<typeof api.fetchSuppliers>>);
+  // SELECTOR-UX-01: a model without a palette keeps the selects (with one, THE configurator: registration-configurator).
+  mApi.fetchModelPalette.mockResolvedValue({
+    model_id: 9, model_name: 'iPhone 15', has_palette: false, attributes: [], combinations: [], variants: [],
+    summary: { combinations: 0, existing: 0, valid_without_variant: 0, outside: 0, incomplete: 0 }, truncated: false,
+  });
   mReg.submitRegistration.mockImplementation(async (body) => (
     body.dry_run ? result({ dry_run: true, product: { ...result().product, id: null } }) : result()
   ));
@@ -264,7 +270,7 @@ describe('un equipo nuevo', () => {
     await choose(/Equipo nuevo/);
     await fillProduct({ name: 'iPhone 15 128 GB Negro', category: '6', price: '3999' });
     fireEvent.change(screen.getByLabelText(/^Modelo/), { target: { value: '9' } });
-    fireEvent.change(screen.getByLabelText('Capacidad'), { target: { value: '11' } });
+    fireEvent.change(await screen.findByLabelText('Capacidad'), { target: { value: '11' } });
     fireEvent.change(screen.getByLabelText('Color'), { target: { value: '21' } });
     fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
     await screen.findByLabelText('Número de serie 1');
