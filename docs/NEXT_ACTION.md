@@ -30,7 +30,7 @@ posterior de `master`.
 - Orden: R13.2 desplegada → archivos del propietario en `backups/stock-real-inbox/` → vista previa en copia aislada
   (`backups/stockreal-preview/`, `README-stockreal-preview.md`) → aprobación del informe por el propietario →
   «GO carga stock real prod-02» → carga en el panel (`docs/carga-stock-real.md` §11).
-- Kit con revisión independiente (todos sus hallazgos corregidos: lectura de identificadores con el lector del importador, privacidad, guarda por host, backup nuevo obligatorio, identidad de imagen, sondas de red) y validado en prod-02 con archivos sintéticos
+- Kit con revisión independiente; corregido después en: lectura de identificadores con el lector del importador, privacidad, guarda por host, backup nuevo obligatorio, identidad de imagen y sondas de red. Validado en prod-02 con archivos sintéticos
   sobre el catálogo real: con R13.2, 4 equipos registrados en la copia, `check_unit_stock` 0, todo deshecho; aislamiento
   179 destinos, 0 abiertos salvo el sshd del propio host (sólo con clave, se informa); producción sin cambios (filas de equipos, movimientos
   y cargas iguales; 0 filas insertadas, actualizadas o borradas).
@@ -49,7 +49,7 @@ posterior de `master`.
   (3–4 ms), **notas 5 y 7 → NULL** (nunca descargadas).
 - Actualización condicional e idempotente de un solo campo, una fila de auditoría por nota, diff exacto, backup previo.
 - Ensayo en copia aislada (`db-20261125-084236`): aplicar, repetir (NO-OP), 11 rechazos del script del GO y 2 de su vuelta atrás, sin escribir (más fallo inyectado y huella equivocada, deshechos), vuelta atrás,
-  reaplicar, serializador del panel y reimpresión de sólo lectura correctos (los avisos «fallo al abrir evidencia» son de la copia, que no lleva las fotos de evidencia; no afectan a las notas); acepta R13.1 y R13.2. Producción intacta.
+  reaplicar, serializador del panel y reimpresión de sólo lectura correctos (los avisos «fallo al abrir evidencia» salen porque el ensayo monta una carpeta de evidencias vacía, `notes7_rehearse.sh`; no afectan a las notas); acepta R13.1 y R13.2. Producción intacta.
 - Huella antes `a42dfa17d6779f45` → después `c2be046bf7bce2d8`.
 - GO: **«GO restaurar sellos 7 notas prod-02 fuente 222417»**; vuelta atrás: **«GO vuelta atrás sellos 7 notas prod-02 fuente 222417»**.
 
