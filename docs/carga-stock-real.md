@@ -523,3 +523,24 @@ Pasos, en `/srv/blackdogstore`:
 | «Otra operación estaba usando este stock» | Nada se escribió: vuelve a intentarlo. |
 | La conciliación muestra diferencias | No corrijas a mano: revisa el Kardex del producto y avisa al responsable. |
 | «No se anuló ningún equipo» | Algún equipo de la carga ya se movió: la lista dice cuál. |
+
+## 13. Un equipo suelto: «Registrar equipo por escaneo»
+
+Para un equipo que llega solo (no un archivo), **Inventario › Centro de operaciones › «Registrar equipo por escaneo»**
+(`/admin/inventory/scan`, permiso «Ajustar inventario»). Diseño y reglas: `docs/adr-scan-to-stock.md`.
+
+1. Elige la **sucursal** y si es **nuevo** o **seminuevo**.
+2. Elige el **modelo** y la **variante**, o lee el **código comercial** (UPC/EAN) de la caja: elige la variante, nunca
+   es un equipo.
+3. Lee con el lector (o escribe y pulsa Enter) el **IMEI 1**, el **IMEI 2** y la **serie**. La pantalla dice qué espera.
+   Un EID (32 dígitos) o un MEID nunca se toman por IMEI; un código dudoso se pregunta («¿Es la serie?»); una lectura
+   repetida se ignora. El lector puede terminar con Enter o Tab (se elige en la pantalla).
+4. Proveedor y costo (con permiso); en un seminuevo, batería, estado, defectos y accesorios; precio y garantía sólo con
+   «Administrar productos».
+5. Si un **pedido pagado** espera esa variante en la sucursal, primero se elige: «Es del pedido #N» o «Ingresar como
+   stock» con un motivo.
+6. **«Confirmar ingreso».** Ninguna lectura registra nada sola. El Kardex dice «Inventario: registro por escaneo»; la
+   etiqueta interna del equipo queda lista en «Etiquetas pendientes».
+
+Las reglas de §3 valen igual: un IMEI no se repite en la empresa; un equipo vendido o dado de baja sigue ocupando su IMEI;
+uno anulado lo libera. Un seminuevo entra **pendiente de inspección y sin publicar** (§10).
