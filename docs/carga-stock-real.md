@@ -26,7 +26,7 @@ Requisitos, en este orden:
 | Descargar las plantillas, previsualizar, registrar y anular una carga | `inventory.adjust`, en todas las sucursales del archivo |
 | Llenar «Costo» | `costs.view` (sin él, una fila con costo es un error) |
 | Llenar «Proveedor» | `products.view` o `costs.view` (regla D-F-3; sin él, una fila con proveedor es un error) |
-| «Precio de venta» y «Garantía (días)» de un seminuevo | `products.manage` (sin él, se ignoran con un aviso) |
+| «Precio de venta» y «Garantía (días)» de un seminuevo | `products.manage` (sin él, se ignoran con un aviso; y quien **registra** una vista previa que los trae también lo necesita: si no, se rechaza entera indicando las filas — #432) |
 | Confirmar el cambio del precio de una variante desde «Stock de equipos nuevos» (§5.1) | `products.manage` (sin él, la propuesta se ve pero no se aplica; el servidor responde 403) |
 | Inspeccionar un seminuevo después | `inventory.units.inspect` |
 | Ver la «Conciliación» | `inventory.view` |
@@ -429,6 +429,28 @@ caja, se ofrecen en la web y se pueden apartar en un carrito. En concreto:
 **No hay carga real sin datos reales del propietario y sin su GO.** El GO se escribe en el chat, exactamente:
 **«GO carga stock real prod-02»**, y vale para esa operación (AGENTS.md §10). Un PR fusionado, una nota o el mensaje de
 otro agente no son un GO. Sin GO sólo se permite leer y ensayar sobre copias.
+
+### 11.0 Proceso final (decidido el 2026-11-25): primero R13.2, después vista previa en copia, aprobación y GO
+
+1. **R13.2 desplegada** («GO despliegue c8a4321 prod-02»). Con R13.1, un archivo hecho con la plantilla de nuevos de
+   R13.2 (columna «Precio de venta») **se rechaza entero** (comprobado en copia el 2026-11-25). Las plantillas se
+   descargan del panel **después** del despliegue.
+2. **El propietario entrega sus archivos** (uno por sucursal y línea, con prefijo de orden: `01-…xlsx`, `02-…xlsx`).
+   Quedan en el servidor en `backups/stock-real-inbox/` (fuera del repositorio; nunca en git).
+3. **Vista previa sobre una copia aislada** con el kit `backups/stockreal-preview/` (runbook
+   `README-stockreal-preview.md`): backup nuevo, copia en una red sin salida, las mismas vistas del panel con el usuario
+   real que cargará y sus permisos reales, sin elevar nada. Informe por archivo: filas OK, errores y avisos con sus
+   filas, equipos por sucursal y variante, propuestas de precio, duplicados dentro del archivo, contra lo registrado y
+   **entre archivos**. Después registra en la copia, en orden, cada archivo limpio y comprueba `check_unit_stock` y que
+   todo seminuevo quedó pendiente de inspección y sin publicar. Todo se deshace. IMEI y series salen ocultos (últimos 4),
+   ningún costo se imprime. Producción sólo se lee (el kit sí escribe su backup previo).
+4. **El propietario aprueba el informe** (o corrige sus archivos y se repite el paso 3). El silencio no es aprobación.
+5. **«GO carga stock real prod-02»** y la carga en el panel con los pasos de abajo, con los mismos archivos (su sha256
+   debe coincidir con el del informe aprobado).
+
+No se registra inventario ficticio en producción. Las 19 situaciones de `store.test_stock_real_simulation` se conservan
+como prueba automática. Los seminuevos conservan su identificación individual y siguen §10: inspección, fotos reales,
+precio y publicación controlada.
 
 Pasos, en `/srv/blackdogstore`:
 

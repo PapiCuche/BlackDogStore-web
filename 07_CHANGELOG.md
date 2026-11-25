@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-25 — R13.2 preparada; siete notas y stock real listos para GO
+
+**Fixed** (en `master`, sin desplegar)
+- La garantía de un seminuevo sólo la fija quien tiene `products.manage`, también al cargar por Excel (se ignora con aviso; al aplicar una carga ajena con garantía o precio, se rechaza indicando las filas), al registrar equipos y al recibir de un proveedor (#432, `94b0fb39`). El precio de venta en la recepción del proveedor no cambia (ver `docs/NEXT_ACTION.md`).
+
+**Ops** (fuera del repositorio, en prod-02 `backups/`; nada ejecutado en producción)
+- Kit `release-notes7b`: restaurar el sello de generación de las 7 notas desde `db-20261121-222417`, ensayado 72/72.
+- Kit `stockreal-preview`: vista previa de los archivos reales del stock en una copia aislada, validado.
+
 ## 2026-11-24 — R13.1 desplegada (`bf6a3307`) y nuevas funciones en `master` (`b8610b07`)
 
 **Deployed**
