@@ -56046,6 +56046,9 @@ class H412bFrontendLegacyRoleParityTest(TestCase):
         # `inventory.adjust` and `_LEGACY_INVENTORY_ADJUST_ROLES`: the same bridge as «Registrar equipo».
         'inventory/operations/page.tsx': ('inventory.view', _LEGACY_INVENTORY_VIEW_ROLES),
         'inventory/receive/page.tsx': ('inventory.adjust', _LEGACY_INVENTORY_ADJUST_ROLES),
+        # SCAN-TO-STOCK-01 — «Registrar equipo por escaneo»: its endpoints (`/api/admin/inventory/scan/*`) open with
+        # `inventory.adjust` and `_LEGACY_INVENTORY_ADJUST_ROLES` (`scan_intake_views._company`).
+        'inventory/scan/page.tsx': ('inventory.adjust', _LEGACY_INVENTORY_ADJUST_ROLES),
     }
 
     _GUARD = _h412b_re.compile(

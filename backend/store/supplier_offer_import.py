@@ -906,6 +906,10 @@ _KEY_LABELS = {'identifier': 'el identificador', 'barcode': 'el código del prod
                'supplier_code': 'el código del proveedor'}
 
 
+#: SELECTOR-UX-01 — a row whose options are a pair the model excludes: nothing to create, a line to review.
+EXCLUDED_ROW = 'El modelo excluye esa combinación: revisa la línea con el proveedor.'
+
+
 def _by_model(company, fields, *, cache=None, notes=None, proposal=None):
     try:
         spec = device_catalog.resolve_variant_spec(
@@ -913,6 +917,9 @@ def _by_model(company, fields, *, cache=None, notes=None, proposal=None):
             labels=[fields.get('capacity'), fields.get('colour'), fields.get('sim'), fields.get('region')],
             cache=cache, notes=notes)
     except device_catalog.CatalogError as exc:
+        if exc.code == 'combination_excluded':
+            # SELECTOR-UX-01: a pair the model excludes is not a variant to create («Créala» would be refused).
+            return None, EXCLUDED_ROW
         return None, str(exc)
     product = device_catalog.find_variant(company, spec)
     if product is not None and product.archived_at is not None:

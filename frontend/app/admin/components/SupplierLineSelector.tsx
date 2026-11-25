@@ -48,7 +48,9 @@ export function SupplierLineSelector({
   const reading = useMemo(() => (ready ? readingOf(ready, result) : null), [ready, result]);
   const locked = useMemo(() => (ready ? lockedSteps(ready, line, result) : {}), [ready, line, result]);
   const [draft, setDraft] = useState<MultiPick | null>(null);
-  const pick = draft ?? applied ?? reading?.pick ?? { picked: {}, colours: [] };
+  // What the person marked stays until the screen uses it (a refused or failed answer never loses it).
+  const pending = draft && !(applied && sameSelection(draft, applied)) ? draft : null;
+  const pick = pending ?? applied ?? reading?.pick ?? { picked: {}, colours: [] };
   const results = ready ? multiResults(ready, pick) : [];
   const colour = ready ? colourAttributeOf(ready) : null;
   const inUse = applied ?? reading?.pick ?? null;
@@ -149,10 +151,10 @@ export function SupplierLineSelector({
             <div className="flex flex-wrap gap-2">
               <button type="button" className={`${touch} ${focusRing} ${internalPrimaryButtonClass}`}
                 disabled={busy || !results.length || (!changed && Boolean(applied))}
-                onClick={() => { onApply(pick); setDraft(null); }}>
+                onClick={() => { setDraft(pick); onApply(pick); }}>
                 {`Usar esta selección (${results.length})`}
               </button>
-              {applied || draft ? (
+              {applied || pending ? (
                 <button type="button" className={`${touch} ${focusRing} ${internalButtonClass}`} disabled={busy}
                   onClick={() => { setDraft(null); if (applied) onApply(null); }}>
                   Volver a lo leído en la línea

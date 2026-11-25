@@ -132,6 +132,7 @@ describe('the preferences people already have keep working (owner, point 7)', ()
     expect(Object.fromEntries(Object.entries(STORAGE_KEYS).map(([key, entry]) => [key, entry.area]))).toEqual({
       'internal-selected-company': 'local',
       'bds-inventory-mode': 'local',
+      'scan-intake-terminator': 'local',
       'ui-theme': 'local',
       'bd.consent.v2': 'local',
       'storefront_session_key': 'local',

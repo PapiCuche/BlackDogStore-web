@@ -7,7 +7,7 @@
  * sola manera limpia de partirla, se propone partirla en líneas, cada una con su importe. Nunca se parte sola y nunca
  * se combinan opciones que el proveedor no escribió juntas.
  */
-import { readSupplierList, supplierLexicon } from '@/app/admin/lib/supplier-list-grammar';
+import { OFFER_READS_MAX, readSupplierList, splitOffers, supplierLexicon } from '@/app/admin/lib/supplier-list-grammar';
 import { lineDoubts } from '@/app/admin/lib/supplier-list-plan';
 import { trainingVocabulary } from './support/training-vocabulary';
 
@@ -73,5 +73,29 @@ describe('una línea con dos ofertas', () => {
   it('las líneas de una oferta no cambian', () => {
     const line = one('iph 18 pro esim LLA 256gb 4650 borgoña');
     expect(line.offers ?? null).toBeNull();
+  });
+});
+
+describe('rendimiento de la búsqueda de cortes', () => {
+  it('cada lectura de una parte se hace una sola vez (memoria) y hay un tope de lecturas', () => {
+    const stats = { reads: 0 };
+    const split = splitOffers('iph 15 128gb negro 2500 azul 2600 256gb 2700 negro 2800 512gb 2900', 1, lexicon, stats);
+    expect(split).not.toBeUndefined();
+    expect(stats.reads).toBeGreaterThan(0);
+    expect(stats.reads).toBeLessThanOrEqual(OFFER_READS_MAX);
+    const again = { reads: 0 };
+    splitOffers('iph 15 128gb negro 2500 azul 2600', 1, lexicon, again);
+    // 6 words: at most one reading per distinct (piece, what it inherits).
+    expect(again.reads).toBeLessThanOrEqual(30);
+  });
+
+  it('una línea larga no se parte (más de 16 palabras): ni una lectura, y queda como siempre', () => {
+    const stats = { reads: 0 };
+    const long = 'iph 15 negro 2500 iph 17 pro esim japan 3900 iph 18 pro 256gb esim LLA borgoña 4650 iph 18 pro max chip 256gb 5650';
+    expect(splitOffers(long, 1, lexicon, stats)).toBeNull();
+    expect(stats.reads).toBe(0);
+    const t0 = Date.now();
+    one(long);
+    expect(Date.now() - t0).toBeLessThan(500);
   });
 });

@@ -42,3 +42,27 @@ class SerialElsewhereTest(base.ReceiptBase):
                                  serial_number='C02FOREIGN1')
         data = self.preview(self.clerk, self.body(self.dev(self.other_laptop, unit('C02FOREIGN1'))), expect=200).json()
         self.assertFalse(any('serie' in w for w in data['lines'][0]['warnings']), data['lines'][0]['warnings'])
+
+
+class ImeiSerialCrossInOneReceptionTest(base.ReceiptBase):
+    """SCAN-TO-STOCK-01 review H1 — a reception never takes one value as a serial and, on another device, as an IMEI."""
+
+    def test_a_serial_equal_to_another_rows_imei_is_refused(self):
+        value = base.IMEIS[7]
+        body = self.body(self.dev(self.phone, unit('CRUCE00001', value)), self.dev(self.laptop, unit(value)))
+        data = self.preview(self.clerk, body, expect=200).json()
+        self.assertFalse(data['ok'], data)
+        self.confirm(self.clerk, body, expect=400)
+        self.assertFalse(StockUnit.objects.filter(serial_number=value).exists())
+
+    def test_an_imei_equal_to_another_rows_serial_is_refused(self):
+        value = base.IMEIS[8]
+        body = self.body(self.dev(self.laptop, unit(value)), self.dev(self.phone, unit('CRUCE00002', value)))
+        self.assertFalse(self.preview(self.clerk, body, expect=200).json()['ok'])
+
+    def test_a_serial_equal_to_a_registered_devices_imei_is_refused_with_its_own_words(self):
+        value = base.IMEIS[9]
+        self.confirm(self.clerk, self.body(self.dev(self.phone, unit('CRUCE00003', value))), expect=201)
+        data = self.preview(self.clerk, self.body(self.dev(self.laptop, unit(value))), expect=200).json()
+        self.assertFalse(data['ok'])
+        self.assertIn('IMEI de otro equipo', str(data['lines']))

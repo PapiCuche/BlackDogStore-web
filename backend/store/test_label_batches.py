@@ -585,6 +585,8 @@ class AllowedListTest(TestCase):
             'receipt_services.py',
             # INV-UNIT-CORRECT-01 (UC-D6): a device moved to another variant gets its new label.
             'stock_unit_services.py',
+            # SCAN-TO-STOCK-01: a used device registered by scan gets its label, like «Registrar equipos».
+            'scan_intake.py',
         })
 
     def test_the_single_writer_and_the_excluded_services_never_mention_it(self):

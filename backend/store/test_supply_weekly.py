@@ -373,3 +373,36 @@ class ReviewFindingsTest(WeeklyShop, TestCase):
         job = BulkImportJob.objects.get(pk=body['id'])
         payload = supplier_offer_import.job_payload(job, include_cost=True)
         self.assertEqual((payload['unmentioned'], payload['unmentioned_count']), ([], 0))
+
+
+class ExcludedCombinationRowTest(ValidCombinationWithoutVariantTest):
+    """
+    SELECTOR-UX-01 — the same row when the model EXCLUDES that pair (CATALOG-REFERENCE-01 · PR B): it is not a
+    combination to create — the row says so and carries no «Crear variante» proposal.
+    """
+
+    def setUp(self):
+        super().setUp()
+        model_palette.add_exclusions(self.model, pairs=[[self.big.pk, self.black.pk]])
+
+    def test_the_resolver_is_what_decides(self):
+        fields = {'model': 'Tableta Serie X', 'capacity': '128 GB', 'colour': 'Grafito', 'sim': '', 'region': '',
+                  'line': ''}
+        proposal = {}
+        product, problem = supplier_offer_import._by_model(self.company, fields, proposal=proposal)
+        self.assertIsNone(product)
+        self.assertEqual(problem, 'El modelo excluye esa combinación: revisa la línea con el proveedor.')
+        self.assertEqual(proposal, {})
+
+    def test_the_row_says_the_combination_is_valid_and_what_creating_it_needs(self):
+        row = self.preview([self.model_row('128 GB')]).json()['rows'][0]
+        self.assertEqual(row['action'], 'error', row)
+        self.assertNotIn('variant_proposal', row['data'])
+        self.assertTrue(any('excluye esa combinación' in text for text in row['errors']), row['errors'])
+        self.assertFalse(any('Créala' in text for text in row['errors']), row['errors'])
+
+    def test_once_the_variant_is_created_the_row_finds_it(self):
+        # The server refuses to create an excluded combination: nothing to find.
+        res = self.client_.post(f'/api/admin/catalog/models/{self.model.pk}/variants/', {
+            'condition_line': 'new', 'option_ids': [self.big.pk, self.black.pk]}, format='json')
+        self.assertEqual(res.status_code, 400, res.content)

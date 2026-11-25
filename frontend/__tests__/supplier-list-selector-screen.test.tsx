@@ -14,7 +14,7 @@ import { SupplierListAssistant } from '@/app/admin/components/SupplierListAssist
 import { fetchWithAuth } from '@/app/lib/auth';
 import { phraseKey } from '@/app/admin/lib/supplier-list-grammar';
 import {
-  BLACK, BLUE, CHIP, ESIM, G128, GREEN, JA, MODEL, selectorPalette, selectorVocabulary,
+  BLACK, BLUE, CHIP, ESIM, G128, G256, GREEN, JA, MODEL, selectorPalette, selectorVocabulary,
 } from './support/selector-catalog';
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
@@ -29,6 +29,11 @@ let resolved: { key: string; colour_text?: string; capacity_text?: string; sim_t
 let paletteUrls: string[];
 let variantPosts: { url: string; body: { option_ids: number[] } }[];
 let created: Set<string>;
+/** Holds the next /resolve answer until released (review a: nothing typed is cleared before the answer). */
+let resolveGate: Promise<void> | null;
+let resolveFails: () => boolean;
+/** The server reads a selector row as ANOTHER model (a name or alias collision, review c). */
+let otherModelForSelector: boolean;
 
 const vocabulary = selectorVocabulary();
 const compact = (text: string) => phraseKey(text).replace(/ /g, '');
@@ -36,8 +41,10 @@ const compact = (text: string) => phraseKey(text).replace(/ /g, '');
 /** A small stand-in for the server's resolver over «Equipo Z»: labels, the palette, the excluded pair, the variants. */
 function resolveRow(row: Record<string, string>) {
   const known = phraseKey(row.model_text) === 'equipo z';
+  const swapped = known && otherModelForSelector && row.key.includes('-S');
   const model = { text: row.model_text, status: known ? 'exact' : 'unknown', via: known ? 'exact' : null,
-    model_id: known ? MODEL : null, model_name: known ? 'Equipo Z' : null, candidates: [], extracted: [] };
+    model_id: known ? (swapped ? 777 : MODEL) : null, model_name: known ? (swapped ? 'Equipo Z Pro' : 'Equipo Z') : null,
+    candidates: [], extracted: [] };
   if (!known) return { key: row.key, model, line: 'new', readings: [], error: '', configurations: [] };
   const find = (role: 'capacity' | 'color' | 'sim' | 'region', text: string) => vocabulary.options[role]
     .find((o) => compact(o.label) === compact(text));
@@ -79,6 +86,9 @@ beforeEach(() => {
   paletteUrls = [];
   variantPosts = [];
   created = new Set();
+  resolveGate = null;
+  resolveFails = () => false;
+  otherModelForSelector = false;
   send.mockImplementation(async (url, init) => {
     const path = String(url);
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -89,11 +99,16 @@ beforeEach(() => {
     if (path.includes(`/admin/catalog/models/${MODEL}/palette/`)) { paletteUrls.push(path); return reply(200, selectorPalette()); }
     if (path.includes(`/admin/catalog/models/${MODEL}/variants/`)) {
       variantPosts.push({ url: path, body });
-      created.add([...body.option_ids].sort((a: number, b: number) => a - b).join());
+      const ids = [...body.option_ids].sort((a: number, b: number) => a - b).join();
+      // The server never creates a variant twice: `duplicate`, as `device_catalog.set_variant` answers.
+      if (created.has(ids)) return reply(400, { detail: 'Otra persona acaba de crear esa misma variante.', code: 'duplicate', field: 'option_ids' });
+      created.add(ids);
       return reply(201, { id: 950, name: 'Equipo Z borrador', draft_pending: true });
     }
     if (path.includes('/admin/catalog/resolve/')) {
       resolved.push(body.rows);
+      if (resolveGate) { const gate = resolveGate; resolveGate = null; await gate; }
+      if (resolveFails()) return reply(500, {});
       const rows = body.rows.map(resolveRow);
       return reply(200, { rows, summary: {} });
     }
@@ -257,6 +272,75 @@ describe('crear en lote las variantes que faltan', () => {
   it('sin permiso para gestionar productos no se ofrece', async () => {
     await open({ manage: false });
     await readList('equipo z 256gb esim j/a azul, verde 2500');
+    expect(screen.queryByRole('region', { name: 'Variantes que faltan' })).toBeNull();
+  });
+});
+
+describe('revisión de #438', () => {
+  it('a · lo escrito en la línea no se borra hasta que el servidor responde, ni si la respuesta falla', async () => {
+    await open();
+    await readList('equipo z 128gb esim j/a negro, azul 2500');
+    fireEvent.change(screen.getByLabelText('Precio comercial · línea 1, configuración 1'), { target: { value: '2999' } });
+    await openSelector(1);
+    fireEvent.click(chip(1, 'Color', /Azul/));
+    let release!: () => void;
+    resolveGate = new Promise((resolve) => { release = resolve; });
+    resolveFails = () => true;
+    act(() => { fireEvent.click(within(selector(1)).getByRole('button', { name: /Usar esta selección/ })); });
+    // In flight: the cards and what was typed are still there.
+    expect(screen.getByLabelText('Precio comercial · línea 1, configuración 1')).toHaveValue('2999');
+    await act(async () => { release(); });
+    // The answer failed: nothing was replaced or cleared, and the failure is said.
+    expect(screen.getByLabelText('Precio comercial · línea 1, configuración 1')).toHaveValue('2999');
+    expect(within(line(1)).getAllByRole('article')).toHaveLength(2);
+    expect(screen.getByRole('alert')).toHaveTextContent(/No se pudo/);
+    // Now it answers: the line's cards are the selection's, with nothing typed carried over.
+    resolveFails = () => false;
+    await useSelection(1);
+    expect(within(line(1)).getAllByRole('article')).toHaveLength(1);
+    expect(screen.getByLabelText('Precio comercial · línea 1, configuración 1')).toHaveValue('');
+  });
+
+  it('a · una respuesta que llega después de cambiar el texto se descarta sin borrar nada', async () => {
+    await open();
+    await readList('equipo z 128gb esim j/a negro, azul 2500');
+    await openSelector(1);
+    fireEvent.click(chip(1, 'Color', /Azul/));
+    let release!: () => void;
+    resolveGate = new Promise((resolve) => { release = resolve; });
+    act(() => { fireEvent.click(within(selector(1)).getByRole('button', { name: /Usar esta selección/ })); });
+    fireEvent.change(screen.getByLabelText('Texto de la lista del proveedor'), { target: { value: 'equipo z 128gb esim j/a negro 2500' } });
+    await act(async () => { release(); });
+    expect(screen.queryByRole('article', { name: 'Línea 1' })).toBeNull();
+    expect(screen.getByLabelText('Texto de la lista del proveedor')).toHaveValue('equipo z 128gb esim j/a negro 2500');
+  });
+
+  it('c · una fila que el servidor lee como OTRO modelo no se usa: se dice, y nunca se ofrece crearla', async () => {
+    await open();
+    await readList('equipo z 256gb esim j/a azul 2500');
+    await openSelector(1);
+    fireEvent.click(chip(1, 'Color', /Verde/));
+    otherModelForSelector = true;
+    await useSelection(1);
+    expect(selector(1)).toHaveTextContent('la leyó como «Equipo Z Pro»');
+    // The text's own reading stays: no selector card, no «Crear variante» on the wrong model.
+    expect(within(line(1)).getAllByRole('article')).toHaveLength(1);
+    expect(within(line(1)).queryByText(/Elegida en el selector visual/)).toBeNull();
+    expect(variantPosts).toEqual([]);
+  });
+
+  it('e · crear en lote lo que otra pestaña ya creó: el «duplicate» del servidor cuenta como hecho y se vuelve a leer', async () => {
+    await open();
+    await readList('equipo z 256gb esim j/a azul, verde 2500');
+    // Another tab created «256 GB · Azul» meanwhile: this reading still says it is missing.
+    created.add([G256, BLUE, ESIM, JA].sort((a, b) => a - b).join());
+    const batch = screen.getByRole('region', { name: 'Variantes que faltan' });
+    fireEvent.click(within(batch).getByRole('button', { name: /Revisar y crear 2 variantes/ }));
+    await act(async () => { fireEvent.click(within(batch).getByRole('button', { name: 'Confirmar: crear 2 borradores' })); });
+    expect(variantPosts).toHaveLength(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.getByText(/1 ya existía/)).toBeInTheDocument();
+    for (const card of within(line(1)).getAllByRole('article')) expect(card).toHaveTextContent('Con variante');
     expect(screen.queryByRole('region', { name: 'Variantes que faltan' })).toBeNull();
   });
 });
