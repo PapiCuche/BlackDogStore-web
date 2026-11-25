@@ -246,8 +246,8 @@ cd backend
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/blackdog_ensayo python3 manage.py test store.test_stock_load --noinput
 ```
 
-**Simulación completa (STOCK-REAL-READY).** `store.test_stock_real_simulation` recorre en 13 escenarios, con las
-vistas reales y permisos reales:
+**Simulación completa (STOCK-REAL-READY + STOCK-REAL-SIM-2).** `store.test_stock_real_simulation` recorre en 19
+escenarios, con las vistas reales y permisos reales:
 
 1. la primera carga de nuevos y seminuevos;
 2. una segunda tanda del mismo modelo;
@@ -263,9 +263,25 @@ vistas reales y permisos reales:
 11. la venta web del equipo exacto. La vista del checkout no se usa, porque abre el pago con el proveedor: sus
     servicios crean el pedido y el pago se confirma con el `_confirm` real de una notificación ya verificada;
 12. el Kardex neto igual al stock de cada estante;
-13. el aislamiento entre sucursales y entre empresas.
+13. el aislamiento entre sucursales y entre empresas;
+14. inventario inicial en cuatro tandas en dos sucursales (nuevos y seminuevos) y la copia de revisión (IMEI ocultos)
+    como conciliación: sus filas por sucursal cuadran con lo cargado; esa copia vuelta a subir, y sus filas pegadas en
+    una plantilla, se rechazan sin preparar ninguna carga;
+15. «Precio de venta» en la plantilla de nuevos (§5.1): precio igual, sin propuesta; distinto, con propuesta; registrar
+    sin confirmar deja la variante como estaba; confirmar sin `products.manage` es 403 y no escribe nada; con
+    `products.manage` y confirmación el precio cambia y queda en la auditoría; una vista previa vencida porque otro
+    cambió el precio es 409 y no escribe nada; el costo nunca se vuelve precio;
+16. seminuevos con y sin precio en la misma variante: se habilita con uno con precio, la caja vende el que tiene precio
+    e inspección y rechaza el que no tiene precio, la web ofrece sólo el que está listo;
+17. «Registrar equipo», la venta inmediata en caja con nota de venta y su reimpresión (ticket 80 mm y A4) en una
+    transacción que se deshace y con el dibujo puro: la reimpresión no deja nada escrito;
+18. el archivo completo (`inventory.adjust`) vuelto a subir a la misma tienda: cada fila «ya está registrado», nada
+    creado;
+19. la conciliación final: `check_unit_stock` con 0 diferencias y, en cada estante, stock = equipos disponibles =
+    Kardex neto.
 
-Cada escenario compara el stock y el Kardex antes y después. Con `-v 2` imprime la bitácora:
+Cada escenario compara el stock y el Kardex antes y después; del 14 al 19, también la auditoría de la empresa, por
+acción. Con `-v 2` imprime la bitácora:
 
 ```sh
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/blackdog_ensayo python3 manage.py test store.test_stock_real_simulation --noinput -v 2
@@ -283,6 +299,12 @@ dentro de la imagen sobre una **copia aislada**:
   - admite los dominios sintéticos;
   - apaga SUNAT, el correo y WhatsApp;
 - deshace la base al terminar y comprueba que la carpeta temporal ya no existe.
+
+**En navegador (Playwright).** `frontend/e2e/stock-real-new-used.spec.ts` recorre lo mismo con la interfaz, en
+escritorio (1280×800) y en un móvil de 390×844: plantilla de nuevos con un precio distinto → propuesta → registrar sin
+actualizarlo → venta en caja por escaneo → ticket; plantilla de seminuevos → el equipo aparece pendiente en
+«Seminuevos» (tarjetas en el móvil) → inspección, foto, confirmación de la foto, precio y publicación. Se corre en el
+entorno E2E de `AGENTS.md` §6.
 
 **Ensayo sobre una copia aislada** (opcional, con las plantillas ya llenas con datos reales o sintéticos). Nunca sobre
 producción:
