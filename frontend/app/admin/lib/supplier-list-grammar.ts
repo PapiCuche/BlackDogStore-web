@@ -1004,8 +1004,10 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
 
 /** Offers one line may be split into; a longer run is left for a person to write one per line. */
 const MAX_OFFER_PARTS = 4;
-/** Words of a line the split looks at (each split point is one more reading of the line). */
-const MAX_OFFER_WORDS = 40;
+/** Words of a line the split looks at (each split point is one more reading of the line); a longer line is not split. */
+const MAX_OFFER_WORDS = 16;
+/** Readings one line's split may make; beyond it the line is in doubt with no proposal (never a long computation). */
+export const OFFER_READS_MAX = 400;
 /** Marks that only stand between two offers («4100 / 512gb …»): never part of either. */
 const OFFER_EDGE = /^[\s/|;,·•–-]+|[\s/|;,·•–-]+$/g;
 
@@ -1020,13 +1022,27 @@ function cleanOffer(text: string, number: number, lexicon: SupplierLexicon): Sup
   return line;
 }
 
-function piecesOf(words: string[], number: number, lexicon: SupplierLexicon, before: SupplierLine | null, depth: number): OfferPiece[][] {
+/** One search: each (piece, what it inherits) is read once; the readings are counted against `OFFER_READS_MAX`. */
+type OfferSearch = { memo: Map<string, OfferPiece | null>; stats: { reads: number }; exhausted: boolean };
+
+function piecesOf(words: string[], number: number, lexicon: SupplierLexicon, before: SupplierLine | null, depth: number,
+  search: OfferSearch): OfferPiece[][] {
   const out: OfferPiece[][] = [];
   /**
    * A later piece takes what it does not say from the piece before it — the model, and the capacity, SIM and region —
    * as a person reads «… negro 2500 azul 2600». Never the colour: colours are what an offer lists, not what it shares.
    */
+  const inherited = before ? [before.model?.text ?? "", before.capacityText, before.simText, before.regionText].join("|") : "";
   const read = (text: string): OfferPiece | null => {
+    const key = `${inherited}#${text}`;
+    if (search.memo.has(key)) return search.memo.get(key)!;
+    if (search.stats.reads >= OFFER_READS_MAX) { search.exhausted = true; return null; }
+    search.stats.reads += 1;
+    const piece = readPiece(text);
+    search.memo.set(key, piece);
+    return piece;
+  };
+  const readPiece = (text: string): OfferPiece | null => {
     const own = cleanOffer(text, number, lexicon);
     if (!own) return null;
     if (!before) return own.model ? { text, line: own } : null;
@@ -1050,7 +1066,7 @@ function piecesOf(words: string[], number: number, lexicon: SupplierLexicon, bef
   for (let cut = 1; cut < words.length; cut += 1) {
     const head = read(words.slice(0, cut).join(" ").replace(OFFER_EDGE, ""));
     if (!head) continue;
-    for (const rest of piecesOf(words.slice(cut), number, lexicon, head.line, depth + 1)) out.push([head, ...rest]);
+    for (const rest of piecesOf(words.slice(cut), number, lexicon, head.line, depth + 1, search)) out.push([head, ...rest]);
   }
   return out;
 }
@@ -1060,10 +1076,14 @@ function piecesOf(words: string[], number: number, lexicon: SupplierLexicon, bef
  * is tried; each piece must read as ONE clean offer on its own (with what it shares from the piece before). Two or
  * more different ways: the line is in doubt with no proposal. None: it is one offer (a cost and a sale price…).
  */
-export function splitOffers(raw: string, number: number, lexicon: SupplierLexicon): OfferSplit | null {
+export function splitOffers(raw: string, number: number, lexicon: SupplierLexicon,
+  stats: { reads: number } = { reads: 0 }): OfferSplit | null {
   const words = raw.trim().split(/\s+/).filter(Boolean);
   if (words.length < 2 || words.length > MAX_OFFER_WORDS) return null;
-  const ways = piecesOf(words, number, lexicon, null, 0).filter((pieces) => pieces.length > 1);
+  const search: OfferSearch = { memo: new Map(), stats, exhausted: false };
+  const ways = piecesOf(words, number, lexicon, null, 0, search).filter((pieces) => pieces.length > 1);
+  // Too many readings to know: in doubt, never a proposal built on half a search.
+  if (search.exhausted) return ways.length ? { parts: null } : null;
   const distinct = new Map(ways.map((pieces) => [pieces.map((piece) => piece.text).join("\n"), pieces]));
   if (!distinct.size) return null;
   if (distinct.size > 1) return { parts: null };

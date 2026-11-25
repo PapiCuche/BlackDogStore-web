@@ -270,6 +270,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [pickResults, setPickResults] = useState<Record<string, ResolveRowResult[] | undefined>>({});
   const [pickProblems, setPickProblems] = useState<Record<string, string[] | undefined>>({});
   const [picking, setPicking] = useState(false);
+  /** Every «Usar esta selección» has its number: an older answer never replaces a newer choice. */
+  const pickRun = useRef(0);
   /** «Revisar y crear N variantes…» open: the detailed list waits for its explicit confirmation. */
   const [batchOpen, setBatchOpen] = useState(false);
   const run = useRef(0);
@@ -595,6 +597,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     const problems: Record<string, string[] | undefined> = {};
     const rows: ResolveRowInput[] = [];
     const owner = new Map<string, string>();
+    const expected = new Map<string, { modelId: number; modelName: string; colour: string }>();
     for (const [lineKey, pick] of Object.entries(only)) {
       const line = lines.find((candidate) => candidate.key === lineKey);
       const modelId = lineResults[lineKey]?.model?.model_id;
@@ -602,14 +605,28 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
       if (!pick || !line || !space || space === "error" || space.modelId !== modelId) continue;
       const answer = selectionRows(space, line, pick, source);
       problems[lineKey] = answer.problems;
-      for (const row of answer.rows) { rows.push(row); owner.set(row.key, lineKey); }
+      for (const row of answer.rows) {
+        rows.push(row);
+        owner.set(row.key, lineKey);
+        expected.set(row.key, { modelId: space.modelId, modelName: space.modelName, colour: row.colour_text ?? "" });
+      }
       results[lineKey] = [];
     }
     for (let at = 0; at < rows.length; at += 300) {
       const answer = await resolveCatalogRows(rows.slice(at, at + 300), companyId);
       for (const row of answer.rows) {
         const lineKey = owner.get(row.key);
-        if (lineKey) results[lineKey] = [...(results[lineKey] ?? []), row];
+        if (!lineKey) continue;
+        // Review c: the server must read the row as THE model the selector showed. A name or an alias of another
+        // model would put the configuration (and a «Crear variante») on the wrong model: the row is not used.
+        const wanted = expected.get(row.key);
+        if (!wanted || row.model?.model_id !== wanted.modelId) {
+          const read = row.model?.model_name ? `«${row.model.model_name}»` : "otro modelo";
+          problems[lineKey] = [...(problems[lineKey] ?? []),
+            `${wanted?.colour ? `«${wanted.colour}»: ` : ""}el catálogo la leyó como ${read}, no como «${wanted?.modelName ?? "el modelo"}»: no se usa. Revisa el nombre del modelo y sus alias.`];
+          continue;
+        }
+        results[lineKey] = [...(results[lineKey] ?? []), row];
       }
     }
     for (const key of Object.keys(results)) if (!results[key]?.length) delete results[key];
@@ -620,13 +637,18 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   async function applyPick(line: SupplierLine, pick: MultiPick | null) {
     if (!vocabulary) return;
     const asked = textNow.current;
+    const mine = ++pickRun.current;
     const forget = <T,>(all: Record<string, T>) => Object.fromEntries(
       Object.entries(all).filter(([key]) => !key.startsWith(`${line.key}-`)),
     ) as Record<string, T>;
-    dropDraft();
-    setPending(null);
-    setPrices(forget); setQuantities(forget); setSelected(forget);
+    /** The line's cards change: what was typed for them belongs to the old ones (review a: only once they change). */
+    const replaceCards = () => {
+      dropDraft();
+      setPending(null);
+      setPrices(forget); setQuantities(forget); setSelected(forget);
+    };
     if (!pick) {
+      replaceCards();
       setPicks((all) => ({ ...all, [line.key]: undefined }));
       setPickResults((all) => ({ ...all, [line.key]: undefined }));
       setPickProblems((all) => ({ ...all, [line.key]: undefined }));
@@ -636,9 +658,11 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setActionError("");
     try {
       const answer = await resolvePicks(lines, results, spaces, vocabulary, { [line.key]: pick });
-      if (asked !== textNow.current) return;
+      // An answer for an older text, or for an older choice of this line, is dropped: nothing is cleared for it.
+      if (asked !== textNow.current || mine !== pickRun.current) return;
       setPickProblems((all) => ({ ...all, [line.key]: answer.problems[line.key] ?? [] }));
       if (!answer.results[line.key]) return;
+      replaceCards();
       setPicks((all) => ({ ...all, [line.key]: pick }));
       setPickResults((all) => ({ ...all, [line.key]: answer.results[line.key] }));
     } catch (error) {
@@ -707,12 +731,20 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setActionError("");
     const failed: string[] = [];
     const made: string[] = [];
+    let existed = 0;
     try {
       for (const item of list) {
         try {
           await createModelVariant(item.modelId, { condition_line: "new", option_ids: item.optionIds }, companyId);
           made.push(...item.entries.map((entry) => entry.key));
         } catch (error) {
+          if (error instanceof CatalogApiError && error.code === "duplicate") {
+            // Review e: it already exists (another tab, an earlier try whose answer was lost). Done; the reading after
+            // decides what it is — never a second variant, never an error.
+            existed += 1;
+            made.push(...item.entries.map((entry) => entry.key));
+            continue;
+          }
           failed.push(`${item.words}: ${variantWriteError(error)}`);
         }
       }
@@ -723,9 +755,12 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
         dropDraft();
       }
       if (failed.length) setActionError(`No se pudieron crear: ${failed.join(" · ")}`);
-      const count = list.length - failed.length;
-      if (!count) return;
-      const done = `Se crearon ${count === 1 ? "1 variante" : `${count} variantes`} como borrador pendiente: ocultas, sin precio ni stock. No se venden ni se publican hasta habilitarlas en la paleta del modelo.`;
+      const count = list.length - failed.length - existed;
+      if (!count && !existed) return;
+      const done = [
+        count ? `Se crearon ${count === 1 ? "1 variante" : `${count} variantes`} como borrador pendiente: ocultas, sin precio ni stock. No se venden ni se publican hasta habilitarlas en la paleta del modelo.` : "",
+        existed ? `${existed === 1 ? "1 ya existía" : `${existed} ya existían`}: no se creó otra vez.` : "",
+      ].filter(Boolean).join(" ");
       if (await refresh()) setNotice(done);
       else setStaleReading(`${done} Pero no se pudo volver a leer la lista: lo que ves puede estar desactualizado.`);
     } finally {
