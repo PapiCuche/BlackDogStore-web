@@ -63,6 +63,11 @@ En la puerta del escaneo la serie nunca recibe otro identificador (`scan_intake.
 400 `serial_not_a_serial`): un EID, un código comercial seguro o el IMEI del mismo equipo, siempre; 15 dígitos con
 Luhn, un IMEISV o un MEID, salvo que la persona haya respondido «Es la serie» al preguntarle (`serial_confirmed`).
 
+Diferencia consciente con otras puertas (revisión H3): la caja («Llegó el equipo»), «Registrar equipos», la recepción
+y la carga masiva **aceptan** un equipo cuya serie sea igual a su propio IMEI (es el mismo equipo y la búsqueda lo
+encuentra igual); sólo la puerta del escaneo lo rechaza, porque allí una lectura puede caer en la casilla equivocada.
+No se cambia el comportamiento de esas puertas.
+
 ### 3.2.2 Un IMEI y una serie nunca nombran dos equipos (todas las puertas)
 
 `stock_unit_services._already_in_stock` (por donde pasan la recepción, la carga masiva, la caja y el escaneo) y
@@ -71,7 +76,10 @@ Luhn, un IMEISV o un MEID, salvo que la persona haya respondido «Es la serie» 
 libera. Motivo: la caja y toda búsqueda leen primero un código con forma de IMEI como IMEI (`find_unit`), así que un
 equipo cuya serie fuera el IMEI de otro sería inalcanzable o confundible. Regla mínima: sólo igualdad exacta del valor
 guardado (las series se guardan en mayúsculas y los IMEI en dígitos). El candado por identificador también encola una
-serie con el mismo valor recibido como IMEI.
+serie con el mismo valor recibido como IMEI. Vale también **dentro de una misma carga, recepción o archivo** (revisión
+H1): la serie de una fila nunca es el IMEI de otra, ni al revés (`receive_units`, `receipt_services._check_unit`, la
+vista previa de la carga de equipos). La ocupación de un lote se lee una sola vez (`stock_unit_services._Occupancy`: dos
+consultas para todo el lote, no hasta seis por fila dentro de la transacción con candados).
 
 ### 3.3 Sin fuga entre empresas
 
@@ -123,7 +131,10 @@ escribir otro modelo, sucursal, nuevo/seminuevo, variante), la respuesta se desc
 código comercial leído no cuenta como cambio: el IMEI leído justo después sigue valiendo. Una pregunta abierta no deja pasar otra lectura. En pantalla táctil el campo no abre el teclado del móvil
 (`inputMode="none"`) salvo que se pida con «Teclado». La clave de idempotencia cambia tras un rechazo 4xx
 o si el cuerpo cambió desde el último envío; tras un 5xx sin cambios el reintento usa la misma. Mientras se registra,
-salir de la página (recargar, un enlace, «atrás») se detiene. Las lecturas se atienden en orden (`ReadQueue`). Indicador «Esperando:
+salir de la página (recargar, un enlace, «atrás») se detiene; «atrás» devuelve a esta pantalla (una entrada de guarda
+que se quita al terminar). Si tras un 5xx el reintento (con otra clave, porque el cuerpo cambió) recibe «ya registrado»
+para este mismo identificador, la pantalla busca el equipo y, si es de esta variante y esta sucursal, muestra el
+registro del intento anterior en lugar del rechazo. Las lecturas se atienden en orden (`ReadQueue`). Indicador «Esperando:
 IMEI 1 / IMEI 2 / Número de serie». Una lectura repetida se ignora y se dice; Enter con el campo vacío no hace nada;
 **ninguna lectura confirma**: sólo el botón, protegido contra doble clic y con clave de idempotencia. Un pedido pagado que
 espera la variante en la sucursal se resuelve antes de confirmar (su pedido, o stock con motivo).
