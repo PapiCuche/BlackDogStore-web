@@ -63,14 +63,27 @@ En la puerta del escaneo la serie nunca recibe otro identificador (`scan_intake.
 400 `serial_not_a_serial`): un EID, un código comercial seguro o el IMEI del mismo equipo, siempre; 15 dígitos con
 Luhn, un IMEISV o un MEID, salvo que la persona haya respondido «Es la serie» al preguntarle (`serial_confirmed`).
 
+### 3.2.2 Un IMEI y una serie nunca nombran dos equipos (todas las puertas)
+
+`stock_unit_services._already_in_stock` (por donde pasan la recepción, la carga masiva, la caja y el escaneo) y
+`pos_device_services._duplicate` rechazan una **serie igual al IMEI 1 o 2** de un equipo vivo de la empresa, y un
+**IMEI igual a la serie** de un equipo vivo. Misma ocupación que el IMEI: vendido y dado de baja ocupan; anulado
+libera. Motivo: la caja y toda búsqueda leen primero un código con forma de IMEI como IMEI (`find_unit`), así que un
+equipo cuya serie fuera el IMEI de otro sería inalcanzable o confundible. Regla mínima: sólo igualdad exacta del valor
+guardado (las series se guardan en mayúsculas y los IMEI en dígitos). El candado por identificador también encola una
+serie con el mismo valor recibido como IMEI.
+
 ### 3.3 Sin fuga entre empresas
 
 Las consultas filtran por la empresa del usuario antes de mirar un identificador: un IMEI o un código de otra empresa no
 se lee, así que no se puede decir nada de él. El IMEI es único **por empresa** (`unique_stock_unit_imei_per_company`),
 así que registrarlo aquí no choca con la otra. Un equipo de otra sucursal de la misma empresa que el usuario no alcanza se
 dice «registrado en otra sucursal», sin estado (vendido, de baja), producto ni sucursal. Lo mismo el aviso de una serie
-en otra variante y el 409 de un IMEI repetido, **también en la caja** (`pos_device_services._duplicate`, que ahora
-recibe a quien registra y no devuelve `unit` fuera de sus sucursales).
+en otra variante, el conflicto con un código interno («ya existe en la empresa») y el 409 de un IMEI repetido,
+**también en la caja** (`pos_device_services._duplicate`, que recibe a quien registra y no devuelve `unit`).
+**Sólo se oculta a quien está limitado a algunas sucursales** (Membership SELECTED): quien tiene alcance de toda la
+empresa (`has_company_wide_scope`: maestro de plataforma, puente legacy, Membership ALL) ve el detalle completo, también
+de un equipo en una sucursal desactivada (`pos_device_services.reachable_branch_ids`).
 
 ### 3.4 Estado de un identificador ya usado
 
@@ -90,15 +103,27 @@ Fotos reales, confirmación de fotos e inspección siguen en «Inventario › Se
 
 ### 3.6 Pantalla (`frontend/app/admin/inventory/scan`)
 
-Un único campo recibe todas las lecturas; terminador Enter, Tab o ambos (preferencia del navegador,
-`scan-intake-terminator` en `browser-storage`). **Tab termina una lectura sólo sin modificadores y con un código entero
-escrito (4 caracteres o más)**: con el campo vacío o casi vacío, y con Shift+Tab, Tab mueve el foco como siempre. Esc
-vacía el campo. Las teclas imprimibles que llegan a un botón, un radio o la página van al campo del lector, y un Enter
-ahí con algo escrito termina esa lectura: nunca pulsa «Confirmar ingreso» ni una opción de una pregunta. Cada lectura
-pertenece a un equipo, un modelo y una sucursal: si alguno cambia mientras se consulta, la respuesta se descarta y se
-dice. Una pregunta abierta no deja pasar otra lectura. En pantalla táctil el campo no abre el teclado del móvil
-(`inputMode="none"`) salvo que se pida con «Teclado». La clave de idempotencia sólo cambia tras un rechazo 4xx; tras un
-5xx el reintento usa la misma. Mientras se registra, salir de la página se detiene. Las lecturas se atienden en orden (`ReadQueue`). Indicador «Esperando:
+Un único campo recibe todas las lecturas; el terminador se elige por navegador (`scan-intake-terminator` en
+`browser-storage`): «Enter» o «Tab».
+
+**Regla de las teclas (determinista; el ritmo de las teclas nunca decide nada):**
+- **Enter** termina siempre la lectura (con algo escrito). Quien escribe a mano tiene además el botón **«Leer»**.
+- **Tab** termina la lectura **sólo** con el terminador «Tab», sin modificadores (Shift+Tab siempre vuelve atrás) y con
+  un código entero escrito (4 caracteres o más). Con el terminador «Tab» y un código escrito, el primer Tab lo lee y el
+  segundo (campo vacío) sale.
+- En cualquier otro caso Tab sale del campo como siempre; si quedaba algo escrito, se descarta y se dice, para que no
+  se pegue a la lectura siguiente. Esc vacía el campo. Una preferencia vieja «Enter o Tab» se lee como «Tab».
+- Las teclas imprimibles que caen en la página o en un control de **esta pantalla** que no es un campo de texto (un
+  botón, un radio, un `select`) van al campo del lector, y un Enter ahí con algo escrito termina esa lectura: nunca
+  pulsa «Confirmar ingreso», una opción de una pregunta ni cambia una sucursal o un proveedor. Nunca desde la barra
+  lateral o superior, un diálogo, un menú, un combobox, un buscador o una lista; Espacio sobre un botón, enlace, radio o
+  casilla los activa como siempre. Cada lectura
+pertenece a un equipo, un modelo y una sucursal: si la persona cambia alguno mientras se consulta (limpiar, elegir o
+escribir otro modelo, sucursal, nuevo/seminuevo, variante), la respuesta se descarta y se dice. El modelo que elige un
+código comercial leído no cuenta como cambio: el IMEI leído justo después sigue valiendo. Una pregunta abierta no deja pasar otra lectura. En pantalla táctil el campo no abre el teclado del móvil
+(`inputMode="none"`) salvo que se pida con «Teclado». La clave de idempotencia cambia tras un rechazo 4xx
+o si el cuerpo cambió desde el último envío; tras un 5xx sin cambios el reintento usa la misma. Mientras se registra,
+salir de la página (recargar, un enlace, «atrás») se detiene. Las lecturas se atienden en orden (`ReadQueue`). Indicador «Esperando:
 IMEI 1 / IMEI 2 / Número de serie». Una lectura repetida se ignora y se dice; Enter con el campo vacío no hace nada;
 **ninguna lectura confirma**: sólo el botón, protegido contra doble clic y con clave de idempotencia. Un pedido pagado que
 espera la variante en la sucursal se resuelve antes de confirmar (su pedido, o stock con motivo).
