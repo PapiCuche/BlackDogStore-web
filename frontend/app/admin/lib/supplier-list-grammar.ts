@@ -1023,7 +1023,7 @@ function cleanOffer(text: string, number: number, lexicon: SupplierLexicon): Sup
 }
 
 /** One search: each (piece, what it inherits) is read once; the readings are counted against `OFFER_READS_MAX`. */
-type OfferSearch = { memo: Map<string, OfferPiece | null>; stats: { reads: number }; exhausted: boolean };
+type OfferSearch = { memo: Map<string, OfferPiece | null>; stats: { reads: number }; exhausted: boolean; budget: number };
 
 function piecesOf(words: string[], number: number, lexicon: SupplierLexicon, before: SupplierLine | null, depth: number,
   search: OfferSearch): OfferPiece[][] {
@@ -1036,7 +1036,7 @@ function piecesOf(words: string[], number: number, lexicon: SupplierLexicon, bef
   const read = (text: string): OfferPiece | null => {
     const key = `${inherited}#${text}`;
     if (search.memo.has(key)) return search.memo.get(key)!;
-    if (search.stats.reads >= OFFER_READS_MAX) { search.exhausted = true; return null; }
+    if (search.stats.reads >= search.budget) { search.exhausted = true; return null; }
     search.stats.reads += 1;
     const piece = readPiece(text);
     search.memo.set(key, piece);
@@ -1077,13 +1077,14 @@ function piecesOf(words: string[], number: number, lexicon: SupplierLexicon, bef
  * more different ways: the line is in doubt with no proposal. None: it is one offer (a cost and a sale price…).
  */
 export function splitOffers(raw: string, number: number, lexicon: SupplierLexicon,
-  stats: { reads: number } = { reads: 0 }): OfferSplit | null {
+  stats: { reads: number } = { reads: 0 }, budget = OFFER_READS_MAX): OfferSplit | null {
   const words = raw.trim().split(/\s+/).filter(Boolean);
   if (words.length < 2 || words.length > MAX_OFFER_WORDS) return null;
-  const search: OfferSearch = { memo: new Map(), stats, exhausted: false };
+  const search: OfferSearch = { memo: new Map(), stats, exhausted: false, budget };
   const ways = piecesOf(words, number, lexicon, null, 0, search).filter((pieces) => pieces.length > 1);
-  // Too many readings to know: in doubt, never a proposal built on half a search.
-  if (search.exhausted) return ways.length ? { parts: null } : null;
+  // Too many readings to know (review of #438): a line with several amounts whose search did not end is in doubt —
+  // never one offer by default, never a proposal built on half a search.
+  if (search.exhausted) return { parts: null };
   const distinct = new Map(ways.map((pieces) => [pieces.map((piece) => piece.text).join("\n"), pieces]));
   if (!distinct.size) return null;
   if (distinct.size > 1) return { parts: null };
