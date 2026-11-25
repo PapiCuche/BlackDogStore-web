@@ -460,6 +460,17 @@ class ApplyTest(_Base, TestCase):
         self.assertEqual(audit.metadata['variants_without_imei'],
                          [{'ref': tablet['ref'], 'product_id': product.pk, 'name': product.name}])
 
+    def test_a_replayed_proposal_keeps_one_audit_row_naming_the_variant_without_imei(self):
+        rows = [row('a', 'Teléfono Y', 128, 'negro'), row('b', 'Tableta T', 128, 'negro')]
+        plan = self.propose(rows).json()['plan']
+        tablet = next(v for v in plan['variants'] if v['suggested_name'].startswith('Tableta'))
+        first = self.apply(rows, self.everything(plan), without_imei=[tablet['ref']], key='lote-sin-imei')
+        again = self.apply(rows, self.everything(plan), without_imei=[tablet['ref']], key='lote-sin-imei')
+        self.assertEqual((first.status_code, again.status_code), (200, 200))
+        self.assertTrue(again.json()['replayed'])
+        [audit] = AdminAuditLog.objects.filter(action='catalog_proposal_applied')
+        self.assertEqual([v['ref'] for v in audit.metadata['variants_without_imei']], [tablet['ref']])
+
     def test_the_audit_row_lists_no_variant_without_imei_by_default(self):
         rows = [row('a', 'Teléfono Y', 128, 'negro')]
         self.approve_everything(rows)
