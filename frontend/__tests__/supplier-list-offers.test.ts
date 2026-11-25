@@ -146,3 +146,14 @@ describe('revisión de #438: búsqueda agotada', () => {
     expect(lineDoubts(line, NONE).join(' ')).toMatch(/varias ofertas/);
   });
 });
+
+describe('revisión 3 de #438: una parte con su propio modelo no hereda nada', () => {
+  it('«iph 15 128gb negro 2500 iph 15 negro 2600»: la segunda oferta no dice capacidad y queda sin ella (nunca 128gb inventado)', () => {
+    const line = one('iph 15 128gb negro 2500 iph 15 negro 2600');
+    expect(line.offers?.parts?.map((part) => part.text)).toEqual(['iph 15 128gb negro 2500', 'iph 15 negro 2600']);
+    // Once split, the second line reads without a capacity: the server will say «incompleta» and it is not saved.
+    const second = one('iph 15 negro 2600');
+    expect(second.capacityText).toBe('');
+    expect(second.model?.text).toBe('iph 15');
+  });
+});
