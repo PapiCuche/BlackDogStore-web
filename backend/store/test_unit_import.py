@@ -544,6 +544,26 @@ class PreviewTest(ImportBase):
         self.assertFalse(BulkImportJob.objects.exists())
 
 
+class ImeiSerialCrossFileTest(ImportBase):
+    """SCAN-TO-STOCK-01 review H1 — a file never carries one value as a serial on a row and as an IMEI on another."""
+
+    def test_a_serial_then_the_same_value_as_an_imei_in_the_file_is_refused(self):
+        payload = self.staged([self.laptop_row(IMEI_A), self.phone_row('F2LXK1CR01', IMEI_A)])
+        self.assertIn(3, self.errors(payload))
+        self.assertIn('serie', self.errors(payload)[3])
+
+    def test_an_imei_then_the_same_value_as_a_serial_in_the_file_is_refused(self):
+        payload = self.staged([self.phone_row('F2LXK1CR02', IMEI_B), self.laptop_row(IMEI_B)])
+        self.assertIn(3, self.errors(payload))
+        self.assertIn('IMEI', self.errors(payload)[3])
+
+    def test_against_what_is_registered_too(self):
+        self.receive(self.row('YAREG00001', IMEI_C))
+        payload = self.staged([self.laptop_row(IMEI_C)])
+        self.assertIn(2, self.errors(payload))
+        self.assertIn('IMEI de otro equipo', self.errors(payload)[2])
+
+
 class ApplyTest(ImportBase):
     def test_applying_registers_each_row_as_one_unit_through_the_kardex(self):
         # COST-WRITE-AUTHORITY: the laptop's cost is stored, so the file is loaded by somebody holding `costs.view`.

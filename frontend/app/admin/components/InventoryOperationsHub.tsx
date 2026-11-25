@@ -93,6 +93,13 @@ export function operationTasks(access: InternalAccess): Task[] {
       reason: `Tu usuario no puede registrar equipos. ${ASK}`,
     },
     {
+      // SCAN-TO-STOCK-01: one device by its barcodes — IMEI 1, IMEI 2 and serial with the scanner, confirmed once.
+      id: "scan", title: "Registrar equipo por escaneo",
+      hint: "Lee con el lector la caja y la etiqueta del equipo: IMEI, serie y código comercial. Nada entra sin confirmar.",
+      href: "/admin/inventory/scan", allowed: adjust,
+      reason: `Tu usuario no puede registrar equipos. ${ASK}`,
+    },
+    {
       id: "labels", title: "Etiquetas pendientes",
       hint: "Imprime o revisa las etiquetas de código de barras que están por pegar.",
       href: "/admin/inventory/labels", allowed: labels,

@@ -110,6 +110,8 @@ seminuevo entra **pendiente de inspección y sin publicar** (USED-READY-01). Eso
 
 - El IMEI tiene 15 dígitos y su último dígito es de control: un IMEI mal copiado se rechaza.
 - Un IMEI no se repite en **ningún** equipo de la empresa (ni como IMEI 1 ni como IMEI 2).
+- Una serie no puede ser el IMEI (1 o 2) de otro equipo de la empresa, ni un IMEI la serie de otro: la caja lee primero
+  un código con forma de IMEI como IMEI (SCAN-TO-STOCK-01).
 - La serie no se repite dentro de la misma variante. Si ya existe en **otra** variante, la vista previa lo avisa: si es
   el mismo equipo, no lo cargues dos veces.
 - En una variante que «lleva IMEI», la serie es opcional si la fila trae un IMEI válido. En las demás, la serie es
@@ -523,3 +525,27 @@ Pasos, en `/srv/blackdogstore`:
 | «Otra operación estaba usando este stock» | Nada se escribió: vuelve a intentarlo. |
 | La conciliación muestra diferencias | No corrijas a mano: revisa el Kardex del producto y avisa al responsable. |
 | «No se anuló ningún equipo» | Algún equipo de la carga ya se movió: la lista dice cuál. |
+
+## 13. Un equipo suelto: «Registrar equipo por escaneo»
+
+Para un equipo que llega solo (no un archivo), **Inventario › Centro de operaciones › «Registrar equipo por escaneo»**
+(`/admin/inventory/scan`, permiso «Ajustar inventario»). Diseño y reglas: `docs/adr-scan-to-stock.md`.
+
+1. Elige la **sucursal** y si es **nuevo** o **seminuevo**.
+2. Elige el **modelo** y la **variante**, o lee el **código comercial** (UPC/EAN) de la caja: elige la variante, nunca
+   es un equipo.
+3. Lee con el lector (o escribe y pulsa Enter) el **IMEI 1**, el **IMEI 2** y la **serie**. La pantalla dice qué espera.
+   Un EID (32 dígitos) o un MEID nunca se toman por IMEI; un código dudoso se pregunta («¿Es la serie?»), también 15
+   dígitos que parecen un IMEI cuando se espera la serie; una lectura repetida se ignora. El lector puede terminar con
+   Enter (siempre) o Tab (si se elige en la pantalla; sólo con un código entero escrito). Lo escrito a mano se lee con
+   Enter o «Leer»; Esc vacía el campo.
+4. Proveedor y costo (con permiso); en un seminuevo, batería, estado, defectos y accesorios; precio y garantía sólo con
+   «Administrar productos».
+5. Si un **pedido pagado** espera esa variante en la sucursal, primero se elige: «Es del pedido #N» o «Ingresar como
+   stock» con un motivo.
+6. **«Confirmar ingreso».** Ninguna lectura registra nada sola. El Kardex dice «Inventario: registro por escaneo»; la
+   etiqueta interna del equipo queda lista en «Etiquetas pendientes».
+
+Las reglas de §3 valen igual: un IMEI no se repite en la empresa; un equipo vendido o dado de baja sigue ocupando su IMEI;
+uno anulado lo libera. Una serie no puede ser el IMEI de otro equipo de la empresa, ni un IMEI la serie de otro (en todas
+las puertas, también la carga masiva). Un seminuevo entra **pendiente de inspección y sin publicar** (§10).

@@ -568,26 +568,55 @@ def clean_reason(value) -> str:
     return _reason(value)
 
 
+class _Occupancy:
+    """
+    The live identifiers of the company that a batch touches, read ONCE (SCAN-TO-STOCK-01 review H2): two queries for
+    the whole batch instead of up to six per row inside the locked transaction. Live = every status but voided
+    (INV-UNIT-CORRECT-01: a VOIDED row keeps its identifiers as the record and occupies none of them).
+    """
+
+    def __init__(self, company_id, cleaned_rows):
+        values = set()
+        for cleaned in cleaned_rows:
+            values.update(v for v in (cleaned['serial_number'], cleaned['imei'], cleaned['imei2']) if v)
+        self.imeis: set[str] = set()
+        self.serials: dict[str, set[int]] = {}
+        if not values:
+            return
+        live = StockUnit.objects.filter(company_id=company_id).exclude(status=StockUnit.Status.VOIDED)
+        for first, second in live.filter(Q(imei__in=values) | Q(imei2__in=values)).values_list('imei', 'imei2'):
+            self.imeis.update(v for v in (first, second) if v)
+        for product_id, serial in live.filter(serial_number__in=values).values_list('product_id', 'serial_number'):
+            self.serials.setdefault(serial, set()).add(product_id)
+
+    def conflict(self, product, cleaned: dict) -> tuple[str, str]:
+        """(why this unit cannot enter, which field says so) — or ('', ''). Either IMEI column counts for both."""
+        serial = cleaned['serial_number']
+        # A device without a serial is not «the same serial» as another one without it.
+        if serial and product.pk in self.serials.get(serial, ()):
+            return f'El número de serie {serial} ya está registrado para este producto.', 'serial_number'
+        for field in ('imei', 'imei2'):
+            if cleaned[field] and cleaned[field] in self.imeis:
+                return 'Ese IMEI ya está registrado en otro equipo de la empresa.', field
+        # SCAN-TO-STOCK-01 review R1 — an IMEI and a serial never name two devices: the till and every lookup read an
+        # IMEI-shaped code as an IMEI first (`unit_identification.find_unit`). A serial equal to a live device's IMEI
+        # (1 or 2), or an IMEI equal to a live device's serial, is refused in the company. Same occupancy as the IMEI:
+        # sold and written-off devices still hold theirs; a voided one frees them.
+        if serial and serial in self.imeis:
+            return SERIAL_IS_AN_IMEI, 'serial_number'
+        for field in ('imei', 'imei2'):
+            if cleaned[field] and cleaned[field] in self.serials:
+                return IMEI_IS_A_SERIAL, field
+        return '', ''
+
+
+SERIAL_IS_AN_IMEI = 'Esa serie es el IMEI de otro equipo de la empresa: revisa el dato.'
+IMEI_IS_A_SERIAL = 'Ese IMEI es la serie de otro equipo de la empresa: revisa el dato.'
+
+
 def _already_in_stock(company, product, cleaned: dict) -> tuple[str, str]:
-    """(why this unit cannot enter, which field says so) — or ('', ''). Either IMEI column counts for both."""
-    # A device without a serial is not «the same serial» as another one without it: `filter(serial_number=None)`
-    # would read IS NULL.
-    # INV-UNIT-CORRECT-01: a VOIDED row keeps its identifiers as the record and occupies none of them.
-    live = StockUnit.objects.exclude(status=StockUnit.Status.VOIDED)
-    if cleaned['serial_number'] and live.filter(
-        company=company, product=product, serial_number=cleaned['serial_number'],
-    ).exists():
-        return (
-            f'El número de serie {cleaned["serial_number"]} ya está registrado para este producto.',
-            'serial_number',
-        )
-    for field in ('imei', 'imei2'):
-        value = cleaned[field]
-        if value and live.filter(company=company).filter(
-            Q(imei=value) | Q(imei2=value),
-        ).exists():
-            return 'Ese IMEI ya está registrado en otro equipo de la empresa.', field
-    return '', ''
+    """(why this unit cannot enter, which field says so) — or ('', ''). One row's `_Occupancy`."""
+    return _Occupancy(company.pk, [cleaned]).conflict(product, cleaned)
 
 
 def serial_elsewhere(company, product, serial: str) -> str:
@@ -696,6 +725,8 @@ def _lock_identifiers(company_id, product_id, cleaned_rows):
     for cleaned in cleaned_rows:
         if cleaned['serial_number']:
             keys.add(f'unit-serial|{company_id}|{product_id}|{cleaned["serial_number"]}')
+            # Review R1: a serial also queues with the same value received as an IMEI (any product of the company).
+            keys.add(f'unit-imei|{company_id}|{cleaned["serial_number"]}')
         for field in ('imei', 'imei2'):
             if cleaned[field]:
                 keys.add(f'unit-imei|{company_id}|{cleaned[field]}')
@@ -762,6 +793,7 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
     inventory_services._locked_branch_stocks(branch, [product])
     _lock_identifiers(branch.company_id, product.pk, [c for _, c, _ in prepared if c is not None])
 
+    occupancy = _Occupancy(branch.company_id, [c for _, c, _ in prepared if c is not None])
     cleaned_rows, seen_serials, seen_imeis = [], set(), set()
     for index, cleaned, failure in prepared:
         try:
@@ -774,7 +806,13 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
                 )
             if seen_imeis.intersection(imeis):
                 raise StockUnitError('Este IMEI está repetido en la misma carga.', field='imei')
-            duplicate, where = _already_in_stock(branch.company, product, cleaned)
+            # Review H1 — R1 inside the batch too: one row's serial is never another row's IMEI, nor the reverse.
+            if cleaned['serial_number'] and cleaned['serial_number'] in seen_imeis:
+                raise StockUnitError('Esta serie es el IMEI de otro equipo de la misma carga.', field='serial_number')
+            crossed = next((f for f in ('imei', 'imei2') if cleaned[f] and cleaned[f] in seen_serials), None)
+            if crossed:
+                raise StockUnitError('Este IMEI es la serie de otro equipo de la misma carga.', field=crossed)
+            duplicate, where = occupancy.conflict(product, cleaned)
             if duplicate:
                 raise StockUnitError(duplicate, field=where)
         except StockUnitError as exc:

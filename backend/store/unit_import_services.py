@@ -1171,6 +1171,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
     unmarked = 0
     seen_imeis: dict[str, int] = {}
     seen_serial_products: dict[str, dict[int, str]] = {}
+    seen_serial_rows: dict[str, int] = {}
     branch_ids = set()
 
     def stage(row_number, action, *, key='', data=None, errors=None, warnings=None):
@@ -1456,6 +1457,18 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                     errors.append(f'El IMEI {value} está repetido en el archivo (fila {seen_imeis[value]}).')
                 elif value in in_stock_imeis:
                     errors.append(f'El IMEI {value} ya está registrado en otro equipo de la empresa.')
+                # SCAN-TO-STOCK-01 review H1 — one value is never a serial on one device and an IMEI on another.
+                elif value in seen_serial_rows:
+                    errors.append(f'El IMEI {value} es la serie de otro equipo del archivo '
+                                  f'(fila {seen_serial_rows[value]}).')
+                elif value in serial_products:
+                    errors.append(f'El IMEI {value} es la serie de otro equipo de la empresa.')
+            serial_value = cleaned['serial_number']
+            if serial_value and serial_value in seen_imeis:
+                errors.append(f'La serie {serial_value} es el IMEI de otro equipo del archivo '
+                              f'(fila {seen_imeis[serial_value]}).')
+            elif serial_value and serial_value in in_stock_imeis:
+                errors.append(f'La serie {serial_value} es el IMEI de otro equipo de la empresa.')
             if cleaned['serial_number']:
                 # INV-SERIAL-01 — the same serial on ANOTHER product (in stock, or earlier in this file): a WARNING.
                 # The database keys a serial per product; a device without an IMEI could enter twice under two
@@ -1470,6 +1483,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
                     warnings.append(f'Ese número de serie aparece también en «{in_file[0]}» en este archivo.')
                 seen_serial_products.setdefault(serial, {})[product.pk] = product.name
                 seen_serials.setdefault(serial_key, row_number)
+                seen_serial_rows.setdefault(serial, row_number)
             for value in imeis:
                 seen_imeis.setdefault(value, row_number)
             data.update(

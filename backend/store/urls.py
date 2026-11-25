@@ -214,6 +214,9 @@ from .catalog_reference_views import (
 )
 from .catalog_presentation_views import AdminModelCommercialView, AdminModelOptionOrderView
 from .registration_views import AdminProductRegisterView
+from .scan_intake_views import (
+    ScanCheckView, ScanModelConfigurationsView, ScanModelSearchView, ScanReceiveView,
+)
 from .external_receipt_views import AdminOrderExternalReceiptView, AdminOrderExternalReceiptVoidView
 from .receipt_views import InventoryReceiptConfirmView, InventoryReceiptDraftView, InventoryReceiptPreviewView
 from .label_views import LabelPdfView, LabelPreviewView
@@ -713,6 +716,12 @@ urlpatterns = [
     # --- SERIALIZED-STOCK: Inventario › Equipos ---
     # `products/` before `<int:pk>/`, so the literal is not read as an id.
     path('admin/inventory/units/', StockUnitListView.as_view(), name='admin-inventory-units'),
+    # SCAN-TO-STOCK-01 — «Registrar equipo por escaneo».
+    path('admin/inventory/scan/check/', ScanCheckView.as_view(), name='admin-inventory-scan-check'),
+    path('admin/inventory/scan/models/', ScanModelSearchView.as_view(), name='admin-inventory-scan-models'),
+    path('admin/inventory/scan/models/<int:pk>/configurations/', ScanModelConfigurationsView.as_view(),
+         name='admin-inventory-scan-configurations'),
+    path('admin/inventory/scan/receive/', ScanReceiveView.as_view(), name='admin-inventory-scan-receive'),
     # LABEL-02 — prefix of device codes and the device label profile (`company.manage` to change).
     path('admin/label-settings/', AdminLabelSettingsView.as_view(), name='admin-label-settings'),
     # DOC-UX-02 — a SAMPLE of each paper from made-up data (read-only, `company.manage`).
