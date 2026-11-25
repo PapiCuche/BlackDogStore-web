@@ -31,7 +31,7 @@ const MARK_CLASS: Record<ChipMark["tone"], string> = {
 
 export function ConfiguratorStep({
   attribute, multiple = false, extraOptions = [], isChecked, stateOf, onToggle, markOf, unavailableText = "no existe",
-  lockedText, note, name,
+  lockedText, note, name, disabled = false,
 }: {
   attribute: ConfiguratorAttribute;
   /** A group of checkboxes (several options) instead of a radio group. */
@@ -50,6 +50,8 @@ export function ConfiguratorStep({
   note?: string | null;
   /** The radio group's name; by default one per attribute. */
   name?: string;
+  /** Every option off (the screen is busy, e.g. registering): nothing changes meanwhile. */
+  disabled?: boolean;
 }) {
   const labelId = useId();
   const colour = isColourAttribute(attribute);
@@ -75,7 +77,7 @@ export function ConfiguratorStep({
                 name={name ?? `attribute-${attribute.id}`}
                 value={option.id}
                 checked={checked}
-                disabled={!state.possible || locked}
+                disabled={disabled || !state.possible || locked}
                 onChange={() => onToggle(option.id)}
               />
               {/* G (owner's visual order 4): finish picture → company swatch → the name alone. */}

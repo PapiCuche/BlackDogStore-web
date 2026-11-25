@@ -233,3 +233,67 @@ describe('revisión final de #437: la guarda del historial', () => {
     state.mockRestore();
   });
 });
+
+describe('revisión de #440', () => {
+  it('C1 · mientras se registra, el configurador y «Limpiar este equipo» no se pueden usar', async () => {
+    const pending = deferred<lib.ScanReceived>();
+    receive.mockImplementationOnce(() => pending.promise);
+    renderScreen();
+    const group = await chooseModel();
+    fireEvent.click(radio(group, 'Capacidad', /128 GB/));
+    fireEvent.click(radio(group, 'Color', /Negro/));
+    fireEvent.click(radio(group, 'Tipo de SIM', /eSIM/));
+    await scan(IMEI_1);
+    const confirm = screen.getByTestId('scan-intake-confirm');
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await act(async () => { fireEvent.click(confirm); });
+    for (const option of within(group).getAllByRole('radio')) expect(option).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Limpiar este equipo' })).toBeDisabled();
+    await act(async () => { pending.resolve(received); await pending.promise; });
+  });
+
+  it('C1 · si cambia el equipo (otra sucursal) mientras espera la guarda anterior, no se envía nada y se dice', async () => {
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    let top: unknown = null;
+    const push = jest.spyOn(window.history, 'pushState').mockImplementation((value) => { top = value; });
+    const state = jest.spyOn(window.history, 'state', 'get').mockImplementation(() => top);
+    const back = jest.spyOn(window.history, 'back').mockImplementation(() => {
+      setTimeout(() => { top = null; window.dispatchEvent(new PopStateEvent('popstate', { state: null })); }, 150);
+    });
+    receive.mockRejectedValueOnce(new lib.ScanIntakeError('Revisa el IMEI', 'invalid', 'imei', 400));
+    render(<ScanIntake companyId={7} branches={[{ id: 1, name: 'Central' }, { id: 2, name: 'Norte' }]} defaultBranch={1} canPrintLabels />);
+    const group = await chooseModel();
+    fireEvent.click(radio(group, 'Capacidad', /128 GB/));
+    fireEvent.click(radio(group, 'Color', /Negro/));
+    fireEvent.click(radio(group, 'Tipo de SIM', /eSIM/));
+    await scan(IMEI_1);
+    const confirm = screen.getByTestId('scan-intake-confirm');
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await act(async () => { fireEvent.click(confirm); });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    // Second submit: it waits for the first guard's back(); meanwhile the clerk moves to another branch.
+    await act(async () => { fireEvent.click(confirm); });
+    fireEvent.change(screen.getByTestId('scan-intake-branch'), { target: { value: '2' } });
+    await act(async () => { await new Promise((r) => setTimeout(r, 250)); });
+    expect(receive).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('No se envió');
+    push.mockRestore(); state.mockRestore(); back.mockRestore();
+  });
+
+  it('C2 · seminuevo: con una variante que no lleva un paso que otra sí (A con eSIM, B sin SIM) se usa la lista, nunca un chip que elija la otra', async () => {
+    configs.mockResolvedValue(config({
+      used_variants: [
+        { id: 400, name: 'Teléfono Q 128 GB Azul eSIM seminuevo', is_serialized: true, requires_imei: true, pending_draft: false, option_ids: [G128, BLUE, ESIM] },
+        { id: 401, name: 'Teléfono Q 128 GB Azul seminuevo', is_serialized: true, requires_imei: true, pending_draft: false, option_ids: [G128, BLUE] },
+      ],
+    } as Partial<ScanConfigurations>));
+    expect(lib.usedSpace(await configs.getMockImplementation()!(7, 1, 9) as ScanConfigurations)).toBeNull();
+    renderScreen();
+    fireEvent.click(screen.getByRole('button', { name: 'Seminuevo' }));
+    fireEvent.change(screen.getByTestId('scan-intake-model'), { target: { value: 'Teléfono' } });
+    fireEvent.click(await screen.findByRole('button', { name: 'Teléfono Q' }));
+    expect(await screen.findByLabelText('Teléfono Q 128 GB Azul seminuevo')).toBeInTheDocument();
+    expect(screen.getByLabelText(/Teléfono Q 128 GB Azul eSIM seminuevo/)).toBeInTheDocument();
+    expect(screen.queryByRole('group', { name: 'Configuración del equipo' })).toBeNull();
+  });
+});

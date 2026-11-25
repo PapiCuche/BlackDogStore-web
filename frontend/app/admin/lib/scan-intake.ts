@@ -401,6 +401,11 @@ export function usedSpace(config: ScanConfigurations): UsedSpace | null {
     .filter((attribute) => attribute.options.length > 0);
   const known = new Set(attributes.flatMap((attribute) => attribute.options.map((option) => option.id)));
   if (usable.some((variant) => variant.option_ids.some((id) => !known.has(id)))) return null;
+  // Review of #440: a variant that lacks a step another has (A = 128 · Azul · eSIM, B = 128 · Azul) cannot be told
+  // apart by chips without a «Sin …» answer; the list names each variant instead.
+  if (attributes.some((attribute) => usable.some((variant) => !variant.option_ids.some((id) => attribute.options.some((o) => o.id === id))))) {
+    return null;
+  }
   return {
     attributes,
     combinations: usable.map((variant) => ({ key: `u${variant.id}`, option_ids: variant.option_ids, variant })),

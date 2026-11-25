@@ -540,6 +540,21 @@ export function ScanIntake({
   const confirm = async () => {
     if (!branchId || inFlight.current || problems.length) return;
     inFlight.current = true;
+    setSubmitting(true);
+    setError(null);
+    // Review of #440: the device is the one on screen WHEN the person confirmed. The guard may wait for an earlier
+    // traversal; if the device, model or branch changed meanwhile, nothing is sent.
+    const born = generation.current;
+    const endGuard = await startHistoryGuard();
+    if (born !== generation.current) {
+      endGuard();
+      inFlight.current = false;
+      setSubmitting(false);
+      say("info", "No se envió: cambiaste de equipo, modelo o sucursal mientras se preparaba el registro. Revisa y confirma otra vez.");
+      return;
+    }
+    // The identifiers as they are NOW (a read may have landed during the wait), never those of the click's render.
+    const ids = idsRef.current;
     const method: EntryMethod = methods.imei ?? methods.serial ?? "manual";
     const shared: Record<string, unknown> = {
       method,
@@ -571,10 +586,6 @@ export function ScanIntake({
         ...(orderChoice === "stock" ? { confirm_stock: true, reason: stockReason.trim() } : {}),
       };
     }
-    setSubmitting(true);
-    setError(null);
-    const endGuard = await startHistoryGuard();
-    const born = generation.current;
     try {
       const sent = JSON.stringify(body);
       if (keyBody.current !== null && keyBody.current !== sent) idemKey.current = newKey();
@@ -734,6 +745,7 @@ export function ScanIntake({
                     extraOptions={isOptional(config, attribute.id) ? [{ id: NO_OPTION, label: `Sin ${attribute.name}`, swatch_hex: "" }] : []}
                     isChecked={(optionId) => picked[attribute.id] === optionId}
                     stateOf={(optionId) => optionState(config, picked, attribute.id, optionId)}
+                    disabled={submitting}
                     onToggle={(optionId) => {
                       newGeneration();
                       setPicked(autoFill(config, pickOption(config, picked, attribute.id, optionId)));
@@ -764,6 +776,7 @@ export function ScanIntake({
                     attribute={attribute}
                     isChecked={(optionId) => usedShown[attribute.id] === optionId}
                     stateOf={(optionId) => configuratorOptionState(used, usedShown, attribute.id, optionId)}
+                    disabled={submitting}
                     onToggle={(optionId) => {
                       newGeneration();
                       const next = autoFill(used, pickOption(used, usedShown, attribute.id, optionId));
@@ -796,7 +809,7 @@ export function ScanIntake({
                   {config.used_variants.map((variant) => (
                     <label key={variant.id} className={`flex min-h-11 items-center gap-2 rounded-lg border px-3 text-sm ${variant.is_serialized ? "" : "opacity-50"}`}>
                       <input
-                        type="radio" name={`${scanId}-used`} disabled={!variant.is_serialized}
+                        type="radio" name={`${scanId}-used`} disabled={submitting || !variant.is_serialized}
                         checked={usedVariantId === variant.id} onChange={() => { newGeneration(); setUsedVariantId(variant.id); }}
                       />
                       <span className="min-w-0 break-words">{variant.name}{variant.pending_draft ? " · borrador" : ""}{variant.is_serialized ? "" : " · sin control por serie"}</span>
@@ -1044,7 +1057,7 @@ export function ScanIntake({
           >
             {submitting ? "Registrando…" : "Confirmar ingreso"}
           </button>
-          <button type="button" className={`${internalButtonClass} w-full`} onClick={() => resetDevice(true)}>Limpiar este equipo</button>
+          <button type="button" className={`${internalButtonClass} w-full`} disabled={submitting} onClick={() => resetDevice(true)}>Limpiar este equipo</button>
         </section>
       </aside>
     </div>
