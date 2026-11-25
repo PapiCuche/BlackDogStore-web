@@ -616,10 +616,6 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
     );
   }
 
-  /**
-   * SELECTOR-UX-01 — THE configurator (the till's chips) in single mode over the model's palette minus its exclusions:
-   * only what exists, one option per step, and whether the configuration already is a variant of this line.
-   */
   /** The palette could not be read: said where the person is (Datos or the devices), with its retry. */
   function paletteNotice() {
     return (
@@ -632,6 +628,10 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
     );
   }
 
+  /**
+   * SELECTOR-UX-01 — THE configurator (the till's chips) in single mode over the model's palette minus its exclusions:
+   * only what exists, one option per step, and whether the configuration already is a variant of this line.
+   */
   function configurator() {
     if (!space) return null;
     const variant = combination?.variant ?? null;
