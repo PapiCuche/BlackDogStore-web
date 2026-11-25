@@ -52,9 +52,9 @@ import { correctionsAgainst, isEditedCopy, sameLine, sharedShare, splitLines, wi
 import {
   AMOUNT_CLASS_LABELS, AMOUNT_LABEL_HINT, AMOUNT_PROBLEM_TEXT, LIST_CURRENCY_CODES, amountChoices, amountCurrency,
   amountVisible, ambiguousReadings, conditionConfirmKey, configurationEntries, draftBody, draftRows, dryRunByKey, entryIssues,
-  lineCost, lineReferences, messageDateIssue, mayCreateVariant, modelConfirmKey, repeatedIn, serverReadsOneModel, serverToday,
+  lineCost, lineReferences, messageDateIssue, mayCreateVariant, missingVariants, modelConfirmKey, repeatedIn, serverReadsOneModel, serverToday,
   writableModelId, COLOUR_DOUBT_TEXT,
-  type AmountClass, type AmountContext, type AmountDecision, type ConfigEntry, type EntryInputs,
+  type AmountClass, type AmountContext, type AmountDecision, type ConfigEntry, type EntryInputs, type MissingVariant,
 } from "../lib/supplier-list-plan";
 import { ResolverStatusBadge } from "./CatalogVocabulary";
 import { SupplierLineSelector, type SpaceState } from "./SupplierLineSelector";
@@ -270,6 +270,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [pickResults, setPickResults] = useState<Record<string, ResolveRowResult[] | undefined>>({});
   const [pickProblems, setPickProblems] = useState<Record<string, string[] | undefined>>({});
   const [picking, setPicking] = useState(false);
+  /** «Revisar y crear N variantes…» open: the detailed list waits for its explicit confirmation. */
+  const [batchOpen, setBatchOpen] = useState(false);
   const run = useRef(0);
   const importerRef = useRef<HTMLElement>(null);
 
@@ -348,6 +350,9 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     chosen.push(entry);
   }
   const dateIssue = messageDateIssue(messageDate);
+  const missing = canManage
+    ? missingVariants(entries, inputs, (entry) => writableModelId(entry.line, results[entry.line.key]?.model, confirmed), created)
+    : [];
 
   // ── Reading ─────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -690,6 +695,45 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     }
   }
 
+  /**
+   * SELECTOR-UX-01 — «Confirmar: crear N borradores»: the same write as «Crear variante», once per configuration, after
+   * the detailed list was shown. Each one is a pending draft (hidden, 0,00, no stock, never published). The server
+   * refuses what already exists; a refusal stops nothing else and is said by name. One fresh reading at the end.
+   */
+  async function createMissing(list: MissingVariant[]) {
+    if (writing.current || !list.length) return;
+    writing.current = true;
+    setActionBusy(true);
+    setActionError("");
+    const failed: string[] = [];
+    const made: string[] = [];
+    try {
+      for (const item of list) {
+        try {
+          await createModelVariant(item.modelId, { condition_line: "new", option_ids: item.optionIds }, companyId);
+          made.push(...item.entries.map((entry) => entry.key));
+        } catch (error) {
+          failed.push(`${item.words}: ${variantWriteError(error)}`);
+        }
+      }
+      setBatchOpen(false);
+      setPending(null);
+      if (made.length) {
+        setCreated((all) => ({ ...all, ...Object.fromEntries(made.map((key) => [key, true])) }));
+        dropDraft();
+      }
+      if (failed.length) setActionError(`No se pudieron crear: ${failed.join(" · ")}`);
+      const count = list.length - failed.length;
+      if (!count) return;
+      const done = `Se crearon ${count === 1 ? "1 variante" : `${count} variantes`} como borrador pendiente: ocultas, sin precio ni stock. No se venden ni se publican hasta habilitarlas en la paleta del modelo.`;
+      if (await refresh()) setNotice(done);
+      else setStaleReading(`${done} Pero no se pudo volver a leer la lista: lo que ves puede estar desactualizado.`);
+    } finally {
+      writing.current = false;
+      setActionBusy(false);
+    }
+  }
+
   async function registerAlias(body: CatalogAliasWrite) {
     setActionBusy(true);
     setActionError("");
@@ -980,6 +1024,41 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           spaces={spaces} onLoadSpace={loadSpace} picks={picks} pickProblems={pickProblems} picking={picking}
           onApplyPick={(target, pick) => void applyPick(target, pick)} onSplit={splitLine}
         />
+      ) : null}
+
+      {reading && missing.length ? (
+        <section aria-label="Variantes que faltan" className="min-w-0 space-y-3 rounded-xl border border-bd-border bg-surface p-5">
+          <p className="text-sm text-foreground">
+            {missing.length === 1 ? "1 configuración válida no tiene variante" : `${missing.length} configuraciones válidas no tienen variante`}
+            {" "}todavía: sin variante, su oferta no se puede guardar.
+          </p>
+          {batchOpen ? (
+            <div className="min-w-0 space-y-3">
+              <ul className="min-w-0 space-y-1 text-sm">
+                {missing.map((item) => (
+                  <li key={item.key} className="break-words">
+                    <span className="font-semibold text-foreground">{item.words}</span>
+                    <span className="text-xs text-muted">{` — ${item.lines.length === 1 ? "línea" : "líneas"} ${item.lines.join(", ")}`}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-xs text-foreground">
+                Se crearán como borradores: ocultos, a 0,00, sin stock ni movimientos y sin publicar. No se venden hasta que
+                alguien los habilite en la paleta del modelo. Nunca se crean modelos ni opciones, y lo que ya existe no se crea otra vez.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button type="button" className={primaryClass} disabled={actionBusy} onClick={() => void createMissing(missing)}>
+                  {`Confirmar: crear ${missing.length === 1 ? "1 borrador" : `${missing.length} borradores`}`}
+                </button>
+                <button type="button" className={buttonClass} disabled={actionBusy} onClick={() => setBatchOpen(false)}>Cancelar</button>
+              </div>
+            </div>
+          ) : (
+            <button type="button" className={buttonClass} disabled={actionBusy} onClick={() => { setActionError(""); setBatchOpen(true); }}>
+              {`Revisar y crear ${missing.length === 1 ? "1 variante" : `${missing.length} variantes`}…`}
+            </button>
+          )}
+        </section>
       ) : null}
 
       {reading ? (

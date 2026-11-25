@@ -370,6 +370,50 @@ export function mayCreateVariant(entry: ConfigEntry, inputs: Pick<EntryInputs, "
     && !entry.line.conflicts.length && !lineDoubts(entry.line, inputs, entry.model).length;
 }
 
+/** One variant the reading lacks: a valid configuration no variant is yet, wherever the list names it. */
+export type MissingVariant = {
+  /** `<model>:<option ids>`: two lines that name the same configuration are ONE variant to create. */
+  key: string;
+  modelId: number;
+  optionIds: number[];
+  /** «Modelo · 128 GB · Negro · eSIM · J/A», in the reading order of the roles. */
+  words: string;
+  lines: number[];
+  entries: ConfigEntry[];
+};
+
+const ROLE_RANK: Record<string, number> = { capacity: 0, color: 1, sim: 2, region: 3, other: 4 };
+
+/**
+ * SELECTOR-UX-01 — the variants a person may create at once (the same rule as «Crear variante» on a card: a complete
+ * valid configuration of a NEW line with no doubt left, on a model the line may write to), one per configuration by
+ * the server's option ids — never by how it was spelt.
+ */
+export function missingVariants(entries: ConfigEntry[], inputs: Pick<EntryInputs, "ignoredWords" | "confirmed">,
+  writableModel: (entry: ConfigEntry) => number | null, done: Record<string, boolean | undefined> = {}): MissingVariant[] {
+  const out = new Map<string, MissingVariant>();
+  for (const entry of entries) {
+    if (done[entry.key] || !mayCreateVariant(entry, inputs)) continue;
+    const modelId = writableModel(entry);
+    const ids = [...entry.configuration.option_ids].sort((a, b) => a - b);
+    if (!modelId || !ids.length) continue;
+    const key = `${modelId}:${ids.join(",")}`;
+    const found = out.get(key);
+    if (found) {
+      found.entries.push(entry);
+      if (!found.lines.includes(entry.line.number)) found.lines.push(entry.line.number);
+      continue;
+    }
+    const labels = [...entry.configuration.options].sort((a, b) => (ROLE_RANK[a.role] ?? 9) - (ROLE_RANK[b.role] ?? 9))
+      .map((option) => option.label);
+    out.set(key, {
+      key, modelId, optionIds: ids, entries: [entry], lines: [entry.line.number],
+      words: [entry.model?.model_name ?? "", ...labels].filter(Boolean).join(" · "),
+    });
+  }
+  return [...out.values()];
+}
+
 /** The selected configuration that already offers the same variant, if any (the same variant twice is refused). */
 export function repeatedIn(entry: ConfigEntry, selected: ConfigEntry[]): ConfigEntry | null {
   const product = entry.configuration.product_id;

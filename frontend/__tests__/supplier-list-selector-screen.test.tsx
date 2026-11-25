@@ -232,6 +232,35 @@ describe('el selector visual de una línea', () => {
   });
 });
 
+describe('crear en lote las variantes que faltan', () => {
+  it('vista previa detallada, confirmación explícita, una vez por configuración aunque dos líneas la repitan', async () => {
+    await open();
+    await readList('equipo z 256gb esim j/a azul, verde 2500\nequipo z 256gb esim j/a azul 2600');
+    const batch = screen.getByRole('region', { name: 'Variantes que faltan' });
+    expect(batch).toHaveTextContent('2 configuraciones válidas no tienen variante');
+    fireEvent.click(within(batch).getByRole('button', { name: /Revisar y crear 2 variantes/ }));
+    // The preview names each configuration and where it comes from; nothing is written yet.
+    expect(batch).toHaveTextContent('Equipo Z · 256 GB · Azul · eSIM · J/A');
+    expect(batch).toHaveTextContent('líneas 1, 2');
+    expect(batch).toHaveTextContent('Equipo Z · 256 GB · Verde · eSIM · J/A');
+    expect(batch).toHaveTextContent('borradores: ocultos, a 0,00, sin stock ni movimientos y sin publicar');
+    expect(variantPosts).toEqual([]);
+    await act(async () => { fireEvent.click(within(batch).getByRole('button', { name: 'Confirmar: crear 2 borradores' })); });
+    expect(variantPosts).toHaveLength(2);
+    expect(variantPosts.every((post) => post.url.includes('company=5'))).toBe(true);
+    // Read again: every card is now the draft, and nothing is left to create.
+    for (const card of within(line(1)).getAllByRole('article')) expect(card).toHaveTextContent('Borrador pendiente');
+    expect(screen.queryByRole('region', { name: 'Variantes que faltan' })).toBeNull();
+    expect(screen.getByText(/Se crearon 2 variantes como borrador/)).toBeInTheDocument();
+  });
+
+  it('sin permiso para gestionar productos no se ofrece', async () => {
+    await open({ manage: false });
+    await readList('equipo z 256gb esim j/a azul, verde 2500');
+    expect(screen.queryByRole('region', { name: 'Variantes que faltan' })).toBeNull();
+  });
+});
+
 describe('dos ofertas en una línea', () => {
   it('se propone separarla; nada se separa ni se clasifica solo', async () => {
     await open();
