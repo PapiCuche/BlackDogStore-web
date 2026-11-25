@@ -38,7 +38,18 @@ def product_payload(product, branch, *, barcode=None) -> dict:
 
     `available` is read per branch on purpose. A national figure would tell a
     cashier they can sell something that is three cities away.
+
+    USED-UNIT-OWN-GATE-01 — for a product charged device by device (a used one), `available` counts the devices the
+    till may sell on THIS shelf: each with its own price and an approved inspection
+    (`used_unit_services.till_sellable_units`). A device without a price is not counted and holds back nobody.
     """
+    by_unit = pos_services.priced_by_unit(product)
+    if by_unit:
+        from .used_unit_services import till_sellable_units
+
+        available = till_sellable_units(branch, product).count()
+    else:
+        available = inventory_services.branch_quantity(branch, product)
     primary = (
         barcode
         or product.barcodes.filter(is_active=True, is_primary=True).first()
@@ -48,7 +59,7 @@ def product_payload(product, branch, *, barcode=None) -> dict:
         'id': product.pk,
         'name': product.name,
         'price': str(product.price),
-        'available': inventory_services.branch_quantity(branch, product),
+        'available': available,
         'barcode': primary.code if primary else '',
         # SERIAL-PICK-01: a product sold device by device. The till asks for
         # the IMEI or serial of each one before it can charge.
@@ -57,7 +68,7 @@ def product_payload(product, branch, *, barcode=None) -> dict:
         # DC3: «Bajo pedido» — its lead time and price — or null.
         'on_order': supply_services.on_order_payload(product),
         # INV-COM-01C: a used device is charged at ITS price, not at this product's `price`.
-        'priced_by': 'unit' if pos_services.priced_by_unit(product) else 'product',
+        'priced_by': 'unit' if by_unit else 'product',
     }
 
 

@@ -469,7 +469,11 @@ def _units_for_movement(*, branch, product, quantity, units, expected_status,
         candidates = StockUnit.objects.select_for_update().filter(
             company_id=branch.company_id, branch=branch, product=product, status=StockUnit.Status.AVAILABLE)
         if used:
-            candidates = candidates.filter(inspection_status=StockUnit.Inspection.APPROVED)
+            # USED-UNIT-OWN-GATE-01 — and only one with its own price: an unpriced sibling is not for sale, so it is
+            # never the one set aside, and it never stops a priced and approved sibling from being taken.
+            from .used_unit_services import till_sellable_q
+
+            candidates = candidates.filter(till_sellable_q())
         picked = list(candidates.order_by('received_at', 'pk')[:quantity])
         if len(picked) < quantity:
             raise InsufficientStockError(
@@ -818,7 +822,7 @@ def _sell_chosen_units(order: Order, branch, items, *, actor=None, strict: bool 
     available here any more raises `InvalidMovementError` and the sale unwinds whole, and the identification
     record is the till's (it names how the device was read), not 'buyer'.
     """
-    from . import margin_services, unit_hold_services, unit_identification
+    from . import margin_services, unit_hold_services, unit_identification, used_unit_services
     from .models import OrderUnit, StockUnit
 
     product = items[0].product
@@ -853,13 +857,14 @@ def _sell_chosen_units(order: Order, branch, items, *, actor=None, strict: bool 
             .filter(pk=item.stock_unit_id, company_id=order.company_id, branch=branch, product_id=item.product_id)
             .first()
         )
-        if (unit is not None and product.condition_line == product.CONDITION_USED
-                and unit.inspection_status != StockUnit.Inspection.APPROVED):
-            # USED-READY-01 — its inspection was rejected (or reopened) after the buyer took it: the money is in, so
-            # the payment is not refused; the line is flagged for a person, as a device that is gone.
+        refusal = used_unit_services.payment_refusal(unit) if unit is not None else ''
+        if refusal:
+            # USED-READY-01 — its inspection was rejected (or reopened) after the buyer took it; USED-UNIT-OWN-GATE-01
+            # — or its price was removed: it is not for sale. The money is in, so the payment is not refused; the line
+            # is flagged for a person, as a device that is gone. Only THIS device: its siblings sell as usual.
             _flag_stock_shortfall(
                 order, item,
-                f'El equipo elegido de "{product.name}" ya no tiene la inspección aprobada: no se vende.',
+                f'El equipo elegido de "{product.name}" {refusal}: no se vende.',
             )
             continue
         held_for_us = (

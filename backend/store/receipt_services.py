@@ -475,7 +475,9 @@ def commercial(product, line: dict, *, require_image: bool, branch=None, dispatc
                     card        anything else has its own card (or none, if it is not published).
         state       published   the product is active and marked for the shop;
                     ready       hidden, with nothing missing to publish it (the operator has not published it);
-                    pending     hidden, and something is missing (`problems`, and unpriced devices).
+                    pending     hidden, and something is missing (`problems`, or no device of a used line has
+                                its own price). USED-UNIT-OWN-GATE-01: a device without a price waits by itself; with
+                                one priced sibling the line is not held back.
     """
     used = _is_used(product)
     model = product.product_model if product.product_model_id else None
@@ -490,7 +492,7 @@ def commercial(product, line: dict, *, require_image: bool, branch=None, dispatc
     if published:
         state = 'published'
     else:
-        state = 'pending' if problems or unpriced else 'ready'
+        state = 'pending' if problems or (unpriced and not priced) else 'ready'
     return {
         'placement': 'model_page' if used and model is not None else 'card',
         'state': state,
@@ -636,9 +638,11 @@ def check(company, resolved: Resolved, normalised: dict) -> list[dict]:
             # STOCK-UX-WALK: the words agree with the count, and the till is named (it does not sell it either).
             verbs = ('se recibe, pero no se vende en caja ni se ofrece' if count == 1
                      else 'se reciben, pero no se venden en caja ni se ofrecen')
+            # USED-UNIT-OWN-GATE-01: each device waits by itself — its priced siblings are not held back.
             entry['warnings'].append(
                 f'{count} {"equipo" if count == 1 else "equipos"} sin precio propio: {verbs} en línea hasta que '
-                'alguien con permiso fije el precio.')
+                'alguien con permiso fije el precio. Los demás equipos de la variante no esperan por '
+                f'{"él" if count == 1 else "ellos"}.')
         if not entry['errors'] and not entry['duplicates']:
             entry['will_receive'], entry['labels'] = amount, amount
         else:

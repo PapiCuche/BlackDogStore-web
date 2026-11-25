@@ -75,6 +75,7 @@
   "store.test_supply_lock_scope.SupplyActionAgainstPaymentTest",
   "store.test_supply_reception.ReceiveAtTheSameInstantTest",
   "store.test_unit_import_new_price.ApplyWithPriceAgainstSaleTest",
+  "store.test_used_unit_own_gate.SiblingRaceTest",
   "store.test_variant_safe.DeleteAgainstAConcurrentInsertTest",
   "store.test_verification_code.ConcurrencyTest",
   "store.tests.C11IdempotencyRecoveryTest",
