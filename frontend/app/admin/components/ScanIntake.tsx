@@ -296,8 +296,10 @@ export function ScanIntake({
   const onScanKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
     if (inFlight.current) {
-      // Review of #440: while registering, no read is taken — what was reviewed is what is sent.
-      if (event.key === "Enter" || event.key === "Tab") event.preventDefault();
+      // Review of #440: while registering, no read is taken — what was reviewed is what is sent. Only Enter is
+      // stopped: typing is already ignored (onChange), so the field stays empty and Tab may move focus as usual
+      // (a keyboard user is never trapped here while the request runs).
+      if (event.key === "Enter") event.preventDefault();
       if (event.key === "Enter") say("warn", "Espera a que termine el registro: esta lectura no se tomó. Vuelve a leerla después.");
       return;
     }

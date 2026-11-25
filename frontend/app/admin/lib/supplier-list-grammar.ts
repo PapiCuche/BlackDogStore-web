@@ -1055,8 +1055,10 @@ function waysFrom(words: string[], start: number, number: number, lexicon: Suppl
   const known = search.ways.get(solved);
   if (known) return known;
   /**
-   * A later piece takes what it does not say from the piece before it — the model, and the capacity, SIM and region —
-   * as a person reads «… negro 2500 azul 2600». Never the colour: colours are what an offer lists, not what it shares.
+   * A later piece that does NOT name a model takes what it does not say from the piece before it — the model, and the
+   * capacity, SIM and region — as a person reads «… negro 2500 azul 2600». A piece that names its own model starts
+   * another offer and takes nothing (a missing capacity leaves it incomplete, never borrowed). Never the colour:
+   * colours are what an offer lists, not what it shares.
    */
   const readPiece = (text: string): OfferPiece | null => {
     const own = cleanOffer(text, number, lexicon);

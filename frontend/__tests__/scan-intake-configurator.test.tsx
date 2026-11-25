@@ -330,6 +330,9 @@ describe('revisión 2 de #440', () => {
     expect(check.mock.calls.length).toBe(checks);
     expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('Espera a que termine el registro');
     expect(screen.getByTestId('scan-intake-value-imei2')).toHaveTextContent('—');
+    // Tab is never trapped here while the request runs: only Enter is stopped.
+    expect(fireEvent.keyDown(input, { key: 'Tab' })).toBe(true);
+    expect(fireEvent.keyDown(input, { key: 'Enter' })).toBe(false);
     await act(async () => { await new Promise((r) => setTimeout(r, 250)); });
     // The device reviewed is sent once the earlier guard's traversal ended — without the refused read.
     await screen.findByTestId('scan-intake-done');
