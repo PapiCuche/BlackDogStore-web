@@ -244,3 +244,92 @@ describe('revisión de #439', () => {
     expect(second.model).toEqual({ id: 812 });
   });
 });
+
+describe('revisión 2 de #439', () => {
+  /** 14 invented digits + Luhn check digit. */
+  function luhn(body: string): string {
+    let total = 0;
+    for (let index = 0; index < body.length; index += 1) {
+      let digit = Number(body[body.length - 1 - index]);
+      if (index % 2 === 0) { digit *= 2; if (digit > 9) digit -= 9; }
+      total += digit;
+    }
+    return body + String((10 - (total % 10)) % 10);
+  }
+
+  it('«Registrar otro igual» con un modelo nuevo cuya paleta no se puede leer: se dice en los equipos y no se revisa', async () => {
+    mReg.submitRegistration.mockImplementation(async (body) => (body.dry_run
+      ? result({ dry_run: true })
+      : result({ model: { id: 812, created: true, name: 'Equipo Nuevo', slug: 'equipo-nuevo' } })));
+    mApi.fetchModelPalette.mockRejectedValue(new Error('red'));
+    await startDevice();
+    fireEvent.change(screen.getByLabelText('Modelo'), { target: { value: '__new' } });
+    fireEvent.change(await screen.findByLabelText('Nombre del modelo nuevo'), { target: { value: 'Equipo Nuevo' } });
+    fireEvent.change(screen.getByLabelText(/^Nombre$/), { target: { value: 'Equipo Nuevo' } });
+    fireEvent.change(screen.getByLabelText(/^Precio de venta/), { target: { value: '3000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    fireEvent.change(await screen.findByLabelText(/^IMEI 1$/), { target: { value: GOOD_IMEI } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar artículo' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar otro igual' }));
+    // The created model is now an existing one: its palette is read, and it fails — said HERE, with its retry.
+    const notice = await screen.findByText(/No se pudieron leer las opciones/);
+    expect(within(notice.closest('[role="alert"]') as HTMLElement).getByRole('button', { name: 'Volver a intentar' })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText(/^IMEI 1$/), { target: { value: GOOD_IMEI_2 } });
+    const calls = mReg.submitRegistration.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    expect(await screen.findByText(/Lee primero las opciones del modelo/)).toBeInTheDocument();
+    expect(mReg.submitRegistration.mock.calls.length).toBe(calls);
+  });
+
+  it('el segundo IMEI registrado en esta sesión también se rechaza (nuevo)', async () => {
+    const third = luhn('35693803564004');
+    fireEvent.change(await (async () => {
+      await startDevice();
+      await chooseModel(MODEL);
+      await screen.findByRole('group', { name: 'Configuración del equipo' });
+      fireEvent.click(radio('Capacidad', /128 GB/));
+      fireEvent.click(radio('Color', /Negro/));
+      fireEvent.click(radio('Tipo de SIM', /eSIM/));
+      fireEvent.change(screen.getByLabelText(/^Nombre/), { target: { value: 'Equipo Z' } });
+      fireEvent.change(screen.getByLabelText(/^Precio de venta/), { target: { value: '3000' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+      return screen.findByLabelText(/^IMEI 1$/);
+    })(), { target: { value: GOOD_IMEI } });
+    fireEvent.change(screen.getByLabelText(/^Segundo IMEI 1/), { target: { value: GOOD_IMEI_2 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar artículo' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar otro igual' }));
+    fireEvent.change(await screen.findByLabelText(/^IMEI 1$/), { target: { value: third } });
+    fireEvent.change(screen.getByLabelText(/^Segundo IMEI 1/), { target: { value: GOOD_IMEI_2 } });
+    const calls = mReg.submitRegistration.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Ese IMEI ya se registró en esta sesión (segundo IMEI)');
+    expect(mReg.submitRegistration.mock.calls.length).toBe(calls);
+  });
+
+  it('el segundo IMEI registrado en esta sesión también se rechaza (seminuevo)', async () => {
+    const third = luhn('35693803564004');
+    mReg.submitRegistration.mockImplementation(async (body) => result({ kind: 'used_device', dry_run: Boolean(body.dry_run) }));
+    await startDevice(/Equipo seminuevo/);
+    await chooseModel(MODEL);
+    await screen.findByRole('group', { name: 'Configuración del equipo' });
+    fireEvent.click(radio('Capacidad', /128 GB/));
+    fireEvent.click(radio('Color', /Negro/));
+    fireEvent.click(radio('Tipo de SIM', /eSIM/));
+    fireEvent.change(screen.getByLabelText(/^Nombre/), { target: { value: 'Equipo Z' } });
+    fireEvent.change(screen.getByLabelText(/^Precio de venta/), { target: { value: '3000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    fireEvent.change(await screen.findByLabelText('Número de serie'), { target: { value: 'SNU1' } });
+    fireEvent.change(screen.getByLabelText(/^IMEI$/), { target: { value: GOOD_IMEI } });
+    fireEvent.change(screen.getByLabelText(/^Segundo IMEI/), { target: { value: GOOD_IMEI_2 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar artículo' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar otro igual' }));
+    fireEvent.change(await screen.findByLabelText('Número de serie'), { target: { value: 'SNU2' } });
+    fireEvent.change(screen.getByLabelText(/^IMEI$/), { target: { value: third } });
+    fireEvent.change(screen.getByLabelText(/^Segundo IMEI/), { target: { value: GOOD_IMEI_2 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Ese IMEI ya se registró en esta sesión (segundo IMEI)');
+  });
+});
