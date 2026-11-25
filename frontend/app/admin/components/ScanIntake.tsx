@@ -37,6 +37,9 @@ type LogLine = { id: number; tone: Tone; text: string };
 type Ask = { value: string; options: Choice[]; message: string; method: EntryMethod };
 type Condition = "new" | "used";
 
+/** Where a key is never routed to the scanner field (G2): someone is using that widget. */
+const BLOCKED_ROUTING = '[role="dialog"], [role="menu"], [role="combobox"], [role="searchbox"], [role="listbox"]';
+
 const TONE_CLASS: Record<Tone, string> = {
   ok: "border-success-border bg-success-surface text-success",
   warn: "border-warning-border bg-warning-surface text-foreground",
@@ -57,6 +60,7 @@ export function ScanIntake({
   canPrintLabels: boolean;
 }) {
   const scanId = useId();
+  const sectionRef = useRef<HTMLDivElement>(null);
   const scanRef = useRef<HTMLInputElement>(null);
   const rhythm = useRef(newRhythm());
   const queue = useRef(new ReadQueue());
@@ -113,6 +117,8 @@ export function ScanIntake({
   const [error, setError] = useState<{ message: string; field: string } | null>(null);
   const [result, setResult] = useState<ScanReceived | null>(null);
   const idemKey = useRef(newKey());
+  // The body last sent with `idemKey`: the same key never carries another body (the server would answer 409).
+  const keyBody = useRef<string | null>(null);
   // A second click before React re-renders must not send twice (the key would replay it, but nothing should go).
   const inFlight = useRef(false);
   const logId = useRef(0);
@@ -160,10 +166,14 @@ export function ScanIntake({
     setIds(next);
   }, []);
 
-  const loadModel = useCallback(async (modelId: number, preset?: ScanProduct) => {
+  /**
+   * `byScan`: the model comes from a commercial code just read (G7). That is not the clerk changing device: reads
+   * already on their way (the IMEI scanned right after the box code) stay valid. A model chosen by hand starts over.
+   */
+  const loadModel = useCallback(async (modelId: number, preset?: ScanProduct, byScan = false) => {
     if (!branchId) return;
     const request = ++configRequest.current;
-    newGeneration();
+    if (!byScan) newGeneration();
     try {
       const data = await scanConfigurations(companyId, branchId, modelId);
       if (request !== configRequest.current) return;      // F4: a later choice already asked
@@ -226,7 +236,7 @@ export function ScanIntake({
       if (!product.model_id) {
         say("warn", "Esa variante no pertenece a un modelo: regístrala desde «Registrar artículo».");
       } else {
-        void loadModel(product.model_id, product);
+        void loadModel(product.model_id, product, true);
       }
     } else if (outcome.type === "ask") {
       openAsk({ value: outcome.value, options: outcome.options, message: outcome.message, method });
@@ -286,26 +296,50 @@ export function ScanIntake({
       event.preventDefault();
       return;
     }
-    if (!isTerminator(event.key, terminator, value, event)) return;
-    event.preventDefault();
-    takeRead(value);
+    if (isTerminator(event.key, terminator, value, event)) {
+      event.preventDefault();
+      takeRead(value);
+      return;
+    }
+    if (event.key === "Tab" && value.trim()) {
+      // G5/G6: Tab leaves the field as always; what was typed and not read is not kept to glue onto the next read.
+      resetRhythm(rhythm.current);
+      setScanText("");
+      say("info", `Se descartó lo escrito («${value.trim()}»): para leerlo, pulsa Enter o «Leer».`);
+    }
   };
 
-  // F3: a scanner types wherever the focus is. Printable keys that land on a button, a radio or the page go to the
-  // scanner field; Enter there, with characters in the field, ends that read — it never presses the focused button
-  // («Confirmar ingreso», an option of a question). Typing in another text field (cost, battery, model) is left alone.
+  /** G5: the explicit way to read what was typed by hand. */
+  const readTyped = () => {
+    const value = scanTextRef.current;
+    if (value.trim()) takeRead(value);
+    scanRef.current?.focus();
+  };
+
+  // F3 + G1–G3: a scanner types wherever the focus is. Keys are routed to the scanner field ONLY when they land on the
+  // page itself (body) or on a control of THIS screen that is not a text field: a button, a radio, a select (a read
+  // must not type-ahead a branch or a supplier). Never from the shell (sidebar, top bar, notifications), a dialog, a
+  // menu, a combobox, a search box or a list box. Space is never routed from a button, link, radio or checkbox: it
+  // activates them as always. Enter there, with characters in the field, ends that read — it never presses the focused
+  // button («Confirmar ingreso», an option of a question) nor changes a select.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const input = scanRef.current;
       if (!input || event.defaultPrevented || event.isComposing) return;
       const target = event.target as HTMLElement | null;
-      if (target === input) return;
-      const tag = target?.tagName ?? "";
-      const type = (target as HTMLInputElement | null)?.type ?? "";
-      const typing = tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable
+      if (!target || target === input) return;
+      const onPage = target === document.body || target === document.documentElement;
+      if (!onPage && !sectionRef.current?.contains(target)) return;
+      if (target.closest?.(BLOCKED_ROUTING)) return;
+      const tag = target.tagName;
+      const type = (target as HTMLInputElement).type ?? "";
+      const typing = tag === "TEXTAREA" || target.isContentEditable
         || (tag === "INPUT" && !["button", "submit", "radio", "checkbox", "reset"].includes(type));
       if (typing) return;
       if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const activates = tag === "BUTTON" || tag === "A" || target.getAttribute("role") === "button"
+        || (tag === "INPUT" && ["radio", "checkbox", "button", "submit", "reset"].includes(type));
+      if (event.key === " " && activates) return;               // G1: native activation
       if (event.key.length === 1) {
         event.preventDefault();
         rhythmKey(rhythm.current, event.key, event.timeStamp);
@@ -313,10 +347,10 @@ export function ScanIntake({
         rhythm.current.typed = scanTextRef.current;
         return;
       }
-      if ((event.key === "Enter" || event.key === " ") && scanTextRef.current.trim()) {
+      if (event.key === "Enter" && scanTextRef.current.trim()) {
         event.preventDefault();
         event.stopPropagation();
-        if (event.key === "Enter") takeRead(scanTextRef.current);
+        takeRead(scanTextRef.current);
       }
     };
     window.addEventListener("keydown", onKey, true);
@@ -334,10 +368,18 @@ export function ScanIntake({
         say("warn", "Espera a que termine el registro del equipo antes de salir.");
       }
     };
+    // G8: «atrás» of the browser too — the history entry it would leave to is put back, and the person is told.
+    window.history.pushState(window.history.state, "", window.location.href);
+    const onBack = () => {
+      window.history.pushState(window.history.state, "", window.location.href);
+      say("warn", "Espera a que termine el registro del equipo antes de salir.");
+    };
     window.addEventListener("beforeunload", onLeave);
+    window.addEventListener("popstate", onBack);
     document.addEventListener("click", onClick, true);
     return () => {
       window.removeEventListener("beforeunload", onLeave);
+      window.removeEventListener("popstate", onBack);
       document.removeEventListener("click", onClick, true);
     };
   }, [say, submitting]);
@@ -385,6 +427,7 @@ export function ScanIntake({
     openAsk(null);
     setSerialConfirmed(false);
     idemKey.current = newKey();
+    keyBody.current = null;
     if (!keepModel) {
       configRequest.current += 1;
       setConfig(null);
@@ -445,6 +488,9 @@ export function ScanIntake({
     setSubmitting(true);
     setError(null);
     try {
+      const sent = JSON.stringify(body);
+      if (keyBody.current !== null && keyBody.current !== sent) idemKey.current = newKey();
+      keyBody.current = sent;
       const answer = await scanReceive(companyId, branchId, body, idemKey.current);
       setResult(answer);
       say("ok", `Equipo registrado: ${answer.unit.label_code || `#${answer.unit.id}`}.`);
@@ -456,7 +502,10 @@ export function ScanIntake({
         }
         // F11: a 4xx refusal wrote nothing and the next body will differ: a new key. A 5xx (or a lost answer) may
         // have registered the device: the retry keeps the key, so the server replays instead of writing twice.
-        if (err.status >= 400 && err.status < 500) idemKey.current = newKey();
+        if (err.status >= 400 && err.status < 500) {
+          idemKey.current = newKey();
+          keyBody.current = null;
+        }
         setError({ message: err.message, field: err.field });
       } else {
         setError({ message: err instanceof Error ? err.message : "No se pudo registrar el equipo.", field: "" });
@@ -507,7 +556,7 @@ export function ScanIntake({
   const field = (name: string) => (error?.field === name ? error.message : "");
 
   return (
-    <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+    <div ref={sectionRef} className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
       <div className="min-w-0 space-y-4">
         {/* 1 · Sucursal y tipo */}
         <section className="grid gap-3 rounded-xl border border-bd-border bg-surface p-4 sm:grid-cols-2">
@@ -543,7 +592,15 @@ export function ScanIntake({
             <input
               className={internalInputClass} value={modelQuery} data-testid="scan-intake-model"
               placeholder="Busca el modelo (o escanea el código comercial de la caja)"
-              onChange={(e) => { setModelQuery(e.target.value); if (config) { setConfig(null); setPicked({}); setUsedVariantId(null); } }}
+              onChange={(e) => {
+                setModelQuery(e.target.value);
+                if (config) {
+                  // G4: another model by hand — reads and configuration requests on their way are for the old one.
+                  newGeneration();
+                  configRequest.current += 1;
+                  setConfig(null); setPicked({}); setUsedVariantId(null);
+                }
+              }}
             />
           </label>
           {shownHits.length ? (
@@ -623,16 +680,24 @@ export function ScanIntake({
               </strong>
             </p>
           </div>
+          <div className="flex min-w-0 gap-2">
           <input
             id={`${scanId}-input`} ref={scanRef} value={scanText} autoFocus={!coarse} data-testid="scan-intake-input"
             inputMode={coarse && !keyboard ? "none" : "text"}
-            className={`${internalInputClass} min-h-12 font-mono text-base`}
+            className={`${internalInputClass} min-h-12 min-w-0 flex-1 font-mono text-base`}
             placeholder="Pasa el lector por el código o escríbelo y pulsa Enter"
             autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="next"
             aria-describedby={`${scanId}-log`}
             onChange={(e) => { setScanText(e.target.value); rhythmChanged(rhythm.current, e.target.value); }}
             onKeyDown={onScanKeyDown}
           />
+            <button
+              type="button" className={`${internalButtonClass} min-h-12 shrink-0`} onClick={readTyped}
+              disabled={!scanText.trim()}
+            >
+              Leer
+            </button>
+          </div>
           <div className="flex flex-wrap items-center gap-3 text-xs text-muted">
             <label className="inline-flex items-center gap-2">
               El lector termina con
@@ -641,8 +706,7 @@ export function ScanIntake({
                 onChange={(e) => { const v = e.target.value as Terminator; setTerminator(v); saveTerminator(v); }}
               >
                 <option value="enter">Enter</option>
-                <option value="tab">Tab</option>
-                <option value="both">Enter o Tab</option>
+                <option value="tab">Tab (Enter también lee)</option>
               </select>
             </label>
             {coarse ? (

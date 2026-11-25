@@ -587,6 +587,17 @@ def _already_in_stock(company, product, cleaned: dict) -> tuple[str, str]:
             Q(imei=value) | Q(imei2=value),
         ).exists():
             return 'Ese IMEI ya está registrado en otro equipo de la empresa.', field
+    # SCAN-TO-STOCK-01 review R1 — an IMEI and a serial never name two devices: the till and every lookup read an
+    # IMEI-shaped code as an IMEI first (`unit_identification.find_unit`). A serial equal to a live device's IMEI (1 or
+    # 2), or an IMEI equal to a live device's serial, is refused in the company. Same occupancy as the IMEI: sold and
+    # written-off devices still hold theirs; a voided one frees them.
+    serial = cleaned['serial_number']
+    if serial and live.filter(company=company).filter(Q(imei=serial) | Q(imei2=serial)).exists():
+        return 'Esa serie es el IMEI de otro equipo de la empresa: revisa el dato.', 'serial_number'
+    for field in ('imei', 'imei2'):
+        value = cleaned[field]
+        if value and live.filter(company=company, serial_number=value).exists():
+            return 'Ese IMEI es la serie de otro equipo de la empresa: revisa el dato.', field
     return '', ''
 
 
@@ -696,6 +707,8 @@ def _lock_identifiers(company_id, product_id, cleaned_rows):
     for cleaned in cleaned_rows:
         if cleaned['serial_number']:
             keys.add(f'unit-serial|{company_id}|{product_id}|{cleaned["serial_number"]}')
+            # Review R1: a serial also queues with the same value received as an IMEI (any product of the company).
+            keys.add(f'unit-imei|{company_id}|{cleaned["serial_number"]}')
         for field in ('imei', 'imei2'):
             if cleaned[field]:
                 keys.add(f'unit-imei|{company_id}|{cleaned[field]}')

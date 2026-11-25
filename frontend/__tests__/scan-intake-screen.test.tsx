@@ -160,13 +160,26 @@ it('el foco vuelve al campo del lector después de cada lectura', async () => {
   await waitFor(() => expect(document.activeElement).toBe(input));
 });
 
-it('Tab termina la lectura sólo si así está configurado', async () => {
+it('Tab termina la lectura sólo si así está configurado; si no, sale del campo y descarta lo escrito (G5/G6)', async () => {
   const input = renderScreen();
   await chooseVariantByBoxCode(input);
   await scan(input, IMEI_1, 'Tab');
   expect(screen.getByTestId('scan-intake-value-imei')).toHaveTextContent('—');
-  fireEvent.change(screen.getByDisplayValue('Enter'), { target: { value: 'both' } });
+  expect(input.value).toBe('');
+  expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('Se descartó');
+  fireEvent.change(screen.getByDisplayValue('Enter'), { target: { value: 'tab' } });
   await scan(input, IMEI_1, 'Tab');
+  await waitFor(() => expect(screen.getByTestId('scan-intake-value-imei')).toHaveTextContent(IMEI_1));
+  // Below a full code, Tab leaves the field and nothing stale stays to glue onto the next read.
+  await scan(input, 'ab', 'Tab');
+  expect(input.value).toBe('');
+});
+
+it('G5: «Leer» lee lo escrito a mano', async () => {
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  fireEvent.change(input, { target: { value: IMEI_1 } });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer' })); });
   await waitFor(() => expect(screen.getByTestId('scan-intake-value-imei')).toHaveTextContent(IMEI_1));
 });
 
@@ -356,4 +369,114 @@ it('F12: mientras se registra, salir de la página se detiene', async () => {
   link.dispatchEvent(click);
   expect(click.defaultPrevented).toBe(true);
   link.remove();
+});
+
+// ---------------------------------------------------------------------------
+// Frontend re-review of #437 (G1–G8)
+// ---------------------------------------------------------------------------
+
+it('G1: Espacio sobre un botón lo activa (no va al lector)', async () => {
+  const input = renderScreen();
+  const used = screen.getByRole('button', { name: 'Seminuevo' });
+  used.focus();
+  const space = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+  used.dispatchEvent(space);
+  expect(space.defaultPrevented).toBe(false);
+  expect(input.value).toBe('');
+});
+
+it('G2: las teclas fuera de la pantalla (un menú, un diálogo, la barra) no van al lector', () => {
+  const input = renderScreen();
+  const menu = document.createElement('div');
+  menu.setAttribute('role', 'menu');
+  const item = document.createElement('button');
+  menu.appendChild(item);
+  document.body.appendChild(menu);
+  item.focus();
+  fireEvent.keyDown(item, { key: 'a' });
+  const outside = document.createElement('button');
+  document.body.appendChild(outside);
+  outside.focus();
+  fireEvent.keyDown(outside, { key: 'b' });
+  expect(input.value).toBe('');
+  // From the page itself (nothing focused), a read still reaches the scanner field.
+  (document.activeElement as HTMLElement | null)?.blur();
+  fireEvent.keyDown(document.body, { key: '7' });
+  expect(input.value).toBe('7');
+  menu.remove();
+  outside.remove();
+});
+
+it('G3: una lectura con la sucursal enfocada va al lector y no cambia la sucursal', async () => {
+  const input = renderScreen();
+  const branch = screen.getByTestId('scan-intake-branch');
+  branch.focus();
+  for (const key of '8'.repeat(32)) fireEvent.keyDown(branch, { key });
+  expect(input.value).toBe('8'.repeat(32));
+  await act(async () => { fireEvent.keyDown(branch, { key: 'Enter' }); });
+  await waitFor(() => expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('EID'));
+  expect((branch as HTMLSelectElement).value).toBe('1');
+});
+
+it('G4: escribir otro modelo descarta lo que estaba en camino', async () => {
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  const late = deferred<ScanCheck>();
+  check.mockImplementationOnce(() => late.promise);
+  await scan(input, IMEI_1);
+  fireEvent.change(screen.getByTestId('scan-intake-model'), { target: { value: 'Otro' } });
+  await act(async () => { late.resolve(byValue(IMEI_1)); await late.promise; });
+  await waitFor(() => expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('descartada'));
+  expect(screen.getByTestId('scan-intake-value-imei')).toHaveTextContent('—');
+});
+
+it('G7: el código de la caja y un IMEI leídos seguidos: el IMEI no se pierde', async () => {
+  const slow = deferred<ScanConfigurations>();
+  configs.mockImplementationOnce(() => slow.promise);
+  const box = deferred<ScanCheck>();
+  check.mockImplementationOnce(() => box.promise);
+  const input = renderScreen();
+  // Both reads leave before the box code is answered, as a scanner fires them.
+  await scan(input, '194253000001');
+  await scan(input, IMEI_1);
+  await act(async () => { box.resolve(byValue('194253000001')); await box.promise; });
+  await waitFor(() => expect(screen.getByTestId('scan-intake-value-imei')).toHaveTextContent(IMEI_1));
+  await act(async () => { slow.resolve(config); await slow.promise; });
+  await waitFor(() => expect(screen.getByTestId('scan-intake-variant')).toBeInTheDocument());
+  expect(screen.getByTestId('scan-intake-value-imei')).toHaveTextContent(IMEI_1);
+});
+
+it('G8: mientras se registra, «atrás» del navegador no sale de la pantalla', async () => {
+  const pending = deferred<lib.ScanReceived>();
+  receive.mockImplementationOnce(() => pending.promise);
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  await scan(input, IMEI_1);
+  await waitFor(() => expect(screen.getByTestId('scan-intake-confirm')).toBeEnabled());
+  const before = window.history.length;
+  await act(async () => { fireEvent.click(screen.getByTestId('scan-intake-confirm')); });
+  expect(window.history.length).toBeGreaterThan(before);
+  await act(async () => { window.dispatchEvent(new PopStateEvent('popstate')); });
+  expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('Espera a que termine');
+});
+
+it('tras un 5xx, cambiar el proveedor cambia la clave; sin cambios, la misma', async () => {
+  receive
+    .mockRejectedValueOnce(new lib.ScanIntakeError('Error del servidor', '', '', 502))
+    .mockRejectedValueOnce(new lib.ScanIntakeError('Error del servidor', '', '', 502))
+    .mockRejectedValueOnce(new lib.ScanIntakeError('Error del servidor', '', '', 502));
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  await scan(input, IMEI_1);
+  const confirm = screen.getByTestId('scan-intake-confirm');
+  await waitFor(() => expect(confirm).toBeEnabled());
+  await act(async () => { fireEvent.click(confirm); });
+  await waitFor(() => expect(confirm).toBeEnabled());
+  await act(async () => { fireEvent.click(confirm); });
+  fireEvent.change(screen.getByTestId('scan-intake-supplier'), { target: { value: '5' } });
+  await waitFor(() => expect(confirm).toBeEnabled());
+  await act(async () => { fireEvent.click(confirm); });
+  const keys = receive.mock.calls.map((call) => call[3]);
+  expect(keys[1]).toBe(keys[0]);
+  expect(keys[2]).not.toBe(keys[1]);
 });

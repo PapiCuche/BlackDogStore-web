@@ -25,7 +25,7 @@ import type { PosModelConfigurations, PosModelHit, PosPendingOrderLine } from ".
 export type Slot = "imei" | "imei2" | "serial";
 export type Choice = "imei" | "serial" | "gtin";
 export type ScanKind = "imei" | "eid" | "meid" | "imeisv" | "gtin" | "label_code" | "serial" | "unknown";
-export type Terminator = "enter" | "tab" | "both";
+export type Terminator = "enter" | "tab";
 
 export type ScanReading = {
   value: string;
@@ -167,19 +167,29 @@ export const MIN_CODE = 4;
 export type KeyMods = { shiftKey?: boolean; ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean };
 
 /**
- * La tecla termina la lectura. Con el campo vacío nada termina: un Enter doble (o un Tab de más) no hace nada, y
- * nunca confirma el ingreso. Ctrl, Alt o Cmd nunca terminan una lectura.
+ * La tecla termina la lectura. Con el campo vacío nada termina: un Enter doble no hace nada, y nunca confirma el
+ * ingreso. Ctrl, Alt o Cmd nunca terminan una lectura.
  *
- * Tab (revisión F9): sólo con el terminador «Tab» o «ambos», sin modificadores (Shift+Tab siempre vuelve atrás) y con
- * un código entero escrito (`MIN_CODE` caracteres o más). Con el campo vacío o con 1–3 caracteres, Tab hace lo de
- * siempre: lleva al control siguiente, y quien usa el teclado puede salir del campo.
+ * LA REGLA DE TAB (revisiones F9 y G5), determinista y sin mirar el ritmo de las teclas:
+ *   - Enter termina siempre (todo lector puede enviarlo, y es lo que pulsa quien escribe a mano). Quien escribe a mano
+ *     también tiene el botón «Leer».
+ *   - Tab termina SÓLO si el lector de esta caja está configurado para terminar con Tab (terminador «Tab»), sin
+ *     modificadores (Shift+Tab siempre vuelve atrás) y con un código entero escrito (`MIN_CODE` o más).
+ *   - En cualquier otro caso Tab hace lo de siempre: lleva al control siguiente. Si quedaba algo escrito, la pantalla
+ *     lo descarta y lo dice (revisión G6), para que no se pegue a la lectura siguiente.
+ * Con el terminador «Tab» y un código escrito, el primer Tab lo lee y el segundo (con el campo ya vacío) sale.
  */
 export function isTerminator(key: string, terminator: Terminator, value: string, mods: KeyMods = {}): boolean {
   const text = value.trim();
   if (!text || mods.ctrlKey || mods.altKey || mods.metaKey) return false;
-  if (key === "Enter") return terminator === "enter" || terminator === "both";
-  if (key === "Tab") return (terminator === "tab" || terminator === "both") && !mods.shiftKey && text.length >= MIN_CODE;
+  if (key === "Enter") return true;
+  if (key === "Tab") return terminator === "tab" && !mods.shiftKey && text.length >= MIN_CODE;
   return false;
+}
+
+/** Una preferencia guardada: «ambos» (de una versión anterior) es «Tab», porque Enter ya termina siempre. */
+export function normalizeTerminator(value: string | null | undefined): Terminator {
+  return value === "tab" || value === "both" ? "tab" : "enter";
 }
 
 /** Varias lecturas pueden llegar mientras la anterior se consulta: se atienden en orden, de una en una. */
@@ -344,8 +354,7 @@ const TERMINATOR_KEY = "scan-intake-terminator";
 /** Preferencia de este navegador; sin almacenamiento (ventana privada) vale Enter. */
 export function readTerminator(): Terminator {
   try {
-    const value = storageGet("local", TERMINATOR_KEY);
-    return value === "tab" || value === "both" ? value : "enter";
+    return normalizeTerminator(storageGet("local", TERMINATOR_KEY));
   } catch {
     return "enter";
   }

@@ -26,7 +26,7 @@ from store import device_catalog
 from store import inventory_services as inventory
 from store import stock_unit_services as units
 from store.models import (
-    AdminAuditLog, OrderItem, OrderUnit, Product, ProductBarcode, StockMovement, StockUnit,
+    AdminAuditLog, Branch, OrderItem, OrderUnit, Product, ProductBarcode, StockMovement, StockUnit,
 )
 from store.test_pos_order_arrival import ArrivalShop
 from store.test_pos_quick_device import MANAGER_CAPS, RECEIVER_CAPS, QuickShop, _api
@@ -577,6 +577,113 @@ class PermissionsTest(ScanShop, TestCase):
 # ---------------------------------------------------------------------------
 # Two clerks, one IMEI
 # ---------------------------------------------------------------------------
+
+class ImeiSerialCrossTest(ScanShop, TestCase):
+    """
+    Review R1 — an IMEI and a serial never name two devices. A serial equal to an IMEI (1 or 2) of a live device of
+    the company is refused, and an IMEI equal to a live device's serial too, on every door (`receive_units`, the till,
+    the scan door). Sold and written-off devices still occupy; a voided one frees.
+    """
+
+    def setUp(self):
+        self.build('scan-cruce')
+        self.plain = _prod(self.company, 'Laptop sin IMEI', 'scan-cruce-laptop', price='10.00', inventory=0)
+        Product.objects.filter(pk=self.plain.pk).update(is_serialized=True, requires_imei=False)
+        self.plain.refresh_from_db()
+
+    def test_receive_units_refuses_a_serial_that_is_another_devices_imei_or_imei2(self):
+        second = self.fresh()
+        holder = units.receive_units(branch=self.branch, product=self.existing, actor=self.manager, reason='Compra',
+                                     units=[{'imei': self.fresh(), 'imei2': second}])[0]
+        for value in (holder.imei, second):
+            with self.subTest(value=value), self.assertRaises(units.StockUnitError) as caught:
+                units.receive_units(branch=self.branch, product=self.plain, actor=self.manager, reason='Compra',
+                                    units=[{'serial_number': value}])
+            self.assertEqual(caught.exception.field, 'serial_number')
+
+    def test_sold_and_written_off_still_occupy_voided_frees(self):
+        sold, gone, void = self.here[0], self.here[1], units.receive_units(
+            branch=self.branch, product=self.existing, actor=self.manager, reason='Compra',
+            units=[{'imei': self.fresh()}])[0]
+        StockUnit.objects.filter(pk=sold.pk).update(status=StockUnit.Status.SOLD)
+        units.write_off(gone, reason='Robado', actor=self.manager)
+        for unit in (sold, gone):
+            with self.subTest(status=unit.pk), self.assertRaises(units.StockUnitError):
+                units.receive_units(branch=self.branch, product=self.plain, actor=self.manager, reason='Compra',
+                                    units=[{'serial_number': unit.imei}])
+        StockUnit.objects.filter(pk=void.pk).update(status=StockUnit.Status.VOIDED, voided_at='2026-11-01T00:00Z')
+        units.receive_units(branch=self.branch, product=self.plain, actor=self.manager, reason='Compra',
+                            units=[{'serial_number': void.imei}])
+
+    def test_receive_units_refuses_an_imei_that_is_another_devices_serial(self):
+        value = self.fresh()
+        units.receive_units(branch=self.branch, product=self.plain, actor=self.manager, reason='Compra',
+                            units=[{'serial_number': value}])
+        with self.assertRaises(units.StockUnitError) as caught:
+            units.receive_units(branch=self.branch, product=self.existing, actor=self.manager, reason='Compra',
+                                units=[{'imei': value}])
+        self.assertEqual(caught.exception.field, 'imei')
+
+    def test_scan_door_new_device_without_imei_cannot_take_an_imei_as_its_serial(self):
+        body = {'condition': 'new', 'model': self.model.pk, 'method': 'manual', 'price': '3900.00',
+                'option_ids': [self.gb256.pk, self.blue.pk, self.esim.pk, self.ja.pk],
+                'serial_number': self.here[0].imei, 'serial_confirmed': True}
+        res = self.scan_receive(self.manager, body)
+        self.assertEqual((res.status_code, res.json()['code'], res.json()['field']),
+                         (409, 'duplicate_serial', 'serial_number'), res.content)
+        self.assertFalse(StockUnit.objects.filter(serial_number=self.here[0].imei).exists())
+
+    def test_scan_door_used_device_without_imei_cannot_take_an_imei_as_its_serial(self):
+        Product.objects.filter(pk=self.used.pk).update(requires_imei=False)
+        body = {'condition': 'used', 'product_id': self.used.pk, 'method': 'manual',
+                'serial_number': self.here[0].imei, 'serial_confirmed': True}
+        res = self.scan_receive(self.clerk, body)
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'duplicate_serial'), res.content)
+
+    def test_the_till_refuses_a_serial_that_is_another_devices_imei(self):
+        body = self.body([self.gb128, self.black, self.esim, self.lla], price=None)
+        body['serial_number'] = self.here[0].imei
+        res = self.post(self.manager, body, key='till-cross')
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'duplicate_serial'), res.content)
+
+
+class MaskingScopeTest(ScanShop, TestCase):
+    """
+    Review R3 — the 409 and the check are masked only for actors restricted to some branches. A company-wide actor
+    keeps the device's details, also for a device in a deactivated branch.
+    """
+
+    def setUp(self):
+        self.build('scan-mascara')
+        self.north_unit = units.receive_units(branch=self.north, product=self.existing, actor=self.manager,
+                                              reason='Compra', units=[{'imei': self.fresh()}])[0]
+        Branch.objects.filter(pk=self.north.pk).update(is_active=False)
+        self.limited, _ = _p2d_member(self.company, 'scan-mascara-sel', MANAGER_CAPS, branches=[self.branch])
+
+    def test_a_company_wide_actor_is_told_which_device_even_in_a_deactivated_branch(self):
+        res = self.scan_receive(self.manager, self.new_body(imei=self.north_unit.imei))
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'duplicate_imei'), res.content)
+        self.assertEqual(res.json()['unit']['id'], self.north_unit.pk)
+        self.assertIn(self.north.name, res.json()['detail'])
+        brief = self.check(self.manager, self.north_unit.imei).json()['unit']
+        self.assertEqual((brief['standing'], brief['id']), ('registered', self.north_unit.pk))
+
+    def test_a_restricted_actor_is_told_only_that_it_exists(self):
+        res = self.scan_receive(self.limited, self.new_body(imei=self.north_unit.imei))
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'duplicate_imei'), res.content)
+        self.assertNotIn('unit', res.json())
+        self.assertNotIn(self.north.name, res.content.decode())
+        self.assertEqual(self.check(self.limited, self.north_unit.imei).json()['unit']['standing'], 'elsewhere')
+
+    def test_a_label_code_out_of_reach_is_not_called_another_devices_internal_code(self):
+        # Review R2.
+        body = self.check(self.limited, self.north_unit.label_code, choice='serial').json()
+        self.assertEqual(body['conflict']['code'], 'label_code')
+        self.assertNotIn('código interno', body['conflict']['detail'])
+        self.assertIn('ya existe en la empresa', body['conflict']['detail'])
+        reach = self.check(self.manager, self.north_unit.label_code, choice='serial').json()
+        self.assertIn('código interno', reach['conflict']['detail'])
+
 
 class SameImeiRaceTest(ScanShop, TransactionTestCase):
     def setUp(self):

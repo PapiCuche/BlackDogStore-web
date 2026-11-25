@@ -12,6 +12,7 @@ import {
   decide,
   expectedSlot,
   isTerminator,
+  normalizeTerminator,
   reviewProblems,
   type Identifiers,
   type ScanCheck,
@@ -160,19 +161,24 @@ describe("isTerminator — doble Enter y Tab", () => {
 
   it("Tab con modificadores (Shift+Tab) o con poco escrito deja salir del campo (revisión F9)", () => {
     expect(isTerminator("Tab", "tab", IMEI_1, { shiftKey: true })).toBe(false);
-    expect(isTerminator("Tab", "both", IMEI_1, { ctrlKey: true })).toBe(false);
+    expect(isTerminator("Tab", "tab", IMEI_1, { ctrlKey: true })).toBe(false);
     expect(isTerminator("Tab", "tab", "abc")).toBe(false);
     expect(isTerminator("Enter", "enter", IMEI_1, { metaKey: true })).toBe(false);
     expect(isTerminator("Enter", "enter", "abc")).toBe(true);
   });
 
-  it("Enter o Tab según la configuración", () => {
+  it("Tab termina sólo con el terminador «Tab»; Enter termina siempre (revisión G5)", () => {
     expect(isTerminator("Enter", "enter", IMEI_1)).toBe(true);
     expect(isTerminator("Tab", "enter", IMEI_1)).toBe(false);
     expect(isTerminator("Tab", "tab", IMEI_1)).toBe(true);
-    expect(isTerminator("Enter", "tab", IMEI_1)).toBe(false);
-    expect(isTerminator("Tab", "both", IMEI_1)).toBe(true);
-    expect(isTerminator("a", "both", IMEI_1)).toBe(false);
+    expect(isTerminator("Enter", "tab", IMEI_1)).toBe(true);
+    expect(isTerminator("a", "tab", IMEI_1)).toBe(false);
+  });
+
+  it("una preferencia vieja «ambos» se lee como «Tab»", () => {
+    expect(normalizeTerminator("both")).toBe("tab");
+    expect(normalizeTerminator("tab")).toBe("tab");
+    expect(normalizeTerminator("x")).toBe("enter");
   });
 });
 

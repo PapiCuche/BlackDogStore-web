@@ -417,12 +417,19 @@ def duplicate(company, row: dict, product=None, *, actor=None) -> QuickSaleError
     return _duplicate(company, row, product, actor=actor)
 
 
-def _visible_branch_ids(company, actor) -> set[int] | None:
-    """The branches `actor` reaches in `company`; None (no masking) only when no actor is known."""
+def reachable_branch_ids(company, actor) -> set[int] | None:
+    """
+    SCAN-TO-STOCK-01 review R3 — the branches an answer may name a device in. None means «no masking»: no actor
+    known, or an actor with company-wide scope (`has_company_wide_scope`: platform master, legacy bridge, Membership
+    ALL), who keeps every detail — also of a device in a deactivated branch. A restricted actor (Membership SELECTED)
+    gets the ids of the active branches granted.
+    """
     if actor is None:
         return None
-    from .tenancy import visible_branches
+    from .tenancy import has_company_wide_scope, visible_branches
 
+    if has_company_wide_scope(actor, company):
+        return None
     return set(visible_branches(actor, company).values_list('pk', flat=True))
 
 
@@ -435,12 +442,14 @@ def _duplicate(company, row: dict, product=None, *, actor=None) -> QuickSaleErro
     """
     live = (StockUnit.objects.filter(company=company).exclude(status=StockUnit.Status.VOIDED)
             .select_related('product', 'branch'))
-    visible = _visible_branch_ids(company, actor)
+    visible = reachable_branch_ids(company, actor)
     for field in ('imei', 'imei2'):
         value = row.get(field)
         if not value:
             continue
         holder = live.filter(Q(imei=value) | Q(imei2=value)).order_by('pk').first()
+        # Review R1: an IMEI equal to a live device's serial names that device too.
+        holder = holder or live.filter(serial_number=value).order_by('pk').first()
         if holder is not None:
             if visible is not None and holder.branch_id not in visible:
                 return QuickSaleError(
@@ -452,6 +461,16 @@ def _duplicate(company, row: dict, product=None, *, actor=None) -> QuickSaleErro
                 f'{holder.get_status_display().lower()}, {holder.branch.name}). Revisa el número o busca ese equipo.',
                 code='duplicate_imei', field=field, status=409, extra={'unit': _unit_brief(holder)})
     serial = row.get('serial_number')
+    # Review R1: a serial equal to a live device's IMEI (1 or 2), in any variant, names that device.
+    holder = live.filter(Q(imei=serial) | Q(imei2=serial)).order_by('pk').first() if serial else None
+    if holder is not None:
+        if visible is not None and holder.branch_id not in visible:
+            return QuickSaleError('Esa serie es el IMEI de un equipo de otra sucursal de la empresa. Revisa el dato.',
+                                  code='duplicate_serial', field='serial_number', status=409)
+        return QuickSaleError(
+            f'Esa serie es el IMEI del equipo {holder.label_code or holder.pk} («{holder.product.name}», '
+            f'{holder.branch.name}). Revisa el dato.',
+            code='duplicate_serial', field='serial_number', status=409, extra={'unit': _unit_brief(holder)})
     if serial and product is not None:
         holder = live.filter(product=product, serial_number=serial).order_by('pk').first()
         if holder is not None:

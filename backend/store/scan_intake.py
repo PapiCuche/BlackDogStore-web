@@ -80,6 +80,13 @@ def _unit_brief(unit, visible_ids) -> dict:
             'product_name': unit.product.name, 'branch_name': unit.branch.name}
 
 
+class _AllBranches:
+    """Every branch id: what a company-wide actor reaches (review R3)."""
+
+    def __contains__(self, _branch_id) -> bool:
+        return True
+
+
 def _product_brief(product) -> dict:
     return {'id': product.pk, 'name': product.name, 'model_id': product.product_model_id,
             'condition_line': product.condition_line, 'is_serialized': product.is_serialized,
@@ -101,7 +108,6 @@ def check(*, company, user, code, product_id=None, choice=None, expected='') -> 
     Products and devices of branches the caller does not reach are never named (review B7/B9).
     """
     from . import unit_codes
-    from .tenancy import visible_branches
 
     if expected not in ('', None, *scan_classifier.SLOTS):
         raise ScanIntakeError('Casilla esperada no válida.', field='expected')
@@ -143,7 +149,9 @@ def check(*, company, user, code, product_id=None, choice=None, expected='') -> 
     if reading.kind == scan_classifier.GTIN:
         return answer
 
-    visible_ids = set(visible_branches(user, company).values_list('pk', flat=True))
+    # Review R3: masked only for an actor restricted to some branches; a company-wide one sees every branch.
+    reach = quick.reachable_branch_ids(company, user)
+    visible_ids = reach if reach is not None else _AllBranches()
     live = (StockUnit.objects.filter(company=company).exclude(status=StockUnit.Status.VOIDED)
             .select_related('product', 'branch'))
     found = None
@@ -153,9 +161,12 @@ def check(*, company, user, code, product_id=None, choice=None, expected='') -> 
         found = live.filter(Q(imei=value) | Q(imei2=value)).order_by('pk').first()
     could_be_serial = reading.kind == scan_classifier.SERIAL or scan_classifier.SERIAL in reading.alternatives
     if found is None and could_be_serial:
-        if reading.kind != scan_classifier.LABEL_CODE and live.filter(label_code=value).exists():
-            answer['conflict'] = {'code': 'label_code',
-                                  'detail': f'«{value}» es el código interno de otro equipo de esta empresa.'}
+        labelled = live.filter(label_code=value).first() if reading.kind != scan_classifier.LABEL_CODE else None
+        if labelled is not None:
+            # Review R2: out of the caller's reach, only that the code exists — not what it is of.
+            answer['conflict'] = {'code': 'label_code', 'detail': (
+                f'«{value}» es el código interno de otro equipo de esta empresa.' if labelled.branch_id in visible_ids
+                else f'«{value}» ya existe en la empresa como identificador de otro equipo: revisa el dato.')}
             return answer
         same = live.filter(serial_number=value)
         product = Product.objects.filter(company=company, pk=product_id).first() if product_id else None
@@ -167,7 +178,8 @@ def check(*, company, user, code, product_id=None, choice=None, expected='') -> 
             others = same
         if found is None:
             # INV-SERIAL-01's warning, naming the variant only when the device is in a branch the caller reaches (B9).
-            seen = others.filter(branch_id__in=visible_ids).order_by('pk').values_list('product__name', flat=True).first()
+            named = others if reach is None else others.filter(branch_id__in=reach)
+            seen = named.order_by('pk').values_list('product__name', flat=True).first()
             answer['serial_elsewhere'] = seen or ''
             answer['serial_elsewhere_hidden'] = not seen and others.exists()
     if found is not None:
