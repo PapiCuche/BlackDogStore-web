@@ -149,7 +149,7 @@ it('un código dudoso se pregunta; elegida la serie, el servidor la confirma y s
   expect(screen.getByTestId('scan-intake-value-serial')).toHaveTextContent('—');
   await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Es la serie' })); });
   await waitFor(() => expect(screen.getByTestId('scan-intake-value-serial')).toHaveTextContent('1234567890'));
-  expect(check).toHaveBeenLastCalledWith(7, '1234567890', { productId: 100, choice: 'serial' });
+  expect(check).toHaveBeenLastCalledWith(7, '1234567890', expect.objectContaining({ productId: 100, choice: 'serial' }));
 });
 
 it('el foco vuelve al campo del lector después de cada lectura', async () => {
@@ -209,4 +209,151 @@ it('un pedido pagado que espera aquí se resuelve antes de confirmar', async () 
   expect(screen.getByTestId('scan-intake-confirm')).toBeDisabled();
   fireEvent.click(screen.getByLabelText(/Es del pedido #8/));
   await waitFor(() => expect(screen.getByTestId('scan-intake-confirm')).toBeEnabled());
+});
+
+// ---------------------------------------------------------------------------
+// Review of #437
+// ---------------------------------------------------------------------------
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
+it('F1: una respuesta que llega después de limpiar el equipo se descarta y se dice', async () => {
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  const late = deferred<ScanCheck>();
+  check.mockImplementationOnce(() => late.promise);
+  await scan(input, IMEI_1);
+  fireEvent.click(screen.getByRole('button', { name: 'Limpiar este equipo' }));
+  await act(async () => { late.resolve(byValue(IMEI_1)); await late.promise; });
+  await waitFor(() => expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('descartada'));
+  expect(screen.getByTestId('scan-intake-value-imei')).toHaveTextContent('—');
+});
+
+it('F2/F5: con una pregunta abierta el foco sigue en el lector, Enter en una opción no elige y otra lectura espera', async () => {
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  await scan(input, '1234567890');
+  const dialog = await screen.findByTestId('scan-intake-ask');
+  await waitFor(() => expect(document.activeElement).toBe(input));
+  const calls = check.mock.calls.length;
+  // Another read while the question is open: not sent, and said.
+  await scan(input, IMEI_1);
+  expect(check.mock.calls.length).toBe(calls);
+  expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('Responde primero');
+  // A scanner's trailing Enter on a focused option, with characters in the buffer: no choice is made.
+  const option = within(dialog).getByRole('button', { name: 'Es la serie' });
+  fireEvent.change(input, { target: { value: '99' } });
+  option.focus();
+  await act(async () => { fireEvent.keyDown(option, { key: 'Enter' }); });
+  expect(screen.getByTestId('scan-intake-ask')).toBeInTheDocument();
+  expect(check.mock.calls.length).toBe(calls);
+  fireEvent.change(input, { target: { value: '' } });
+  await act(async () => { fireEvent.click(option); });
+  await waitFor(() => expect(screen.getByTestId('scan-intake-value-serial')).toHaveTextContent('1234567890'));
+  expect(document.activeElement).toBe(input);
+});
+
+it('F3: con «Confirmar ingreso» enfocado, una lectura va al lector y su Enter no confirma', async () => {
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  await scan(input, IMEI_1);
+  const confirm = screen.getByTestId('scan-intake-confirm');
+  await waitFor(() => expect(confirm).toBeEnabled());
+  confirm.focus();
+  for (const key of IMEI_2) fireEvent.keyDown(confirm, { key });
+  expect(input.value).toBe(IMEI_2);
+  await act(async () => { fireEvent.keyDown(confirm, { key: 'Enter' }); });
+  await waitFor(() => expect(screen.getByTestId('scan-intake-value-imei2')).toHaveTextContent(IMEI_2));
+  expect(receive).not.toHaveBeenCalled();
+});
+
+it('F6: elegir «Seminuevo» no le quita el foco a ese botón', async () => {
+  renderScreen();
+  const used = screen.getByRole('button', { name: 'Seminuevo' });
+  used.focus();
+  fireEvent.click(used);
+  await new Promise((r) => setTimeout(r, 5));
+  expect(document.activeElement).toBe(used);
+});
+
+it('F7: con pantalla táctil el lector no abre el teclado del móvil, salvo que se pida', () => {
+  const original = window.matchMedia;
+  window.matchMedia = ((query: string) => ({
+    matches: query.includes('coarse'), media: query, addEventListener() {}, removeEventListener() {},
+    addListener() {}, removeListener() {}, onchange: null, dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+  try {
+    const input = renderScreen();
+    expect(input.getAttribute('inputmode')).toBe('none');
+    expect(document.activeElement).not.toBe(input);
+    fireEvent.click(screen.getByRole('button', { name: /Teclado/ }));
+    expect(input.getAttribute('inputmode')).toBe('text');
+  } finally {
+    window.matchMedia = original;
+  }
+});
+
+it('F8: una combinación nueva sin «Administrar productos» no pide precio y no se confirma', async () => {
+  configs.mockResolvedValue({
+    ...config, combinations: [{ ...config.combinations[0], variant: null }],
+  } as ScanConfigurations);
+  const input = renderScreen();
+  await scan(input, '194253000001');
+  await waitFor(() => expect(screen.getByTestId('scan-intake-variant')).toBeInTheDocument());
+  await scan(input, IMEI_1);
+  await waitFor(() => expect(screen.getByTestId('scan-intake-value-imei')).toHaveTextContent(IMEI_1));
+  expect(screen.queryByTestId('scan-intake-price')).not.toBeInTheDocument();
+  expect(screen.getByTestId('scan-intake-problems')).toHaveTextContent('Administrar productos');
+  expect(screen.getByTestId('scan-intake-confirm')).toBeDisabled();
+});
+
+it('F10: cada botón de casilla dice qué casilla toca', async () => {
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  await scan(input, IMEI_1);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Borrar IMEI 1' })).toBeInTheDocument());
+  const toggle = screen.getByRole('button', { name: 'Marcar que no tiene IMEI 2' });
+  expect(toggle).not.toHaveAttribute('aria-pressed');
+});
+
+it('F11: tras un 5xx se reintenta con la misma clave; tras un rechazo 4xx, con otra', async () => {
+  receive
+    .mockRejectedValueOnce(new lib.ScanIntakeError('Error del servidor', '', '', 502))
+    .mockRejectedValueOnce(new lib.ScanIntakeError('Ese IMEI ya está registrado', 'duplicate_imei', 'imei', 409))
+    .mockRejectedValueOnce(new lib.ScanIntakeError('Otra cosa', 'invalid', '', 400));
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  await scan(input, IMEI_1);
+  const confirm = screen.getByTestId('scan-intake-confirm');
+  for (let n = 0; n < 3; n += 1) {
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await act(async () => { fireEvent.click(confirm); });
+  }
+  const keys = receive.mock.calls.map((call) => call[3]);
+  expect(keys[1]).toBe(keys[0]);
+  expect(keys[2]).not.toBe(keys[1]);
+});
+
+it('F12: mientras se registra, salir de la página se detiene', async () => {
+  const pending = deferred<lib.ScanReceived>();
+  receive.mockImplementationOnce(() => pending.promise);
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  await scan(input, IMEI_1);
+  await waitFor(() => expect(screen.getByTestId('scan-intake-confirm')).toBeEnabled());
+  await act(async () => { fireEvent.click(screen.getByTestId('scan-intake-confirm')); });
+  const leave = new Event('beforeunload', { cancelable: true });
+  window.dispatchEvent(leave);
+  expect(leave.defaultPrevented).toBe(true);
+  const link = document.createElement('a');
+  link.href = '/admin';
+  document.body.appendChild(link);
+  const click = new MouseEvent('click', { bubbles: true, cancelable: true });
+  link.dispatchEvent(click);
+  expect(click.defaultPrevented).toBe(true);
+  link.remove();
 });

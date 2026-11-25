@@ -15,6 +15,7 @@ What these tests fix:
 
 Names are invented (AGENTS §2); IMEIs are synthetic with a valid Luhn digit.
 """
+import os
 from decimal import Decimal as D
 from threading import Barrier, Thread
 
@@ -28,7 +29,7 @@ from store.models import (
     AdminAuditLog, OrderItem, OrderUnit, Product, ProductBarcode, StockMovement, StockUnit,
 )
 from store.test_pos_order_arrival import ArrivalShop
-from store.test_pos_quick_device import RECEIVER_CAPS, QuickShop, _api
+from store.test_pos_quick_device import MANAGER_CAPS, RECEIVER_CAPS, QuickShop, _api
 from store.test_scan_classifier import gtin
 from store.test_stock_units import imei
 from store.tests import _c1_sale, _p2d_member, _p3_company, _prod
@@ -92,10 +93,24 @@ class CheckTest(ScanShop, TestCase):
         return res.json()
 
     def test_a_valid_free_imei_is_an_imei_with_nothing_registered(self):
-        body = self.reading(self.check(self.clerk, self.fresh()))
+        body = self.reading(self.check(self.clerk, self.fresh(), expected='imei'))
         self.assertEqual((body['reading']['kind'], body['reading']['certain']), ('imei', True))
         self.assertIsNone(body['unit'])
         self.assertIsNone(body['product'])
+
+    def test_fifteen_luhn_digits_while_the_serial_is_expected_are_asked(self):
+        body = self.reading(self.check(self.clerk, self.fresh(), expected='serial'))
+        self.assertEqual((body['reading']['kind'], body['reading']['certain']), ('imei', False))
+        self.assertEqual(body['reading']['alternatives'], ['imei', 'serial'])
+        res = self.check(self.clerk, self.fresh(), expected='model')
+        self.assertEqual(res.status_code, 400, res.content)
+
+    def test_a_meid_shaped_code_is_still_looked_up_as_a_serial(self):
+        unit = units.receive_units(branch=self.branch, product=self.existing, actor=self.manager, reason='Compra',
+                                   units=[{'imei': self.fresh(), 'serial_number': 'A0000012345678'}])[0]
+        body = self.reading(self.check(self.clerk, 'A0000012345678', product_id=self.existing.pk))
+        self.assertEqual(body['reading']['kind'], 'meid')
+        self.assertEqual(body['unit']['id'], unit.pk)
 
     def test_an_imei_that_fails_luhn_is_not_an_imei(self):
         value = self.fresh()
@@ -201,9 +216,29 @@ class CheckTest(ScanShop, TestCase):
     def test_a_device_outside_the_callers_branches_exists_without_its_details(self):
         limited, _ = _p2d_member(self.company, 'scan-check-norte', CLERK_CAPS, branches=[self.north])
         body = self.reading(self.check(limited, self.here[0].imei))
-        self.assertEqual(body['unit']['standing'], 'registered')
+        self.assertEqual(body['unit']['standing'], 'elsewhere')
         self.assertNotIn('id', body['unit'])
         self.assertNotIn('product_name', body['unit'])
+
+    def test_out_of_branch_a_sold_or_written_off_device_tells_no_status(self):
+        limited, _ = _p2d_member(self.company, 'scan-check-norte2', CLERK_CAPS, branches=[self.north])
+        sold, gone = self.here[0], self.here[1]
+        StockUnit.objects.filter(pk=sold.pk).update(status=StockUnit.Status.SOLD)
+        units.write_off(gone, reason='Robado', actor=self.manager)
+        for unit in (sold, gone):
+            with self.subTest(status=unit.pk):
+                brief = self.reading(self.check(limited, unit.imei))['unit']
+                self.assertEqual(set(brief), {'standing', 'detail'})
+                self.assertEqual(brief['standing'], 'elsewhere')
+                for word in ('vend', 'baja', self.branch.name, self.existing.name):
+                    self.assertNotIn(word, brief['detail'])
+
+    def test_out_of_branch_a_serial_elsewhere_or_a_label_does_not_name_the_product(self):
+        limited, _ = _p2d_member(self.company, 'scan-check-norte3', CLERK_CAPS, branches=[self.north])
+        body = self.reading(self.check(limited, self.here[0].serial_number, product_id=self.used.pk))
+        self.assertEqual(body['serial_elsewhere'], '')
+        self.assertTrue(body['serial_elsewhere_hidden'])
+        self.assertNotIn(self.existing.name, str(body))
 
     def test_without_inventory_adjust_nothing_is_read(self):
         viewer, _ = _p2d_member(self.company, 'scan-check-ver', VIEWER_CAPS)
@@ -273,7 +308,8 @@ class ReceiveNewTest(ScanShop, TestCase):
         self.assertEqual(res.json()['code'], 'duplicate_serial')
 
     def test_a_commercial_code_cannot_be_a_units_serial(self):
-        code = gtin('19000000003')
+        # A GTIN-shaped one is refused by its shape (`serial_not_a_serial`); any other product code by LABEL-02's rule.
+        code = 'QPROD7X12345'
         ProductBarcode.objects.create(company=self.company, product=self.existing, code=code)
         res = self.scan_receive(self.clerk, self.new_body(serial_number=code))
         self.assertEqual(res.status_code, 409, res.content)
@@ -299,6 +335,45 @@ class ReceiveNewTest(ScanShop, TestCase):
         body = self.new_body(option_ids=[self.gb256.pk, self.blue.pk, self.chip.pk, self.lla.pk], price='3900.00')
         res = self.scan_receive(self.manager, body)
         self.assertEqual(res.status_code, 400, res.content)
+
+    def test_a_serial_that_is_an_imei_eid_or_commercial_code_is_refused_on_its_field(self):
+        value = self.fresh()
+        cases = [(value, {'imei': value}), (self.fresh(), {}), ('8904' + '0' * 28, {}), (gtin('19000000004'), {}),
+                 (self.fresh()[:14] + '01', {})]
+        for n, (serial, extra) in enumerate(cases):
+            with self.subTest(serial=serial):
+                res = self.scan_receive(self.clerk, self.new_body(serial_number=serial, **extra), key=f'sn-{n}')
+                self.assertEqual(res.status_code, 400, res.content)
+                self.assertEqual((res.json()['field'], res.json()['code']), ('serial_number', 'serial_not_a_serial'))
+        # A Luhn-valid number the clerk explicitly called the serial (not this device's IMEI) is accepted.
+        res = self.scan_receive(self.clerk, self.new_body(serial_number=self.fresh(), serial_confirmed=True), key='ok')
+        self.assertEqual(res.status_code, 201, res.content)
+        # Never this device's own IMEI, confirmed or not.
+        value = self.fresh()
+        res = self.scan_receive(self.clerk, self.new_body(imei=value, serial_number=value, serial_confirmed=True),
+                                key='own')
+        self.assertEqual(res.status_code, 400, res.content)
+
+    def test_a_duplicate_in_a_branch_the_clerk_does_not_reach_names_nothing(self):
+        limited, _ = _p2d_member(self.company, 'scan-nuevo-norte', CLERK_CAPS, branches=[self.north])
+        res = self.scan_receive(limited, self.new_body(imei=self.here[0].imei), branch=self.north)
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'duplicate_imei'))
+        text = res.content.decode()
+        for word in (self.branch.name, self.existing.name, self.here[0].label_code):
+            self.assertNotIn(word, text)
+        self.assertNotIn('unit', res.json())
+
+    def test_the_till_names_nothing_of_a_branch_the_seller_does_not_reach_either(self):
+        limited, _ = _p2d_member(self.company, 'scan-caja-norte', MANAGER_CAPS, branches=[self.north])
+        q = f'?company={self.company.pk}&branch={self.north.pk}'
+        body = {'model': self.model.pk, 'option_ids': [self.gb128.pk, self.black.pk, self.esim.pk, self.lla.pk],
+                'imei': self.here[0].imei}
+        res = _api(limited).post(f'/api/admin/pos/devices/receive/{q}', body, format='json',
+                                 HTTP_IDEMPOTENCY_KEY='till-leak')
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'duplicate_imei'), res.content)
+        for word in (self.branch.name, self.here[0].label_code):
+            self.assertNotIn(word, res.content.decode())
+        self.assertNotIn('unit', res.json())
 
     def test_a_cost_needs_costs_view(self):
         res = self.scan_receive(self.clerk, self.new_body(cost='2500.00'))
@@ -448,6 +523,30 @@ class ReceiveUsedTest(ScanShop, TestCase):
         self.assertEqual([m['id'] for m in search.json()['results']], [self.model.pk])
 
 
+class UsedPendingOrderTest(ScanShop, ArrivalShop, TestCase):
+    """Review B10 — a paid order waiting for the USED variant here is presented before free stock, as for a new one."""
+
+    def setUp(self):
+        self.build('scan-usado-pedido')
+
+    def test_free_stock_of_a_used_device_over_a_waiting_order_needs_a_reason(self):
+        line = self.pending(product=self.used)
+        body = self.used_body()
+        res = self.scan_receive(self.clerk, body)
+        self.assertEqual((res.status_code, res.json()['code']), (409, 'pending_order_line'), res.content)
+        self.assertEqual(res.json()['lines'][0]['order_item'], line.pk)
+        self.assertFalse(StockUnit.objects.filter(imei=body['imei']).exists())
+        res = self.scan_receive(self.clerk, {**body, 'confirm_stock': True, 'reason': 'Cliente desistió'}, key='s-2')
+        self.assertEqual(res.status_code, 201, res.content)
+        log = AdminAuditLog.objects.get(company=self.company, action='pos_device_received_over_pending_order')
+        self.assertEqual(log.metadata['order_item_ids'], [line.pk])
+
+    def test_a_used_device_is_not_delivered_to_an_order_from_here(self):
+        line = self.pending(product=self.used)
+        res = self.scan_receive(self.clerk, {**self.used_body(), 'order_item': line.pk})
+        self.assertEqual((res.status_code, res.json()['code']), (400, 'used_order_line'), res.content)
+
+
 class PermissionsTest(ScanShop, TestCase):
     def setUp(self):
         self.build('scan-permisos')
@@ -485,6 +584,9 @@ class SameImeiRaceTest(ScanShop, TransactionTestCase):
 
     def race(self, make_body):
         if connection.vendor != 'postgresql':
+            # Review B12: CI runs PostgreSQL (backend-postgres-validation.yml); there a skip would hide the race.
+            if os.environ.get('CI'):
+                self.fail('CI must run this race on PostgreSQL.')
             self.skipTest('needs PostgreSQL row and advisory locks')
         value = self.fresh()
         barrier = Barrier(2)

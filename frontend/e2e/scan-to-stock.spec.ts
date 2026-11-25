@@ -183,6 +183,14 @@ test.describe("registrar equipo por escaneo", () => {
     await page.getByTestId("scan-intake-input").press("Enter");
     await expect(page.getByTestId("scan-intake-input")).toBeFocused();
     expect(unidad(NUEVO.imei).exists).toBe(false);
+
+    // Review F3: with «Confirmar ingreso» focused, a scanner's read goes to the scanner field and its Enter never confirms.
+    await page.getByTestId("scan-intake-confirm").focus();
+    await page.keyboard.type(EID, { delay: 0 });
+    await page.keyboard.press("Enter");
+    await expect(page.getByText("Consultando…")).toHaveCount(0);
+    await expect(page.getByTestId("scan-intake-log").getByRole("listitem").first()).toContainText("EID");
+    expect(unidad(NUEVO.imei).exists).toBe(false);
     await captura(page, "scan-to-stock-desktop-review");
 
     await page.getByTestId("scan-intake-confirm").click();

@@ -50,9 +50,10 @@ export type ScanProduct = {
 };
 
 export type ScanUnitBrief = {
-  standing: "registered" | "sold" | "written_off";
-  status: string;
-  status_label: string;
+  /** `elsewhere`: in a branch the person does not reach — nothing else is told (no status, product or branch). */
+  standing: "registered" | "sold" | "written_off" | "elsewhere";
+  status?: string;
+  status_label?: string;
   detail: string;
   id?: number;
   label_code?: string;
@@ -66,6 +67,8 @@ export type ScanCheck = {
   unit: ScanUnitBrief | null;
   conflict: { code: string; detail: string } | null;
   serial_elsewhere: string;
+  /** The serial is on a device of another variant in a branch the person does not reach: warned, never named. */
+  serial_elsewhere_hidden?: boolean;
 };
 
 export type Identifiers = { imei: string; imei2: string; serial: string };
@@ -131,17 +134,18 @@ export function decide(check: ScanCheck, ids: Identifiers): ScanOutcome {
     if (ids.serial) {
       return { type: "rejected", message: `La serie ya está leída (${ids.serial}). Si te equivocaste, bórrala primero.` };
     }
-    return {
-      type: "filled", slot: "serial", value, message: `Serie leída: ${value}.`,
-      ...(check.serial_elsewhere
-        ? { warning: `Esa serie ya existe en «${check.serial_elsewhere}». Si es el mismo equipo, no lo registres dos veces.` }
-        : {}),
-    };
+    const warning = check.serial_elsewhere
+      ? `Esa serie ya existe en «${check.serial_elsewhere}». Si es el mismo equipo, no lo registres dos veces.`
+      : check.serial_elsewhere_hidden
+        ? "Esa serie ya existe en un equipo de otra variante, en otra sucursal de la empresa. Si es el mismo equipo, no lo registres dos veces."
+        : "";
+    return { type: "filled", slot: "serial", value, message: `Serie leída: ${value}.`, ...(warning ? { warning } : {}) };
   }
   if (reading.kind === "gtin" && reading.certain) {
+    // Review B2: a sure commercial code is never a serial, even when no product of the company carries it.
     return {
-      type: "ask", value, options: ["serial"],
-      message: "Es un código comercial, pero ningún producto de la empresa lo tiene. Si en realidad es la serie del equipo, indícalo.",
+      type: "rejected",
+      message: "Es un código comercial (UPC/EAN), pero ningún producto de la empresa lo tiene: no identifica el equipo. Elige el modelo y lee el IMEI o la serie.",
     };
   }
   const options = reading.alternatives.filter((choice): choice is Choice => ["imei", "serial", "gtin"].includes(choice));
@@ -157,14 +161,24 @@ export function applyOutcome(ids: Identifiers, outcome: ScanOutcome): Identifier
   return outcome.type === "filled" ? { ...ids, [outcome.slot]: outcome.value } : ids;
 }
 
+/** Lo más corto que es un identificador entero (una serie tiene al menos 4 caracteres, `device_identity.SERIAL_MIN`). */
+export const MIN_CODE = 4;
+
+export type KeyMods = { shiftKey?: boolean; ctrlKey?: boolean; altKey?: boolean; metaKey?: boolean };
+
 /**
  * La tecla termina la lectura. Con el campo vacío nada termina: un Enter doble (o un Tab de más) no hace nada, y
- * nunca confirma el ingreso.
+ * nunca confirma el ingreso. Ctrl, Alt o Cmd nunca terminan una lectura.
+ *
+ * Tab (revisión F9): sólo con el terminador «Tab» o «ambos», sin modificadores (Shift+Tab siempre vuelve atrás) y con
+ * un código entero escrito (`MIN_CODE` caracteres o más). Con el campo vacío o con 1–3 caracteres, Tab hace lo de
+ * siempre: lleva al control siguiente, y quien usa el teclado puede salir del campo.
  */
-export function isTerminator(key: string, terminator: Terminator, value: string): boolean {
-  if (!value.trim()) return false;
+export function isTerminator(key: string, terminator: Terminator, value: string, mods: KeyMods = {}): boolean {
+  const text = value.trim();
+  if (!text || mods.ctrlKey || mods.altKey || mods.metaKey) return false;
   if (key === "Enter") return terminator === "enter" || terminator === "both";
-  if (key === "Tab") return terminator === "tab" || terminator === "both";
+  if (key === "Tab") return (terminator === "tab" || terminator === "both") && !mods.shiftKey && text.length >= MIN_CODE;
   return false;
 }
 
@@ -179,10 +193,15 @@ export class ReadQueue {
 }
 
 /** Lo que el formulario pide antes de habilitar «Confirmar ingreso». Vacío: se puede confirmar. */
+export const CREATE_FORBIDDEN =
+  "Esta combinación todavía no existe como variante. Crearla requiere además «Administrar productos»: pide a un usuario autorizado que reciba el equipo.";
+
 export function reviewProblems(input: {
   ids: Identifiers;
   plan: SlotPlan;
   variantChosen: boolean;
+  /** The combination is not a variant yet and the person may not create one (the server would answer 403). */
+  createForbidden?: boolean;
   needsPrice: boolean;
   price: string;
   cost: string;
@@ -195,6 +214,7 @@ export function reviewProblems(input: {
   const problems: string[] = [];
   const amount = /^\d{1,9}(\.\d{1,2})?$/;
   if (!input.variantChosen) problems.push("Elige el modelo y la variante.");
+  if (input.createForbidden) problems.push(CREATE_FORBIDDEN);
   if (input.plan.requiresImei && !input.ids.imei) problems.push("Falta el IMEI 1.");
   if (!input.plan.requiresImei && !input.ids.imei && !input.ids.serial) problems.push("Falta la serie.");
   if (input.ids.imei2 && !input.ids.imei) problems.push("El IMEI 2 acompaña al IMEI 1: lee primero el IMEI 1.");
@@ -278,12 +298,15 @@ function query(companyId: number | null, extra: Record<string, string> = {}) {
 }
 
 export async function scanCheck(
-  companyId: number | null, code: string, opts: { productId?: number | null; choice?: Choice } = {},
+  companyId: number | null, code: string,
+  opts: { productId?: number | null; choice?: Choice; expected?: Slot | null } = {},
 ): Promise<ScanCheck> {
   const res = await fetchWithAuth(`${API_BASE}/admin/inventory/scan/check/?${query(companyId)}`, {
     method: "POST",
     body: JSON.stringify({
       code, ...(opts.productId ? { product_id: opts.productId } : {}), ...(opts.choice ? { choice: opts.choice } : {}),
+      // Review B3: only an IMEI slot makes fifteen Luhn digits a sure IMEI.
+      ...(opts.expected ? { expected: opts.expected } : {}),
     }),
   });
   if (res.ok) return res.json();

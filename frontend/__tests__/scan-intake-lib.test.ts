@@ -114,9 +114,27 @@ describe("decide — lo que no es un IMEI", () => {
     expect(applyOutcome(EMPTY_IDENTIFIERS, outcome)).toEqual(EMPTY_IDENTIFIERS);
   });
 
-  it("un código comercial sin producto en la empresa pregunta", () => {
-    expect(decide(check({ value: "194253000001", kind: "gtin", certain: true }), EMPTY_IDENTIFIERS))
-      .toMatchObject({ type: "ask", options: ["serial"] });
+  it("un código comercial sin producto en la empresa se rechaza: nunca es la serie (revisión B2)", () => {
+    expect(decide(check({ value: "194253000001", kind: "gtin", certain: true }), EMPTY_IDENTIFIERS).type).toBe("rejected");
+  });
+
+  it("15 dígitos con Luhn sin esperar un IMEI preguntan IMEI o serie (revisión B3)", () => {
+    const outcome = decide(
+      check({ value: IMEI_1, kind: "imei", certain: false, alternatives: ["imei", "serial"], detail: "¿IMEI o serie?" }),
+      { imei: "350000000000030", imei2: IMEI_2, serial: "" });
+    expect(outcome).toMatchObject({ type: "ask", options: ["imei", "serial"] });
+  });
+
+  it("fuera de sus sucursales sólo se dice que existe", () => {
+    const unit = { standing: "elsewhere" as const, detail: "Ese identificador ya está registrado en un equipo de otra sucursal" };
+    expect(decide(check({ value: IMEI_1, kind: "imei", certain: true }, { unit }), EMPTY_IDENTIFIERS))
+      .toEqual({ type: "rejected", message: unit.detail });
+  });
+
+  it("una serie que existe en una variante de otra sucursal avisa sin nombrarla", () => {
+    const outcome = decide(
+      check({ value: "QZ7K2M9XW1", kind: "serial", certain: true }, { serial_elsewhere_hidden: true }), EMPTY_IDENTIFIERS);
+    expect(outcome.type === "filled" && outcome.warning).toContain("otra sucursal");
   });
 
   it("un identificador ya registrado (vendido, de baja o en estante) se rechaza con lo que dijo el servidor", () => {
@@ -138,6 +156,14 @@ describe("isTerminator — doble Enter y Tab", () => {
   it("con el campo vacío ninguna tecla termina (un Enter doble no hace nada)", () => {
     expect(isTerminator("Enter", "enter", "")).toBe(false);
     expect(isTerminator("Enter", "enter", "   ")).toBe(false);
+  });
+
+  it("Tab con modificadores (Shift+Tab) o con poco escrito deja salir del campo (revisión F9)", () => {
+    expect(isTerminator("Tab", "tab", IMEI_1, { shiftKey: true })).toBe(false);
+    expect(isTerminator("Tab", "both", IMEI_1, { ctrlKey: true })).toBe(false);
+    expect(isTerminator("Tab", "tab", "abc")).toBe(false);
+    expect(isTerminator("Enter", "enter", IMEI_1, { metaKey: true })).toBe(false);
+    expect(isTerminator("Enter", "enter", "abc")).toBe(true);
   });
 
   it("Enter o Tab según la configuración", () => {
@@ -189,6 +215,10 @@ describe("reviewProblems", () => {
     expect(reviewProblems({ ...base, waitingHere: true, orderChoice: "stock", stockReason: "no" }).length).toBe(1);
     expect(reviewProblems({ ...base, waitingHere: true, orderChoice: "stock", stockReason: "Cliente desistió" })).toEqual([]);
     expect(reviewProblems({ ...base, waitingHere: true, orderChoice: 12 })).toEqual([]);
+  });
+
+  it("una variante nueva sin permiso para crearla no se confirma (revisión F8)", () => {
+    expect(reviewProblems({ ...base, createForbidden: true }).join(" ")).toContain("Administrar productos");
   });
 
   it("una variante nueva necesita precio; la batería es un porcentaje", () => {

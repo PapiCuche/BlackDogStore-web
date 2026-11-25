@@ -34,6 +34,9 @@ IMEI, EID, MEID, IMEISV, GTIN, LABEL_CODE, SERIAL, UNKNOWN = (
 KINDS = (IMEI, EID, MEID, IMEISV, GTIN, LABEL_CODE, SERIAL, UNKNOWN)
 #: What a clerk may say a doubtful code is. Only these two are written on a device; `gtin` picks a product.
 CHOICES = (IMEI, SERIAL, GTIN)
+#: The identifier the screen is waiting for (`expected`). Only an IMEI slot makes fifteen Luhn digits a sure IMEI.
+SLOTS = ('imei', 'imei2', 'serial')
+IMEI_SLOTS = ('imei', 'imei2')
 
 #: Longer than any identifier this screen takes: a URL, a sentence, a whole QR payload.
 MAX_LENGTH = 64
@@ -58,6 +61,9 @@ _HINT = re.compile(
     r'|^(?P<name2>' + '|'.join(f'(?:{pattern})' for pattern, _ in LABEL_HINTS) + r')\s+(?P<value2>\S.*)$',
 )
 
+#: Another printed name inside a value: «S/N: X IMEI: Y» is two fields, not one serial.
+_ANOTHER_NAME = re.compile(r'(?:IMEI|MEID|EID|UPC|EAN|GTIN|S/N)\s*\d?\s*[:#=]')
+
 DETAIL = {
     IMEI: 'IMEI válido.',
     EID: 'Es el EID (identificador de la eSIM, 32 dígitos): no es un IMEI ni se registra en el equipo.',
@@ -69,6 +75,10 @@ DETAIL = {
     UNKNOWN: 'No se reconoce este código como un identificador de equipo.',
 }
 PROBLEM_DETAIL = {
+    'imei_or_serial': 'Tiene la forma de un IMEI (15 dígitos con su dígito de control), pero no se esperaba un IMEI: '
+                      '¿es el IMEI o la serie?',
+    'gtin_or_meid': 'Catorce dígitos con dígito de control GS1: parece un código comercial (GTIN-14). También podría '
+                    'ser un MEID, que nunca es un IMEI. ¿Qué es?',
     'imei_check_digit': 'Tiene 15 dígitos pero no supera el dígito de control de un IMEI: vuelve a escanearlo. '
                         'Si es la serie, indícalo.',
     'placeholder': 'Eso no es un identificador. Si el equipo no lo tiene, deja el campo vacío.',
@@ -126,12 +136,20 @@ def _reading(raw, value, kind, *, certain, alternatives=(), hint='', problem='')
                    problem=problem, detail=detail)
 
 
-def _digits(raw: str, digits: str, hint: str) -> Reading:
-    """A code of digits only, by its length and its check digit."""
+def _digits(raw: str, digits: str, hint: str, expected: str = '') -> Reading:
+    """
+    A code of digits only, by its length and its check digit.
+
+    Fifteen Luhn digits are a SURE IMEI only when the label says IMEI or the screen waits for an IMEI (review B3):
+    one numeric serial in ten passes Luhn as well, so otherwise the clerk is asked.
+    """
     n = len(digits)
     if n == 15:
         if _imei_valid(digits):
-            return _reading(raw, digits, IMEI, certain=True, hint=hint)
+            if hint in (IMEI, 'imei2') or expected in IMEI_SLOTS:
+                return _reading(raw, digits, IMEI, certain=True, hint=hint)
+            return _reading(raw, digits, IMEI, certain=False, alternatives=(IMEI, SERIAL), hint=hint,
+                            problem='imei_or_serial')
         return _reading(raw, digits, UNKNOWN, certain=False, alternatives=(SERIAL,), hint=hint,
                         problem='imei_check_digit')
     if n == 32:
@@ -141,8 +159,11 @@ def _digits(raw: str, digits: str, hint: str) -> Reading:
     if n == 18:
         return _reading(raw, digits, MEID, certain=False, alternatives=(SERIAL,), hint=hint)
     if n == 14:
-        return _reading(raw, digits, MEID, certain=False,
-                        alternatives=(GTIN, SERIAL) if _gs1_valid(digits) else (SERIAL,), hint=hint)
+        # Review B4: digits with a GS1 digit are a GTIN-14 first; a MEID is only ever named, never an IMEI.
+        if _gs1_valid(digits):
+            return _reading(raw, digits, GTIN, certain=False, alternatives=(GTIN, SERIAL), hint=hint,
+                            problem='gtin_or_meid')
+        return _reading(raw, digits, MEID, certain=False, alternatives=(SERIAL,), hint=hint)
     if n in (12, 13) and _gs1_valid(digits):
         return _reading(raw, digits, GTIN, certain=True, alternatives=(SERIAL,), hint=hint)
     if n == 8 and _gs1_valid(digits):
@@ -169,15 +190,23 @@ def _named(raw: str, name: str, value: str) -> Reading | None:
     digits = re.sub(r'[\s.\-/]', '', value) if _SEPARATED_DIGITS.match(value) else value
     if hint in (IMEI, 'imei2'):
         if digits.isdigit() and len(digits) == 15:
-            reading = _digits(raw, digits, hint)
+            reading = _digits(raw, digits, hint, hint)
             return reading if reading.kind == IMEI else _reading(
                 raw, digits, UNKNOWN, certain=False, hint=hint, problem='imei_check_digit')
         return _reading(raw, digits, UNKNOWN, certain=False, hint=hint, problem='not_a_code')
+    # Review B6: a named EID or MEID is still held to its shape.
     if hint == EID:
-        return _reading(raw, digits, EID, certain=True, hint=hint)
+        if digits.isdigit() and len(digits) == 32:
+            return _reading(raw, digits, EID, certain=True, hint=hint)
+        return _reading(raw, digits, UNKNOWN, certain=False, hint=hint, problem='not_a_code')
     if hint == MEID:
-        return _reading(raw, digits, MEID, certain=True, hint=hint)
+        if (digits.isdigit() and len(digits) in (14, 18)) or _HEX14.match(digits):
+            return _reading(raw, digits, MEID, certain=True, hint=hint)
+        return _reading(raw, digits, UNKNOWN, certain=False, hint=hint, problem='not_a_code')
     if hint == SERIAL:
+        # Review B5: a serial is one token. Spaces or another printed name (a multi-field QR) are never glued into one.
+        if re.search(r'[\s;,|]', value) or _ANOTHER_NAME.search(value):
+            return _reading(raw, value, UNKNOWN, certain=False, hint=hint, problem='not_a_code')
         return _serial(raw, value, hint, certain=True)
     if hint == GTIN:
         if digits.isdigit() and _gs1_valid(digits):
@@ -186,8 +215,12 @@ def _named(raw: str, name: str, value: str) -> Reading | None:
     return None
 
 
-def classify(code) -> Reading:
-    """What `code` is. Never raises: a code that is nothing known is `unknown`, with its `problem`."""
+def classify(code, expected: str = '') -> Reading:
+    """
+    What `code` is. Never raises: a code that is nothing known is `unknown`, with its `problem`.
+
+    `expected`: the slot the screen waits for (`SLOTS`), or ''. It only makes fifteen Luhn digits a sure IMEI.
+    """
     raw = str(code if code is not None else '')
     text = raw.strip()
     if not text:
@@ -205,7 +238,7 @@ def classify(code) -> Reading:
             return named
 
     if _SEPARATED_DIGITS.match(upper):
-        return _digits(raw, re.sub(r'[\s.\-/]', '', upper), '')
+        return _digits(raw, re.sub(r'[\s.\-/]', '', upper), '', expected)
     from . import unit_codes
 
     # The shop's own label before a MEID: a 4-letter prefix of A–F and ten digits is also fourteen «hex» characters.
@@ -233,7 +266,9 @@ def as_identifier(code, choice: str) -> str:
             raise ScanError(reading.detail if reading.kind != UNKNOWN or reading.problem else
                             'Eso no es un IMEI: son 15 dígitos con su dígito de control.', field='imei')
         return reading.value
-    if reading.kind in (EID, IMEI):
+    # A named IMEI, an EID or a sure commercial code is never a serial. Fifteen Luhn digits without a name may be one:
+    # the clerk said so (review B3), and the reception records it (`serial_confirmed`).
+    if reading.kind == EID or (reading.kind in (IMEI, GTIN) and reading.certain):
         raise ScanError(f'{reading.detail} No es la serie.', field='serial_number')
     text = reading.value or str(code or '').strip()
     try:

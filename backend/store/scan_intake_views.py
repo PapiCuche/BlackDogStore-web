@@ -70,8 +70,9 @@ class ScanCheckView(APIView):
             except quick.QuickSaleError as exc:
                 return Response(exc.body(), status=exc.status)
         try:
+            expected = data.get('expected') or ''
             answer = scan_intake.check(company=company, user=request.user, code=code, product_id=product_id or None,
-                                       choice=data.get('choice'))
+                                       choice=data.get('choice'), expected=expected if isinstance(expected, str) else '?')
         except scan_intake.ScanIntakeError as exc:
             return Response(exc.body(), status=exc.status)
         return Response(answer)

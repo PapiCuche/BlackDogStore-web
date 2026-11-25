@@ -412,21 +412,40 @@ def _unit_brief(unit) -> dict:
             'branch_name': unit.branch.name}
 
 
-def duplicate(company, row: dict, product=None) -> QuickSaleError | None:
+def duplicate(company, row: dict, product=None, *, actor=None) -> QuickSaleError | None:
     """SCAN-TO-STOCK-01 — the 409 of `_duplicate`, for the scan screen's used devices (the same words, the same unit)."""
-    return _duplicate(company, row, product)
+    return _duplicate(company, row, product, actor=actor)
 
 
-def _duplicate(company, row: dict, product=None) -> QuickSaleError | None:
-    """409 naming the device of the company that already holds one of these identifiers, or None."""
+def _visible_branch_ids(company, actor) -> set[int] | None:
+    """The branches `actor` reaches in `company`; None (no masking) only when no actor is known."""
+    if actor is None:
+        return None
+    from .tenancy import visible_branches
+
+    return set(visible_branches(actor, company).values_list('pk', flat=True))
+
+
+def _duplicate(company, row: dict, product=None, *, actor=None) -> QuickSaleError | None:
+    """
+    409 naming the device of the company that already holds one of these identifiers, or None.
+
+    SCAN-TO-STOCK-01 review B1: the device is named (code, product, status, branch) only when it is in a branch the
+    caller reaches; otherwise the answer says it exists elsewhere in the company and nothing more, with no `unit`.
+    """
     live = (StockUnit.objects.filter(company=company).exclude(status=StockUnit.Status.VOIDED)
             .select_related('product', 'branch'))
+    visible = _visible_branch_ids(company, actor)
     for field in ('imei', 'imei2'):
         value = row.get(field)
         if not value:
             continue
         holder = live.filter(Q(imei=value) | Q(imei2=value)).order_by('pk').first()
         if holder is not None:
+            if visible is not None and holder.branch_id not in visible:
+                return QuickSaleError(
+                    'Ese IMEI ya está registrado en un equipo de otra sucursal de la empresa. Revisa el número.',
+                    code='duplicate_imei', field=field, status=409)
             name = holder.label_code or f'#{holder.pk}'
             return QuickSaleError(
                 f'Ese IMEI ya está registrado en el equipo {name} («{holder.product.name}», '
@@ -436,6 +455,10 @@ def _duplicate(company, row: dict, product=None) -> QuickSaleError | None:
     if serial and product is not None:
         holder = live.filter(product=product, serial_number=serial).order_by('pk').first()
         if holder is not None:
+            if visible is not None and holder.branch_id not in visible:
+                return QuickSaleError(
+                    'Esa serie ya está registrada en un equipo de esta variante en otra sucursal de la empresa.',
+                    code='duplicate_serial', field='serial_number', status=409)
             return QuickSaleError(
                 f'Esa serie ya está registrada en el equipo {holder.label_code or holder.pk} de esta variante.',
                 code='duplicate_serial', field='serial_number', status=409, extra={'unit': _unit_brief(holder)})
@@ -525,9 +548,9 @@ def _usable(product):
                              code='variant_inactive', field='option_ids', status=409)
 
 
-def _registration_error(company, exc: registration.RegistrationError, row, product) -> QuickSaleError:
+def _registration_error(company, exc: registration.RegistrationError, row, product, actor=None) -> QuickSaleError:
     if exc.field in ('imei', 'imei2', 'serial_number', 'units'):
-        duplicate = _duplicate(company, row, product)
+        duplicate = _duplicate(company, row, product, actor=actor)
         if duplicate is not None:
             return duplicate
     field = exc.field if exc.field in ('imei', 'imei2', 'serial_number', 'cost', 'price') else (
@@ -653,7 +676,7 @@ def receive(*, company, branch, body, actor, request=None, authority: Authority,
         typed, price_changed = decide(product)          # early answer, on the row as read
         if typed is not None:
             price = typed
-    duplicate = _duplicate(company, row, product)
+    duplicate = _duplicate(company, row, product, actor=actor)
     if duplicate is not None:
         raise duplicate
     waiting = [] if product is None else _refuse_over_waiting(company, actor, product, branch, confirmed)
@@ -700,7 +723,7 @@ def receive(*, company, branch, body, actor, request=None, authority: Authority,
             reason=REASONS[origin], entry_type=StockMovement.PURCHASE_ENTRY, unit_supplier=supplier,
         )
     except registration.RegistrationError as exc:
-        raise _registration_error(company, exc, row, product) from None
+        raise _registration_error(company, exc, row, product, actor) from None
     unit_id = record['unit_ids'][0]
     if waiting:
         # Ids and the reason, never the customer: the log is read by more people.
@@ -738,7 +761,7 @@ def _receive_order_line(*, company, body, actor, request, authority) -> dict:
     method = _method(body)
     row = _device(body)
     _refuse_cost(body, authority)
-    duplicate = _duplicate(company, row, line.product)
+    duplicate = _duplicate(company, row, line.product, actor=actor)
     if duplicate is not None:
         raise duplicate
     unit_row = {key: value for key, value in row.items() if value}
@@ -749,7 +772,7 @@ def _receive_order_line(*, company, body, actor, request, authority) -> dict:
                                      method=method)
     except supply_services.SupplyError as exc:
         if getattr(exc, 'unit_field', '') in ('imei', 'imei2', 'serial_number'):
-            found = _duplicate(company, row, line.product)
+            found = _duplicate(company, row, line.product, actor=actor)
             if found is not None:
                 raise found from None
         status = {'already_received': 409, 'return_open': 409, 'not_found': 404}.get(exc.code, 400)

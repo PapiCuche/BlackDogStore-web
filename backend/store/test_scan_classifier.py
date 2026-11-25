@@ -25,10 +25,20 @@ def bad_luhn(value: str) -> str:
 
 
 class ImeiTest(SimpleTestCase):
-    def test_fifteen_digits_with_their_luhn_digit_are_an_imei_for_certain(self):
+    def test_fifteen_digits_with_their_luhn_digit_are_an_imei_but_not_for_certain_alone(self):
+        # Review B3: one numeric serial in ten passes Luhn too. Alone, the clerk is asked: IMEI or serial.
         reading = sc.classify(IMEI_1)
-        self.assertEqual((reading.kind, reading.value, reading.certain), ('imei', IMEI_1, True))
-        self.assertEqual(reading.problem, '')
+        self.assertEqual((reading.kind, reading.value, reading.certain), ('imei', IMEI_1, False))
+        self.assertEqual(reading.alternatives, ('imei', 'serial'))
+        self.assertEqual(reading.problem, 'imei_or_serial')
+
+    def test_they_are_certain_when_an_imei_slot_is_expected_or_the_label_says_imei(self):
+        for expected in ('imei', 'imei2'):
+            with self.subTest(expected=expected):
+                reading = sc.classify(IMEI_1, expected=expected)
+                self.assertEqual((reading.kind, reading.certain, reading.problem), ('imei', True, ''))
+        self.assertTrue(sc.classify(f'IMEI: {IMEI_1}').certain)
+        self.assertFalse(sc.classify(IMEI_1, expected='serial').certain)
 
     def test_a_typed_imei_with_spaces_or_dashes_is_the_same_imei(self):
         spaced = f'{IMEI_1[:2]} {IMEI_1[2:8]} {IMEI_1[8:14]}-{IMEI_1[14]}'
@@ -60,10 +70,19 @@ class NotAnImeiTest(SimpleTestCase):
         self.assertNotIn('imei', reading.alternatives)
 
     def test_fourteen_digits_are_a_meid_never_an_imei_even_when_they_are_an_imei_without_its_last_digit(self):
-        reading = sc.classify(IMEI_1[:14])
+        body = next(f'350000000000{n:02d}' for n in range(100) if not sc._gs1_valid(f'350000000000{n:02d}'))
+        reading = sc.classify(body)
         self.assertEqual(reading.kind, 'meid')
         self.assertFalse(reading.certain)
         self.assertNotIn('imei', reading.alternatives)
+
+    def test_fourteen_digits_with_a_gs1_digit_are_first_a_gtin_14_never_meid_first(self):
+        code = gtin('1' + '9' * 12)
+        reading = sc.classify(code)
+        self.assertEqual((reading.kind, reading.certain), ('gtin', False))
+        self.assertEqual(reading.alternatives, ('gtin', 'serial'))
+        self.assertNotIn('imei', reading.alternatives)
+        self.assertIn('MEID', reading.detail)
 
     def test_an_eighteen_digit_decimal_meid_is_a_meid(self):
         self.assertEqual(sc.classify('270113177612345678').kind, 'meid')
@@ -145,12 +164,37 @@ class PrintedLabelTest(SimpleTestCase):
     def test_a_named_eid_is_an_eid(self):
         self.assertEqual(sc.classify('EID 8904' + '0' * 28).kind, 'eid')
 
+    def test_a_named_eid_or_meid_is_still_checked_by_its_shape(self):
+        for text in ('EID: 8904' + '0' * 27, 'EID: ABC', 'MEID: XYZ123', 'MEID: 12345'):
+            with self.subTest(text=text):
+                reading = sc.classify(text)
+                self.assertEqual((reading.kind, reading.problem), ('unknown', 'not_a_code'))
+        self.assertEqual(sc.classify('MEID: A0000012345678').kind, 'meid')
+        self.assertEqual(sc.classify('MEID: 270113177612345678').kind, 'meid')
+
+    def test_a_named_serial_with_spaces_or_another_field_is_not_one_serial(self):
+        for text in ('S/N: QZ7K 2M9XW1', f'S/N: QZ7K2M9XW1 IMEI: {IMEI_1}', f'SN: QZ7K2M9XW1;IMEI:{IMEI_1}'):
+            with self.subTest(text=text):
+                reading = sc.classify(text)
+                self.assertFalse(reading.certain)
+                self.assertEqual(reading.problem, 'not_a_code')
+
 
 class AsIdentifierTest(SimpleTestCase):
     """What the clerk says a doubtful code is, checked by the same rules the reception uses."""
 
     def test_the_clerk_may_call_a_numeric_code_a_serial(self):
         self.assertEqual(sc.as_identifier('1234567890', 'serial'), '1234567890')
+
+    def test_the_clerk_may_call_a_luhn_valid_number_a_serial_but_never_a_named_imei(self):
+        self.assertEqual(sc.as_identifier(IMEI_1, 'serial'), IMEI_1)
+        self.assertEqual(sc.as_identifier(IMEI_1, 'imei'), IMEI_1)
+        with self.assertRaises(sc.ScanError):
+            sc.as_identifier(f'IMEI: {IMEI_1}', 'serial')
+
+    def test_a_commercial_code_cannot_be_called_a_serial(self):
+        with self.assertRaises(sc.ScanError):
+            sc.as_identifier(gtin('19425300000'), 'serial')
 
     def test_the_clerk_cannot_turn_a_bad_check_digit_into_an_imei(self):
         with self.assertRaises(sc.ScanError):

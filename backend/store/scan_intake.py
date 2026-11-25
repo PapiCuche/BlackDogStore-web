@@ -28,6 +28,7 @@ Nothing is confirmed by a scan: the screen sends `receive_once` only when the cl
 from __future__ import annotations
 
 import hashlib
+import re
 
 from django.db import connection, transaction
 from django.db.models import Q
@@ -65,16 +66,18 @@ def _standing(unit) -> tuple[str, str]:
     return 'registered', f'Ese identificador ya está registrado en el equipo {name} ({unit.get_status_display().lower()}).'
 
 
+ELSEWHERE = 'Ese identificador ya está registrado en un equipo de otra sucursal de la empresa.'
+
+
 def _unit_brief(unit, visible_ids) -> dict:
+    if unit.branch_id not in visible_ids:
+        # Review B7 — in the company, outside the caller's branches: it exists (the reception refuses it). Not its
+        # status (sold, written off), its product or its branch.
+        return {'standing': 'elsewhere', 'detail': ELSEWHERE}
     code, detail = _standing(unit)
-    brief = {'standing': code, 'status': unit.status, 'status_label': unit.get_status_display(), 'detail': detail}
-    if unit.branch_id in visible_ids:
-        brief.update({'id': unit.pk, 'label_code': unit.label_code or '', 'product_id': unit.product_id,
-                      'product_name': unit.product.name, 'branch_name': unit.branch.name})
-    else:
-        # In the company, outside the caller's branches: it exists (the reception refuses it), nothing more.
-        brief['detail'] = 'Ese identificador ya está registrado en un equipo de otra sucursal de la empresa.'
-    return brief
+    return {'standing': code, 'status': unit.status, 'status_label': unit.get_status_display(), 'detail': detail,
+            'id': unit.pk, 'label_code': unit.label_code or '', 'product_id': unit.product_id,
+            'product_name': unit.product.name, 'branch_name': unit.branch.name}
 
 
 def _product_brief(product) -> dict:
@@ -85,18 +88,24 @@ def _product_brief(product) -> dict:
             'option_ids': sorted(product.variant_options.values_list('option_id', flat=True))}
 
 
-def check(*, company, user, code, product_id=None, choice=None) -> dict:
+def check(*, company, user, code, product_id=None, choice=None, expected='') -> dict:
     """
     What `code` is and what THIS company already has under it. Reads only.
 
     `choice` (`imei`, `serial` or `gtin`): what the clerk said a doubtful code is — checked by the reception's own
     rules (`scan_classifier.as_identifier`), never taken on trust. `product_id`: the variant being registered, so a
     serial is judged as the reception judges it (unique within a variant; in another variant, a warning).
+    `expected`: the slot the screen waits for (`scan_classifier.SLOTS`), which alone makes fifteen Luhn digits a sure
+    IMEI (review B3).
+
+    Products and devices of branches the caller does not reach are never named (review B7/B9).
     """
     from . import unit_codes
     from .tenancy import visible_branches
 
-    reading = scan_classifier.classify(code)
+    if expected not in ('', None, *scan_classifier.SLOTS):
+        raise ScanIntakeError('Casilla esperada no válida.', field='expected')
+    reading = scan_classifier.classify(code, expected=expected or '')
     if choice not in (None, ''):
         if choice not in scan_classifier.CHOICES:
             raise ScanIntakeError('Elige si el código es el IMEI, la serie o el código comercial.', field='choice')
@@ -112,9 +121,13 @@ def check(*, company, user, code, product_id=None, choice=None) -> dict:
             reading = scan_classifier.Reading(raw=reading.raw, value=value, kind=choice, certain=True,
                                               detail=scan_classifier.DETAIL[choice])
 
-    answer = {'reading': reading.as_dict(), 'product': None, 'unit': None, 'conflict': None, 'serial_elsewhere': ''}
+    answer = {'reading': reading.as_dict(), 'product': None, 'unit': None, 'conflict': None, 'serial_elsewhere': '',
+              'serial_elsewhere_hidden': False}
     value = reading.value
-    if not value or reading.kind in (scan_classifier.EID, scan_classifier.IMEISV, scan_classifier.MEID):
+    # Review B8: an EID (or a MEID / IMEISV nobody could call a serial or a product code) names nothing here.
+    could_be_other = {scan_classifier.SERIAL, scan_classifier.GTIN} & set(reading.alternatives)
+    if not value or (reading.kind in (scan_classifier.EID, scan_classifier.IMEISV, scan_classifier.MEID)
+                     and not could_be_other):
         return answer
 
     holder = unit_codes.product_code_holding(company.pk, value)
@@ -148,11 +161,15 @@ def check(*, company, user, code, product_id=None, choice=None) -> dict:
         product = Product.objects.filter(company=company, pk=product_id).first() if product_id else None
         if product is not None:
             found = same.filter(product=product).order_by('pk').first()
-            if found is None:
-                answer['serial_elsewhere'] = units.serial_elsewhere(company, product, value)
+            others = same.exclude(product=product)
         else:
             # No variant chosen yet: a serial is unique per variant, so another device with it is a warning, not a no.
-            answer['serial_elsewhere'] = same.order_by('pk').values_list('product__name', flat=True).first() or ''
+            others = same
+        if found is None:
+            # INV-SERIAL-01's warning, naming the variant only when the device is in a branch the caller reaches (B9).
+            seen = others.filter(branch_id__in=visible_ids).order_by('pk').values_list('product__name', flat=True).first()
+            answer['serial_elsewhere'] = seen or ''
+            answer['serial_elsewhere_hidden'] = not seen and others.exists()
     if found is not None:
         answer['unit'] = _unit_brief(found, visible_ids)
     return answer
@@ -201,7 +218,12 @@ def receive_used(*, company, branch, body, actor, request=None, authority: quick
     """A used device into an existing used variant. The caller holds the transaction. Returns the RECORD."""
     if not authority.receive:
         raise ScanIntakeError(quick.RECEIVE_FORBIDDEN, code='receive_forbidden', status=403)
+    if body.get('order_item') not in (None, ''):
+        # The till's delivery to an order takes the identifiers only; a used device's ficha would be lost.
+        raise ScanIntakeError('Un seminuevo pedido al proveedor se recibe desde su pedido, con su ficha completa.',
+                              code='used_order_line', field='order_item')
     method = quick._method(body)
+    confirmed = quick._confirmation(body)
     product = _used_variant(company, body)
     row = {key: body[key] for key in USED_KEYS if body.get(key) not in (None, '')}
     row['condition'] = StockUnit.Condition.USED
@@ -213,9 +235,12 @@ def receive_used(*, company, branch, body, actor, request=None, authority: quick
         raise ScanIntakeError('No tienes permiso para fijar precios de venta: registra el equipo sin precio.',
                               code=PRICES_FORBIDDEN, field='sale_price', status=403)
     supplier = quick._supplier(company, body, authority)
-    duplicate = quick.duplicate(company, identifiers, product)
+    duplicate = quick.duplicate(company, identifiers, product, actor=actor)
     if duplicate is not None:
         raise duplicate
+    # Review B10 — POS-ORDER-ARRIVAL-01's rule on this door too: a paid order waiting here for this variant is
+    # presented (409 with its lines) before the device may enter as free stock, which then needs a reason.
+    waiting = quick._refuse_over_waiting(company, actor, product, branch, confirmed)
     try:
         received = units.receive_units(
             branch=branch, product=product, units=[row], actor=actor, reason=quick.REASONS[quick.ORIGIN_SCAN],
@@ -224,7 +249,7 @@ def receive_used(*, company, branch, body, actor, request=None, authority: quick
             may_set_warranty=authority.set_price,
         )
     except InventoryError as exc:
-        found = quick.duplicate(company, identifiers, product)
+        found = quick.duplicate(company, identifiers, product, actor=actor)
         if found is not None and getattr(exc, 'field', None) in ('imei', 'imei2', 'serial_number', None):
             raise found from None
         code = getattr(exc, 'code', None) or 'invalid'
@@ -234,12 +259,54 @@ def receive_used(*, company, branch, body, actor, request=None, authority: quick
         raise ScanIntakeError(str(exc), code=code, field=getattr(exc, 'field', None) or '', status=status) from None
     batch = label_batches.create_for_movement(received.movement, units=received, actor=actor)
     unit = received[0]
+    if waiting:
+        # Ids and the reason, never the customer (the till's audit line).
+        AdminAuditLog.log(
+            actor=actor, action=quick.OVER_PENDING_AUDIT_ACTION, target_type='stock_unit', target_id=unit.pk,
+            request=request, company=company,
+            metadata={'reason': confirmed, 'product_id': product.pk, 'branch_id': branch.pk,
+                      'order_item_ids': [line['order_item'] for line in waiting],
+                      'order_ids': [line['order_id'] for line in waiting]})
     return {'mode': 'stock', 'branch_id': branch.pk, 'model_id': product.product_model_id, 'product_id': product.pk,
             'product_created': False, 'unit_id': unit.pk, 'movement_ids': [received.movement.pk],
             'label_batch_ids': [batch.pk] if batch and batch is not label_batches.FAILED else [],
             'label_failed': batch is label_batches.FAILED, 'supplier_id': supplier.pk if supplier else None,
             'price_changed': False, 'order_id': None, 'order_item_id': None, 'method': method,
-            'over_pending_order_items': [], 'origin': quick.ORIGIN_SCAN, 'condition': USED}
+            'over_pending_order_items': [line['order_item'] for line in waiting], 'origin': quick.ORIGIN_SCAN,
+            'condition': USED}
+
+
+SERIAL_NOT_A_SERIAL = 'serial_not_a_serial'
+
+
+def refuse_serial_that_is_not_one(body: dict) -> None:
+    """
+    Review B2 — on the scan door the serial slot never takes another identifier. An EID, a sure commercial code, or
+    this device's own IMEI: always refused. Fifteen Luhn digits, an IMEISV or a MEID: refused unless the clerk said
+    «Es la serie» when asked (`serial_confirmed: true`) — one numeric serial in ten passes Luhn.
+    """
+    raw = body.get('serial_number')
+    if not isinstance(raw, str) or not raw.strip():
+        return
+    reading = scan_classifier.classify(raw)
+    own = {re.sub(r'[\s.\-/]', '', str(body.get(k) or '')) for k in ('imei', 'imei2')} - {''}
+    confirmed = body.get('serial_confirmed') is True
+    refused = (reading.kind == scan_classifier.EID
+               or (reading.kind == scan_classifier.GTIN and reading.certain)
+               or reading.value in own
+               or (reading.kind in (scan_classifier.IMEI, scan_classifier.IMEISV, scan_classifier.MEID)
+                   and not confirmed))
+    if refused:
+        what = 'es el IMEI de este mismo equipo' if reading.value in own else _NOT_A_SERIAL[reading.kind]
+        raise ScanIntakeError(f'Eso no es la serie: {what}. Lee la serie del equipo o márcala «No tiene».',
+                              code=SERIAL_NOT_A_SERIAL, field='serial_number')
+
+
+_NOT_A_SERIAL = {
+    scan_classifier.IMEI: 'tiene la forma de un IMEI (si de verdad es la serie, elige «Es la serie» al leerla)',
+    scan_classifier.IMEISV: 'parece un IMEISV', scan_classifier.MEID: 'parece un MEID',
+    scan_classifier.EID: 'es el EID de la eSIM', scan_classifier.GTIN: 'es un código comercial (UPC/EAN)',
+}
 
 
 # ---------------------------------------------------------------------------
@@ -303,8 +370,9 @@ def receive_once(*, company, branch, body, actor, request, authority: quick.Auth
     condition = body.get('condition') or NEW
     if condition not in (NEW, USED):
         raise ScanIntakeError('Indica si el equipo es nuevo o seminuevo.', code='invalid_condition', field='condition')
+    refuse_serial_that_is_not_one(body)
     if condition == NEW:
-        forwarded = {k: v for k, v in body.items() if k != 'condition'}
+        forwarded = {k: v for k, v in body.items() if k not in ('condition', 'serial_confirmed')}
         return quick.receive_once(company=company, branch=branch, body=forwarded, actor=actor, request=request,
                                   authority=authority, key=key, fingerprint=fingerprint, origin=quick.ORIGIN_SCAN,
                                   present_with=_present_for)

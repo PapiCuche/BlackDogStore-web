@@ -75,7 +75,24 @@ export function ScanIntake({
   const [methods, setMethods] = useState<Partial<Record<Slot, EntryMethod>>>({});
   const [noImei2, setNoImei2] = useState(false);
   const [noSerial, setNoSerial] = useState(false);
-  const [scanText, setScanText] = useState("");
+  const [scanText, setScanTextState] = useState("");
+  // The scanner's buffer, read by key handlers outside the input (F2/F3) without waiting for a render.
+  const scanTextRef = useRef("");
+  const setScanText = useCallback((value: string) => {
+    scanTextRef.current = value;
+    setScanTextState(value);
+  }, []);
+  // F1: every read belongs to one device of one model at one branch. Changing any of them bumps this, and an answer
+  // that comes back for an older generation is dropped (and said), never written into the new device.
+  const generation = useRef(0);
+  // F4: only the latest model configuration request may land.
+  const configRequest = useRef(0);
+  const askRef = useRef<Ask | null>(null);
+  // F7: on a touch screen the scanner field does not raise the on-screen keyboard unless the person asks for it.
+  const [coarse] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function"
+    && window.matchMedia("(pointer: coarse)").matches);
+  const [keyboard, setKeyboard] = useState(false);
+  const [serialConfirmed, setSerialConfirmed] = useState(false);
   const [log, setLog] = useState<LogLine[]>([]);
   const [ask, setAsk] = useState<Ask | null>(null);
   const [busyReads, setBusyReads] = useState(0);
@@ -109,11 +126,24 @@ export function ScanIntake({
   const requiresImei = condition === "new" ? combination?.variant?.requires_imei ?? true : usedVariant?.requires_imei ?? true;
   const plan = useMemo(() => ({ requiresImei, noImei2, noSerial }), [requiresImei, noImei2, noSerial]);
   const expected = expectedSlot(ids, plan);
-  const needsPrice = condition === "new" && Boolean(combination) && !combination?.variant;
+  const newCombination = condition === "new" && Boolean(combination) && !combination?.variant;
+  // F8: the price of a new variant is asked only of who may create it; anybody else is told before confirming.
+  const needsPrice = newCombination && Boolean(can?.create_variant);
+  const createForbidden = newCombination && !can?.create_variant;
   const waiting = useMemo(() => {
     const fromConfig = condition === "new" ? (combination?.pending_order_lines ?? []).filter((line) => line.here) : [];
     return serverLines.length ? serverLines : fromConfig;
   }, [condition, combination, serverLines]);
+
+  const openAsk = useCallback((next: Ask | null) => {
+    askRef.current = next;
+    setAsk(next);
+  }, []);
+
+  /** F1: a new device, model or branch — what is still on its way belongs to the previous one. */
+  const newGeneration = useCallback(() => {
+    generation.current += 1;
+  }, []);
 
   const focusScan = useCallback(() => {
     window.setTimeout(() => scanRef.current?.focus(), 0);
@@ -132,8 +162,11 @@ export function ScanIntake({
 
   const loadModel = useCallback(async (modelId: number, preset?: ScanProduct) => {
     if (!branchId) return;
+    const request = ++configRequest.current;
+    newGeneration();
     try {
       const data = await scanConfigurations(companyId, branchId, modelId);
+      if (request !== configRequest.current) return;      // F4: a later choice already asked
       setConfig(data);
       setHits([]);
       setModelQuery(data.model.name);
@@ -155,10 +188,9 @@ export function ScanIntake({
         setUsedVariantId(data.used_variants.length === 1 ? data.used_variants[0].id : null);
       }
     } catch (err) {
-      say("error", err instanceof Error ? err.message : "No se pudo leer el modelo.");
+      if (request === configRequest.current) say("error", err instanceof Error ? err.message : "No se pudo leer el modelo.");
     }
-    focusScan();
-  }, [branchId, companyId, focusScan, say]);
+  }, [branchId, companyId, newGeneration, say]);
 
   // The model search: from two letters, a short pause after the last key. Stale answers are dropped.
   const searching = !branchId || modelQuery.trim().length < 2 || config?.model.name === modelQuery ? null : modelQuery.trim();
@@ -174,11 +206,15 @@ export function ScanIntake({
   }, [branchId, companyId, searching]);
   const shownHits = searching ? hits : [];
 
-  const handleCheck = useCallback((check: Awaited<ReturnType<typeof scanCheck>>, method: EntryMethod) => {
+  const handleCheck = useCallback((check: Awaited<ReturnType<typeof scanCheck>>, method: EntryMethod, choice?: Choice) => {
     const outcome = decide(check, idsRef.current);
     if (outcome.type === "filled") {
       writeIds(applyOutcome(idsRef.current, outcome));
+      // F13: «lector» / «a mano» is a label of how the code arrived (SERIAL-PICK). It never gates anything here: what
+      // a code IS comes from the server's classifier, never from the rhythm of the keys.
       setMethods((m) => ({ ...m, [outcome.slot]: method }));
+      // B2: a Luhn-looking number goes in the serial slot only because the person said «Es la serie».
+      if (outcome.slot === "serial") setSerialConfirmed(choice === "serial");
       setError(null);
       say("ok", outcome.message);
       if (outcome.warning) say("warn", outcome.warning);
@@ -193,60 +229,141 @@ export function ScanIntake({
         void loadModel(product.model_id, product);
       }
     } else if (outcome.type === "ask") {
-      setAsk({ value: outcome.value, options: outcome.options, message: outcome.message, method });
-      return;
+      openAsk({ value: outcome.value, options: outcome.options, message: outcome.message, method });
     } else {
       say("error", outcome.message);
     }
     focusScan();
-  }, [focusScan, loadModel, say, writeIds]);
+  }, [focusScan, loadModel, openAsk, say, writeIds]);
 
   const read = useCallback((text: string, method: EntryMethod, choice?: Choice) => {
+    if (askRef.current && !choice) {
+      // F5: one question at a time. The new read is not sent; the person answers first and reads it again.
+      say("warn", `Responde primero la pregunta sobre ${askRef.current.value}; después vuelve a leer ${text}.`);
+      return;
+    }
+    const born = generation.current;
     setBusyReads((n) => n + 1);
     void queue.current.push(async () => {
       try {
-        const check = await scanCheck(companyId, text, { productId: variantProductId, choice });
-        handleCheck(check, method);
+        const check = await scanCheck(companyId, text, {
+          productId: variantProductId, choice, expected: choice ? null : expectedSlot(idsRef.current, plan),
+        });
+        if (born !== generation.current) {
+          say("info", `Lectura de ${text} descartada: llegó después de cambiar de equipo, modelo o sucursal.`);
+          return;
+        }
+        handleCheck(check, method, choice);
       } catch (err) {
-        say("error", err instanceof Error ? err.message : "No se pudo consultar el código.");
+        if (born === generation.current) say("error", err instanceof Error ? err.message : "No se pudo consultar el código.");
         focusScan();
       } finally {
         setBusyReads((n) => n - 1);
       }
     });
-  }, [companyId, focusScan, handleCheck, say, variantProductId]);
+  }, [companyId, focusScan, handleCheck, plan, say, variantProductId]);
+
+  const takeRead = useCallback((value: string) => {
+    const method = rhythmMethod(rhythm.current, value);
+    resetRhythm(rhythm.current);
+    setScanText("");
+    read(value.trim(), method);
+  }, [read, setScanText]);
 
   const onScanKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
     rhythmKey(rhythm.current, event.key, event.timeStamp);
     const value = event.currentTarget.value;
+    if (event.key === "Escape") {
+      // F9: Esc empties the field (a half read, a wrong key) without leaving it.
+      event.preventDefault();
+      resetRhythm(rhythm.current);
+      setScanText("");
+      return;
+    }
     if (event.key === "Enter" && !value.trim()) {
       // A double Enter, or an Enter on an empty field: nothing — and never a confirmation.
       event.preventDefault();
       return;
     }
-    if (!isTerminator(event.key, terminator, value)) return;
+    if (!isTerminator(event.key, terminator, value, event)) return;
     event.preventDefault();
-    const method = rhythmMethod(rhythm.current, value);
-    resetRhythm(rhythm.current);
-    setScanText("");
-    read(value.trim(), method);
+    takeRead(value);
   };
 
+  // F3: a scanner types wherever the focus is. Printable keys that land on a button, a radio or the page go to the
+  // scanner field; Enter there, with characters in the field, ends that read — it never presses the focused button
+  // («Confirmar ingreso», an option of a question). Typing in another text field (cost, battery, model) is left alone.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      const input = scanRef.current;
+      if (!input || event.defaultPrevented || event.isComposing) return;
+      const target = event.target as HTMLElement | null;
+      if (target === input) return;
+      const tag = target?.tagName ?? "";
+      const type = (target as HTMLInputElement | null)?.type ?? "";
+      const typing = tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable
+        || (tag === "INPUT" && !["button", "submit", "radio", "checkbox", "reset"].includes(type));
+      if (typing) return;
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key.length === 1) {
+        event.preventDefault();
+        rhythmKey(rhythm.current, event.key, event.timeStamp);
+        setScanText(scanTextRef.current + event.key);
+        rhythm.current.typed = scanTextRef.current;
+        return;
+      }
+      if ((event.key === "Enter" || event.key === " ") && scanTextRef.current.trim()) {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === "Enter") takeRead(scanTextRef.current);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [setScanText, takeRead]);
+
+  // F12: a registration on its way is not abandoned by leaving the page: the browser asks, and links wait.
+  useEffect(() => {
+    if (!submitting) return;
+    const onLeave = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    const onClick = (event: MouseEvent) => {
+      const link = (event.target as HTMLElement | null)?.closest?.("a[href]");
+      if (link) {
+        event.preventDefault();
+        say("warn", "Espera a que termine el registro del equipo antes de salir.");
+      }
+    };
+    window.addEventListener("beforeunload", onLeave);
+    document.addEventListener("click", onClick, true);
+    return () => {
+      window.removeEventListener("beforeunload", onLeave);
+      document.removeEventListener("click", onClick, true);
+    };
+  }, [say, submitting]);
+
   const choose = (choice: Choice) => {
-    if (!ask) return;
-    const { value, method } = ask;
-    setAsk(null);
-    read(value, method, choice);
+    const current = askRef.current;
+    if (!current) return;
+    openAsk(null);
+    read(current.value, current.method, choice);
+    focusScan();
+  };
+
+  /** F2: a choice is a deliberate click (or Enter/Space with the scanner field empty), never a scanner's Enter. */
+  const guardChoiceKey = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if ((event.key === "Enter" || event.key === " ") && scanTextRef.current.trim()) event.preventDefault();
   };
 
   const clearSlot = (slot: Slot) => {
     writeIds({ ...idsRef.current, [slot]: "" });
     setMethods((m) => ({ ...m, [slot]: undefined }));
+    if (slot === "serial") setSerialConfirmed(false);
     focusScan();
   };
 
   const resetDevice = (keepModel: boolean) => {
+    newGeneration();
     writeIds(EMPTY_IDENTIFIERS);
     setMethods({});
     setNoImei2(false);
@@ -265,25 +382,30 @@ export function ScanIntake({
     setServerLines([]);
     setError(null);
     setResult(null);
-    setAsk(null);
+    openAsk(null);
+    setSerialConfirmed(false);
     idemKey.current = newKey();
     if (!keepModel) {
+      configRequest.current += 1;
       setConfig(null);
       setPicked({});
       setUsedVariantId(null);
       setModelQuery("");
     } else if (config && branchId) {
-      // Same model and variant; fresh stock and waiting orders.
-      scanConfigurations(companyId, branchId, config.model.id).then(setConfig).catch(() => undefined);
+      // Same model and variant; fresh stock and waiting orders — unless another model is asked for meanwhile (F4).
+      const request = ++configRequest.current;
+      scanConfigurations(companyId, branchId, config.model.id)
+        .then((data) => { if (request === configRequest.current) setConfig(data); })
+        .catch(() => undefined);
     }
     focusScan();
   };
 
   const problems = reviewProblems({
-    ids, plan, variantChosen, needsPrice, price, cost,
+    ids, plan, variantChosen, createForbidden, needsPrice, price, cost,
     salePrice: condition === "used" ? salePrice : undefined,
     battery: condition === "used" ? battery : undefined,
-    waitingHere: condition === "new" && waiting.length > 0, orderChoice, stockReason,
+    waitingHere: waiting.length > 0, orderChoice, stockReason,
   });
 
   const confirm = async () => {
@@ -295,6 +417,7 @@ export function ScanIntake({
       ...(ids.imei ? { imei: ids.imei } : {}),
       ...(ids.imei2 ? { imei2: ids.imei2 } : {}),
       ...(ids.serial ? { serial_number: ids.serial } : {}),
+      ...(ids.serial && serialConfirmed ? { serial_confirmed: true } : {}),
       ...(supplier ? { supplier: Number(supplier) } : {}),
       ...(cost.trim() ? { cost: cost.trim() } : {}),
     };
@@ -316,6 +439,7 @@ export function ScanIntake({
         ...(accessories.trim() ? { accessories: accessories.trim() } : {}),
         ...(salePrice.trim() ? { sale_price: salePrice.trim() } : {}),
         ...(warranty.trim() ? { warranty_days: warranty.trim() } : {}),
+        ...(orderChoice === "stock" ? { confirm_stock: true, reason: stockReason.trim() } : {}),
       };
     }
     setSubmitting(true);
@@ -330,8 +454,9 @@ export function ScanIntake({
           setServerLines(err.lines);
           setOrderChoice(null);
         }
-        // A refused attempt leaves the key free (D-F-6), but a new one is safer after the body changes.
-        idemKey.current = newKey();
+        // F11: a 4xx refusal wrote nothing and the next body will differ: a new key. A 5xx (or a lost answer) may
+        // have registered the device: the retry keeps the key, so the server replays instead of writing twice.
+        if (err.status >= 400 && err.status < 500) idemKey.current = newKey();
         setError({ message: err.message, field: err.field });
       } else {
         setError({ message: err instanceof Error ? err.message : "No se pudo registrar el equipo.", field: "" });
@@ -402,7 +527,7 @@ export function ScanIntake({
                 <button
                   key={value} type="button" aria-pressed={condition === value}
                   className={`${condition === value ? internalPrimaryButtonClass : internalButtonClass} min-h-11 flex-1`}
-                  onClick={() => { setCondition(value); setOrderChoice(null); setServerLines([]); focusScan(); }}
+                  onClick={() => { newGeneration(); setCondition(value); setOrderChoice(null); setServerLines([]); }}
                 >
                   {value === "new" ? "Nuevo" : "Seminuevo"}
                 </button>
@@ -446,7 +571,7 @@ export function ScanIntake({
                         <button
                           key={option.id} type="button" disabled={!state.possible} aria-pressed={on}
                           className={`${on ? internalPrimaryButtonClass : internalButtonClass} min-h-11`}
-                          onClick={() => { setPicked(autoFill(config, pickOption(config, picked, attribute.id, option.id))); setOrderChoice(null); setServerLines([]); }}
+                          onClick={() => { newGeneration(); setPicked(autoFill(config, pickOption(config, picked, attribute.id, option.id))); setOrderChoice(null); setServerLines([]); }}
                         >
                           {option.label}
                         </button>
@@ -475,7 +600,7 @@ export function ScanIntake({
                     <label key={variant.id} className={`flex min-h-11 items-center gap-2 rounded-lg border px-3 text-sm ${variant.is_serialized ? "" : "opacity-50"}`}>
                       <input
                         type="radio" name={`${scanId}-used`} disabled={!variant.is_serialized}
-                        checked={usedVariantId === variant.id} onChange={() => { setUsedVariantId(variant.id); focusScan(); }}
+                        checked={usedVariantId === variant.id} onChange={() => { newGeneration(); setUsedVariantId(variant.id); }}
                       />
                       <span className="min-w-0 break-words">{variant.name}{variant.pending_draft ? " · borrador" : ""}{variant.is_serialized ? "" : " · sin control por serie"}</span>
                     </label>
@@ -499,7 +624,8 @@ export function ScanIntake({
             </p>
           </div>
           <input
-            id={`${scanId}-input`} ref={scanRef} value={scanText} autoFocus data-testid="scan-intake-input"
+            id={`${scanId}-input`} ref={scanRef} value={scanText} autoFocus={!coarse} data-testid="scan-intake-input"
+            inputMode={coarse && !keyboard ? "none" : "text"}
             className={`${internalInputClass} min-h-12 font-mono text-base`}
             placeholder="Pasa el lector por el código o escríbelo y pulsa Enter"
             autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="next"
@@ -512,13 +638,21 @@ export function ScanIntake({
               El lector termina con
               <select
                 className="rounded border border-bd-border bg-background px-2 py-1" value={terminator}
-                onChange={(e) => { const v = e.target.value as Terminator; setTerminator(v); saveTerminator(v); focusScan(); }}
+                onChange={(e) => { const v = e.target.value as Terminator; setTerminator(v); saveTerminator(v); }}
               >
                 <option value="enter">Enter</option>
                 <option value="tab">Tab</option>
                 <option value="both">Enter o Tab</option>
               </select>
             </label>
+            {coarse ? (
+              <button
+                type="button" className="rounded border border-bd-border px-2 py-1"
+                onClick={() => { setKeyboard(!keyboard); scanRef.current?.focus(); }}
+              >
+                {keyboard ? "Ocultar teclado" : "Teclado (escribir a mano)"}
+              </button>
+            ) : null}
             {busyReads > 0 ? <span role="status">Consultando…</span> : null}
           </div>
 
@@ -527,11 +661,11 @@ export function ScanIntake({
               <p id={`${scanId}-ask`} className="text-sm"><span className="font-mono break-all">{ask.value}</span> — {ask.message}</p>
               <div className="flex flex-wrap gap-2">
                 {ask.options.map((choice) => (
-                  <button key={choice} type="button" className={`${internalButtonClass} min-h-11`} onClick={() => choose(choice)} autoFocus={choice === ask.options[0]}>
+                  <button key={choice} type="button" className={`${internalButtonClass} min-h-11`} onClick={() => choose(choice)} onKeyDown={guardChoiceKey}>
                     {CHOICE_LABEL[choice]}
                   </button>
                 ))}
-                <button type="button" className={`${internalButtonClass} min-h-11`} onClick={() => { setAsk(null); say("info", "Lectura descartada."); focusScan(); }}>
+                <button type="button" className={`${internalButtonClass} min-h-11`} onKeyDown={guardChoiceKey} onClick={() => { openAsk(null); say("info", "Lectura descartada."); focusScan(); }}>
                   Descartar
                 </button>
               </div>
@@ -559,11 +693,12 @@ export function ScanIntake({
                   ) : null}
                   <div className="mt-2 flex flex-wrap gap-2">
                     {ids[slot] ? (
-                      <button type="button" className="text-xs underline" onClick={() => clearSlot(slot)}>Borrar</button>
+                      <button type="button" className="text-xs underline" aria-label={`Borrar ${SLOT_LABEL[slot]}`} onClick={() => clearSlot(slot)}>Borrar</button>
                     ) : slot !== "imei" ? (
                       <button
-                        type="button" className="text-xs underline" aria-pressed={skipped}
-                        onClick={() => { if (slot === "imei2") setNoImei2(!noImei2); else setNoSerial(!noSerial); focusScan(); }}
+                        type="button" className="text-xs underline"
+                        aria-label={skipped ? `Marcar que sí tiene ${SLOT_LABEL[slot]}` : `Marcar que no tiene ${SLOT_LABEL[slot]}`}
+                        onClick={() => { if (slot === "imei2") setNoImei2(!noImei2); else setNoSerial(!noSerial); }}
                       >
                         {skipped ? "Sí lo tiene" : "No tiene"}
                       </button>
@@ -655,16 +790,18 @@ export function ScanIntake({
           ) : null}
         </section>
 
-        {condition === "new" && waiting.length ? (
+        {waiting.length ? (
           <section className={`space-y-2 rounded-xl border p-4 ${TONE_CLASS.warn}`} data-testid="scan-intake-waiting">
             <h2 className="text-sm font-bold">Un pedido pagado espera este equipo</h2>
             {waiting.map((line) => (
               <label key={line.order_item} className="flex min-h-11 items-center gap-2 text-sm">
                 <input
-                  type="radio" name={`${scanId}-order`} disabled={!can?.receive_on_order || line.quantity !== 1}
+                  type="radio" name={`${scanId}-order`}
+                  disabled={!can?.receive_on_order || line.quantity !== 1 || condition === "used"}
                   checked={orderChoice === line.order_item} onChange={() => setOrderChoice(line.order_item)}
                 />
                 Es del pedido #{line.order_number}{line.customer ? ` (${line.customer})` : ""}
+                {condition === "used" ? <span className="text-xs text-muted"> · un seminuevo pedido se recibe desde su pedido</span> : null}
               </label>
             ))}
             <label className="flex min-h-11 items-center gap-2 text-sm">
@@ -698,6 +835,7 @@ export function ScanIntake({
           {error ? <ErrorBox message={error.message} /> : null}
           <button
             type="button" className={`${internalPrimaryButtonClass} min-h-12 w-full`} data-testid="scan-intake-confirm"
+            onKeyDown={guardChoiceKey}
             disabled={submitting || busyReads > 0 || problems.length > 0 || !can?.receive} onClick={() => void confirm()}
           >
             {submitting ? "Registrando…" : "Confirmar ingreso"}
