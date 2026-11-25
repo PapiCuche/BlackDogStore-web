@@ -455,7 +455,7 @@ it('G8: mientras se registra, «atrás» del navegador no sale de la pantalla', 
   await waitFor(() => expect(screen.getByTestId('scan-intake-confirm')).toBeEnabled());
   await act(async () => { fireEvent.click(screen.getByTestId('scan-intake-confirm')); });
   // A guard entry of this page now stands between the person and the previous page.
-  expect((window.history.state as { scanIntakeGuard?: boolean } | null)?.scanIntakeGuard).toBe(true);
+  expect((window.history.state as { scanIntakeGuard?: number } | null)?.scanIntakeGuard).toBeTruthy();
   await act(async () => { window.dispatchEvent(new PopStateEvent('popstate')); });
   expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('Espera a que termine');
 });
@@ -497,7 +497,7 @@ it('K1: «atrás» mientras se registra devuelve a la pantalla del escaneo, y al
   await waitFor(() => expect(screen.getByTestId('scan-intake-confirm')).toBeEnabled());
   await act(async () => { fireEvent.click(screen.getByTestId('scan-intake-confirm')); });
   // The browser went back: the address is already the previous page when popstate fires.
-  window.history.replaceState(window.history.state, '', '/admin/inventory');
+  window.history.replaceState(null, '', '/admin/inventory');
   await act(async () => { window.dispatchEvent(new PopStateEvent('popstate')); });
   expect(window.location.pathname).toBe('/admin/inventory/scan');
   const back = jest.spyOn(window.history, 'back').mockImplementation(() => undefined);
@@ -574,4 +574,67 @@ it('K4: sin un 5xx antes, o si es otro equipo, el «ya registrado» se muestra c
   await act(async () => { fireEvent.click(confirm); });
   await waitFor(() => expect(screen.getAllByText('Ese IMEI ya está registrado').length).toBeGreaterThan(0));
   expect(screen.queryByTestId('scan-intake-done')).not.toBeInTheDocument();
+});
+
+// ---------------------------------------------------------------------------
+// Round 5 (L1–L4)
+// ---------------------------------------------------------------------------
+
+it('L1: con una combinación que aún no es variante, un «ya registrado» tras un 5xx es un rechazo', async () => {
+  configs.mockResolvedValue({
+    ...config, can: { ...config.can, create_variant: true }, combinations: [{ ...config.combinations[0], variant: null }],
+  } as ScanConfigurations);
+  receive
+    .mockRejectedValueOnce(new lib.ScanIntakeError('Error del servidor', '', '', 502))
+    .mockRejectedValueOnce(new lib.ScanIntakeError('Ese IMEI ya está registrado', 'duplicate_imei', 'imei', 409));
+  const input = renderScreen();
+  await scan(input, '194253000001');
+  await waitFor(() => expect(screen.getByTestId('scan-intake-variant')).toBeInTheDocument());
+  await scan(input, IMEI_1);
+  fireEvent.change(screen.getByTestId('scan-intake-price'), { target: { value: '3900.00' } });
+  const confirm = screen.getByTestId('scan-intake-confirm');
+  await waitFor(() => expect(confirm).toBeEnabled());
+  await act(async () => { fireEvent.click(confirm); });
+  check.mockImplementation(async (_c, code) => (code === IMEI_1
+    ? answer({ value: code, kind: 'imei', certain: true }, { unit: brief() }) : byValue(code)));
+  fireEvent.change(screen.getByTestId('scan-intake-price'), { target: { value: '3950.00' } });
+  await waitFor(() => expect(confirm).toBeEnabled());
+  await act(async () => { fireEvent.click(confirm); });
+  await waitFor(() => expect(screen.getAllByText('Ese IMEI ya está registrado').length).toBeGreaterThan(0));
+  expect(screen.queryByTestId('scan-intake-done')).not.toBeInTheDocument();
+});
+
+it('L2: desmontar la pantalla con la guarda arriba no navega', async () => {
+  await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+  const pending = deferred<lib.ScanReceived>();
+  receive.mockImplementationOnce(() => pending.promise);
+  const back = jest.spyOn(window.history, 'back').mockImplementation(() => undefined);
+  const view = render(<ScanIntake companyId={7} branches={[{ id: 1, name: 'Central' }]} defaultBranch={1} canPrintLabels />);
+  const input = screen.getByTestId('scan-intake-input') as HTMLInputElement;
+  await chooseVariantByBoxCode(input);
+  await scan(input, IMEI_1);
+  await waitFor(() => expect(screen.getByTestId('scan-intake-confirm')).toBeEnabled());
+  await act(async () => { fireEvent.click(screen.getByTestId('scan-intake-confirm')); });
+  view.unmount();
+  expect(back).not.toHaveBeenCalled();
+  back.mockRestore();
+});
+
+it('L4: un popstate que deja la pantalla en una de sus propias guardas no empuja otra ni avisa', async () => {
+  await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+  window.history.replaceState(null, '', '/admin/inventory/scan');
+  const pending = deferred<lib.ScanReceived>();
+  receive.mockImplementationOnce(() => pending.promise);
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  await scan(input, IMEI_1);
+  await waitFor(() => expect(screen.getByTestId('scan-intake-confirm')).toBeEnabled());
+  await act(async () => { fireEvent.click(screen.getByTestId('scan-intake-confirm')); });
+  const push = jest.spyOn(window.history, 'pushState');
+  // An earlier submit's own `back()` lands on an older guard of this page: still here.
+  window.history.replaceState({ scanIntakeGuard: -1 }, '', '/admin/inventory/scan');
+  await act(async () => { window.dispatchEvent(new PopStateEvent('popstate', { state: { scanIntakeGuard: -1 } })); });
+  expect(push).not.toHaveBeenCalled();
+  expect(screen.getByTestId('scan-intake-log')).not.toHaveTextContent('Espera a que termine');
+  push.mockRestore();
 });

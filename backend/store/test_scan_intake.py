@@ -690,6 +690,36 @@ class ImeiSerialCrossInOneBatchTest(ScanShop, TestCase):
         self.assertLessEqual(lookups(50), lookups(5))
 
 
+class NoIdentifierEditTest(ScanShop, TestCase):
+    """
+    Review L5 — after entry a device's IMEI 1, IMEI 2 and serial are never edited, so no door can write an identifier
+    around R1's lock and occupancy check: «Corregir» edits details (`update_unit`: «Identifiers and status are not
+    here»), «Anular ingreso» frees them, «Cambiar variante» keeps them, and a correction re-enters through
+    `receive_units`. This fixes it: the PATCH ignores identifiers.
+    """
+
+    def setUp(self):
+        self.build('scan-sin-edicion')
+
+    def test_the_unit_patch_never_writes_an_identifier(self):
+        unit, other = self.here[0], self.here[1]
+        before = (unit.imei, unit.imei2, unit.serial_number)
+        res = _api(self.manager).patch(
+            f'/api/admin/inventory/units/{unit.pk}/?company={self.company.pk}',
+            {'serial_number': other.imei, 'imei': other.serial_number, 'imei2': self.fresh(), 'notes': 'Revisado'},
+            format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        unit.refresh_from_db()
+        self.assertEqual((unit.imei, unit.imei2, unit.serial_number), before)
+        self.assertEqual(unit.notes, 'Revisado')
+
+    def test_the_service_has_no_identifier_parameter(self):
+        import inspect
+        source = inspect.getsource(units.update_unit)
+        for name in ("'imei'", "'imei2'", "'serial_number'", '.imei =', '.serial_number ='):
+            self.assertNotIn(name, source)
+
+
 class MaskingScopeTest(ScanShop, TestCase):
     """
     Review R3 — the 409 and the check are masked only for actors restricted to some branches. A company-wide actor

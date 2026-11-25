@@ -376,26 +376,43 @@ export function ScanIntake({
         say("warn", "Espera a que termine el registro del equipo antes de salir.");
       }
     };
-    // G8 + K1: «atrás» of the browser too. One guard entry for THIS page is pushed (the router's own state kept); when
-    // «atrás» leaves it, the page's address — captured now, not the one the browser already moved to — is pushed back.
-    const here = window.location.href;
-    const guard = { ...(window.history.state ?? {}), scanIntakeGuard: true };
-    window.history.pushState(guard, "", here);
-    const onBack = () => {
-      window.history.pushState(guard, "", here);
-      say("warn", "Espera a que termine el registro del equipo antes de salir.");
-    };
     window.addEventListener("beforeunload", onLeave);
-    window.addEventListener("popstate", onBack);
     document.addEventListener("click", onClick, true);
     return () => {
       window.removeEventListener("beforeunload", onLeave);
-      window.removeEventListener("popstate", onBack);
       document.removeEventListener("click", onClick, true);
-      // Done: the guard entry goes, so «atrás» is one step again.
-      if ((window.history.state as { scanIntakeGuard?: boolean } | null)?.scanIntakeGuard) window.history.back();
     };
   }, [say, submitting]);
+
+  // G8 + K1 + L2/L4: «atrás» of the browser while registering. Each submit pushes ONE guard entry of this page (the
+  // router's own state kept, plus its own id) and listens to popstate:
+  //   - landing on ANY guard of this page (an earlier submit's own `back()` still on its way) is staying here: nothing;
+  //   - landing anywhere else is leaving: the page's address, captured when the submit began, is pushed back and the
+  //     person is told.
+  // Only the submit that pushed a guard removes it, when it ends, and only if that guard is still on top. Unmounting
+  // (another screen, a reset) never navigates.
+  const guardSeq = useRef(0);
+  const guardCleanup = useRef<(() => void) | null>(null);
+  const startHistoryGuard = useCallback(() => {
+    const id = ++guardSeq.current;
+    const here = window.location.href;
+    const guard = { ...(window.history.state ?? {}), scanIntakeGuard: id };
+    window.history.pushState(guard, "", here);
+    const onBack = (event: PopStateEvent) => {
+      const state = event.state as { scanIntakeGuard?: number } | null;
+      if (state?.scanIntakeGuard) return;
+      window.history.pushState(guard, "", here);
+      say("warn", "Espera a que termine el registro del equipo antes de salir.");
+    };
+    window.addEventListener("popstate", onBack);
+    guardCleanup.current = () => window.removeEventListener("popstate", onBack);
+    return () => {
+      window.removeEventListener("popstate", onBack);
+      guardCleanup.current = null;
+      if ((window.history.state as { scanIntakeGuard?: number } | null)?.scanIntakeGuard === id) window.history.back();
+    };
+  }, [say]);
+  useEffect(() => () => guardCleanup.current?.(), []);
 
   const choose = (choice: Choice) => {
     const current = askRef.current;
@@ -474,7 +491,8 @@ export function ScanIntake({
       const unit = found.unit;
       const branchName = branches.find((b) => b.id === branchId)?.name;
       if (!unit || unit.standing !== "registered" || !unit.id) return null;
-      if (variantProductId && unit.product_id !== variantProductId) return null;
+      // L1: «the same device» needs a variant to compare with: a combination that is not a variant yet never matches.
+      if (!variantProductId || unit.product_id !== variantProductId) return null;
       if (unit.branch_name !== branchName) return null;
       return {
         replayed: true, mode: "stock", condition,
@@ -528,6 +546,8 @@ export function ScanIntake({
     }
     setSubmitting(true);
     setError(null);
+    const endGuard = startHistoryGuard();
+    const born = generation.current;
     try {
       const sent = JSON.stringify(body);
       if (keyBody.current !== null && keyBody.current !== sent) idemKey.current = newKey();
@@ -541,6 +561,11 @@ export function ScanIntake({
         // K4: the earlier attempt failed without an answer and the body (so the key) changed since. If the device the
         // server now names is THIS one — same identifier, same variant, this branch — it entered then: say so.
         const earlier = await registeredEarlier();
+        if (born !== generation.current) {
+          // L3: the clerk moved on (another device, model or branch) while it was looked up.
+          say("info", "Comprobación del intento anterior descartada: cambiaste de equipo, modelo o sucursal.");
+          return;
+        }
         if (earlier) {
           uncertain.current = false;
           setResult(earlier);
@@ -565,6 +590,7 @@ export function ScanIntake({
         setError({ message: err instanceof Error ? err.message : "No se pudo registrar el equipo.", field: "" });
       }
     } finally {
+      endGuard();
       inFlight.current = false;
       setSubmitting(false);
     }
