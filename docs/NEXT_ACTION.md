@@ -1,30 +1,36 @@
-# NEXT ACTION — 2026-11-25
+# NEXT ACTION — 2026-11-25 (tarde)
 
-## R13.2 · CIERRE PRODUCTIVO CONTROLADO (2026-11-25) — producción SIN CAMBIOS; todo preparado, cada paso espera su GO
+## PRODUCCIÓN (prod-02) — R13.2 `c8a43215` desde 2026-11-25 10:51 (Lima), esquema `0192_unit_photo_provenance`; sana
 
-Orden del propietario: cron → normalización → muestras 167 → producto 12 → R13.2. El mensaje del propietario del
-2026-11-25 **no concede** ningún GO. Antes de cada operación: SHA y esquema, candado, backup, preflight, huellas y alcance;
-sólo el cambio autorizado; datos antes y después; pruebas; evidencia.
+## R13.2 · EJECUCIÓN CONTROLADA (2026-11-25) — los cinco GO del propietario, HECHOS en orden
 
-| # | Operación | GO exacto que falta | Kit | Estado |
-|---|---|---|---|---|
-| 1 | Cron de cotizaciones | «GO cron cotizaciones prod-02 kit v2» | `backups/release-r13-ops/cron_expire_quotes_install.sh` (v2, ensayo 33/33) | Listo; primero `--dry-run`, si da >0 cotizaciones se para y se pregunta |
-| 2 | Normalización del catálogo | «GO normalización catálogo prod-02 kit v131b» | `f11p_go.sh` (no toca las variantes #19, #22, #23) | Listo |
-| 3 | Muestras aproximadas, **sólo 167** | «GO muestras 167 prod-02 kit v131b» | `f12s_go.sh` (excluye las 38 dudosas) | Listo |
-| 4 | Imagen rota del producto 12 | «GO producto 12 prod-02 kit v131b» | `p12_go.sh` | Listo |
-| 5 | Despliegue R13.2 `c8a43215` | «GO despliegue c8a4321 prod-02» | `backups/release-r132/d_deploy_r132.sh` | Listo (ver abajo) |
-| — | Sellos de las 7 notas (fuente `222417`) | «GO restaurar sellos 7 notas prod-02 fuente 222417» | `backups/release-notes7b/notes7_go.sh` | Listo; acepta R13.1 o R13.2, no depende del orden |
-| — | Carga del stock real | «GO carga stock real prod-02» | panel + `docs/carga-stock-real.md` §11 | Espera archivos, R13.2 y aprobación del informe |
+Ejecutor: Claude (sesión principal), cada operación bajo `backups/ops/prod_lock.sh`, con su backup previo, preflight, huellas y diff esperado. Ninguna operación dependiente se ejecutó sobre una fallida.
 
-Los kits 2–4 fijan R13.1 `bf6a3307`: deben ir antes que R13.2, como pidió el propietario. Si R13.2 se desplegara antes,
-habría que refijarlos y volver a ensayarlos.
+| # | GO exacto | Hora (Lima) | Resultado | Backup previo | Log |
+|---|---|---|---|---|---|
+| 1 | «GO cron cotizaciones prod-02 kit v2» | 10:27–10:28 | **HECHO.** `--dry-run`: 0 cotizaciones (la base no tiene ninguna); crontab +1 línea exacta (md5 `1df44dbe` → `45fee39a`); pasada manual «Cotizaciones vencidas: 0»; la pasada automática de las :41 corrió | `~/crontab.before-expire-quotes-20261125-102809` | `backups/release-r13-ops/cron-expire-quotes-install.txt` |
+| 2 | «GO normalización catálogo prod-02 kit v131b» | 10:29 | **HECHO.** `EXPECTED_DIFF OK`: `VariantAttribute` 2 (`role`), `VariantOption` 4 (`label`, `sort_order`), 7 auditorías; 0 filas de `Product` (#19, #22 y #23 intactas); repetición sin escribir | `db-20261125-102910` | `backups/f11p-go-r132.log` |
+| 3 | «GO muestras 167 prod-02 kit v131b» | 10:29–10:30 | **HECHO.** 167 `ModelOption` (`swatch_hex`, `swatch_is_approximate`) + 168 auditorías; 38 dudosas con 0 muestras; repetición sin escribir. **Incidencia explicada:** el diff mostró además `FinanceReminderPolicy.last_run_at` (1 fila): la tarea `*/15 run_finance_schedule` corrió a las 10:30:00–10:30:12, dentro de la ventana entre la instantánea y el diff; el kit no toca finanzas | `db-20261125-102957` | `backups/f12s-go-r132.log` |
+| 4 | «GO producto 12 prod-02 kit v131b» | 10:33 | **HECHO.** `EXPECTED_DIFF OK`: sólo `Product.image_url` del #12 + 2 auditorías; ficha 200 sin el enlace roto. Ejecutado en una ventana sin tareas programadas | `db-20261125-103323` | `backups/p12-go-r132.log` |
+| 5 | «GO despliegue c8a4321 prod-02» | 10:51–10:52 | **HECHO.** Exactamente `c8a4321538d9…`, imágenes `211010eb…`/`085254fd…`; sin migraciones; sanos en ~9 s; huella de datos idéntica; 15 rutas en 200 y la inexistente en 404; healthcheck 0 ATENCIÓN; reimpresión de sólo lectura; 0 errores desde el cambio; Caddy, CRM, enrutamiento y crontab iguales. Desplegado fuera de :35–:50 por el cron de las :41 | `db-20261125-105117` (+ evidencias) | `backups/d-r132-go.log` |
 
-**R13.2 reconfirmada (sólo lectura, 2026-11-25; resultados del ensayo de `c8a43215` en `backups/release-r132/r132-rehearsal.log`):** imágenes `rc-c8a4321` construidas desde un árbol limpio en
-`c8a4321538d9…` (backend `sha256:211010ebf1c9…`, frontend `sha256:085254fd4e4c…`); `git diff bf6a3307..c8a43215` sin
-cambios en `deploy/`, compose, Dockerfiles ni migraciones (43 archivos de código, pruebas y docs); ensayo: humo 32/32,
-simulación 19/19, exportaciones con IMEI ocultos y 403 `full_identifiers_forbidden` sin `inventory.adjust`, reimpresión
-de sólo lectura (7 notas A4, ticket y ESC/POS), vuelta atrás a `release-bf6a330` con humo 32/32. No se desplegará un SHA
-posterior de `master`.
+Después: `check_unit_stock` 0 diferencias tras cada operación; finanzas y conciliación siguen con rc=0; las 7 notas conservan la huella `a42dfa17d6779f45`.
+
+**Vuelta atrás disponible (sólo con su GO):** código a R13.1 con `backups/release-r132/rollback_r132_code.sh` (preflight OK); datos con `rollback` de cada kit («GO vuelta atrás normalización catálogo prod-02», «… muestras 167 …», «… producto 12 …»); cron con `backups/release-r13-ops/cron_expire_quotes_remove.sh`.
+
+**Trampa aprendida:** los kits de datos comparan instantáneas; ejecutarlos lejos de :00/:15/:30/:45 (finanzas), de los minutos 2/7/12… (conciliación) y de las :41 (cotizaciones). Un despliegue no debe caer entre :35 y :50.
+
+### GO pendientes (preparados y ensayados; ninguno ejecutado)
+| Operación | GO exacto | Kit | Estado |
+|---|---|---|---|
+| Sellos de las 7 notas (fuente `222417`) | «GO restaurar sellos 7 notas prod-02 fuente 222417» | `backups/release-notes7b/` | Ensayo 72/72; acepta R13.2 (comprobado tras el despliegue) |
+| «lleva IMEI» en #22 y/o #23 | «GO IMEI variante 22 prod-02» · «GO IMEI variante 23 prod-02» · «GO IMEI variantes 22 y 23 prod-02» | `backups/release-imei22/` (`RUNBOOK-imei22-prod02.md`) | Ensayo 119/119 en copia aislada; producción intacta |
+| Carga del stock real | «GO carga stock real prod-02» | panel + `docs/carga-stock-real.md` §11 | Espera tus archivos y tu aprobación del informe de `backups/stockreal-preview/` |
+
+### iPhone 15 128 GB Negro (#22) — auditoría (2026-11-25, sólo lectura)
+- #22 «iPhone 15 128Gb Negro» y #23 «iPhone 17 Pro JPN 256Gb Plata» se crearon el 2026-11-10 por el usuario id 1 desde la lista pegada («Proponer lo que falta», `via: catalog_proposal`), con serie y **sin** «lleva IMEI» (auditorías 339 y 344). Desde el 2026-10-28 esa propuesta exige IMEI salvo que el operador nombre la variante en «sin IMEI»: fue una elección explícita, que la auditoría de entonces no registraba (corregido en #435).
+- Ninguna de las dos tiene equipos: no hay identificadores históricos afectados.
+- Efecto de corregirla: desde el GO, toda entrada de esas variantes (recepción, compras, carga masiva, alta guiada, alta rápida en caja, lista pegada) exige un IMEI válido y la serie pasa a opcional; escribir el equipo a mano en caja, despacho o traslado pide el IMEI. La tienda pública no cambia. El panel no ofrece hoy cómo cambiarlo en un producto ya serializado: por eso el kit.
 
 ### Stock real — proceso final preparado · espera archivos del propietario
 - Orden: R13.2 desplegada → archivos del propietario en `backups/stock-real-inbox/` → vista previa en copia aislada
@@ -54,7 +60,7 @@ posterior de `master`.
 - GO: **«GO restaurar sellos 7 notas prod-02 fuente 222417»**; vuelta atrás: **«GO vuelta atrás sellos 7 notas prod-02 fuente 222417»**.
 
 
-## PRODUCCIÓN (prod-02) — `bf6a3307` (R13.1), esquema `0192_unit_photo_provenance`, imágenes `release-bf6a330`; sana
+## (Histórico, 2026-11-24) producción en R13.1 `bf6a3307`
 
 ## OPERACIONES PRODUCTIVAS 2026-11-24 (tarde) — autorización controlada del propietario
 

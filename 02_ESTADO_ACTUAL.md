@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-25 — R13.2 `c8a43215` DESPLEGADA en prod-02; cron, normalización, muestras 167 y producto 12 aplicados
+
+Los cinco GO exactos del propietario, en su orden, entre las 10:27 y las 10:52 (Lima), cada uno bajo el candado con backup previo y diff esperado. Una incidencia explicada (la tarea de finanzas cambió una fila durante la ventana del diff de las muestras). Producción sana, 0 errores, Caddy y CRM sin cambios. Pendientes con su propio GO: sellos de las 7 notas (kit 72/72), «lleva IMEI» en #22/#23 (kit 119/119) y la carga del stock real. En desarrollo: #435 fusionado (auditoría «sin IMEI» de la propuesta), #434 aprobación de precios y garantías en cargas (0193, en revisión). Detalle en `docs/NEXT_ACTION.md`.
+
 ## 2026-11-25 — R13.2 · cierre productivo controlado: todo preparado, producción SIN CAMBIOS (R13.1 `bf6a3307`)
 
 Ninguna escritura sobre datos ni código de producción: el mensaje del propietario no concedió GO. En `backups/` de prod-02 sí se escribieron backups, manifiestos y logs de los ensayos. Preparado y ensayado:
