@@ -27,6 +27,7 @@ jest.mock('@/app/admin/lib/internal-api', () => ({
   fetchCatalogAttributes: jest.fn(),
   fetchCosmeticGrades: jest.fn(),
   fetchSuppliers: jest.fn(),
+  fetchModelPalette: jest.fn(),
 }));
 
 const mReg = registration as jest.Mocked<typeof registration>;
@@ -46,6 +47,11 @@ beforeEach(() => {
   mApi.fetchCatalogAttributes.mockResolvedValue([]);
   mApi.fetchCosmeticGrades.mockResolvedValue([]);
   mApi.fetchSuppliers.mockResolvedValue({ count: 0, page: 1, page_size: 1, results: [] } as unknown as Awaited<ReturnType<typeof api.fetchSuppliers>>);
+  // SELECTOR-UX-01: a model without a palette keeps the selects.
+  mApi.fetchModelPalette.mockResolvedValue({
+    model_id: 9, model_name: 'iPhone 15', has_palette: false, attributes: [], combinations: [], variants: [],
+    summary: { combinations: 0, existing: 0, valid_without_variant: 0, outside: 0, incomplete: 0 }, truncated: false,
+  });
   mReg.submitRegistration.mockRejectedValue(new Error('sin servidor en esta prueba'));
 });
 
@@ -63,6 +69,8 @@ async function toStock(kind: RegExp) {
   fireEvent.change(screen.getByLabelText(/^Categoría/), { target: { value: '6' } });
   type(/^Precio de venta/, '3999');
   fireEvent.change(screen.getByLabelText(/^Modelo/), { target: { value: '9' } });
+  // SELECTOR-UX-01 · #439: the model's options are read before going on.
+  await waitFor(() => expect(screen.queryByText('Leyendo las opciones del modelo…')).toBeNull());
   fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
 }
 

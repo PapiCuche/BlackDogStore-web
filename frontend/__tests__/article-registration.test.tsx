@@ -322,6 +322,8 @@ describe('un seminuevo', () => {
     await choose(/Equipo seminuevo/);
     await fillProduct({ name: 'iPhone 15 seminuevo', category: '6', price: '2500' });
     fireEvent.change(screen.getByLabelText(/^Modelo/), { target: { value: '9' } });
+    // SELECTOR-UX-01 · #439: the model's options are read before going on.
+    await waitFor(() => expect(screen.queryByText('Leyendo las opciones del modelo…')).toBeNull());
     fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
     await screen.findByLabelText('Número de serie');
     type('Número de serie', 'SNU');

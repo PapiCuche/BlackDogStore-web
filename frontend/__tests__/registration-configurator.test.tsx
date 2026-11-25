@@ -177,3 +177,70 @@ describe('«Registrar otro igual»', () => {
 });
 
 void COL; void CHIP; void GREEN;
+
+describe('revisión de #439', () => {
+  async function toDevices() {
+    await startDevice();
+    await chooseModel(MODEL);
+    await screen.findByRole('group', { name: 'Configuración del equipo' });
+    fireEvent.click(radio('Capacidad', /128 GB/));
+    fireEvent.click(radio('Color', /Negro/));
+    fireEvent.click(radio('Tipo de SIM', /eSIM/));
+    fireEvent.change(screen.getByLabelText(/^Nombre/), { target: { value: 'Equipo Z' } });
+    fireEvent.change(screen.getByLabelText(/^Precio de venta/), { target: { value: '3000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    return screen.findByLabelText(/^IMEI 1$/);
+  }
+
+  it('b · si la paleta no se puede leer se dice, no se cae a los <select> y no se avanza hasta leerla', async () => {
+    mApi.fetchModelPalette.mockRejectedValueOnce(new Error('red'));
+    await startDevice();
+    await chooseModel(MODEL);
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('No se pudieron leer las opciones de «Equipo Z»');
+    expect(screen.queryByLabelText('Capacidad', { selector: 'select' })).toBeNull();
+    fireEvent.change(screen.getByLabelText(/^Nombre/), { target: { value: 'Equipo Z' } });
+    fireEvent.change(screen.getByLabelText(/^Precio de venta/), { target: { value: '3000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    expect(screen.queryByLabelText(/^IMEI 1$/)).toBeNull();
+    expect(screen.getAllByRole('alert').map((a) => a.textContent).join(' ')).toMatch(/opciones del modelo/);
+    fireEvent.click(within(alert).getByRole('button', { name: 'Volver a intentar' }));
+    expect(await screen.findByRole('group', { name: 'Configuración del equipo' })).toBeInTheDocument();
+  });
+
+  it('c y d · «Registrar otro igual» pone el foco en el primer equipo y no deja repetir un IMEI de esta sesión', async () => {
+    fireEvent.change(await toDevices(), { target: { value: GOOD_IMEI } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar artículo' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar otro igual' }));
+    const imei = await screen.findByLabelText(/^IMEI 1$/);
+    await waitFor(() => expect(imei).toHaveFocus());
+    fireEvent.change(imei, { target: { value: GOOD_IMEI } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    // e: the problems are announced.
+    expect(await screen.findByRole('alert')).toHaveTextContent('Ese IMEI ya se registró en esta sesión');
+    expect(mReg.submitRegistration.mock.calls.filter(([body]) => !body.dry_run)).toHaveLength(1);
+  });
+
+  it('a · tras crear un modelo nuevo, «Registrar otro igual» usa ese modelo (ya existe), no otro nuevo', async () => {
+    mReg.submitRegistration.mockImplementation(async (body) => (body.dry_run
+      ? result({ dry_run: true })
+      : result({ model: { id: 812, created: true, name: 'Equipo Nuevo', slug: 'equipo-nuevo' } })));
+    mApi.fetchModelPalette.mockImplementation(async () => selectorPalette({ has_palette: false, model_id: 812 }));
+    await startDevice();
+    fireEvent.change(screen.getByLabelText('Modelo'), { target: { value: '__new' } });
+    fireEvent.change(await screen.findByLabelText('Nombre del modelo nuevo'), { target: { value: 'Equipo Nuevo' } });
+    fireEvent.change(screen.getByLabelText(/^Nombre$/), { target: { value: 'Equipo Nuevo' } });
+    fireEvent.change(screen.getByLabelText(/^Precio de venta/), { target: { value: '3000' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Continuar' }));
+    fireEvent.change(await screen.findByLabelText(/^IMEI 1$/), { target: { value: GOOD_IMEI } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar artículo' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Registrar otro igual' }));
+    fireEvent.change(await screen.findByLabelText(/^IMEI 1$/), { target: { value: GOOD_IMEI_2 } });
+    fireEvent.click(screen.getByRole('button', { name: 'Revisar' }));
+    await waitFor(() => expect(mReg.submitRegistration.mock.calls.length).toBe(3));
+    const second = mReg.submitRegistration.mock.calls[2][0] as { model: unknown };
+    expect(second.model).toEqual({ id: 812 });
+  });
+});

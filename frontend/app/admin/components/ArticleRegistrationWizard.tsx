@@ -160,6 +160,12 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
    */
   const [palette, setPalette] = useState<{ modelId: string; answer: AdminModelPalette | null | "error" } | null>(null);
   const [picked, setPicked] = useState<Picked>({});
+  /** «Volver a intentar» on a palette that could not be read. */
+  const [paletteTry, setPaletteTry] = useState(0);
+  /** Review of #439: IMEIs registered in this session (a second «Registrar otro igual» never repeats one). */
+  const registeredImeis = useRef<Set<string>>(new Set());
+  /** After «Registrar otro igual», the caret goes to the first device's identifier. */
+  const focusFirstUnit = useRef(false);
 
   useEffect(() => {
     let alive = true;
@@ -193,13 +199,15 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
       .then((answer) => { if (alive) setPalette({ modelId: paletteModel, answer }); })
       .catch(() => { if (alive) setPalette({ modelId: paletteModel, answer: "error" }); });
     return () => { alive = false; };
-  }, [paletteModel, companyId]);
+  }, [paletteModel, companyId, paletteTry]);
   /** The palette as the configurator's steps, for the line of the kind (a used device looks at used variants). */
   const space = useMemo(() => {
     if (!paletteModel || palette?.modelId !== paletteModel || !palette.answer || palette.answer === "error") return null;
     return spaceFromPalette(palette.answer, draft.kind === "used_device" ? "used" : "new");
   }, [palette, paletteModel, draft.kind]);
   const paletteReading = Boolean(paletteModel) && palette?.modelId !== paletteModel;
+  /** Review of #439: a palette that could not be read is never replaced by every option of the company. */
+  const paletteFailed = Boolean(paletteModel) && palette?.modelId === paletteModel && palette.answer === "error";
   const combination = space ? chosenCombination(space, picked) : null;
 
   /** A pick on the configurator: the till's rules (later steps kept while possible, a single way out chosen). */
@@ -210,6 +218,15 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
     const full = effectivePick(space, next);
     update({ options: Object.fromEntries(Object.entries(full).map(([attribute, option]) => [attribute, String(option)])) });
   }
+
+  useEffect(() => {
+    if (step !== "stock" || !focusFirstUnit.current) return;
+    focusFirstUnit.current = false;
+    const first = draft.kind === "used_device"
+      ? document.getElementById("reg-used-imei")
+      : document.getElementById(draft.requires_imei ? "reg-imei-1" : "reg-serial-1");
+    first?.focus();
+  }, [step, draft.kind, draft.requires_imei]);
 
   function update(change: Partial<RegistrationDraft>) {
     setIdempotencyKey(null);
@@ -267,6 +284,9 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
     const price = Number(draft.price.replace(",", "."));
     if (!draft.price.trim() || !Number.isFinite(price) || price <= 0) found.push("El precio de venta debe ser mayor que 0.");
     if (isDevice && draft.model_mode === "existing" && !draft.model_id) found.push("Elige el modelo del equipo.");
+    if (isDevice && (paletteFailed || paletteReading)) {
+      found.push("Lee primero las opciones del modelo («Volver a intentar» si no se pudieron leer).");
+    }
     if (isDevice && space && !combination) found.push("Elige la configuración completa del equipo (capacidad, color…).");
     if (isDevice && space && combination?.archived && !combination.variant) {
       found.push("Esa configuración sólo la tiene una variante archivada: desarchívala en el modelo antes de registrar en ella.");
@@ -287,6 +307,7 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
         if (unit.imei.trim()) {
           const problem = imeiProblem(unit.imei);
           if (problem) found.push(`Equipo ${index + 1}: ${problem}`);
+          else if (registeredImeis.current.has(unit.imei.trim())) found.push(`Equipo ${index + 1}: Ese IMEI ya se registró en esta sesión.`);
         } else if (draft.requires_imei) {
           found.push(`Equipo ${index + 1}: indica el IMEI.`);
         }
@@ -299,6 +320,7 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
       if (draft.used.imei.trim()) {
         const problem = imeiProblem(draft.used.imei);
         if (problem) found.push(problem);
+        else if (registeredImeis.current.has(draft.used.imei.trim())) found.push("Ese IMEI ya se registró en esta sesión.");
       } else {
         found.push("Indica el IMEI del equipo.");
       }
@@ -367,6 +389,11 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
       setBusy(false);
       return;
     }
+    // Review of #439: what this session registered is never offered again by «Registrar otro igual».
+    for (const imei of draft.kind === "used_device" ? [draft.used.imei, draft.used.imei2]
+      : draft.units.flatMap((unit) => [unit.imei, unit.imei2])) {
+      if (imei.trim()) registeredImeis.current.add(imei.trim());
+    }
     // Registered. What follows uses the endpoints of always; a failure is said, never hidden.
     const failures: string[] = [];
     const productId = result.product.id;
@@ -426,9 +453,16 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
    * server still refuses an IMEI it already has).
    */
   function again() {
+    const made = done?.result.model;
+    if (made?.id && !models.some((m) => m.id === made.id)) {
+      // A model this registration created: the next device goes to it, never to another new one.
+      setModels((all) => [...all, { id: made.id as number, name: made.name, slug: made.slug } as AdminCatalogModel]);
+    }
     setIdempotencyKey(null);
+    focusFirstUnit.current = true;
     setDraft((prev) => ({
       ...prev,
+      ...(made?.id ? { model_mode: "existing" as const, model_id: String(made.id), model_name: "" } : {}),
       units: [emptyUnit()],
       used: { ...prev.used, serial_number: "", imei: "", imei2: "", battery_health: "", cosmetic_grade: "", public_notes: "", sale_price: "", cost: "" },
     }));
@@ -471,7 +505,7 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
   ) : null;
 
   const problemList = problems.length ? (
-    <ul className="list-disc space-y-1 rounded-lg border border-warning-border bg-warning-surface py-3 pl-8 pr-4 text-sm text-warning">
+    <ul role="alert" className="list-disc space-y-1 rounded-lg border border-warning-border bg-warning-surface py-3 pl-8 pr-4 text-sm text-warning">
       {problems.map((p) => <li key={p}>{p}</li>)}
     </ul>
   ) : null;
@@ -538,7 +572,14 @@ export function ArticleRegistrationWizard({ access, companyId, branches, returnT
             <input id="reg-model-name" value={draft.model_name} onChange={(e) => update({ model_name: e.target.value })} className={inputCls} />
           </Field>
         ) : null}
-        {space ? configurator() : paletteReading ? (
+        {space ? configurator() : paletteFailed ? (
+          <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning md:col-span-2">
+            <span>{`No se pudieron leer las opciones de «${models.find((m) => String(m.id) === paletteModel)?.name ?? "este modelo"}»: sin ellas no se puede elegir la configuración.`}</span>
+            <button type="button" className={internalButtonClass} onClick={() => { setPalette(null); setPaletteTry((n) => n + 1); }}>
+              Volver a intentar
+            </button>
+          </div>
+        ) : paletteReading ? (
           <p role="status" className="text-xs text-muted md:col-span-2">Leyendo las opciones del modelo…</p>
         ) : attributes.map((attribute) => (
           <Field key={attribute.id} id={`reg-attr-${attribute.id}`} label={attribute.name}>
