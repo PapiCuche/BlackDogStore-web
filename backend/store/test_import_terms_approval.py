@@ -299,3 +299,71 @@ class ManagerApplyUnchangedTest(TermsApprovalBase, TestCase):
         self.assertTrue(body['carries_commercial_terms'])
         self.assertIsNone(body['terms_approval'])
         self.assertTrue(body['can_update_prices'])
+
+
+class ReviewFollowUpTest(TermsApprovalBase, TestCase):
+    """Review of #434: the reviewer is always recorded, the reopened job hides the terms, the approver's reach."""
+
+    def test_a_manager_applying_an_approved_job_records_the_reviewer_too(self):
+        from store import unit_import_services
+        job = self.staged_with_terms(self.manager)
+        self.assertEqual(self.approve(job, self.second_manager).status_code, 200)
+        digest = unit_import_services.terms_digest(list(job.rows.filter(action='create')))
+        self.assertEqual(self.apply(job, self.manager).status_code, 200)
+        log = AdminAuditLog.objects.get(action='stock_units_import_applied')
+        self.assertEqual(log.metadata['terms_authority'], 'applier')
+        self.assertEqual(log.metadata['terms_approved_by_id'], self.second_manager.pk)
+        self.assertEqual(log.metadata['terms_digest'], digest[:12])
+        self.assertEqual(log.metadata['executed_by_id'], self.manager.pk)
+
+    def test_a_stale_approval_is_not_recorded_as_the_reviewer(self):
+        job = self.staged_with_terms(self.manager)
+        self.approve(job, self.second_manager)
+        row = job.rows.get(normalized_data__serial_number='SERAPR00')
+        row.normalized_data = {**row.normalized_data, 'sale_price': '1.00'}
+        row.save(update_fields=['normalized_data'])
+        self.assertEqual(self.apply(job, self.manager).status_code, 200)
+        log = AdminAuditLog.objects.get(action='stock_units_import_applied')
+        self.assertIsNone(log.metadata['terms_approved_by_id'])
+        self.assertIsNone(log.metadata['terms_digest'])
+
+    def staged_with_review(self):
+        job = self.staged_with_terms()
+        job.summary = {**job.summary, 'price_review': [{'variant_id': self.used128.pk, 'proposed_price': '1500.00'}]}
+        job.save(update_fields=['summary'])
+        return job
+
+    def test_the_reopened_job_hides_the_terms_from_a_stocker(self):
+        job = self.staged_with_review()
+        row_number = job.rows.get(normalized_data__serial_number='SERAPR00').row_number
+        body = client_for(self.stocker).get(f'/api/admin/imports/{job.pk}/').json()
+        self.assertTrue(body['carries_commercial_terms'])
+        self.assertEqual(body['commercial_terms_rows'], [row_number])
+        self.assertNotIn('price_review', body['summary'])
+        for row in body['rows']:
+            self.assertNotIn('sale_price', row['data'])
+            self.assertNotIn('warranty_days', row['data'])
+        self.assertIn('serial_number', body['rows'][0]['data'])
+
+    def test_the_reopened_job_shows_the_terms_to_a_manager(self):
+        job = self.staged_with_review()
+        body = client_for(self.second_manager).get(f'/api/admin/imports/{job.pk}/').json()
+        self.assertIn('price_review', body['summary'])
+        priced = [row for row in body['rows'] if row['data'].get('serial_number') == 'SERAPR00']
+        self.assertEqual(priced[0]['data']['sale_price'], '1500.00')
+        self.assertEqual(int(priced[0]['data']['warranty_days']), 90)
+
+    def test_an_approver_who_no_longer_reaches_the_branch_no_longer_covers_the_load(self):
+        from store.models import Branch, MembershipBranchAccess
+        elsewhere = Branch.objects.create(company=self.company, name='Otra sucursal', is_active=True)
+        approver, membership = _p2d_member(self.company, 'terms_branch_manager', MANAGER_CAPS,
+                                           branches=[self.branch, elsewhere])
+        job = self.staged_with_terms()
+        self.assertEqual(self.approve(job, approver).status_code, 200)
+        MembershipBranchAccess.objects.filter(membership=membership, branch=self.branch).delete()
+        cache.clear()
+        res = self.apply(job, self.stocker)
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertEqual(res.json()['code'], 'prices_forbidden')
+        self.assertIn('sucursales', res.json()['detail'])
+        self.assert_nothing_registered(job)

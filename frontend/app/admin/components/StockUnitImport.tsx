@@ -127,15 +127,16 @@ function TermsApproval({ job, canApprove, disabled, onApprove, onRegisterWithout
 }) {
   const approval = job.terms_approval ?? null;
   const valid = Boolean(approval?.valid);
-  const rows = job.commercial_terms_rows ?? 0;
-  const link = unitImportJobPath(job.id);
+  const rows = job.commercial_terms_rows?.length ?? 0;
+  // The whole address, to paste in a message: the block only renders in the browser, after a load arrived.
+  const link = `${window.location.origin}${unitImportJobPath(job.id)}`;
   return (
     <section
       role="group"
       aria-label="Precios y garantías del archivo"
       className="mb-4 space-y-2 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning"
     >
-      {canApprove ? (
+      {canApprove && !valid ? (
         <p>
           Esta carga trae precios o garantías de seminuevos{rows ? ` (${plural(rows, "fila", "filas")})` : ""}. Tú
           administras productos: si la registras tú, se aplican. Si la registrará otra persona sin ese permiso,
@@ -399,7 +400,14 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
   useEffect(() => {
     const raw = new URLSearchParams(window.location.search).get("job");
     const id = raw && /^[0-9]+$/.test(raw) ? Number(raw) : null;
-    if (id) void run(() => fetchUnitImportJob(id));
+    if (id) {
+      void run(async () => {
+        const loaded = await fetchUnitImportJob(id);
+        // Review of #434 — the detail answers any kind of load; only a device load is registered here.
+        if ((loaded.import_type as string) !== "units") throw new Error("Esta carga no es de equipos.");
+        return loaded;
+      });
+    }
   }, []);
 
   async function run(task: () => Promise<UnitImportJob>) {

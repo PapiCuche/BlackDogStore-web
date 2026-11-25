@@ -513,9 +513,9 @@ export type UnitImportJob = {
   /** Who uploaded the file (prepared the load) and who registered it: usernames, "" when unknown. */
   created_by?: string;
   applied_by?: string;
-  /** IMPORT-TERMS-APPROVAL — whether the file brings devices' own sale prices or warranties, and in how many rows. */
+  /** IMPORT-TERMS-APPROVAL — whether the file brings devices' own sale prices or warranties, and in which rows. */
   carries_commercial_terms?: boolean;
-  commercial_terms_rows?: number;
+  commercial_terms_rows?: number[];
   /** IMPORT-TERMS-APPROVAL — the explicit approval of those terms; `valid`: it still covers them now. */
   terms_approval?: UnitImportTermsApproval | null;
 };

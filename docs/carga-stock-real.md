@@ -374,12 +374,17 @@ El servidor vuelve a comprobarlo al registrar:
 - sin aprobación: 403 `prices_forbidden`, no se registra nada;
 - si los precios o garantías cambiaron desde la aprobación: 409 `terms_approval_stale` (la aprobación está atada a
   una huella sha256 de fila, variante, serie, IMEI, precio y garantía de cada equipo);
-- si quien aprobó ya no tiene `products.manage` en la empresa: 403, hace falta otra aprobación;
+- si quien aprobó ya no tiene `products.manage` en la empresa, o ya no alcanza todas las sucursales de la carga: 403,
+  hace falta otra aprobación;
 - la aprobación cubre sólo los precios y garantías **de cada equipo**: cambiar el precio de una variante (§5.1) sigue
   exigiendo `products.manage` a quien registra.
 
+Al reabrir la carga por el enlace, quien no administra productos ve qué filas traen precio o garantía y la aprobación,
+pero no los valores.
+
 Auditoría: `unit_import_terms_approved` (carga, filas con precio o garantía, inicio de la huella, quién preparó, si fue
-su misma persona) y, en `stock_units_import_applied`, `prepared_by_id`, `terms_approved_by_id`, `executed_by_id`,
+su misma persona) y, en `stock_units_import_applied`, `prepared_by_id`, `terms_approved_by_id` y `terms_digest` (si
+una aprobación válida los cubre, registre quien registre), `executed_by_id`,
 `commercial_terms` (`applied`, `dropped` o `none`) y `terms_authority` (`applier` o `approval`).
 
 ## 8. Comprobar: `check_unit_stock` y «Conciliación»

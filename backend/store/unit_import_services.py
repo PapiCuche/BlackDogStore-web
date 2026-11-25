@@ -831,11 +831,22 @@ def _approval_problem(job, rows):
         return TERMS_APPROVAL_STALE, (
             f'Los precios o garantías de esta carga cambiaron desde que {name} los aprobó. No se registró nada: pide '
             f'que los aprueben otra vez, o registra los equipos sin precios ni garantías.')
+    # Asked of the approver NOW, like of whoever applies. Known race (accepted, review of #434): a role change that
+    # commits between this read and the end of the apply is not seen — memberships and roles are not locked here,
+    # as nowhere else a capability is asked.
     if not device_catalog.user_may_manage_products(job.terms_approved_by, job.company):
         return PRICES_FORBIDDEN, (
             f'{name} aprobó los precios y garantías de esta carga, pero ya no administra productos. No se registró '
             f'nada: pide la aprobación de quien administre productos ahora, o registra los equipos sin precios ni '
             f'garantías.')
+    # The reach the approval asked (the job's branches, `import_views._job_within_reach`), asked again.
+    from .import_views import _job_within_reach
+
+    if not _job_within_reach(job.terms_approved_by, job.company, job):
+        return PRICES_FORBIDDEN, (
+            f'{name} aprobó los precios y garantías de esta carga, pero ya no tiene acceso a todas sus sucursales. No '
+            f'se registró nada: pide la aprobación de quien administre productos en esas sucursales, o registra los '
+            f'equipos sin precios ni garantías.')
     return None, None
 
 
@@ -848,7 +859,7 @@ def terms_state(job) -> dict:
         code, _message = _approval_problem(job, rows)
         approval = {'by_name': _person(job.terms_approved_by), 'at': job.terms_approved_at,
                     'valid': bool(carrying) and code is None}
-    return {'carries_commercial_terms': bool(carrying), 'commercial_terms_rows': len(carrying),
+    return {'carries_commercial_terms': bool(carrying), 'commercial_terms_rows': carrying,
             'terms_approval': approval}
 
 
@@ -1594,6 +1605,9 @@ def apply_units(*, job, actor, request=None, price_updates=None, without_commerc
             raise UnitImportError(f'{COMMERCIAL_TERMS_IN_JOB} Filas con garantía o precio: {shown}.',
                                   code=PRICES_FORBIDDEN)
     commercial_terms = TERMS_DROPPED if drop_terms else TERMS_APPLIED if carrying else TERMS_NONE
+    # Review of #434 — the reviewer is recorded whenever a valid approval covers these terms, whoever applies.
+    approved = (terms_authority == 'approval' or bool(carrying and job.terms_approved_digest
+                                                       and _approval_problem(job, rows)[0] is None))
     # NEW-TEMPLATE-PRICE — asked of whoever APPLIES, before anything is written.
     price_updates = clean_price_updates(job, actor, price_updates)
 
@@ -1731,10 +1745,11 @@ def apply_units(*, job, actor, request=None, price_updates=None, without_commerc
                   'imei_on_unmarked_products': unmarked,
                   # NEW-TEMPLATE-PRICE — how many variant prices changed; each has its own `product_updated` line.
                   **({'price_updates': len(price_changes)} if price_changes else {}),
-                  # IMPORT-TERMS-APPROVAL — who prepared, who approved the terms (when an approval was what allowed
-                  # them) and who registered; and what happened to the file's own prices and warranties.
+                  # IMPORT-TERMS-APPROVAL — who prepared, who approved the terms (a valid approval of them, whoever
+                  # applied) and who registered; and what happened to the file's own prices and warranties.
                   'prepared_by_id': job.created_by_id,
-                  'terms_approved_by_id': job.terms_approved_by_id if terms_authority == 'approval' else None,
+                  'terms_approved_by_id': job.terms_approved_by_id if approved else None,
+                  'terms_digest': job.terms_approved_digest[:12] if approved else None,
                   'executed_by_id': actor.pk,
                   'commercial_terms': commercial_terms, 'terms_authority': terms_authority,
                   **({'terms_rows_dropped': len(carrying)} if drop_terms else {})},

@@ -22,7 +22,7 @@ function job(overrides: Record<string, unknown> = {}) {
     counts: { total: 1, create: 1, update: 0, no_change: 0, skip: 0, error: 0 },
     summary: { units: 1 }, is_applicable: true, rows_truncated: false,
     options: { line: 'used', entry_kind: 'purchase' }, created_by: 'ana', applied_by: '',
-    can_update_prices: false, carries_commercial_terms: true, commercial_terms_rows: 1, terms_approval: null,
+    can_update_prices: false, carries_commercial_terms: true, commercial_terms_rows: [2], terms_approval: null,
     rows: [
       { sheet: 'Seminuevos', row: 2, action: 'create', match_key: 'SN1', errors: [], warnings: [],
         data: { name: 'iPhone 13 128 GB Azul', branch: 'Centro', serial_number: 'SN1', imei: '356938035643809',
@@ -78,7 +78,7 @@ test('without products.manage and without an approval: the block says so and off
   expect(block).toHaveTextContent(
     'Esta carga trae precios o garantías de seminuevos. Necesita la aprobación de quien administra productos.');
   expect(block).toHaveTextContent('Preparó: ana');
-  expect(within(block).getByText('/admin/inventory/units/import?job=41')).toBeInTheDocument();
+  expect(within(block).getByText(`${window.location.origin}/admin/inventory/units/import?job=41`)).toBeInTheDocument();
   // Registering WITH the terms is not offered: the server would refuse it.
   expect(screen.queryByRole('button', { name: 'Registrar 1 equipo' })).not.toBeInTheDocument();
   expect(within(block).queryByRole('button', { name: 'Aprobar precios y garantías' })).not.toBeInTheDocument();
@@ -102,6 +102,9 @@ test('a manager approves the terms and sees who approved them', async () => {
   expect(calls.find((c) => c.url.includes('/approve-terms/'))?.method).toBe('POST');
   expect(await within(block).findByText(/Aprobados por Bruno/)).toBeInTheDocument();
   expect(within(block).queryByRole('button', { name: 'Aprobar precios y garantías' })).not.toBeInTheDocument();
+  // Already approved: the copy no longer asks to approve them.
+  expect(block).not.toHaveTextContent('apruébalos antes');
+  expect(block).toHaveTextContent('ya están aprobados');
   // The rows of the preview are still on screen after the approval.
   expect(screen.getByRole('table', { name: 'Equipos del archivo' })).toBeInTheDocument();
 });
@@ -131,7 +134,7 @@ test('an approval that no longer holds is said, and only the operational entry i
 });
 
 test('a load without prices or warranties shows no block', async () => {
-  previewBody = job({ carries_commercial_terms: false, commercial_terms_rows: 0 });
+  previewBody = job({ carries_commercial_terms: false, commercial_terms_rows: [] });
   render(<StockUnitImport branches={BRANCHES} />);
   const file = new File(['x'], 'stock-seminuevos.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   fireEvent.change(screen.getByLabelText('Archivo de equipos (.xlsx)'), { target: { files: [file] } });
@@ -139,4 +142,13 @@ test('a load without prices or warranties shows no block', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
   expect(await screen.findByRole('button', { name: 'Registrar 1 equipo' })).toBeInTheDocument();
   expect(screen.queryByRole('group', { name: 'Precios y garantías del archivo' })).not.toBeInTheDocument();
+});
+
+test('a link to a load that is not of devices is not opened here', async () => {
+  window.history.pushState({}, '', '/admin/inventory/units/import?job=41');
+  detailBody = { ...job(), import_type: 'products' };
+  render(<StockUnitImport branches={BRANCHES} />);
+  expect(await screen.findByRole('alert')).toHaveTextContent('Esta carga no es de equipos');
+  expect(screen.queryByRole('table', { name: 'Equipos del archivo' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Registrar/ })).not.toBeInTheDocument();
 });

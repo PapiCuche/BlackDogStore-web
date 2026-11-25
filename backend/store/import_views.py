@@ -763,6 +763,7 @@ class AdminUnitImportApproveTermsView(APIView):
     throttle_classes = [AdminImportThrottle]
     http_method_names = ['post', 'options']
 
+    @answers_busy           # the job row is locked: a deadlock is 409 `busy`, never a 500
     def post(self, request, pk):
         company, error = _context(request, CAP_PRODUCTS)
         if error:
@@ -1026,7 +1027,27 @@ class AdminImportJobView(APIView):
         if job.import_type == BulkImportJob.UNITS:
             # IMPORT-TERMS-APPROVAL — a load reopened by its link: what it needs before it can be registered.
             payload.update(_unit_terms_payload(request, company, job))
+            if not payload['can_update_prices']:
+                payload = _without_commercial_terms(payload)
         return Response(payload)
+
+
+#: Review of #434 — the prices and warranties a reopened device load stages, hidden from whoever may not set them.
+_TERM_KEYS = ('sale_price', 'warranty_days', 'file_price')
+
+
+def _without_commercial_terms(payload: dict) -> dict:
+    """
+    The reopened job without the file's own prices and warranties (each row's) nor the variant price review: who does
+    not hold `products.manage` learns WHICH rows carry terms (`commercial_terms_rows`) and the approval, not the values.
+    The preview answer of their own upload is not this one: their preview already dropped them.
+    """
+    summary = payload.get('summary')
+    if isinstance(summary, dict) and 'price_review' in summary:
+        summary = {key: value for key, value in summary.items() if key != 'price_review'}
+    rows = [{**row, 'data': {key: value for key, value in (row.get('data') or {}).items() if key not in _TERM_KEYS}}
+            for row in payload.get('rows') or []]
+    return {**payload, 'summary': summary, **({'rows': rows} if 'rows' in payload else {})}
 
 
 class AdminImportErrorReportView(APIView):
