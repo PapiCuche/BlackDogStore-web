@@ -5,7 +5,7 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-11-25 — R13.2 · cierre productivo controlado: todo preparado, producción SIN CAMBIOS (R13.1 `bf6a3307`)
 
-Ninguna operación productiva ejecutada: el mensaje del propietario no concedió GO. Preparado y ensayado:
+Ninguna escritura sobre datos ni código de producción: el mensaje del propietario no concedió GO. En `backups/` de prod-02 sí se escribieron backups, manifiestos y logs de los ensayos. Preparado y ensayado:
 - **R13.2 `c8a43215`** reconfirmada (imágenes del SHA exacto, sin migraciones ni cambios de infraestructura, humo 32/32, simulación 19/19, IMEI protegidos, reimpresión de sólo lectura, vuelta atrás); espera «GO despliegue c8a4321 prod-02», después de los cuatro GO de datos.
 - **Siete notas, fuente `db-20261121-222417`** (elegida por el propietario): kit nuevo `backups/release-notes7b/`, encuesta limpia (sólo cambia `pdf_generated_at`; notas 5 y 7 → NULL), ensayo 72/72; espera «GO restaurar sellos 7 notas prod-02 fuente 222417».
 - **Stock real:** proceso final documentado (`docs/carga-stock-real.md` §11.0) y kit de vista previa en copia aislada `backups/stockreal-preview/`, revisado y validado en el servidor con archivos sintéticos. Espera los archivos del propietario, su aprobación del informe y «GO carga stock real prod-02».

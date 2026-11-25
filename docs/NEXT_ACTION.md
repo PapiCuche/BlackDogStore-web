@@ -13,11 +13,13 @@ sólo el cambio autorizado; datos antes y después; pruebas; evidencia.
 | 3 | Muestras aproximadas, **sólo 167** | «GO muestras 167 prod-02 kit v131b» | `f12s_go.sh` (excluye las 38 dudosas) | Listo |
 | 4 | Imagen rota del producto 12 | «GO producto 12 prod-02 kit v131b» | `p12_go.sh` | Listo |
 | 5 | Despliegue R13.2 `c8a43215` | «GO despliegue c8a4321 prod-02» | `backups/release-r132/d_deploy_r132.sh` | Listo (ver abajo) |
+| — | Sellos de las 7 notas (fuente `222417`) | «GO restaurar sellos 7 notas prod-02 fuente 222417» | `backups/release-notes7b/notes7_go.sh` | Listo; acepta R13.1 o R13.2, no depende del orden |
+| — | Carga del stock real | «GO carga stock real prod-02» | panel + `docs/carga-stock-real.md` §11 | Espera archivos, R13.2 y aprobación del informe |
 
 Los kits 2–4 fijan R13.1 `bf6a3307`: deben ir antes que R13.2, como pidió el propietario. Si R13.2 se desplegara antes,
 habría que refijarlos y volver a ensayarlos.
 
-**R13.2 reconfirmada (sólo lectura, 2026-11-25):** imágenes `rc-c8a4321` construidas desde un árbol limpio en
+**R13.2 reconfirmada (sólo lectura, 2026-11-25; resultados del ensayo de `c8a43215` en `backups/release-r132/r132-rehearsal.log`):** imágenes `rc-c8a4321` construidas desde un árbol limpio en
 `c8a4321538d9…` (backend `sha256:211010ebf1c9…`, frontend `sha256:085254fd4e4c…`); `git diff bf6a3307..c8a43215` sin
 cambios en `deploy/`, compose, Dockerfiles ni migraciones (43 archivos de código, pruebas y docs); ensayo: humo 32/32,
 simulación 19/19, exportaciones con IMEI ocultos y 403 `full_identifiers_forbidden` sin `inventory.adjust`, reimpresión
@@ -28,25 +30,26 @@ posterior de `master`.
 - Orden: R13.2 desplegada → archivos del propietario en `backups/stock-real-inbox/` → vista previa en copia aislada
   (`backups/stockreal-preview/`, `README-stockreal-preview.md`) → aprobación del informe por el propietario →
   «GO carga stock real prod-02» → carga en el panel (`docs/carga-stock-real.md` §11).
-- Kit revisado de forma independiente (1 grave y 23 menores corregidos) y validado en prod-02 con archivos sintéticos
+- Kit con revisión independiente (todos sus hallazgos corregidos: lectura de identificadores con el lector del importador, privacidad, guarda por host, backup nuevo obligatorio, identidad de imagen, sondas de red) y validado en prod-02 con archivos sintéticos
   sobre el catálogo real: con R13.2, 4 equipos registrados en la copia, `check_unit_stock` 0, todo deshecho; aislamiento
-  179 destinos, 0 abiertos (sólo el sshd del host, sólo con clave); producción sin cambios (filas de equipos, movimientos
+  179 destinos, 0 abiertos salvo el sshd del propio host (sólo con clave, se informa); producción sin cambios (filas de equipos, movimientos
   y cargas iguales; 0 filas insertadas, actualizadas o borradas).
 - Con R13.1, un archivo de nuevos con «Precio de venta» se rechaza entero: R13.2 primero.
 - Observado en el catálogo real (para el propietario): «iPhone 15 128Gb Negro» está publicada y no marcada «lleva IMEI».
-- Preguntas nuevas: ¿aplicar una carga con precios o garantías de seminuevos debe exigir `products.manage` también a
-  quien aplica (hoy, tras #432, sí; se rechaza indicando las filas)? En la recepción del proveedor el `sale_price` de
-  una fila sigue sin esa comprobación (sin efecto práctico: un seminuevo no se vende bajo pedido).
+- Regla vigente tras #432: quien registra una carga con precios o garantías de seminuevos también necesita
+  `products.manage` (se rechaza indicando las filas). Para el propietario: confirmar que no hay un flujo en el que un
+  almacenero registre la vista previa de un administrador. En la recepción del proveedor el `sale_price` de una fila
+  sigue sin esa comprobación (sin efecto práctico: un seminuevo no se vende bajo pedido).
 
 ### Siete notas — fuente `db-20261121-222417` (elegida por el propietario) · kit nuevo ENSAYADO 72/72 · espera GO
 - Kit `backups/release-notes7b/` (runbook `RUNBOOK-notes7b-prod02.md`). **Sustituye** al de `release-r13-ops`
   (fuente `140538`, marcado `NOTES7-SUPERSEDED.txt`).
 - Encuesta (producción sólo lectura): mismos 7 ids, identidad igual, **sólo `pdf_generated_at` difiere** (md5 de las 15
   columnas), 0 filas de auditoría sobre las notas desde el backup, cada original = última descarga hecha por una persona
-  (3–5 ms), **notas 5 y 7 → NULL** (nunca descargadas).
+  (3–4 ms), **notas 5 y 7 → NULL** (nunca descargadas).
 - Actualización condicional e idempotente de un solo campo, una fila de auditoría por nota, diff exacto, backup previo.
-- Ensayo en copia aislada (`db-20261125-084236`): aplicar, repetir (NO-OP), 13 rechazos sin escribir, vuelta atrás,
-  reaplicar, serializador del panel y reimpresión de sólo lectura correctos; acepta R13.1 y R13.2. Producción intacta.
+- Ensayo en copia aislada (`db-20261125-084236`): aplicar, repetir (NO-OP), 11 rechazos del script del GO y 2 de su vuelta atrás, sin escribir (más fallo inyectado y huella equivocada, deshechos), vuelta atrás,
+  reaplicar, serializador del panel y reimpresión de sólo lectura correctos (los avisos «fallo al abrir evidencia» son de la copia, que no lleva las fotos de evidencia; no afectan a las notas); acepta R13.1 y R13.2. Producción intacta.
 - Huella antes `a42dfa17d6779f45` → después `c2be046bf7bce2d8`.
 - GO: **«GO restaurar sellos 7 notas prod-02 fuente 222417»**; vuelta atrás: **«GO vuelta atrás sellos 7 notas prod-02 fuente 222417»**.
 

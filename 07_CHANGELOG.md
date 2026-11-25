@@ -6,7 +6,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 ## 2026-11-25 — R13.2 preparada; siete notas y stock real listos para GO
 
 **Fixed** (en `master`, sin desplegar)
-- La garantía de un seminuevo sólo la fija quien tiene `products.manage`, también al cargar por Excel (se ignora con aviso; al aplicar una carga ajena con garantía o precio, se rechaza indicando las filas), al registrar equipos y al recibir de un proveedor (#432, `94b0fb39`).
+- La garantía de un seminuevo sólo la fija quien tiene `products.manage`, también al cargar por Excel (se ignora con aviso; al aplicar una carga ajena con garantía o precio, se rechaza indicando las filas), al registrar equipos y al recibir de un proveedor (#432, `94b0fb39`). El precio de venta en la recepción del proveedor no cambia (ver `docs/NEXT_ACTION.md`).
 
 **Ops** (fuera del repositorio, en prod-02 `backups/`; nada ejecutado en producción)
 - Kit `release-notes7b`: restaurar el sello de generación de las 7 notas desde `db-20261121-222417`, ensayado 72/72.
