@@ -195,6 +195,8 @@ test.describe("stock real: nuevos y seminuevos, de la plantilla a la venta y a l
   test.describe.configure({ mode: "serial" });
 
   test.beforeAll(() => { seeded = seed(); });
+  // The filled templates and the photo live only for the run.
+  test.afterAll(() => { fs.rmSync(WORK, { recursive: true, force: true }); });
 
   for (const env of ENVS) {
     test(`${env.name}: plantilla de nuevos con precio distinto, caja con ticket, seminuevo hasta publicarlo`, async ({ browser }) => {

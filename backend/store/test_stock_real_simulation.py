@@ -30,7 +30,9 @@ Segunda tanda (STOCK-REAL-SIM-2), con lo que entró en #426, #427 y #428:
         precio e inspección y rechaza el que no tiene precio; la web ofrece sólo el listo (inspeccionado + foto real
         confirmada + publicado + precio);
     17. «Registrar equipo» (alta rápida de un nuevo), venta inmediata en caja con nota de venta, y su reimpresión
-        (ticket 80 mm y A4) en una transacción deshecha y con el dibujo puro: la reimpresión no deja nada escrito;
+        (ticket 80 mm y A4). La del panel, como en producción, marca `pdf_generated_at` y audita cada descarga
+        (`sales_note_pdf_downloaded`); la simulación lo comprueba y lo deshace en una transacción anidada, así que no
+        deja nada. Sólo el dibujo puro (`render_sales_note_pdf`, `ticket_pdf_from_ctx`) no escribe nada;
     18. el archivo completo (`inventory.adjust`) vuelto a subir a la misma tienda: cada fila «ya está registrado»,
         nada creado;
     19. conciliación final: `check_unit_stock` con 0 diferencias y, en cada estante, stock = equipos disponibles =
@@ -477,7 +479,7 @@ class StockRealSimulation:
             ('Inventario inicial por tandas y conciliación con la copia de revisión', self.s14_batches_review_export),
             ('«Precio de venta» en la plantilla de nuevos', self.s15_new_template_price),
             ('Seminuevos con y sin precio en la misma variante', self.s16_used_own_gate),
-            ('«Registrar equipo», venta en caja y reimpresión sin escribir nada', self.s17_quick_register_reprint),
+            ('«Registrar equipo», venta en caja y reimpresión (deshecha) de la nota', self.s17_quick_register_reprint),
             ('El archivo completo vuelto a subir: nada se registra', self.s18_full_export_reupload),
             ('Conciliación final del Kardex', self.s19_final_reconciliation),
         ]
@@ -1122,10 +1124,14 @@ class StockRealSimulation:
                     AdminAuditLog.objects.count(), StockMovement.objects.count(), Order.objects.count())
 
         kept = frozen()
-        # The panel's own reprint (the endpoint the till calls), inside a transaction that is rolled back: what it
-        # would stamp (`pdf_generated_at`, the download's audit line) never stays.
+        # The panel's own reprint (the endpoint the till calls) WRITES, as in production: it stamps
+        # `pdf_generated_at` and audits each download. That is checked inside a transaction the simulation then rolls
+        # back, so the run leaves nothing behind.
         sizes = {}
+        downloads = AdminAuditLog.objects.filter(company=self.a, action='sales_note_pdf_downloaded',
+                                                 target_id=str(note.pk))
         with transaction.atomic():
+            downloaded_before = downloads.count()
             for formato in ('ticket80', 'a4'):
                 pdf = clerk.get(f'/api/admin/orders/{order.pk}/sales-note/pdf/{self.q()}&formato={formato}')
                 self.ok(pdf, 200, f'reimprimir la nota ({formato})')
@@ -1134,17 +1140,24 @@ class StockRealSimulation:
                            and (formato == 'ticket80') == ('ticket80' in disposition),
                            f'PDF {formato}: {pdf["Content-Disposition"]}')
                 sizes[formato] = len(pdf.content)
+            stamped = SalesNote.objects.get(pk=note.pk).pdf_generated_at
+            formats = sorted(downloads.order_by('pk').values_list('metadata__formato', flat=True)
+                             [downloaded_before:])
+            self.check(stamped is not None, 'la reimpresión del panel no marcó pdf_generated_at')
+            self.check(downloads.count() - downloaded_before == 2 and formats == ['a4', 'ticket80'],
+                       f'auditoría de las descargas: {downloads.count() - downloaded_before} línea(s), {formats}')
             transaction.set_rollback(True)
-        self.check(frozen() == kept, f'la reimpresión dejó algo escrito: {kept} → {frozen()}')
+        self.check(frozen() == kept, f'deshacer la reimpresión dejó algo escrito: {kept} → {frozen()}')
         # And the pure drawing (what a preview uses): no database write at all.
         ticket = ticket_pdf_from_ctx(build_sales_note_context(note))
         a4 = render_sales_note_pdf(note)
         self.check(ticket.startswith(b'%PDF') and a4.startswith(b'%PDF'), 'dibujo de la nota')
         self.check(frozen() == kept, f'el dibujo puro dejó algo escrito: {kept} → {frozen()}')
-        self.step(f'reimpresión ticket 80 mm ({sizes["ticket80"]} B) y A4 ({sizes["a4"]} B) por el panel en una '
-                  f'transacción deshecha, y por el dibujo puro: nota, pedidos, Kardex y auditoría sin cambios')
+        self.step(f'reimpresión por el panel: ticket 80 mm ({sizes["ticket80"]} B) y A4 ({sizes["a4"]} B), con '
+                  f'pdf_generated_at marcado y 2 líneas sales_note_pdf_downloaded (ticket80, a4), deshechas con su '
+                  f'transacción; el dibujo puro no escribe nada: nota, pedidos, Kardex y auditoría sin cambios')
         # The shelf: +1 and -1, unchanged. The audit: the registration, the sale with its note, and NOT the two
-        # reprints (`sales_note_pdf_downloaded` was rolled back with the transaction).
+        # reprints (their `sales_note_pdf_downloaded` lines were rolled back with the nested transaction).
         self.expect(before, kardex={StockMovement.PURCHASE_ENTRY: (1, 1), StockMovement.SALE_EXIT: (1, 1)},
                     audit={'stock_units_received': 1, 'pos_sale_completed': 1, 'order_unit_identified': 1,
                            'sales_note_created': 1})

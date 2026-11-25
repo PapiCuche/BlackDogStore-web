@@ -273,8 +273,10 @@ escenarios, con las vistas reales y permisos reales:
     cambió el precio es 409 y no escribe nada; el costo nunca se vuelve precio;
 16. seminuevos con y sin precio en la misma variante: se habilita con uno con precio, la caja vende el que tiene precio
     e inspección y rechaza el que no tiene precio, la web ofrece sólo el que está listo;
-17. «Registrar equipo», la venta inmediata en caja con nota de venta y su reimpresión (ticket 80 mm y A4) en una
-    transacción que se deshace y con el dibujo puro: la reimpresión no deja nada escrito;
+17. «Registrar equipo», la venta inmediata en caja con nota de venta y su reimpresión (ticket 80 mm y A4). La
+    reimpresión del panel, como en producción, marca `pdf_generated_at` y deja una línea `sales_note_pdf_downloaded`
+    por descarga; la simulación lo comprueba y lo deshace en una transacción anidada, así que no deja nada. Sólo el
+    dibujo puro (`render_sales_note_pdf`, `ticket_pdf_from_ctx`) no escribe nada;
 18. el archivo completo (`inventory.adjust`) vuelto a subir a la misma tienda: cada fila «ya está registrado», nada
     creado;
 19. la conciliación final: `check_unit_stock` con 0 diferencias y, en cada estante, stock = equipos disponibles =
