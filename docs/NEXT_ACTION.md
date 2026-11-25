@@ -19,6 +19,15 @@ Antes del intento, los tres kits de datos se reapuntaron a R13.1 (sólo SHA e im
 - **Hallazgo:** la reimpresión de los kits escribió en producción tres veces: R12b (2026-11-21), Fase 1 (2026-11-22) y R13 (2026-11-24). El backup `db-20261124-140538` guarda los sellos de la reimpresión de Fase 1. Los sellos reales de los usuarios están en `db-20261121-222417` (coinciden con su última descarga auditada; las notas 5 y 7 nunca se descargaron: vacío). Usar esa fuente exige refijar el manifiesto y reensayar.
 - GO del propietario pendiente, eligiendo la fuente.
 
+## RELEASE R13.2 — candidata `c8a43215` PREPARADA Y ENSAYADA · espera «GO despliegue c8a4321 prod-02»
+
+- Contenido: #426, #427, #428 y #430 (más docs #425/#429). Sin migraciones; sin cambios en `deploy/` ni compose.
+- Imágenes `rc-c8a4321`: backend `sha256:211010ebf1c9…`, frontend `sha256:085254fd4e4c…` (compiladas en prod-02 bajo el candado).
+- Ensayo sobre copia aislada de `db-20261125-030242`: huellas idénticas (139 tablas, 3416 filas); humo 32/32; 319 pruebas en la imagen; simulación **19/19** con copia idéntica después; exportaciones nuevas (ocultas y completas) con los encabezados de las plantillas; usuario sólo `inventory.view` → 403 en la completa e IMEI ocultos en «Equipos con serie»; vuelta atrás a `release-bf6a330` correcta.
+- `--preflight` del despliegue y de la vuelta atrás contra producción: OK, sin escribir nada.
+- Kit `backups/release-r132/` (`d_deploy_r132.sh`, `rollback_r132_code.sh`, `RUNBOOK-c8a4321-prod02.md`, con el aviso al personal sobre los IMEI ocultos).
+- **Orden recomendado:** primero los GO de datos sobre R13.1 (sus kits fijan `bf6a3307`), después R13.2. El kit del cron v2 no depende de esto.
+
 ## Desarrollo fusionado tras R13.1 (en `master`, NO desplegado)
 - #426 `01895791`: «Precio de venta» opcional en la plantilla de nuevos; nunca se aplica solo; diferencia, impacto y propuesta; actualizar exige `products.manage` + confirmación; vista previa desfasada → 409; el costo nunca es precio; orden de bloqueos estante → producto como las ventas.
 - #427 `e449d7b8`: cada seminuevo se bloquea sólo a sí mismo; caja, pago y entrega comparten `sale_refusal`; quitar el precio libera el apartado sin pedido y hace fallar el pedido ya creado.
