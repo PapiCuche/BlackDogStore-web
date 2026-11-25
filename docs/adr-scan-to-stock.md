@@ -81,6 +81,11 @@ H1): la serie de una fila nunca es el IMEI de otra, ni al revés (`receive_units
 vista previa de la carga de equipos). La ocupación de un lote se lee una sola vez (`stock_unit_services._Occupancy`: dos
 consultas para todo el lote, no hasta seis por fila dentro de la transacción con candados).
 
+Después del ingreso, el IMEI 1, el IMEI 2 y la serie de un equipo **no se editan** (revisión L5): «Corregir» cambia
+detalles (`update_unit`), «Anular ingreso» los libera, «Cambiar variante» los conserva y una corrección vuelve a entrar
+por `receive_units`. Así ninguna puerta escribe un identificador sin el candado y la ocupación de arriba; un test fija
+que el PATCH del equipo los ignora.
+
 ### 3.3 Sin fuga entre empresas
 
 Las consultas filtran por la empresa del usuario antes de mirar un identificador: un IMEI o un código de otra empresa no
@@ -134,7 +139,9 @@ o si el cuerpo cambió desde el último envío; tras un 5xx sin cambios el reint
 salir de la página (recargar, un enlace, «atrás») se detiene; «atrás» devuelve a esta pantalla (una entrada de guarda
 que se quita al terminar). Si tras un 5xx el reintento (con otra clave, porque el cuerpo cambió) recibe «ya registrado»
 para este mismo identificador, la pantalla busca el equipo y, si es de esta variante y esta sucursal, muestra el
-registro del intento anterior en lugar del rechazo. Las lecturas se atienden en orden (`ReadQueue`). Indicador «Esperando:
+registro del intento anterior en lugar del rechazo (sólo con una variante ya existente: una combinación que todavía no es
+variante nunca se da por «el mismo equipo»). Cada envío pone una sola entrada de guarda en el historial; sólo ese envío
+la quita al terminar, y desmontar la pantalla nunca navega. Las lecturas se atienden en orden (`ReadQueue`). Indicador «Esperando:
 IMEI 1 / IMEI 2 / Número de serie». Una lectura repetida se ignora y se dice; Enter con el campo vacío no hace nada;
 **ninguna lectura confirma**: sólo el botón, protegido contra doble clic y con clave de idempotencia. Un pedido pagado que
 espera la variante en la sucursal se resuelve antes de confirmar (su pedido, o stock con motivo).
@@ -154,4 +161,8 @@ espera la variante en la sucursal se resuelve antes de confirmar (su pedido, o s
 - **D-SCAN-2 · Inventario inicial.** Hoy el escaneo registra **compra** (`PURCHASE_ENTRY`), también un seminuevo sin
   proveedor ni costo, igual que «Llegó el equipo» de la caja (se mantiene por coherencia). El inventario inicial sigue
   en la carga masiva. ¿Se quiere también aquí?
+- **D-SCAN-4 · Lectores que anteponen un espacio.** Espacio en la página con el campo del lector vacío no se manda al
+  lector (no se roba la tecla a la página). Un lector configurado para empezar cada código con un espacio perdería ese
+  espacio sin efecto, pero si además la página tiene el foco en un botón, Espacio lo pulsaría. ¿Hay lectores así en
+  las tiendas? Si los hay, se configura el lector sin prefijo o se añade una opción.
 - **D-SCAN-3 · EID.** Se reconoce y se rechaza; no hay dónde guardarlo. ¿Se quiere guardar (migración)?
