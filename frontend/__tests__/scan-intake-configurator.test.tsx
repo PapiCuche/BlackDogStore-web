@@ -299,7 +299,7 @@ describe('revisión de #440', () => {
 });
 
 describe('revisión 2 de #440', () => {
-  it('una lectura que llega mientras espera la guarda anterior: no se envía nada y se dice', async () => {
+  it('una lectura intentada mientras espera la guarda anterior se rechaza y se dice; se envía lo revisado', async () => {
     await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
     let top: unknown = null;
     const push = jest.spyOn(window.history, 'pushState').mockImplementation((value) => { top = value; });
@@ -307,7 +307,9 @@ describe('revisión 2 de #440', () => {
     const back = jest.spyOn(window.history, 'back').mockImplementation(() => {
       setTimeout(() => { top = null; window.dispatchEvent(new PopStateEvent('popstate', { state: null })); }, 150);
     });
-    receive.mockRejectedValueOnce(new lib.ScanIntakeError('Revisa el IMEI', 'invalid', 'imei', 400));
+    receive
+      .mockRejectedValueOnce(new lib.ScanIntakeError('Revisa el IMEI', 'invalid', 'imei', 400))
+      .mockResolvedValueOnce(received);
     renderScreen();
     const group = await chooseModel();
     fireEvent.click(radio(group, 'Capacidad', /128 GB/));
@@ -319,14 +321,20 @@ describe('revisión 2 de #440', () => {
     await act(async () => { fireEvent.click(confirm); });
     await waitFor(() => expect(confirm).toBeEnabled());
     await act(async () => { fireEvent.click(confirm); });
-    // While it waits: the scanner field does not take a read, «Leer» is off — and a read that lands anyway is caught.
+    // While it waits: the scanner field does not take a read, «Leer» is off, and a read attempted is refused, said.
     const input = screen.getByTestId('scan-intake-input') as HTMLInputElement;
     expect(input).toHaveAttribute('readonly');
     expect(screen.getByRole('button', { name: 'Leer' })).toBeDisabled();
+    const checks = check.mock.calls.length;
     await scan('350000000000022');
+    expect(check.mock.calls.length).toBe(checks);
+    expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('Espera a que termine el registro');
+    expect(screen.getByTestId('scan-intake-value-imei2')).toHaveTextContent('—');
     await act(async () => { await new Promise((r) => setTimeout(r, 250)); });
-    expect(receive).toHaveBeenCalledTimes(1);
-    expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('No se envió');
+    // The device reviewed is sent once the earlier guard's traversal ended — without the refused read.
+    await screen.findByTestId('scan-intake-done');
+    expect(receive).toHaveBeenCalledTimes(2);
+    expect(receive.mock.calls[1][2]).not.toHaveProperty('imei2');
     push.mockRestore(); state.mockRestore(); back.mockRestore();
   });
 });

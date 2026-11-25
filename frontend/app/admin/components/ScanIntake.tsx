@@ -295,6 +295,12 @@ export function ScanIntake({
 
   const onScanKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.nativeEvent.isComposing) return;
+    if (inFlight.current) {
+      // Review of #440: while registering, no read is taken — what was reviewed is what is sent.
+      if (event.key === "Enter" || event.key === "Tab") event.preventDefault();
+      if (event.key === "Enter") say("warn", "Espera a que termine el registro: esta lectura no se tomó. Vuelve a leerla después.");
+      return;
+    }
     rhythmKey(rhythm.current, event.key, event.timeStamp);
     const value = event.currentTarget.value;
     if (event.key === "Escape") {
@@ -844,9 +850,10 @@ export function ScanIntake({
             placeholder="Pasa el lector por el código o escríbelo y pulsa Enter"
             autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="next"
             aria-describedby={`${scanId}-log`}
-            // While registering, no read is taken: what was reviewed is what is sent (review of #440).
+            // While registering the field is read-only and `onScanKeyDown` refuses any read; the identifiers snapshotted
+            // at «Confirmar ingreso» are the backstop (review of #440).
             readOnly={submitting} aria-busy={submitting || undefined}
-            onChange={(e) => { setScanText(e.target.value); rhythmChanged(rhythm.current, e.target.value); }}
+            onChange={(e) => { if (inFlight.current) return; setScanText(e.target.value); rhythmChanged(rhythm.current, e.target.value); }}
             onKeyDown={onScanKeyDown}
           />
             <button
