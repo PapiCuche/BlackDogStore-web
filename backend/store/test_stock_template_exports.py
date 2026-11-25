@@ -80,7 +80,8 @@ class _Stock(_Base):
             units=[{'serial_number': 'SER-U001', 'imei': IMEI_U, 'condition': 'used', 'cost': '1200.00',
                     'cosmetic_grade': self.grade.pk, 'battery_health': 88, 'sale_price': '1899.90',
                     'notes': 'Vitrina 2', 'public_notes': 'Sin rayones', 'warranty_days': 90,
-                    'functional_state': 'with_faults', 'defects': 'Botón lateral duro', 'accessories': 'Caja'}])
+                    'functional_state': 'with_faults', 'defects': 'Botón lateral duro', 'accessories': 'Caja'}],
+            may_set_warranty=True)     # the fixture's admin holds products.manage
         foreign = Product.objects.create(company=self.other, name='Teléfono ajeno', slug='tel-ajeno',
                                          price=Decimal('10.00'), is_serialized=True, requires_imei=True)
         stock_unit_services.receive_units(branch=self.foreign_branch, product=foreign, reason='Ajeno', units=[
@@ -163,7 +164,8 @@ class TemplateShapeTest(_Stock):
             units=[{'serial_number': 'SER-LLENO-U', 'imei': imei('35693803564393'), 'imei2': imei('35693803564394'),
                     'condition': 'used', 'cost': '900.00', 'cosmetic_grade': self.grade.pk, 'battery_health': 91,
                     'sale_price': '1500.00', 'notes': 'Vitrina 3', 'public_notes': 'Como nuevo', 'warranty_days': 30,
-                    'functional_state': 'full', 'defects': 'Ninguno visible', 'accessories': 'Caja y cable'}])
+                    'functional_state': 'full', 'defects': 'Ninguno visible', 'accessories': 'Caja y cable'}],
+            may_set_warranty=True)     # the fixture's admin holds products.manage
         for kind, line, serial in (('units_new', NEW, 'SER-LLENO-N'), ('units_used', USED, 'SER-LLENO-U')):
             with self.subTest(kind):
                 _title, headers, rows = self.data(self.get(kind, mode='full'))

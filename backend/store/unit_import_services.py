@@ -538,6 +538,7 @@ def _pick_sheet(workbook) -> str:
 
 
 ZERO_PRICE = 'El precio de venta debe ser mayor que cero; déjalo vacío si aún no tiene precio.'
+WARRANTY_IGNORED = 'Garantía (días) ignorada: sólo quien administra productos fija la garantía.'
 _FLOAT_NOISE = 1e-9  # Excel noise is ~1e-13; a typed 1899.9999999 is not noise
 
 
@@ -741,6 +742,25 @@ SUPPLIERS_FORBIDDEN = ('No tienes permiso para ver proveedores: deja vacía la c
 
 #: The apply refused the price updates for want of `products.manage` (403). Nothing was written.
 PRICES_FORBIDDEN = 'prices_forbidden'
+#: IMPORT-WARRANTY-AUTHORITY — the apply of a job that carries a warranty or a device's own price, by somebody without
+#: `products.manage` (403 `PRICES_FORBIDDEN`). Nothing was written.
+COMMERCIAL_TERMS_IN_JOB = ('Esta carga trae garantías o precios de venta de equipos y tu usuario no puede fijarlos: '
+                           'pide que la aplique alguien que administre productos, o vuelve a subir el archivo sin '
+                           'esas columnas. No se registró nada.')
+
+
+def _staged_rows_carry_commercial_terms(rows) -> list[int]:
+    """The file rows (`row_number`) whose staged data carries a warranty or a device's own sale price."""
+    found = []
+    for row in rows:
+        data = row.normalized_data if isinstance(row.normalized_data, dict) else {}
+        price = data.get('sale_price')
+        if stock_unit_services.states_a_warranty(data) or not (
+                price is None or (isinstance(price, str) and not price.strip())):
+            found.append(row.row_number)
+    return found
+
+
 #: `price_updates` is not a confirmed copy of a proposal of this job (400). Nothing was written.
 PRICE_UPDATE_INVALID = 'price_update_invalid'
 
@@ -1220,6 +1240,11 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         if used_details and product is not None and product.condition_line != 'used':
             warnings.append(f'{", ".join(_USED_COLUMNS[n] for n in used_details)}: ignorado en un equipo nuevo.')
             used_details = {}
+        elif 'warranty_days' in used_details and not prices_allowed:
+            # IMPORT-WARRANTY-AUTHORITY — the warranty is a commercial promise to the buyer: the price's authority, as
+            # on the device sheet (`stock_unit_views`). Without `products.manage` it is ignored and said, like the price.
+            warnings.append(WARRANTY_IGNORED)
+            used_details.pop('warranty_days')
 
         cleaned = None
         if product is not None:
@@ -1401,6 +1426,14 @@ def apply_units(*, job, actor, request=None, price_updates=None):
     if not cost_services.user_may_view_costs(actor, job.company) and cost_services.staged_rows_carry_cost(
             rows, ('cost',)):
         raise UnitImportError(cost_services.COSTS_IN_JOB, code=cost_services.COSTS_FORBIDDEN)
+    # IMPORT-WARRANTY-AUTHORITY — a device's warranty and its own sale price are the catalogue's (`products.manage`),
+    # asked again of whoever APPLIES like the cost: a job staged by somebody who holds it is no way in for somebody
+    # who does not. Refused whole (403 `prices_forbidden`), nothing written.
+    may_set_terms = device_catalog.user_may_manage_products(actor, job.company)
+    carrying = [] if may_set_terms else _staged_rows_carry_commercial_terms(rows)
+    if carrying:
+        shown = ', '.join(str(n) for n in carrying[:10]) + (' …' if len(carrying) > 10 else '')
+        raise UnitImportError(f'{COMMERCIAL_TERMS_IN_JOB} Filas con garantía o precio: {shown}.', code=PRICES_FORBIDDEN)
     # NEW-TEMPLATE-PRICE — asked of whoever APPLIES, before anything is written.
     price_updates = clean_price_updates(job, actor, price_updates)
 
@@ -1482,6 +1515,7 @@ def apply_units(*, job, actor, request=None, price_updates=None):
                     } for row in chunk],
                     actor=actor, reason=reason, movement_type=movement_type, request=request,
                     supplier=suppliers.get(supplier_id), received_on=received_on or None,
+                    may_set_warranty=may_set_terms,
                 )
             except stock_unit_services.StockUnitError as exc:
                 where = (

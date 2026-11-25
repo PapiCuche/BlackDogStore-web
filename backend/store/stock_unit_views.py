@@ -377,6 +377,9 @@ class StockUnitListView(APIView):
                     reason=data.get('reason') or '', request=request,
                     movement_type=StockMovement.INITIAL_STOCK if entry['opening'] else StockMovement.PURCHASE_ENTRY,
                     supplier=entry['supplier'], received_on=entry['received_on'],
+                    # IMPORT-WARRANTY-AUTHORITY — a warranty is the price's authority: a stated one without
+                    # `products.manage` refuses the batch (403 `prices_forbidden`), like the price just above.
+                    may_set_warranty=may_manage_products(request),
                 )
         except InventoryError as exc:
             return _refusal(exc)

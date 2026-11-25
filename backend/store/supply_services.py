@@ -948,6 +948,8 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
             created = stock_unit_services.receive_units(
                 branch=branch, product=product, actor=actor, reason=reason, request=request,
                 units=[device(row) for row in rows], supplier=supplier,
+                # IMPORT-WARRANTY-AUTHORITY — the rows arrive as sent: a warranty only from `products.manage`.
+                may_set_warranty=_may_manage_products(actor, order.company),
             )
             inventory_services.create_stock_movement(
                 branch=branch, product_id=product.pk, movement_type=StockMovement.SALE_EXIT,
@@ -979,7 +981,11 @@ def receive_line(line, *, actor, units=None, unit_cost=None, company=None, reque
                 actor=actor, order=order, reference_type='order', reference_id=order.pk, metadata=metadata,
             )
     except stock_unit_services.StockUnitError as exc:
-        raise SupplyError(str(exc), field='units', line=exc.line, unit_field=exc.field or '') from None
+        from .cost_services import PERMISSION_CODES
+
+        # A missing authority keeps its code (and so its 403, DEC-INV-05); any other device rule stays `invalid`.
+        raise SupplyError(str(exc), field='units', line=exc.line, unit_field=exc.field or '',
+                          code=exc.code if exc.code in PERMISSION_CODES else 'invalid') from None
     except inventory_services.InventoryError as exc:
         raise SupplyError(str(exc)) from None
     from .cost_services import quantize_cost
@@ -1049,6 +1055,12 @@ def record_real_cost(line, *, actor, unit_cost, company=None, request=None) -> O
            kardex_untouched=True)
     locked.refresh_from_db()
     return locked
+
+
+def _may_manage_products(actor, company) -> bool:
+    from .device_catalog import user_may_manage_products
+
+    return user_may_manage_products(actor, company)
 
 
 def _may_view_costs(actor, company) -> bool:

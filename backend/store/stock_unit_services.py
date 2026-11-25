@@ -30,6 +30,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from . import device_identity, inventory_services, money_input
+from .cost_services import PRICES_FORBIDDEN
 from .inventory_services import (
     InsufficientStockError, InvalidMovementError, InventoryError, create_stock_movement,
 )
@@ -391,6 +392,33 @@ _USED_CLEANERS = {
 }
 
 
+#: IMPORT-WARRANTY-AUTHORITY — what a reception hears when it states a warranty without `products.manage`.
+WARRANTY_FORBIDDEN = ('No tienes permiso para fijar la garantía de un equipo: regístralo sin garantía (rige la política '
+                      'de la empresa) y pide a quien administra productos que la indique.')
+
+
+def states_a_warranty(row) -> bool:
+    """Whether one row of a reception carries a warranty. Blank, spaces or null are none; 0 («sin garantía») is one."""
+    if not isinstance(row, dict) or 'warranty_days' not in row:
+        return False
+    value = row['warranty_days']
+    return not (value is None or (isinstance(value, str) and not value.strip()))
+
+
+def refuse_unauthorised_warranty(rows, *, may_set_warranty: bool) -> None:
+    """
+    IMPORT-WARRANTY-AUTHORITY (USED-READY-01) — a used device's warranty is a commercial promise to the buyer: the
+    price's authority (`products.manage`), on every door that brings devices in, as on the device sheet. One row that
+    states one, from a caller who may not, refuses the whole batch (403 `prices_forbidden`) before anything is read.
+    """
+    if may_set_warranty:
+        return
+    for index, row in enumerate(rows, start=1):
+        if states_a_warranty(row):
+            raise StockUnitError(WARRANTY_FORBIDDEN, line=index, field='warranty_days', code=PRICES_FORBIDDEN,
+                                 status=403)
+
+
 def clean_used_details(product, values: dict) -> dict:
     """
     The used-only fields present in `values`, cleaned. A field stated for a device that is not of the USED line is
@@ -686,7 +714,7 @@ class ReceivedUnits(list):
 @transaction.atomic
 def receive_units(*, branch, product, units, actor=None, reason: str = '',
                   movement_type: str = StockMovement.PURCHASE_ENTRY, request=None, supplier=None,
-                  received_on=None) -> ReceivedUnits:
+                  received_on=None, may_set_warranty: bool = False) -> ReceivedUnits:
     """
     Units arrive. ALL OF THEM OR NONE: one bad line refuses the batch, and the
     error names the line.
@@ -698,6 +726,10 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
 
     `received_on` (INV-LOAD-01): the day the batch entered the shop, when it is not today — the real stock of a shop
     that starts here came in long ago. Validated by `clean_received_on` (never future, never before 2000).
+
+    `may_set_warranty` (IMPORT-WARRANTY-AUTHORITY): whether the person receiving holds `products.manage` in the
+    company — each caller decides it from its actor. False by default: a row that states a warranty is then refused
+    (`refuse_unauthorised_warranty`), so a door that forgets to ask can never store one.
     """
     if product.company_id != branch.company_id:
         raise StockUnitError('El producto no pertenece a la empresa de esta sucursal.')
@@ -710,6 +742,7 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
         raise StockUnitError('Indica al menos un equipo.')
     if len(rows) > MAX_BATCH:
         raise StockUnitError(f'Se reciben hasta {MAX_BATCH} equipos por vez.')
+    refuse_unauthorised_warranty(rows, may_set_warranty=may_set_warranty)
     if movement_type not in (StockMovement.PURCHASE_ENTRY, StockMovement.INITIAL_STOCK,
                              StockMovement.MANUAL_ENTRY):
         raise StockUnitError('Tipo de entrada no válido para equipos.')
