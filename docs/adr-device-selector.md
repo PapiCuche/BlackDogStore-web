@@ -43,8 +43,10 @@ del modelo (la caja lee `/pos/models/<id>/configurations/`; las demás pantallas
 1. Pegar → proveedor, fecha, moneda → «Leer la lista» (sin cambios: gramática, `/resolve`, D-B1-1…D-B1-5).
 2. **Una línea = una oferta = un grupo** (modelo, capacidad, SIM, región, importe; uno o varios colores).
 3. **Dos ofertas en una línea** (`splitOffers`, en `supplier-list-grammar.ts`): sólo en líneas con dos o más importes.
-   Se prueban todos los cortes; cada parte debe leerse sola como UNA oferta limpia (un importe claro, sin dudas, algo
-   ofrecido), tomando de la anterior lo que no dice (modelo, capacidad, SIM, región; **nunca** el color). Con una sola
+   Se prueban todos los cortes (hasta 40 palabras y 8 ofertas; cada lectura y cada resto se resuelven una vez); cada
+   parte debe leerse sola como UNA oferta limpia (un importe claro, sin dudas, algo ofrecido), tomando de la anterior lo
+   que no dice (modelo, capacidad, SIM, región; **nunca** el color), salvo si nombra su propio modelo: entonces es otra
+   oferta y no hereda nada. Una línea más larga, o una búsqueda que no termina, queda en duda: nunca «una oferta». Con una sola
    manera de partirla se propone «Separar en N líneas» (reescribe el texto y se vuelve a leer; nada se clasifica). Con
    varias, la línea queda en duda sin propuesta. En ambos casos la línea **no se guarda** tal cual: un importe nunca se
    pega al modelo o al color de otra oferta. Un costo y un PVP de la misma oferta no son dos ofertas.
