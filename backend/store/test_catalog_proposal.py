@@ -448,6 +448,24 @@ class ApplyTest(_Base, TestCase):
         self.assertEqual(flags, {'Teléfono Y 128 GB Negro Seminuevo': True, 'Tableta T 128 GB Negro Seminuevo': False,
                                  'Teléfono Z 128 GB Negro Seminuevo': True})
 
+    def test_the_audit_row_says_which_variants_were_created_without_imei(self):
+        # 2026-11-25 audit: two variants created «sin IMEI» on 2026-11-10 could not be traced to that choice, because
+        # the audit row of the proposal did not record it. It now names them (ref, product id, name).
+        rows = [row('a', 'Teléfono Y', 128, 'negro'), row('b', 'Tableta T', 128, 'negro')]
+        plan = self.propose(rows).json()['plan']
+        tablet = next(v for v in plan['variants'] if v['suggested_name'].startswith('Tableta'))
+        self.assertEqual(self.apply(rows, self.everything(plan), without_imei=[tablet['ref']]).status_code, 200)
+        product = Product.objects.get(company=self.company, name='Tableta T 128 GB Negro Seminuevo')
+        audit = AdminAuditLog.objects.filter(action='catalog_proposal_applied').latest('pk')
+        self.assertEqual(audit.metadata['variants_without_imei'],
+                         [{'ref': tablet['ref'], 'product_id': product.pk, 'name': product.name}])
+
+    def test_the_audit_row_lists_no_variant_without_imei_by_default(self):
+        rows = [row('a', 'Teléfono Y', 128, 'negro')]
+        self.approve_everything(rows)
+        audit = AdminAuditLog.objects.filter(action='catalog_proposal_applied').latest('pk')
+        self.assertEqual(audit.metadata['variants_without_imei'], [])
+
     def test_a_row_without_imei_never_makes_the_variant_optional(self):
         rows = [row('a', 'Teléfono Y', 128, 'negro')]
         self.approve_everything(rows)
