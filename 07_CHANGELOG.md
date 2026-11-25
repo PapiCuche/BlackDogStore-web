@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-24 — R13.1 desplegada (`bf6a3307`) y nuevas funciones en `master` (`b8610b07`)
+
+**Deployed**
+- R13.1 `bf6a3307` en prod-02 (sólo código; #419–#423).
+
+**Added** (en `master`, sin desplegar)
+- «Precio de venta» opcional en la plantilla de equipos nuevos, con propuesta y confirmación (#426).
+- Exportaciones con formato de plantilla, IMEI ocultos o completos según permiso (#428).
+
+**Fixed** (en `master`, sin desplegar)
+- Un seminuevo sin precio ya no bloquea a sus hermanos; caja, pago y entrega aplican la misma regla (#427).
+
+**Changed** (en `master`, sin desplegar)
+- Las exportaciones de equipos ocultan IMEI y serie a quien no tiene `inventory.adjust` (#428).
+
 ## 2026-11-24 — Post-R13 en `master` (`bf6a3307`, sin desplegar)
 
 **Fixed**
