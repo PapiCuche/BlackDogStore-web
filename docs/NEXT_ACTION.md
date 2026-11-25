@@ -1,6 +1,37 @@
 # NEXT ACTION — 2026-11-24
 
-## PRODUCCIÓN (prod-02) — `f47bd477` (R13), esquema `0192_unit_photo_provenance`, imágenes `release-f47bd47`; sana · candidata R13.1 `bf6a3307` ensayada, espera «GO despliegue bf6a330 prod-02»
+## PRODUCCIÓN (prod-02) — `bf6a3307` (R13.1), esquema `0192_unit_photo_provenance`, imágenes `release-bf6a330`; sana
+
+## OPERACIONES PRODUCTIVAS 2026-11-24 (tarde) — autorización controlada del propietario
+
+| GO | Hora (Lima) · ejecutor | Resultado |
+|---|---|---|
+| «GO despliegue bf6a330 prod-02» | 18:04–18:06 · Claude (sesión principal), bajo `prod_lock.sh` | **HECHO.** R13.1 `bf6a3307`, sólo código, plan de migraciones vacío. Backup previo `db-20261124-180452`. Huellas antes/después idénticas; 14 rutas en 200 y la inexistente en 404; `healthcheck` sin ATENCIÓN; `check_unit_stock` 0 diferencias; 0 errores; reimpresión de **sólo lectura** (`REPRINT_ROLLED_BACK yes`, los sellos de las 7 notas no cambiaron); Caddy, CRM, enrutamiento y crontab intactos. Log `backups/d-r131-go.log`. Vuelta atrás preparada: `backups/release-r131/rollback_r131_code.sh` (a `release-f47bd47`). |
+| «GO cron cotizaciones prod-02» | 18:06–18:07 | **DETENIDO por una guarda, nada escrito.** `--dry-run`: 0 cotizaciones por vencer. El kit esperaba `C=` sin `-f deploy/compose.crm-ingress.yml` y el crontab real lo lleva. Kit **v2** corregido (sólo esa constante; ensayo con crontab falso que ya usa el `C=` real: 33/33). Log `backups/go2-cron-quotes.log`. **Espera reconfirmación: «GO cron cotizaciones prod-02 kit v2».** |
+| «GO normalización catálogo prod-02» | 18:30 | **DETENIDO por un fallo del kit, base sin tocar.** Sólo se tomó el backup `db-20261124-183009`. `backup()` de `r13ops_env.sh` terminaba en `[ -n "$R13OPS_REHEARSAL" ] && …`: en producción devolvía 1 y `set -e` paraba el GO (los ensayos siempre corrían en modo copia). Kit **v131b** corregido con un `if`, probado con stubs (el viejo sale con rc=1, el nuevo sigue), MANIFEST regenerado. Log `backups/f11p-go-r131.log`. **Espera reconfirmación: «GO normalización catálogo prod-02 kit v131b».** |
+| «GO muestras 167 prod-02» | — | **No ejecutado** (mismo `backup()`). **Espera «GO muestras 167 prod-02 kit v131b».** |
+| «GO producto 12 prod-02» | — | **No ejecutado** (mismo `backup()`). **Espera «GO producto 12 prod-02 kit v131b».** |
+
+Antes del intento, los tres kits de datos se reapuntaron a R13.1 (sólo SHA e imágenes; huellas de alcance sin tocar) y se reensayaron sobre una copia con las imágenes `release-bf6a330`: aplicar, repetir sin cambios, rechazo con huella equivocada, vuelta atrás y reaplicar (`backups/release-r13-ops/r131ops-rehearsal.log`). Las huellas de alcance de producción coinciden con las fijadas.
+
+### Siete notas de venta (`pdf_generated_at`)
+- Kit `backups/release-r13-ops/notes7_go.sh` listo y ensayado (60/60), acepta R13 o R13.1. **No ejecutado: no autorizado.**
+- **Hallazgo:** la reimpresión de los kits escribió en producción tres veces: R12b (2026-11-21), Fase 1 (2026-11-22) y R13 (2026-11-24). El backup `db-20261124-140538` guarda los sellos de la reimpresión de Fase 1. Los sellos reales de los usuarios están en `db-20261121-222417` (coinciden con su última descarga auditada; las notas 5 y 7 nunca se descargaron: vacío). Usar esa fuente exige refijar el manifiesto y reensayar.
+- GO del propietario pendiente, eligiendo la fuente.
+
+## Desarrollo fusionado tras R13.1 (en `master`, NO desplegado)
+- #426 `01895791`: «Precio de venta» opcional en la plantilla de nuevos; nunca se aplica solo; diferencia, impacto y propuesta; actualizar exige `products.manage` + confirmación; vista previa desfasada → 409; el costo nunca es precio; orden de bloqueos estante → producto como las ventas.
+- #427 `e449d7b8`: cada seminuevo se bloquea sólo a sí mismo; caja, pago y entrega comparten `sale_refusal`; quitar el precio libera el apartado sin pedido y hace fallar el pedido ya creado.
+- #428 `b8610b07`: exportaciones con formato de plantilla (revisión con IMEI ocultos para `inventory.view`; completos con `inventory.adjust`); las exportaciones de equipos existentes ocultan IMEI a quien no tiene `inventory.adjust`; un archivo oculto nunca se carga.
+- Desplegarlos requiere una release nueva (R13.2), preparada y ensayada aparte, y su GO.
+
+### Preguntas abiertas del propietario
+- Plantilla combinada «Equipos»: ¿proponer precio también ahí? · Stock en la propuesta: ¿toda la empresa para `products.manage`? · ¿Acción de auditoría propia para cambios de precio por carga?
+- ¿`inventory.adjust` basta para IMEI completos o `inventory.labels.sensitive`? · ¿Ocultar IMEI también en la tabla «Inventario › Equipos» y en `/api/admin/inventory/units/` para quien sólo consulta?
+- Seminuevos: quitar el precio no despublica; seminuevos sin modelo por cantidad no exigen publicación/foto y la tienda muestra stock bruto; la caja dice «sin stock» si todas las unidades están sin precio; una unidad despublicada con pedido ya creado se vende a ese pedido.
+- `deploy/crontab.example` no refleja el `-f deploy/compose.crm-ingress.yml` que usa el crontab real.
+
+### R13 (histórico)
 
 Desplegada el 2026-11-24 entre las 14:05 y las 14:07 (Lima) con el GO exacto del propietario («GO despliegue f47bd47 prod-02»). Detalle en la sección «RELEASE R13» más abajo.
 
