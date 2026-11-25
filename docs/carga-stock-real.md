@@ -26,7 +26,8 @@ Requisitos, en este orden:
 | Descargar las plantillas, previsualizar, registrar y anular una carga | `inventory.adjust`, en todas las sucursales del archivo |
 | Llenar «Costo» | `costs.view` (sin él, una fila con costo es un error) |
 | Llenar «Proveedor» | `products.view` o `costs.view` (regla D-F-3; sin él, una fila con proveedor es un error) |
-| «Precio de venta» y «Garantía (días)» de un seminuevo | `products.manage` (sin él, se ignoran con un aviso; y quien **registra** una vista previa que los trae también lo necesita: si no, se rechaza entera indicando las filas — #432) |
+| «Precio de venta» y «Garantía (días)» de un seminuevo | `products.manage` (sin él, se ignoran con un aviso en la vista previa). Quien **registra** una vista previa que los trae necesita `products.manage`, **o** la aprobación explícita y aún válida de alguien que lo tenga, **o** registrar «sin precios ni garantías» (§7.1) — #432 y la decisión del 2026-11-25 |
+| «Aprobar precios y garantías» de una carga (§7.1) | `products.manage` en la empresa, y alcanzar las sucursales del archivo |
 | Confirmar el cambio del precio de una variante desde «Stock de equipos nuevos» (§5.1) | `products.manage` (sin él, la propuesta se ve pero no se aplica; el servidor responde 403) |
 | Inspeccionar un seminuevo después | `inventory.units.inspect` |
 | Ver la «Conciliación» | `inventory.view` |
@@ -353,6 +354,33 @@ Después de registrar aparecen:
 - «Anular esta carga» (§9).
 
 Se preparan sus etiquetas como en cualquier recepción (un lote por sucursal).
+
+### 7.1 Precios y garantías de seminuevos: aprobación o ingreso sin ellos
+
+Decisión del propietario (2026-11-25): los equipos pueden entrar siempre, pero los precios y garantías propios del
+archivo nunca se aplican sin la autoridad de `products.manage`. Si la vista previa los trae (sólo pasa cuando la
+preparó alguien con ese permiso; sin él se ignoran en la vista previa, §1), la pantalla muestra «Precios y garantías del
+archivo» con quién preparó la carga y el enlace que la vuelve a abrir (`…/units/import?job=<n>`):
+
+- **Quien administra productos** puede registrarla directamente, o pulsar «Aprobar precios y garantías» para que la
+  registre otra persona sin ese permiso. Puede aprobar su propia carga (queda dicho en la auditoría).
+- **Quien no administra productos**, sin aprobación válida, no ve «Registrar N equipos». Tiene dos caminos:
+  «Registrar sin precios ni garantías» (los equipos entran sin precio propio y con la garantía de la empresa; se
+  completan después en la ficha) o compartir el enlace con quien administra productos y volver a abrirlo cuando apruebe.
+  Con la aprobación válida registra la carga con sus precios y garantías.
+
+El servidor vuelve a comprobarlo al registrar:
+
+- sin aprobación: 403 `prices_forbidden`, no se registra nada;
+- si los precios o garantías cambiaron desde la aprobación: 409 `terms_approval_stale` (la aprobación está atada a
+  una huella sha256 de fila, variante, serie, IMEI, precio y garantía de cada equipo);
+- si quien aprobó ya no tiene `products.manage` en la empresa: 403, hace falta otra aprobación;
+- la aprobación cubre sólo los precios y garantías **de cada equipo**: cambiar el precio de una variante (§5.1) sigue
+  exigiendo `products.manage` a quien registra.
+
+Auditoría: `unit_import_terms_approved` (carga, filas con precio o garantía, inicio de la huella, quién preparó, si fue
+su misma persona) y, en `stock_units_import_applied`, `prepared_by_id`, `terms_approved_by_id`, `executed_by_id`,
+`commercial_terms` (`applied`, `dropped` o `none`) y `terms_authority` (`applier` o `approval`).
 
 ## 8. Comprobar: `check_unit_stock` y «Conciliación»
 

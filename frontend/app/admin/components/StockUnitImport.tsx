@@ -13,11 +13,12 @@
  */
 
 import Link from "next/link";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 
 import {
-  applyUnitImport, fetchUnitImportVoidPreview, previewUnitImport, unitImportErrorsUrl, unitImportReportUrl,
-  unitImportTemplateUrl, voidUnitImport, UnitImportVoidError,
+  applyUnitImport, approveUnitImportTerms, fetchUnitImportJob, fetchUnitImportVoidPreview, previewUnitImport,
+  unitImportErrorsUrl, unitImportJobPath, unitImportReportUrl, unitImportTemplateUrl, voidUnitImport,
+  UnitImportVoidError,
   type UnitImportBlocking, type UnitImportJob, type UnitImportLine, type UnitImportPriceReview,
   type UnitImportPriceUpdate, type UnitImportRow, type UnitImportSimulation, type UnitImportVoidPreview,
 } from "@/app/lib/stock-units";
@@ -104,6 +105,81 @@ function shopState(entry: UnitImportPriceReview) {
   if (entry.pending_draft) return "Borrador sin habilitar: no se vende (cambiar el precio no la habilita)";
   if (entry.is_sold_online) return "Publicada en la tienda";
   return entry.is_published_online ? "No se vende en la tienda" : "No publicada";
+}
+
+function when(at: string | null) {
+  if (!at) return "";
+  const date = new Date(at);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("es-PE", { dateStyle: "short", timeStyle: "short" });
+}
+
+/**
+ * IMPORT-TERMS-APPROVAL — the file brings devices' own sale prices or warranties (the authority of `products.manage`).
+ * Who holds it may approve them, so somebody without it can register the load with them. Who does not hold it
+ * registers the devices without them, or waits for that approval (the link reopens this load). The server decides.
+ */
+function TermsApproval({ job, canApprove, disabled, onApprove, onRegisterWithout }: {
+  job: UnitImportJob;
+  canApprove: boolean;
+  disabled: boolean;
+  onApprove: () => void;
+  onRegisterWithout: () => void;
+}) {
+  const approval = job.terms_approval ?? null;
+  const valid = Boolean(approval?.valid);
+  const rows = job.commercial_terms_rows ?? 0;
+  const link = unitImportJobPath(job.id);
+  return (
+    <section
+      role="group"
+      aria-label="Precios y garantías del archivo"
+      className="mb-4 space-y-2 rounded-lg border border-warning-border bg-warning-surface px-4 py-3 text-sm text-warning"
+    >
+      {canApprove ? (
+        <p>
+          Esta carga trae precios o garantías de seminuevos{rows ? ` (${plural(rows, "fila", "filas")})` : ""}. Tú
+          administras productos: si la registras tú, se aplican. Si la registrará otra persona sin ese permiso,
+          apruébalos antes.
+        </p>
+      ) : valid ? (
+        <p>Esta carga trae precios o garantías de seminuevos y ya están aprobados: al registrarla se aplican.</p>
+      ) : (
+        <p>
+          Esta carga trae precios o garantías de seminuevos. Necesita la aprobación de quien administra productos.
+        </p>
+      )}
+      <p className="text-xs">
+        Preparó: {job.created_by || "—"}
+        {approval && valid ? ` · Aprobados por ${approval.by_name}${approval.at ? ` el ${when(approval.at)}` : ""}` : ""}
+      </p>
+      {approval && !valid ? (
+        <p>
+          La aprobación de {approval.by_name} ya no vale: los precios o garantías cambiaron, o ya no administra
+          productos.
+        </p>
+      ) : null}
+      {canApprove && !valid ? (
+        <button type="button" className={internalPrimaryButtonClass} disabled={disabled} onClick={onApprove}>
+          Aprobar precios y garantías
+        </button>
+      ) : null}
+      {!canApprove && !valid ? (
+        <>
+          <p>
+            Puedes registrar los equipos ahora sin los precios ni las garantías del archivo: quedan sin precio propio y
+            con la garantía de la empresa. Para registrarlos con ellos, comparte este enlace con quien administra
+            productos y vuelve a abrirlo cuando los apruebe.
+          </p>
+          <button type="button" className={internalButtonClass} disabled={disabled} onClick={onRegisterWithout}>
+            Registrar sin precios ni garantías
+          </button>
+        </>
+      ) : null}
+      <p className="text-xs">
+        Enlace de esta carga: <span className="font-mono">{link}</span>
+      </p>
+    </section>
+  );
 }
 
 /**
@@ -318,6 +394,14 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
   const [confirming, setConfirming] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
 
+  // IMPORT-TERMS-APPROVAL — «?job=<id>» reopens a previewed load: to approve its prices and warranties, or to register
+  // it once they are approved. Read once, from the address (no Suspense boundary for `useSearchParams`).
+  useEffect(() => {
+    const raw = new URLSearchParams(window.location.search).get("job");
+    const id = raw && /^[0-9]+$/.test(raw) ? Number(raw) : null;
+    if (id) void run(() => fetchUnitImportJob(id));
+  }, []);
+
   async function run(task: () => Promise<UnitImportJob>) {
     setWorking(true);
     setError(null);
@@ -365,6 +449,10 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
       name: entry.name, from: entry.current_price, has_price: entry.has_price,
     }));
   const priceChanges = job?.summary.applied?.price_updates ?? [];
+  // IMPORT-TERMS-APPROVAL — registering WITH the file's prices and warranties needs `products.manage` or a valid
+  // approval; without either, only «Registrar sin precios ni garantías» is offered (the server would refuse).
+  const carriesTerms = Boolean(job?.carries_commercial_terms);
+  const termsBlocked = carriesTerms && !canUpdatePrices && !job?.terms_approval?.valid;
 
   function toggle(variantId: number, on: boolean) {
     if (!job) return;
@@ -380,6 +468,15 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
     }
     const confirmed = updates.map(({ variant_id, price, confirm }) => ({ variant_id, price, confirm }));
     run(() => applyUnitImport(currentJob.id, confirmed));
+  }
+
+  function approveTerms(currentJob: UnitImportJob) {
+    // The answer carries no rows: the preview on screen keeps its own.
+    run(async () => ({ ...currentJob, ...(await approveUnitImportTerms(currentJob.id)) }));
+  }
+
+  function registerWithoutTerms(currentJob: UnitImportJob) {
+    run(() => applyUnitImport(currentJob.id, [], { withoutCommercialTerms: true }));
   }
 
   return (
@@ -505,6 +602,12 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
             Se registraron {plural(registered, "equipo", "equipos")} y quedaron en el Kardex.{" "}
             <Link className="font-semibold underline" href="/admin/inventory/units">Ver los equipos</Link>
           </div>
+          {job.summary.applied?.commercial_terms === "dropped" ? (
+            <p role="note" aria-label="Sin precios ni garantías" className="text-sm text-foreground">
+              Se registraron sin los precios ni las garantías del archivo: quedan sin precio propio y con la garantía
+              de la empresa. Quien administra productos puede fijarlos en la ficha de cada equipo.
+            </p>
+          ) : null}
           {priceChanges.length ? (
             <p role="note" aria-label="Precios actualizados" className="text-sm text-foreground">
               Se actualizó el precio de {plural(priceChanges.length, "variante", "variantes")}:{" "}
@@ -536,7 +639,7 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
           action={
             job.counts.error ? (
               <a className={internalButtonClass} href={unitImportErrorsUrl(job.id)}>Descargar errores (CSV)</a>
-            ) : (job.is_applicable || outdated) && job.counts.create > 0 ? (
+            ) : (job.is_applicable || outdated) && job.counts.create > 0 && !termsBlocked ? (
               <button
                 type="button"
                 className={internalPrimaryButtonClass}
@@ -553,6 +656,15 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
               Corrige las filas con error en el archivo y vuelve a subirlo. Mientras haya una, no se
               registra ningún equipo.
             </p>
+          ) : null}
+          {carriesTerms && !job.counts.error && job.counts.create > 0 ? (
+            <TermsApproval
+              job={job}
+              canApprove={canUpdatePrices}
+              disabled={working || Boolean(outdated) || !job.is_applicable}
+              onApprove={() => approveTerms(job)}
+              onRegisterWithout={() => registerWithoutTerms(job)}
+            />
           ) : null}
           {!job.counts.error && job.counts.create > 0 && job.summary.simulation ? (
             <Simulation simulation={job.summary.simulation} />

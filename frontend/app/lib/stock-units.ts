@@ -221,8 +221,12 @@ export class StockUnitApiError extends Error {
 
 const BASE = `${API_BASE}/admin/inventory/units`;
 
-async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const res = await fetchWithAuth(`${BASE}${path}`, init);
+function call<T>(path: string, init: RequestInit = {}): Promise<T> {
+  return request<T>(`${BASE}${path}`, init);
+}
+
+async function request<T>(url: string, init: RequestInit = {}): Promise<T> {
+  const res = await fetchWithAuth(url, init);
   const body = await res.json().catch(() => null);
   if (!res.ok) {
     const detail = body && typeof body === "object" && "detail" in body ? String(body.detail) : "";
@@ -489,6 +493,8 @@ export type UnitImportJob = {
       units: number; movements: number; imei_on_unmarked_products?: number;
       /** NEW-TEMPLATE-PRICE — the variant prices changed with the load (only when some were confirmed). */
       price_updates?: { variant_id: number; old_price: string; new_price: string }[];
+      /** IMPORT-TERMS-APPROVAL — what happened to the devices' own prices and warranties of the file. */
+      commercial_terms?: "applied" | "dropped" | "none";
     };
     /** NEW-TEMPLATE-PRICE — only in a file of the new template. */
     price_review?: UnitImportPriceReview[];
@@ -504,7 +510,18 @@ export type UnitImportJob = {
   rows_truncated?: boolean;
   /** NEW-TEMPLATE-PRICE — in the preview's answer: whether this person may confirm a price proposal. */
   can_update_prices?: boolean;
+  /** Who uploaded the file (prepared the load) and who registered it: usernames, "" when unknown. */
+  created_by?: string;
+  applied_by?: string;
+  /** IMPORT-TERMS-APPROVAL — whether the file brings devices' own sale prices or warranties, and in how many rows. */
+  carries_commercial_terms?: boolean;
+  commercial_terms_rows?: number;
+  /** IMPORT-TERMS-APPROVAL — the explicit approval of those terms; `valid`: it still covers them now. */
+  terms_approval?: UnitImportTermsApproval | null;
 };
+
+/** IMPORT-TERMS-APPROVAL — who approved the file's prices and warranties, when, and whether it still holds. */
+export type UnitImportTermsApproval = { by_name: string; at: string | null; valid: boolean };
 
 /**
  * The template of the company chosen in the switcher: its «Sucursal» list is
@@ -643,6 +660,27 @@ export function previewUnitImport(
  * Register every staged device — all of the file or none of it. `priceUpdates` (NEW-TEMPLATE-PRICE): the variant
  * prices the person confirmed; the server checks each against this job's proposals and the price it saw.
  */
-export function applyUnitImport(jobId: number, priceUpdates: UnitImportPriceUpdate[] = []): Promise<UnitImportJob> {
-  return post<UnitImportJob>(`/import/${jobId}/apply/`, priceUpdates.length ? { price_updates: priceUpdates } : {});
+export function applyUnitImport(
+  jobId: number, priceUpdates: UnitImportPriceUpdate[] = [], options: { withoutCommercialTerms?: boolean } = {},
+): Promise<UnitImportJob> {
+  return post<UnitImportJob>(`/import/${jobId}/apply/`, {
+    ...(priceUpdates.length ? { price_updates: priceUpdates } : {}),
+    // IMPORT-TERMS-APPROVAL — the operational entry: the devices without the file's own prices and warranties.
+    ...(options.withoutCommercialTerms ? { without_commercial_terms: true } : {}),
+  });
+}
+
+/** IMPORT-TERMS-APPROVAL — approve the file's prices and warranties (`products.manage`; the server checks it). */
+export function approveUnitImportTerms(jobId: number): Promise<UnitImportJob> {
+  return post<UnitImportJob>(`/import/${jobId}/approve-terms/`);
+}
+
+/** IMPORT-TERMS-APPROVAL — a load reopened by its link («?job=<id>»), with what it needs before registering. */
+export function fetchUnitImportJob(jobId: number): Promise<UnitImportJob> {
+  return request<UnitImportJob>(`${API_BASE}/admin/imports/${jobId}/`);
+}
+
+/** IMPORT-TERMS-APPROVAL — the address that reopens a previewed load, to share with whoever approves or registers it. */
+export function unitImportJobPath(jobId: number): string {
+  return `/admin/inventory/units/import?job=${jobId}`;
 }

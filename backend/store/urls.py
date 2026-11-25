@@ -120,6 +120,7 @@ from .import_views import (
     AdminProductTemplateView,
     AdminStockImportApplyView,
     AdminUnitImportApplyView,
+    AdminUnitImportApproveTermsView,
     AdminUnitImportPreviewView,
     AdminUnitImportReportView,
     AdminUnitImportTemplateView,
@@ -726,6 +727,8 @@ urlpatterns = [
     path('admin/inventory/units/import/template/', AdminUnitImportTemplateView.as_view(), name='admin-unit-import-template'),
     path('admin/inventory/units/import/preview/', AdminUnitImportPreviewView.as_view(), name='admin-unit-import-preview'),
     path('admin/inventory/units/import/<int:pk>/apply/', AdminUnitImportApplyView.as_view(), name='admin-unit-import-apply'),
+    path('admin/inventory/units/import/<int:pk>/approve-terms/', AdminUnitImportApproveTermsView.as_view(),
+         name='admin-unit-import-approve-terms'),
     # INV-LOAD-02 — annul an applied load whole, and its before/after.
     path('admin/inventory/units/import/<int:pk>/void/', AdminUnitImportVoidView.as_view(), name='admin-unit-import-void'),
     path('admin/inventory/units/import/<int:pk>/report/', AdminUnitImportReportView.as_view(),

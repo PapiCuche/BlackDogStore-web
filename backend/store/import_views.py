@@ -686,13 +686,31 @@ class AdminUnitImportPreviewView(APIView):
             )
         except (xlsx_reader.XlsxError, unit_import_services.UnitImportError) as exc:
             return _error(exc)
-        from .device_catalog import user_may_manage_products
-
         return Response({
             **_job_payload(job, rows=True, include_cost=may_view_costs(request)),
-            # NEW-TEMPLATE-PRICE — whether THIS caller may confirm a variant price proposal (the apply asks again).
-            'can_update_prices': user_may_manage_products(request.user, company),
+            **_unit_terms_payload(request, company, job),
         }, status=status.HTTP_201_CREATED)
+
+
+def _unit_terms_payload(request, company, job) -> dict:
+    """
+    NEW-TEMPLATE-PRICE — whether THIS caller may confirm a variant price proposal (the apply asks again).
+    IMPORT-TERMS-APPROVAL — the same authority approves the devices' own prices and warranties; whether the job stages
+    them (`carries_commercial_terms`) and its approval (`terms_approval`: by whom, when, whether it still covers them).
+    """
+    from .device_catalog import user_may_manage_products
+
+    return {'can_update_prices': user_may_manage_products(request.user, company),
+            **unit_import_services.terms_state(job)}
+
+
+def _unit_import_refusal(exc):
+    """A refusal of the device load: 403 for a missing authority, 409 for terms changed since their approval."""
+    if exc.code == unit_import_services.PRICES_FORBIDDEN:
+        return _error(exc, code=status.HTTP_403_FORBIDDEN)
+    if exc.code == unit_import_services.TERMS_APPROVAL_STALE:
+        return _error(exc, code=status.HTTP_409_CONFLICT)
+    return _error(exc)
 
 
 class AdminUnitImportApplyView(APIView):
@@ -719,11 +737,11 @@ class AdminUnitImportApplyView(APIView):
                 job=job, actor=request.user, request=request,
                 # NEW-TEMPLATE-PRICE — the variant prices the person confirmed, checked against this job's proposals.
                 price_updates=data.get('price_updates'),
+                # IMPORT-TERMS-APPROVAL — only a JSON `true` registers the devices without the file's own terms.
+                without_commercial_terms=data.get('without_commercial_terms') is True,
             )
         except unit_import_services.UnitImportError as exc:
-            if exc.code == unit_import_services.PRICES_FORBIDDEN:
-                return _error(exc, code=status.HTTP_403_FORBIDDEN)
-            return _error(exc)
+            return _unit_import_refusal(exc)
         # LABEL-A — looked up by the job's key, so a repeated apply answers the same batches.
         failed = (job.summary or {}).get('applied', {}).get('label_failed', 0)
         batches = [*label_batches.summaries_for_job(company, job.pk), *label_batches.failures(failed)]
@@ -732,6 +750,31 @@ class AdminUnitImportApplyView(APIView):
             'label_batches': batches,
             'label_error': bool(failed) or label_batches.has_error(batches),
         })
+
+
+class AdminUnitImportApproveTermsView(APIView):
+    """
+    IMPORT-TERMS-APPROVAL — POST …/units/import/<id>/approve-terms/: approve the devices' own sale prices and
+    warranties a previewed load stages, so that somebody without `products.manage` may register them. Needs
+    `products.manage` in the caller's company and the job's branches within reach (404 otherwise, like the apply).
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminImportThrottle]
+    http_method_names = ['post', 'options']
+
+    def post(self, request, pk):
+        company, error = _context(request, CAP_PRODUCTS)
+        if error:
+            return error
+        job = BulkImportJob.objects.filter(company=company, pk=pk, import_type=BulkImportJob.UNITS).first()
+        if job is None or not _job_within_reach(request.user, company, job):
+            return Response({'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND)
+        try:
+            job, _changed = unit_import_services.approve_terms(job=job, actor=request.user, request=request)
+        except unit_import_services.UnitImportError as exc:
+            return _unit_import_refusal(exc)
+        return Response({**_job_payload(job), **_unit_terms_payload(request, company, job)})
 
 
 def _applied_units_job(request, pk):
@@ -979,7 +1022,11 @@ class AdminImportJobView(APIView):
         company, job, error = _job_or_error(request, pk)
         if error:
             return error
-        return Response(_job_payload(job, rows=True, include_cost=may_view_costs(request)))
+        payload = _job_payload(job, rows=True, include_cost=may_view_costs(request))
+        if job.import_type == BulkImportJob.UNITS:
+            # IMPORT-TERMS-APPROVAL — a load reopened by its link: what it needs before it can be registered.
+            payload.update(_unit_terms_payload(request, company, job))
+        return Response(payload)
 
 
 class AdminImportErrorReportView(APIView):
