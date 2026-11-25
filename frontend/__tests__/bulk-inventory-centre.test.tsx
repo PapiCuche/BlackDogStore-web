@@ -140,6 +140,8 @@ describe('las secciones, según lo que la persona puede hacer', () => {
     await show({ ...ALL, costsView: false });
     expect(JSON.parse(screen.getByTestId('exportar').dataset.props!)).toEqual({
       companyId: 7, canCatalogue: true, canInventory: true, canSeeCost: false,
+      // STOCK-TEMPLATE-EXPORT: whole IMEIs in a download, `inventory.adjust`.
+      canAdjust: true,
     });
     expect(JSON.parse(screen.getByTestId('imagenes').dataset.props!)).toEqual({ companyId: 7 });
     expect(section('Imágenes')).toHaveAttribute('id', 'imagenes');

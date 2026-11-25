@@ -30,6 +30,8 @@ Requisitos, en este orden:
 | Confirmar el cambio del precio de una variante desde «Stock de equipos nuevos» (§5.1) | `products.manage` (sin él, la propuesta se ve pero no se aplica; el servidor responde 403) |
 | Inspeccionar un seminuevo después | `inventory.units.inspect` |
 | Ver la «Conciliación» | `inventory.view` |
+| Exportar el stock en el formato de las plantillas, copia de revisión (IMEI ocultos) | `inventory.view` |
+| Exportar el stock en el formato de las plantillas con IMEI y series completos | `inventory.view` + `inventory.adjust` |
 
 ## 2. Las dos plantillas
 
@@ -122,15 +124,59 @@ seminuevo entra **pendiente de inspección y sin publicar** (USED-READY-01). Eso
 Para no escribir dos veces un equipo y para cuadrar el conteo físico, descarga primero lo que el sistema ya tiene. En
 «Carga de stock» (`/admin/inventory/import`), bloque «Exportar», elige «Equipos con serie»:
 
-- **«Reporte»**: una fila por equipo (también vendidos y dados de baja, con su estado), con su serie, **IMEI e IMEI 2
-  completos**, sucursal, variante, precio y notas. Sirve para comparar con el conteo físico y marcar los que ya están.
+- **«Reporte»**: una fila por equipo (también vendidos y dados de baja, con su estado), con su serie, IMEI e IMEI 2,
+  sucursal, variante, precio y notas. Sirve para comparar con el conteo físico y marcar los que ya están.
 - **«Para volver a cargar»**: sólo los equipos en estante, con las columnas de la plantilla combinada («Equipos»).
   Subido a la misma tienda no carga nada: cada fila sale como «ya está registrado».
 
-Las dos respetan las sucursales de quien descarga (`inventory.view`). El costo sólo sale con `costs.view`. El IMEI no
-sale enmascarado: el archivo es del personal que identifica los equipos por ese número y no se reenvía. No existe una
-exportación con el formato de las dos plantillas de stock: la de equipos usa la plantilla combinada. Aunque se te pase
-un equipo, la vista previa lo rechaza: el IMEI no se repite en la empresa.
+Las dos respetan las sucursales de quien descarga (`inventory.view`). El costo sólo sale con `costs.view`.
+**Los IMEI y las series salen completos sólo para quien puede mover inventario (`inventory.adjust`)**; para quien sólo
+consulta (`inventory.view`) salen ocultos salvo sus últimos 4 caracteres (`•••••••••••1234`), igual que en el ZIP del
+inventario completo y en el reporte integral (STOCK-TEMPLATE-EXPORT, desde 2026-11-24). Un archivo con un IMEI o una
+serie oculta **no se puede cargar**. Para el formato de las dos plantillas de stock, ver §3.2. Aunque se te pase un
+equipo, la vista previa lo rechaza: el IMEI no se repite en la empresa.
+
+### 3.2 Exportar el stock con el formato de las plantillas (conciliación)
+
+En el mismo bloque «Exportar», debajo de las descargas de siempre, está **«Stock con formato de plantilla»**: lo que hay
+en tienda (equipos disponibles o apartados), **una fila por equipo físico**, de tus sucursales, con **las mismas
+columnas** que «Stock de equipos nuevos» y «Stock de seminuevos». Cada plantilla ofrece dos archivos:
+
+| Archivo | Quién | Hoja | IMEI y serie | Se puede cargar |
+|---|---|---|---|---|
+| «Revisión (IMEI ocultos)» → `stock-equipos-nuevos-revision.xlsx` / `stock-seminuevos-revision.xlsx` | `inventory.view` | «Revisión · Equipos nuevos» / «Revisión · Equipos seminuevos» | Ocultos salvo los últimos 4 | **No**: se rechaza entero |
+| «IMEI completos» → `stock-equipos-nuevos-completo.xlsx` / `stock-seminuevos-completo.xlsx` | `inventory.view` + `inventory.adjust` | «Equipos nuevos» / «Equipos seminuevos» (la de la plantilla) | Completos | Sí; en la misma tienda no registra nada (cada fila sale «ya está registrado») |
+
+Qué llevan y qué no:
+
+- Sucursal, modelo y opciones de la variante (sólo si al volver a leerlas nombran exactamente esa variante; en la copia
+  de revisión, si no, el nombre del producto), IMEI 1, IMEI 2, serie, fecha de ingreso y observaciones; en seminuevos,
+  además precio de venta, estado estético, batería, estado funcional, defectos, accesorios, garantía y detalles.
+- «Costo», sólo con `costs.view`. «Proveedor», sólo con `products.view` o `costs.view` (la misma regla D-F-3 de la
+  plantilla). Sin esos permisos la columna va vacía.
+- **Nunca** datos de clientes ni de pedidos, ni el código de etiqueta, la inspección o la publicación. Sólo equipos en
+  tienda: ni vendidos, ni dados de baja, ni anulados.
+- Cada archivo trae una hoja «Instrucciones» que dice qué es. La copia de revisión lo dice también en el nombre de su
+  hoja.
+
+Cada descarga queda en la auditoría (`inventory_exported`): quién, empresa, sucursales, filtros, cuántas filas y si los
+identificadores salieron completos (`identifiers: full`) u ocultos (`masked`). Nunca una celda.
+
+**Cómo conciliar el conteo físico** (antes de una carga, después de una tanda o en un conteo periódico):
+
+1. Descarga la **copia de revisión** de la línea que vas a contar (nuevos o seminuevos), de la sucursal que cuentas.
+2. Recorre el estante con la lista: cada equipo se reconoce por modelo, opciones y los **últimos 4** de su IMEI o su
+   serie. Marca los que están.
+3. Lo que está en la lista y no en el estante: búscalo por esos 4 caracteres en «Inventario › Equipos» (quizá está en
+   otra sucursal o apartado). Lo que está en el estante y no en la lista: es un equipo sin cargar; va a la plantilla
+   vacía, con su IMEI completo leído del equipo.
+4. Si hace falta cruzar por IMEI completo, quien tiene `inventory.adjust` descarga la versión **«IMEI completos»**. Es
+   un archivo sensible: no se reenvía ni se deja en una carpeta compartida, y su descarga queda auditada.
+5. Termina con «Conciliación de equipos» → «Comprobar ahora» (§8): cuadra el stock con los equipos disponibles.
+
+La copia de revisión **nunca** entra en una carga: la carga de equipos rechaza su hoja por el nombre y, aunque se copien
+sus filas a una plantilla, rechaza todo el archivo si una celda de IMEI o serie trae «•». El asistente «¿Qué archivo
+tengo?» la reconoce como una copia de revisión.
 
 ## 4. Inventario inicial o compra
 

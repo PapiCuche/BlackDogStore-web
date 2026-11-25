@@ -82,6 +82,8 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
   const canExportInventory = access.can("inventory.view", ["inventory", "admin", "superadmin"]);
   // COST-WRITE-AUTHORITY: whether this person may load a «Costo unitario» (the server decides again).
   const canSeeCost = access.can("costs.view", ["admin", "superadmin"]);
+  // STOCK-TEMPLATE-EXPORT: whole IMEIs and serials in a download (the server decides again).
+  const canAdjustStock = access.can("inventory.adjust", ["inventory", "admin", "superadmin"]);
   const [step, setStep] = useState(0);
   const [file, setFile] = useState<File | null>(null);
   const [inspection, setInspection] = useState<InspectResult | null>(null);
@@ -281,6 +283,7 @@ function StockImportScreen({ ctx }: { ctx: InternalContext }) {
                 canCatalogue={canExportCatalogue}
                 canInventory={canExportInventory}
                 canSeeCost={canSeeCost}
+                canAdjust={canAdjustStock}
               />
             </DashboardSection>
           ) : null}

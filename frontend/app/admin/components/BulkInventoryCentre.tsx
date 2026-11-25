@@ -208,6 +208,7 @@ export function BulkInventoryCentre({ companyId, can, handoff }: {
             canCatalogue={can.productsView}
             canInventory={can.inventoryView}
             canSeeCost={can.costsView}
+            canAdjust={can.inventoryAdjust}
           />
         </Section>
       ) : null}

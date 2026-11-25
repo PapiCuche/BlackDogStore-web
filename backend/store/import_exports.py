@@ -114,9 +114,14 @@ REPORT_SHEETS = {
 
 
 def report_sheet_refusal(name) -> str:
-    """Why `name` cannot be imported, when it is the sheet of a report. Empty otherwise."""
+    """Why `name` cannot be imported, when it is the sheet of a report (or of a masked review copy). Empty otherwise."""
+    from .identifier_masking import sheet_refusal
     from .import_formats import normalize_header
 
+    masked = sheet_refusal(name)
+    if masked:
+        # STOCK-TEMPLATE-EXPORT: a review copy hides its IMEIs and serials; no load reads it.
+        return masked
     if normalize_header(str(name or '')) not in {normalize_header(title) for title in REPORT_SHEETS.values()}:
         return ''
     return (

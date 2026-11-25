@@ -53,14 +53,14 @@ from __future__ import annotations
 
 import io
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import NamedTuple
 
 from django.db.models import IntegerField, OuterRef, Q, Subquery, Sum, Value
 from django.db.models.functions import Coalesce
 from django.utils import timezone
 
-from . import import_exports, product_publication, unit_import_services
+from . import identifier_masking, import_exports, product_publication, unit_import_services
 from .import_formats import (
     DESTINATION_INTERNAL, DESTINATION_LABELS, DESTINATION_ONLINE, IDENTIFIER_HEADER, STATE_HEADER, STATE_LABELS,
     product_identifier,
@@ -68,9 +68,18 @@ from .import_formats import (
 from .models import BranchStock, Product, StockUnit, SupplierOffer
 from .xlsx_reader import looks_like_formula, mark_as_text
 
-KINDS = ('products', 'stock', 'units', 'full', 'integral')
+KINDS = ('products', 'stock', 'units', 'full', 'integral', 'units_new', 'units_used')
 MODE_REIMPORT, MODE_REPORT = 'reimport', 'report'
 MODES = (MODE_REIMPORT, MODE_REPORT)
+
+#: STOCK-TEMPLATE-EXPORT — the devices on the shelf in the shape of «Stock de equipos nuevos» / «Stock de seminuevos»
+#: (`unit_import_services.STOCK_TEMPLATES`). kind -> the template's line. Two modes of their own: `masked` (review,
+#: `inventory.view`) and `full` (operational, `inventory.adjust`).
+TEMPLATE_KINDS = {'units_new': Product.CONDITION_NEW, 'units_used': Product.CONDITION_USED}
+MODE_MASKED, MODE_FULL = 'masked', 'full'
+TEMPLATE_MODES = (MODE_MASKED, MODE_FULL)
+#: Kinds whose files carry IMEIs and serials: full only for `inventory.adjust`, masked for anybody else.
+UNIT_KINDS = ('units', 'full', 'integral', *TEMPLATE_KINDS)
 
 #: Data rows in ONE workbook. Beyond it the download is refused with the count:
 #: the workbook is built in memory, inside a request.
@@ -91,6 +100,10 @@ FILENAMES = {
     ('units', MODE_REPORT): 'reporte-equipos.xlsx',
     ('full', MODE_REIMPORT): 'inventario-completo.zip',
     ('integral', MODE_REPORT): 'reporte-integral-inventario.xlsx',
+    ('units_new', MODE_MASKED): 'stock-equipos-nuevos-revision.xlsx',
+    ('units_new', MODE_FULL): 'stock-equipos-nuevos-completo.xlsx',
+    ('units_used', MODE_MASKED): 'stock-seminuevos-revision.xlsx',
+    ('units_used', MODE_FULL): 'stock-seminuevos-completo.xlsx',
 }
 #: The names INSIDE the ZIP.
 ZIP_PRODUCTS, ZIP_STOCK, ZIP_UNITS, ZIP_NOTE = 'Productos.xlsx', 'Stock.xlsx', 'Equipos.xlsx', 'LEEME.txt'
@@ -209,6 +222,12 @@ class ExportFilters:
     lines: tuple = ()
     #: Whether any cost column carries data: only for a caller holding `costs.view` (DC1).
     include_cost: bool = False
+    #: STOCK-TEMPLATE-EXPORT — whether IMEIs and serials go out whole: only for a caller who may load stock
+    #: (`inventory.adjust`). Otherwise every device file hides them (`identifier_masking.mask`). Safe by default.
+    full_identifiers: bool = False
+    #: Whether «Proveedor» of a stock template carries data: the template's own rule (D-F-3, `products.view` or
+    #: `costs.view`, `stock_unit_views.may_see_suppliers`).
+    include_supplier: bool = False
 
     def audit(self) -> dict:
         return {
@@ -320,6 +339,13 @@ def _project(headers, values: dict) -> list:
 
 def _columns_of(headers, names) -> tuple:
     return tuple(index for index, header in enumerate(headers) if header in names)
+
+
+def _identifier_cell(filters: ExportFilters):
+    """How an IMEI or a serial is written: whole for `filters.full_identifiers`, hidden otherwise. Empty stays empty."""
+    if filters.full_identifiers:
+        return lambda value: value or ''
+    return identifier_masking.mask
 
 
 # =============================================================================
@@ -694,6 +720,7 @@ def _units_sheet(company, filters: ExportFilters, mode: str) -> Sheet:
     statuses = dict(StockUnit.Status.choices)
     variant_cells, grade_cell = _VariantCells(company), _GradeCells(company)
     headers = UNIT_REPORT_HEADERS if report else unit_import_services.HEADERS
+    identifier = _identifier_cell(filters)
     rows = []
     for unit in queryset.iterator(chunk_size=2000):
         slot = codes.get(unit.product_id, {})
@@ -704,9 +731,10 @@ def _units_sheet(company, filters: ExportFilters, mode: str) -> Sheet:
             'Código': slot.get('internal') or slot.get('external', ''),
             'Producto': unit.product.name,
             'Sucursal': unit.branch.name,
-            'Número de serie': unit.serial_number or '',
-            'IMEI': unit.imei or '',
-            'IMEI 2': unit.imei2 or '',
+            # STOCK-TEMPLATE-EXPORT — whole only for `inventory.adjust`; hidden but for the last characters otherwise.
+            'Número de serie': identifier(unit.serial_number),
+            'IMEI': identifier(unit.imei),
+            'IMEI 2': identifier(unit.imei2),
             'Condición': conditions.get(unit.condition, unit.condition),
             'Costo': unit.cost if filters.include_cost else None,
             # DC2 — the variant, its grade and its battery.
@@ -817,6 +845,157 @@ def integral_workbook(company, filters: ExportFilters) -> tuple[bytes, dict]:
 
 
 # =============================================================================
+# STOCK-TEMPLATE-EXPORT — the shelf in the shape of the two stock templates
+# =============================================================================
+#
+# ONE ROW PER PHYSICAL DEVICE ON THE SHELF (available or reserved), of ONE line, in the caller's branches. The sheet and
+# the columns are the template's own (`unit_import_services.STOCK_TEMPLATES`), never a copy: a column the template
+# gains is written here or the drift test says it is not (`TEMPLATE_FIELDS`).
+#
+#   full    the template's sheet, identifiers whole. Loaded into the SAME shop it registers nothing: every row is
+#           «ya está registrado» (its IMEI is unique in the company). `inventory.adjust` only.
+#   masked  the same columns on a sheet named «Revisión · <sheet>», IMEI and serial hidden but for the last four. For
+#           reviewing the shelf against a physical count; no load accepts it (`identifier_masking`).
+#
+# Never in either: the customer, the order, the label code, the inspection or the publication. The cost only for
+# `costs.view`; the supplier only for who already sees suppliers (the template's D-F-3 rule).
+
+#: field -> where its value comes from. Every field of both stock templates must be here (`test_stock_template_exports`).
+TEMPLATE_FIELDS = {
+    'branch': 'the branch of the device',
+    'model': 'the model, when it reads back as exactly this variant (`_VariantCells`)',
+    'capacity': 'the variant option of role capacity', 'colour': 'the variant option of role colour',
+    'sim': 'the variant option of role SIM', 'region': 'the variant option of role region',
+    'imei': 'IMEI 1, whole or masked', 'imei2': 'IMEI 2, whole or masked', 'serial_number': 'serial, whole or masked',
+    'supplier': 'who sold it, `include_supplier` only', 'cost': 'its specific cost, `include_cost` only',
+    'received_on': 'the day it came in', 'notes': 'the staff notes',
+    'sale_price': ('a NEW device: its variant\'s price (what the new template reads as the expected price, #426, so a '
+                   'reload proposes no change); a USED one: its own sale price'), 'grade': 'its cosmetic grade', 'battery': 'measured battery health',
+    'functional_state': 'the template\'s words', 'defects': 'what is wrong', 'accessories': 'what it comes with',
+    'warranty_days': 'its own warranty', 'public_notes': 'what the buyer reads',
+}
+_FUNCTIONAL_WORDS = {StockUnit.FunctionalState.FULL: 'Sin fallas', StockUnit.FunctionalState.WITH_FAULTS: 'Con fallas'}
+_VARIANT_FIELDS = {'Modelo': 'model', 'Capacidad': 'capacity', 'Color': 'colour', 'SIM': 'sim', 'Región': 'region'}
+_TEMPLATE_TEXT_FIELDS = ('imei', 'imei2', 'serial_number', 'supplier')
+
+
+def _template_notice(spec, *, full: bool) -> list:
+    """The «Instrucciones» sheet of a download: what the file is. Never read by a load (`_pick_sheet` skips it)."""
+    if full:
+        return [
+            [f'{spec["title"]}: lo que está en tienda, con los IMEI y las series COMPLETOS.'],
+            ['Es información sensible del inventario: no la reenvíes ni la dejes en una carpeta compartida.'],
+            ['Tiene la hoja y las columnas de la plantilla. Cargada en esta misma tienda no registra nada: cada '
+             'equipo sale como «ya está registrado».'],
+            ['Sólo trae los equipos en tienda (disponibles o apartados) de tus sucursales. La descarga quedó en la '
+             'auditoría.'],
+        ]
+    return [
+        [f'{spec["title"]}: COPIA DE REVISIÓN. Los IMEI y las series están ocultos salvo sus últimos caracteres.'],
+        ['Sirve para comparar con el conteo físico. NO se carga: el sistema rechaza este archivo y cualquier fila '
+         'con un identificador oculto.'],
+        ['Para cargar equipos usa la plantilla vacía; la exportación con IMEI completos la descarga quien puede '
+         'mover inventario.'],
+        ['Sólo trae los equipos en tienda (disponibles o apartados) de tus sucursales.'],
+    ]
+
+
+class _TemplateRow:
+    """
+    {field: value} of ONE device for the stock template of `line` — every key of `TEMPLATE_FIELDS`, always.
+    Built once per download: the variant and grade lookups read the company once.
+    """
+
+    def __init__(self, company, filters: ExportFilters, line: str):
+        self.filters, self.line = filters, line
+        self.full = filters.full_identifiers
+        self.variant_cells, self.grade_cell = _VariantCells(company), _GradeCells(company)
+        self.identifier = _identifier_cell(filters)
+
+    def __call__(self, unit) -> dict:
+        filters, full, identifier = self.filters, self.full, self.identifier
+        variant = dict.fromkeys(_VARIANT_FIELDS.values())
+        variant.update({_VARIANT_FIELDS[header]: value for header, value in self.variant_cells(unit.product).items()
+                        if header in _VARIANT_FIELDS})
+        if not full and not variant['model']:
+            # A review copy is read by a person: the product's name says which device it is. The full file leaves
+            # «Modelo» empty instead, because a reload would guess another variant from it.
+            variant['model'] = unit.product.name
+        return {
+            'branch': unit.branch.name,
+            **variant,
+            'imei': identifier(unit.imei),
+            'imei2': identifier(unit.imei2),
+            'serial_number': identifier(unit.serial_number),
+            'supplier': unit.supplier.name if filters.include_supplier and unit.supplier_id else None,
+            'cost': unit.cost if filters.include_cost else None,
+            'received_on': timezone.localtime(unit.received_at).date().isoformat(),
+            'notes': unit.notes or None,
+            # #426: a NEW device sells at its variant's price, which the new template reads as the expected price;
+            # a USED one has its own.
+            'sale_price': unit.sale_price if self.line == Product.CONDITION_USED else unit.product.price,
+            'grade': self.grade_cell(unit.cosmetic_grade_id, report=not full),
+            'battery': unit.battery_health,
+            'functional_state': _FUNCTIONAL_WORDS.get(unit.functional_state),
+            'defects': unit.defects or None,
+            'accessories': unit.accessories or None,
+            'warranty_days': unit.warranty_days,
+            'public_notes': unit.public_notes or None,
+        }
+
+
+def template_values(unit, *, line: str, filters: ExportFilters, company) -> dict:
+    """{field: value} of one device for the stock template of `line` (`_TemplateRow`)."""
+    return _TemplateRow(company, filters, line)(unit)
+
+
+def stock_template_workbook(company, filters: ExportFilters, line: str, mode: str) -> tuple[bytes, dict]:
+    """
+    The devices of `line` on the caller's shelves as the stock template of that line. `(bytes, {kind: rows})`.
+
+    `mode` is `full` or `masked`; the VIEW decides who may ask for which, and `filters.full_identifiers` must say the
+    same (a masked file never carries a whole identifier, whatever the caller holds).
+    """
+    full = mode == MODE_FULL
+    if filters.full_identifiers != full:
+        raise ValueError('full_identifiers must follow the mode of a stock template export')
+    spec = unit_import_services.STOCK_TEMPLATES[line]
+    columns = spec['columns']
+    headers = [header for header, _field in columns]
+    used_line = line == Product.CONDITION_USED
+
+    # The template fixes its line, whatever the filters said.
+    products = _products(company, replace(filters, lines=(LINE_USED if used_line else LINE_NEW,)))
+    queryset = StockUnit.objects.filter(
+        company=company, branch__in=filters.branches, product__in=products, status__in=ON_THE_SHELF,
+    )
+    if filters.condition:
+        queryset = queryset.filter(condition=filters.condition)
+    queryset = queryset.select_related('product', 'product__product_model', 'branch', 'supplier').order_by(
+        'branch__name', 'branch_id', 'product__name', 'product_id', 'serial_number', 'imei', 'pk',
+    )
+    _check_rows(queryset.count())
+
+    row_values = _TemplateRow(company, filters, line)
+    rows = []
+    for unit in queryset.iterator(chunk_size=2000):
+        values = row_values(unit)
+        # By key, never with a default: a template column without a value is an error here, not an empty cell.
+        rows.append([values[field] for _header, field in columns])
+
+    fields = [field for _header, field in columns]
+    widths = {'branch': 22, 'model': 26, 'region': 30, 'imei': 19, 'imei2': 19, 'serial_number': 28, 'supplier': 26,
+              'notes': 40, 'defects': 32, 'accessories': 28, 'public_notes': 40, 'received_on': 16, 'grade': 16,
+              'functional_state': 16, 'battery': 18, 'warranty_days': 16, 'sale_price': 16}
+    title = spec['sheet'] if full else identifier_masking.masked_sheet_title(spec['sheet'])
+    data = Sheet(title, headers, rows, _columns_of(fields, _TEMPLATE_TEXT_FIELDS),
+                 tuple(widths.get(field, 14) for field in fields))
+    notice = Sheet(unit_import_services.HELP_SHEET, ['Aviso'], _template_notice(spec, full=full), (), (120,))
+    kind = next(kind for kind, kind_line in TEMPLATE_KINDS.items() if kind_line == line)
+    return _sheets_bytes([data, notice]), {kind: len(rows)}
+
+
+# =============================================================================
 # Full — the three files to reload, in a ZIP
 # =============================================================================
 
@@ -904,6 +1083,9 @@ def readme_text() -> str:
         '    +) va en una celda de texto: se ve tal cual y Excel no lo ejecuta como fórmula.',
         '  - El catálogo no tiene campo de marca: no hay columna de marca.',
         '  - Las columnas de costo sólo traen datos si quien descargó puede ver costos (permiso «Ver costos y márgenes»).',
+        '  - Los IMEI y los números de serie sólo salen completos si quien descargó puede mover inventario',
+        f'    (permiso «Mover inventario»). Si no, salen ocultos salvo sus últimos caracteres ({identifier_masking.MASK * 4}1234)',
+        '    y la carga de equipos rechaza el archivo: una copia con identificadores ocultos no se vuelve a cargar.',
         '',
     ])
 
@@ -933,6 +1115,8 @@ def full_archive(company, filters: ExportFilters) -> tuple[bytes, dict]:
 
 def build(kind: str, mode: str, company, filters: ExportFilters) -> tuple[bytes, dict]:
     """`(bytes, {'<what>': rows})` for one download."""
+    if kind in TEMPLATE_KINDS:
+        return stock_template_workbook(company, filters, TEMPLATE_KINDS[kind], mode)
     if kind == 'full':
         return full_archive(company, filters)
     if kind == 'integral':

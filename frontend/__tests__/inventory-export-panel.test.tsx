@@ -173,6 +173,70 @@ describe('lo que la persona puede descargar', () => {
   });
 });
 
+describe('STOCK-TEMPLATE-EXPORT: stock con formato de plantilla', () => {
+  const NEW_STOCK = 'Stock de equipos nuevos';
+  const USED_STOCK = 'Stock de seminuevos';
+  const templateCard = (title: string) => screen.getByRole('heading', { level: 4, name: title }).closest('li')!;
+  const section = () => screen.getByRole('region', { name: 'Stock con formato de plantilla' });
+
+  it('ofrece las dos plantillas, sin tocar las seis descargas de siempre', () => {
+    show({ canAdjust: true });
+    expect(titles()).toEqual([CATALOGUE, ACCESSORIES, STOCK, DEVICES, FULL, INTEGRAL]);
+    expect(within(section()).getAllByRole('heading', { level: 4 }).map((h) => h.textContent)).toEqual([NEW_STOCK, USED_STOCK]);
+    expect(section()).toHaveTextContent(/oculta los IMEI y las series salvo sus últimos 4 caracteres y no se puede cargar/);
+  });
+
+  it('con `inventory.adjust`, revisión e IMEI completos; sin él, sólo la revisión', () => {
+    const { unmount } = show({ canAdjust: true });
+    for (const title of [NEW_STOCK, USED_STOCK]) {
+      expect(within(templateCard(title)).getByRole('button', { name: `Descargar ${title}: revisión con IMEI ocultos` })).toBeInTheDocument();
+      expect(within(templateCard(title)).getByRole('button', { name: `Descargar ${title}: IMEI completos` })).toBeInTheDocument();
+    }
+    unmount();
+    show({ canAdjust: false });
+    for (const title of [NEW_STOCK, USED_STOCK]) {
+      expect(within(templateCard(title)).getByRole('button', { name: /revisión con IMEI ocultos/ })).toBeInTheDocument();
+      expect(within(templateCard(title)).queryByRole('button', { name: /IMEI completos/ })).toBeNull();
+    }
+    expect(section()).toHaveTextContent(/sólo la descarga quien puede mover inventario/);
+  });
+
+  it('sin inventario no aparece', () => {
+    show({ canInventory: false, canAdjust: true });
+    expect(screen.queryByRole('region', { name: 'Stock con formato de plantilla' })).toBeNull();
+  });
+
+  it('pide su archivo y su modo, con las sucursales elegidas y sin la línea ni la existencia del formulario', async () => {
+    show({ canAdjust: true });
+    fireEvent.change(screen.getByLabelText('Línea'), { target: { value: 'accessory' } });
+    fireEvent.change(screen.getByLabelText('Existencia'), { target: { value: 'out_of_stock' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Norte' }));
+    await act(async () => {
+      fireEvent.click(within(templateCard(USED_STOCK)).getByRole('button', { name: /IMEI completos/ }));
+    });
+    const [kind, mode, filters, company] = lastCall();
+    expect([kind, mode, company]).toEqual(['units_used', 'full', 7]);
+    expect(filters).toMatchObject({ branches: [12], line: '', stock: '', type: '' });
+    await act(async () => {
+      fireEvent.click(within(templateCard(NEW_STOCK)).getByRole('button', { name: /revisión/ }));
+    });
+    expect(lastCall().slice(0, 2)).toEqual(['units_new', 'masked']);
+  });
+
+  it('a quien no puede mover inventario se le dice que los equipos salen con IMEI ocultos', () => {
+    show({ canAdjust: false });
+    for (const title of [DEVICES, FULL, INTEGRAL]) {
+      expect(card(title)).toHaveTextContent(/IMEI y las series salen ocultos salvo sus últimos 4 caracteres/);
+    }
+    expect(card(STOCK)).not.toHaveTextContent(/ocultos/);
+  });
+
+  it('a quien puede, no', () => {
+    show({ canAdjust: true });
+    expect(card(DEVICES)).not.toHaveTextContent(/ocultos/);
+  });
+});
+
 describe('las sucursales', () => {
   it('sólo se ofrecen las de la persona', () => {
     show({ branches: [BRANCHES[0]] });
@@ -405,6 +469,15 @@ describe('la petición al servidor', () => {
       await real.downloadInventoryExport('full', 'report', {}, null);
       expect(created.map((link) => link.download)).toEqual(['reporte-equipos.xlsx', 'inventario-completo.zip']);
     });
+
+    it('STOCK-TEMPLATE-EXPORT: sin nombre del servidor, la revisión y la completa se llaman distinto', async () => {
+      served();
+      await real.downloadInventoryExport('units_new', 'masked', {}, null);
+      served();
+      await real.downloadInventoryExport('units_used', 'full', {}, null);
+      expect(created.map((link) => link.download)).toEqual([
+        'stock-equipos-nuevos-revision.xlsx', 'stock-seminuevos-completo.xlsx']);
+    });
   });
 
   it.each([
@@ -418,6 +491,20 @@ describe('la petición al servidor', () => {
   ])('un %i se explica', async (status, body, message) => {
     fetchWithAuth.mockResolvedValueOnce({ ok: false, status, json: async () => body, headers: new Headers() });
     await expect(real.downloadInventoryExport('products', 'reimport', {}, null)).rejects.toThrow(message as string);
+  });
+
+  it('STOCK-TEMPLATE-EXPORT: la plantilla lleva su modo y no la línea', () => {
+    const url = new URL(real.inventoryExportPath('units_new', 'masked', { branches: [11], line: '' }, 7), 'http://panel.test');
+    expect(url.pathname).toMatch(/\/admin\/inventory\/exports\/units_new\/$/);
+    expect(Object.fromEntries(url.searchParams)).toEqual({ company: '7', mode: 'masked', branches: '11' });
+  });
+
+  it('STOCK-TEMPLATE-EXPORT: un 403 por IMEI completos dice lo que el servidor explica', async () => {
+    const detail = 'Los IMEI y las series completos sólo los descarga quien puede mover inventario.';
+    fetchWithAuth.mockResolvedValueOnce({
+      ok: false, status: 403, json: async () => ({ code: 'full_identifiers_forbidden', detail }), headers: new Headers(),
+    });
+    await expect(real.downloadInventoryExport('units_used', 'full', {}, null)).rejects.toThrow(detail);
   });
 
   it('un 429 sin cuerpo legible dice cuándo volver por la cabecera Retry-After', async () => {

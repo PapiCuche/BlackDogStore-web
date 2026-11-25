@@ -940,6 +940,11 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         )
     line = line or template_line
     columns = _columns(headers, template_line=template_line)
+    # STOCK-TEMPLATE-EXPORT — a hidden IMEI or serial is a review copy, whatever its sheet says: never loaded.
+    from .identifier_masking import cells_refusal
+    refusal = cells_refusal(rows, [columns.get(field) for field in ('imei', 'imei2', 'serial_number')])
+    if refusal:
+        raise UnitImportError(refusal)
 
     reachable = set(reachable_branch_ids)
     branches = {

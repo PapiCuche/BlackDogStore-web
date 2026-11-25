@@ -14,8 +14,15 @@
  * sucursales y las categorías de la empresa. Los dos se exportan: hoy el panel
  * vive en «Carga de stock», y una pantalla propia lo montará igual.
  *
+ * STOCK-TEMPLATE-EXPORT — y lo que está en tienda con el formato de las dos
+ * plantillas de stock («Stock de equipos nuevos» / «Stock de seminuevos»), en
+ * dos sabores: la copia de revisión (IMEI y series ocultos salvo los últimos 4,
+ * no se puede cargar) y la operativa (IMEI completos), que sólo se ofrece a quien
+ * puede mover inventario (`inventory.adjust`).
+ *
  * Ofrece sólo lo que la persona puede descargar, pero la autoridad es del
- * servidor: qué empresa, qué sucursales y si la columna «Costo» lleva datos.
+ * servidor: qué empresa, qué sucursales, si la columna «Costo» lleva datos y si
+ * los IMEI salen completos.
  */
 import { useEffect, useState } from "react";
 import { fetchAdminCategories } from "../../lib/admin";
@@ -23,6 +30,8 @@ import {
   ExportFilters,
   ExportKind,
   ExportMode,
+  TemplateKind,
+  TemplateMode,
   downloadInventoryExport,
   fetchExportBranches,
 } from "../../lib/inventory-exports";
@@ -38,6 +47,8 @@ type PanelProps = {
   canInventory: boolean;
   /** `costs.view` (DC1): el servidor sólo escribe los costos para quien lo tiene. */
   canSeeCost?: boolean;
+  /** `inventory.adjust`: los IMEI y las series completos. Sin él, toda descarga de equipos los lleva ocultos. */
+  canAdjust?: boolean;
   branches: Option[];
   categories: Option[];
   /** Aviso de algo que no se pudo leer (sucursales, categorías). */
@@ -83,12 +94,24 @@ const DOWNLOADS: Download[] = [
   },
 ];
 
+/** STOCK-TEMPLATE-EXPORT — las dos plantillas de stock, llenas con lo que está en tienda. */
+const TEMPLATE_DOWNLOADS: { kind: TemplateKind; title: string; description: string }[] = [
+  {
+    kind: "units_new", title: "Stock de equipos nuevos",
+    description: "Los equipos nuevos en tienda, una fila por unidad, con las columnas de la plantilla «Stock de equipos nuevos».",
+  },
+  {
+    kind: "units_used", title: "Stock de seminuevos",
+    description: "Los seminuevos en tienda, una fila por unidad, con las columnas de la plantilla «Stock de seminuevos».",
+  },
+];
+
 const NO_FILTERS = { category: "", type: "", stock: "", condition: "", visibility: "", is_active: "", line: "" };
 
 const LABEL = "mb-1 block text-xs font-semibold text-muted";
 
 export function InventoryExportPanel({
-  companyId, canCatalogue, canInventory, canSeeCost, branches, categories, notice,
+  companyId, canCatalogue, canInventory, canSeeCost, canAdjust, branches, categories, notice,
 }: PanelProps) {
   const [mode, setMode] = useState<ExportMode>("reimport");
   const [filters, setFilters] = useState(NO_FILTERS);
@@ -107,17 +130,17 @@ export function InventoryExportPanel({
   const set = (key: keyof typeof NO_FILTERS) => (event: React.ChangeEvent<HTMLSelectElement>) =>
     setFilters((current) => ({ ...current, [key]: event.target.value }));
 
-  async function run(item: Download) {
+  async function fetchFile(id: string, kind: ExportKind, fileMode: ExportMode, fixed?: Partial<ExportFilters>) {
     if (busy) return;
-    setBusy(item.id);
+    setBusy(id);
     setError(null);
     try {
       await downloadInventoryExport(
-        item.kind,
-        item.kind === "full" ? "reimport" : item.kind === "integral" ? "report" : mode,
+        kind,
+        fileMode,
         {
           ...(filters as ExportFilters),
-          ...item.fixed,
+          ...fixed,
           // Sólo las suyas, y en un orden estable. Ninguna marcada = todas las suyas.
           branches: branches.filter((branch) => chosen.includes(branch.id)).map((branch) => branch.id),
         },
@@ -129,6 +152,13 @@ export function InventoryExportPanel({
       setBusy(null);
     }
   }
+
+  const run = (item: Download) =>
+    fetchFile(item.id, item.kind, item.kind === "full" ? "reimport" : item.kind === "integral" ? "report" : mode, item.fixed);
+
+  // La plantilla fija su línea y sólo lleva lo que está en tienda: esos filtros no viajan.
+  const runTemplate = (kind: TemplateKind, templateMode: TemplateMode) =>
+    fetchFile(`${kind}:${templateMode}`, kind, templateMode, { line: "", stock: "", type: "" });
 
   return (
     <div className="space-y-5 rounded-xl border border-bd-border bg-surface p-4 sm:p-5">
@@ -274,6 +304,12 @@ export function InventoryExportPanel({
                     : "La columna «Costo» va vacía: sólo se entrega a quien puede ver costos."}
                 </p>
               ) : null}
+              {(item.kind === "units" || item.kind === "full" || item.kind === "integral") && !canAdjust ? (
+                <p className="mt-1 text-xs text-muted">
+                  Los IMEI y las series salen ocultos salvo sus últimos 4 caracteres: completos sólo los descarga
+                  quien puede mover inventario. Un archivo con identificadores ocultos no se puede volver a cargar.
+                </p>
+              ) : null}
             </div>
             <button
               type="button"
@@ -287,14 +323,62 @@ export function InventoryExportPanel({
           </li>
         ))}
       </ul>
+
+      {canInventory ? (
+        <section aria-label="Stock con formato de plantilla" className="space-y-3">
+          <div>
+            <p className="text-sm font-semibold text-foreground">Stock con formato de plantilla</p>
+            <p className="mt-0.5 text-xs text-muted">
+              Lo que está en tienda (disponible o apartado) en tus sucursales, con las mismas columnas que las
+              plantillas de carga. La copia de revisión oculta los IMEI y las series salvo sus últimos 4 caracteres y
+              no se puede cargar.
+              {canAdjust
+                ? " La de IMEI completos es para operar: no la reenvíes; cada descarga queda en la auditoría."
+                : " La de IMEI completos sólo la descarga quien puede mover inventario."}
+            </p>
+          </div>
+          <ul className="grid gap-3 md:grid-cols-2">
+            {TEMPLATE_DOWNLOADS.map((item) => (
+              <li key={item.kind} className="flex flex-col justify-between gap-3 rounded-lg border border-bd-border bg-background p-4">
+                <div>
+                  <h4 className="text-sm font-semibold text-foreground">{item.title}</h4>
+                  <p className="mt-1 text-xs text-muted">{item.description}</p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void runTemplate(item.kind, "masked")}
+                    disabled={busy !== null}
+                    className={internalButtonClass}
+                    aria-label={busy === `${item.kind}:masked` ? undefined : `Descargar ${item.title}: revisión con IMEI ocultos`}
+                  >
+                    {busy === `${item.kind}:masked` ? "Generando…" : "Revisión (IMEI ocultos)"}
+                  </button>
+                  {canAdjust ? (
+                    <button
+                      type="button"
+                      onClick={() => void runTemplate(item.kind, "full")}
+                      disabled={busy !== null}
+                      className={internalButtonClass}
+                      aria-label={busy === `${item.kind}:full` ? undefined : `Descargar ${item.title}: IMEI completos`}
+                    >
+                      {busy === `${item.kind}:full` ? "Generando…" : "IMEI completos"}
+                    </button>
+                  ) : null}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
     </div>
   );
 }
 
 /** El panel con las sucursales y las categorías de la empresa ya leídas. */
 export function InventoryExports({
-  companyId, canCatalogue, canInventory, canSeeCost,
-}: Pick<PanelProps, "companyId" | "canCatalogue" | "canInventory" | "canSeeCost">) {
+  companyId, canCatalogue, canInventory, canSeeCost, canAdjust,
+}: Pick<PanelProps, "companyId" | "canCatalogue" | "canInventory" | "canSeeCost" | "canAdjust">) {
   const [branches, setBranches] = useState<Option[]>([]);
   const [categories, setCategories] = useState<Option[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -321,6 +405,7 @@ export function InventoryExports({
       canCatalogue={canCatalogue}
       canInventory={canInventory}
       canSeeCost={canSeeCost}
+      canAdjust={canAdjust}
       branches={branches}
       categories={categories}
       notice={notice}

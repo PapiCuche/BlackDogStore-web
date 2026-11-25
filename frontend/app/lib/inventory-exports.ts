@@ -9,12 +9,19 @@ import { fetchWithAuth } from "./auth";
  * fondo: `reimport` es el archivo que las cargas masivas vuelven a leer tal
  * cual; `report` añade columnas de sólo lectura y las cargas lo rechazan.
  *
+ * STOCK-TEMPLATE-EXPORT — `units_new` y `units_used`: lo que está en tienda con
+ * el formato de «Stock de equipos nuevos» y «Stock de seminuevos». Dos modos
+ * propios: `masked` (revisión, IMEI y series ocultos salvo los últimos 4) y
+ * `full` (IMEI completos, sólo con `inventory.adjust`).
+ *
  * Quién puede descargar qué, de qué sucursales y con qué columnas lo decide el
  * servidor. Aquí sólo se arma la petición y se guarda lo que responde.
  */
 
-export type ExportKind = "products" | "stock" | "units" | "full" | "integral";
-export type ExportMode = "reimport" | "report";
+export type TemplateKind = "units_new" | "units_used";
+export type ExportKind = "products" | "stock" | "units" | "full" | "integral" | TemplateKind;
+export type TemplateMode = "masked" | "full";
+export type ExportMode = "reimport" | "report" | TemplateMode;
 
 export type ExportFilters = {
   /** Vacío = todas las sucursales a las que la persona tiene acceso. */
@@ -56,6 +63,10 @@ const FALLBACK_NAMES: Record<string, string> = {
   "units:report": "reporte-equipos.xlsx",
   "full:reimport": "inventario-completo.zip",
   "integral:report": "reporte-integral-inventario.xlsx",
+  "units_new:masked": "stock-equipos-nuevos-revision.xlsx",
+  "units_new:full": "stock-equipos-nuevos-completo.xlsx",
+  "units_used:masked": "stock-seminuevos-revision.xlsx",
+  "units_used:full": "stock-seminuevos-completo.xlsx",
 };
 
 /** Pide una descarga y la guarda. Lanza un error con lo que el servidor explicó. */
@@ -65,6 +76,10 @@ export async function downloadInventoryExport(
   const res = await fetchWithAuth(inventoryExportPath(kind, mode, filters, companyId));
   if (!res.ok) {
     const err = await res.json().catch(() => null);
+    // STOCK-TEMPLATE-EXPORT: sin `inventory.adjust` el servidor explica que la copia de revisión sí se puede bajar.
+    if (res.status === 403 && err?.code === "full_identifiers_forbidden" && typeof err?.detail === "string") {
+      throw new Error(err.detail);
+    }
     if (res.status === 403) throw new Error("No tienes permisos para esta descarga.");
     if (res.status === 404) throw new Error("La sucursal o la categoría elegida ya no está disponible. Actualiza la página.");
     if (res.status === 429) {

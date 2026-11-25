@@ -215,6 +215,7 @@ class ExportAccessTest(_Base):
         stranger = self.member('exp_ajena', *ALL[1:], company=self.other)
         for kind in inventory_exports.KINDS:
             with self.subTest(kind):
+                cache.clear()   # seven kinds: more than one minute's budget of downloads
                 self.assertIn(stranger.get(url(kind, company=self.company.pk)).status_code, (403, 404))
 
     def test_a_branch_limited_person_downloads_only_their_branches(self):
@@ -223,8 +224,9 @@ class ExportAccessTest(_Base):
         _title, headers, _rows = self.sheet(self.get('stock', limited))
         self.assertEqual(headers[3:], ['ALMACEN Centro'])
         self.assertEqual({row['Sucursal'] for row in self.records(self.get('stock', limited, mode='report'))}, {'Centro'})
+        # STOCK-TEMPLATE-EXPORT: without `inventory.adjust` the serials are hidden but for their last four.
         self.assertEqual(
-            [row['Número de serie'] for row in self.records(self.get('units', limited))], ['SER-0001', 'SER-0002'])
+            [row['Número de serie'] for row in self.records(self.get('units', limited))], ['••••0001', '••••0002'])
 
         book = zipfile.ZipFile(io.BytesIO(self.get('full', limited).content))
         devices = load_workbook(io.BytesIO(book.read('Equipos.xlsx'))).active
@@ -362,6 +364,8 @@ class ExportAccessTest(_Base):
                 'condition': 'used', 'visibility': '', 'is_active': '', 'lines': [],  # INV-EXP-01
             },
             'rows': {'units': 1}, 'cost_included': True,
+            # STOCK-TEMPLATE-EXPORT: whether IMEIs and serials left whole.
+            'identifiers': 'full',
         })
         text = json.dumps(entry.metadata)
         for value in ('SER-0002', IMEI_B, 'Teléfono X'):
@@ -1032,8 +1036,9 @@ class DeviceCommerceRoundTripTest(_Base):
 
     def test_the_sale_price_is_not_a_cost_and_the_costs_still_are(self):
         reader = self.member('exp_dc2_lectora', 'inventory.view', 'products.view')
+        # STOCK-TEMPLATE-EXPORT: a reader gets the serial hidden but for its last four.
         units = {row['Número de serie']: row for row in self.records(self.get('units', reader))}
-        self.assertEqual((units['SER-U001']['Precio de venta'], units['SER-U001']['Costo']), (1899.9, None))
+        self.assertEqual((units['••••U001']['Precio de venta'], units['••••U001']['Costo']), (1899.9, None))
         products = {row['Nombre']: row for row in self.records(self.get('products', reader))}
         self.assertIsNone(products['Teléfono X']['Costo de referencia'])
         mine = {row['Nombre']: row for row in self.records(self.get('products'))}
