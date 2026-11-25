@@ -105,6 +105,15 @@ function syntheticImei(seed: number): string {
   return body + String((10 - (total % 10)) % 10);
 }
 
+function borradores() {
+  return shell<{ name: string; origin: string; price: string; published: boolean; inventory: number; movements: number }[]>(`
+from store.models import Product, StockMovement
+rows = Product.objects.filter(company__slug=data['s']).exclude(draft_origin='').order_by('name')
+out([{'name': p.name, 'origin': p.draft_origin, 'price': str(p.price), 'published': p.is_published_online,
+      'inventory': p.inventory, 'movements': StockMovement.objects.filter(product=p).count()} for p in rows])
+`, { s: SLUG });
+}
+
 function desactivar() {
   return shell(`
 from django.contrib.auth import get_user_model
@@ -261,6 +270,29 @@ test("teléfono 390: el selector cabe, se usa con el teclado y no desborda", asy
   await expect(azul).toBeChecked();
   await expectNoOverflow(page);
   await selectorOf(page, 1).screenshot({ path: path.join(SHOTS, "mobile-390-selector.png") });
+  await context.close();
+});
+
+test("variantes que faltan: vista previa, confirmación y borradores ocultos sin stock (1280)", async ({ browser }) => {
+  test.setTimeout(120_000);
+  expect(borradores()).toEqual([]);
+  const { context, page } = await session(browser);
+  await openAndRead(page, "equipo sel 256gb esim j/a azul, verde 2500\nequipo sel 256gb esim j/a azul 2600");
+  const batch = page.getByRole("region", { name: "Variantes que faltan" });
+  await expect(batch).toContainText("2 configuraciones válidas no tienen variante");
+  await batch.getByRole("button", { name: /Revisar y crear 2 variantes/ }).click();
+  await expect(batch).toContainText("Equipo Sel · 256 GB · Azul · eSIM · J/A");
+  await expect(batch).toContainText("líneas 1, 2");
+  await batch.screenshot({ path: path.join(SHOTS, "desktop-1280-variantes-que-faltan.png") });
+  expect(borradores()).toEqual([]);
+  await batch.getByRole("button", { name: "Confirmar: crear 2 borradores" }).click();
+  await expect(page.getByText(/Se crearon 2 variantes como borrador/)).toBeVisible({ timeout: 30_000 });
+  const drafts = borradores();
+  expect(drafts).toHaveLength(2);
+  for (const draft of drafts) {
+    expect(draft).toEqual(expect.objectContaining({ origin: "palette", price: "0.00", published: false, inventory: 0, movements: 0 }));
+  }
+  await expect(lineOf(page, 2).getByRole("article")).toContainText("Borrador pendiente");
   await context.close();
 });
 
