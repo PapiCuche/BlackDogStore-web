@@ -61,6 +61,10 @@ del modelo (la caja lee `/pos/models/<id>/configurations/`; las demás pantallas
 6. Costo, precio comercial, cantidad confirmada, «Incluir en el guardado», ensayo e importador oficial: los de siempre.
    «Crear variante» es el de siempre (`createModelVariant`, borrador oculto a 0,00, sin stock ni publicación, con
    `products.manage`), sólo para `combinacion_valida_sin_variante`; tras crearla, la selección se vuelve a leer.
+7. **Variantes que faltan, en lote**: «Revisar y crear N variantes…» muestra cada configuración válida sin variante de la
+   lectura (una por configuración según los ids de opción del servidor, nunca por cómo se escribió, con las líneas que la
+   nombran) y sólo las crea con «Confirmar: crear N borradores». Misma regla y misma escritura que «Crear variante»; un
+   rechazo se dice por su nombre y no detiene las demás; al final se vuelve a leer una vez.
 
 **Backend**: el resolutor devuelve `combinacion_excluida` cuando todos los roles se dijeron, están en la paleta, ninguna
 variante es esa combinación y dos de sus opciones son un par excluido. Una variante que ya es esa combinación sigue siendo
