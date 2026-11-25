@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-25 (tarde) — R13.2 desplegada
+
+**Deployed**
+- R13.2 `c8a43215` en prod-02 (#426–#430: «Precio de venta» opcional en equipos nuevos, cada seminuevo sin precio se bloquea sólo a sí mismo, exportaciones con formato de plantilla e IMEI protegidos, simulación de 19 escenarios).
+- Tarea horaria de cotizaciones vencidas (`expire_sales_quotes`, minuto :41).
+
+**Data** (prod-02, con GO)
+- Catálogo normalizado (roles y etiquetas de capacidad), 167 muestras de color aproximadas, enlace roto del producto 12 quitado.
+
+**Fixed** (en `master`, sin desplegar)
+- La auditoría de la propuesta de catálogo registra qué variantes se crearon «sin IMEI» (#435).
+
 ## 2026-11-25 — R13.2 preparada; siete notas y stock real listos para GO
 
 **Fixed** (en `master`, sin desplegar)
