@@ -57,6 +57,7 @@ export type ScanUnitBrief = {
   detail: string;
   id?: number;
   label_code?: string;
+  product_id?: number;
   product_name?: string;
   branch_name?: string;
 };

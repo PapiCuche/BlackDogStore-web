@@ -453,9 +453,9 @@ it('G8: mientras se registra, «atrás» del navegador no sale de la pantalla', 
   await chooseVariantByBoxCode(input);
   await scan(input, IMEI_1);
   await waitFor(() => expect(screen.getByTestId('scan-intake-confirm')).toBeEnabled());
-  const before = window.history.length;
   await act(async () => { fireEvent.click(screen.getByTestId('scan-intake-confirm')); });
-  expect(window.history.length).toBeGreaterThan(before);
+  // A guard entry of this page now stands between the person and the previous page.
+  expect((window.history.state as { scanIntakeGuard?: boolean } | null)?.scanIntakeGuard).toBe(true);
   await act(async () => { window.dispatchEvent(new PopStateEvent('popstate')); });
   expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('Espera a que termine');
 });
@@ -479,4 +479,99 @@ it('tras un 5xx, cambiar el proveedor cambia la clave; sin cambios, la misma', a
   const keys = receive.mock.calls.map((call) => call[3]);
   expect(keys[1]).toBe(keys[0]);
   expect(keys[2]).not.toBe(keys[1]);
+});
+
+// ---------------------------------------------------------------------------
+// Round 4 (K1–K4)
+// ---------------------------------------------------------------------------
+
+it('K1: «atrás» mientras se registra devuelve a la pantalla del escaneo, y al terminar no queda una entrada de más', async () => {
+  // A history traversal left by an earlier test's unmount settles first (jsdom runs them asynchronously).
+  await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+  window.history.replaceState(null, '', '/admin/inventory/scan');
+  const pending = deferred<lib.ScanReceived>();
+  receive.mockImplementationOnce(() => pending.promise);
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  await scan(input, IMEI_1);
+  await waitFor(() => expect(screen.getByTestId('scan-intake-confirm')).toBeEnabled());
+  await act(async () => { fireEvent.click(screen.getByTestId('scan-intake-confirm')); });
+  // The browser went back: the address is already the previous page when popstate fires.
+  window.history.replaceState(window.history.state, '', '/admin/inventory');
+  await act(async () => { window.dispatchEvent(new PopStateEvent('popstate')); });
+  expect(window.location.pathname).toBe('/admin/inventory/scan');
+  const back = jest.spyOn(window.history, 'back').mockImplementation(() => undefined);
+  await act(async () => {
+    pending.resolve({
+      replayed: false, mode: 'stock', condition: 'new',
+      unit: { id: 55, product_id: 100, product_name: 'Teléfono Q 128 Negro', branch_name: 'Central', label_code: 'U4827193056',
+        imei: IMEI_1, imei2: null, serial_number: '', status_label: 'Disponible' },
+      branch: { id: 1, name: 'Central' }, created_variant: false, order: null, method: 'manual', warnings: [],
+    });
+    await pending.promise;
+  });
+  await screen.findByTestId('scan-intake-done');
+  expect(back).toHaveBeenCalled();
+  back.mockRestore();
+});
+
+it('K2: Espacio no se manda al lector desde un select ni desde la página con el campo vacío', () => {
+  const input = renderScreen();
+  const branch = screen.getByTestId('scan-intake-branch');
+  branch.focus();
+  const onSelect = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+  branch.dispatchEvent(onSelect);
+  expect(onSelect.defaultPrevented).toBe(false);
+  (document.activeElement as HTMLElement | null)?.blur();
+  const onPage = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true });
+  document.body.dispatchEvent(onPage);
+  expect(onPage.defaultPrevented).toBe(false);
+  expect(input.value).toBe('');
+});
+
+it('K3: Shift+Tab no descarta lo escrito', async () => {
+  const input = renderScreen();
+  fireEvent.change(input, { target: { value: 'QZ7K' } });
+  await act(async () => { fireEvent.keyDown(input, { key: 'Tab', shiftKey: true }); });
+  expect(input.value).toBe('QZ7K');
+  expect(screen.getByTestId('scan-intake-log')).not.toHaveTextContent('Se descartó');
+});
+
+const brief = (over = {}) => ({
+  standing: 'registered' as const, status: 'available', status_label: 'Disponible', detail: 'Ya está registrado',
+  id: 55, label_code: 'U4827193056', product_id: 100, product_name: 'Teléfono Q 128 Negro', branch_name: 'Central', ...over,
+});
+
+it('K4: tras un 5xx y un reintento con otra clave, un «ya registrado» de ESTE equipo muestra el registro', async () => {
+  receive
+    .mockRejectedValueOnce(new lib.ScanIntakeError('Error del servidor', '', '', 502))
+    .mockRejectedValueOnce(new lib.ScanIntakeError('Ese IMEI ya está registrado', 'duplicate_imei', 'imei', 409));
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  await scan(input, IMEI_1);
+  const confirm = screen.getByTestId('scan-intake-confirm');
+  await waitFor(() => expect(confirm).toBeEnabled());
+  await act(async () => { fireEvent.click(confirm); });
+  check.mockImplementation(async (_c, code) => (code === IMEI_1
+    ? answer({ value: code, kind: 'imei', certain: true }, { unit: brief() }) : byValue(code)));
+  fireEvent.change(screen.getByTestId('scan-intake-supplier'), { target: { value: '5' } });
+  await waitFor(() => expect(confirm).toBeEnabled());
+  await act(async () => { fireEvent.click(confirm); });
+  await screen.findByTestId('scan-intake-done');
+  expect(screen.getByText('U4827193056')).toBeInTheDocument();
+  expect(screen.getByText(/intento anterior/)).toBeInTheDocument();
+});
+
+it('K4: sin un 5xx antes, o si es otro equipo, el «ya registrado» se muestra como rechazo', async () => {
+  receive.mockRejectedValueOnce(new lib.ScanIntakeError('Ese IMEI ya está registrado', 'duplicate_imei', 'imei', 409));
+  check.mockImplementation(async (_c, code) => (code === IMEI_1
+    ? answer({ value: code, kind: 'imei', certain: true }) : byValue(code)));
+  const input = renderScreen();
+  await chooseVariantByBoxCode(input);
+  await scan(input, IMEI_1);
+  const confirm = screen.getByTestId('scan-intake-confirm');
+  await waitFor(() => expect(confirm).toBeEnabled());
+  await act(async () => { fireEvent.click(confirm); });
+  await waitFor(() => expect(screen.getAllByText('Ese IMEI ya está registrado').length).toBeGreaterThan(0));
+  expect(screen.queryByTestId('scan-intake-done')).not.toBeInTheDocument();
 });

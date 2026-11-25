@@ -679,10 +679,15 @@ def _check_unit(company, product, row, n, entry, seen_serials, seen_imeis):
         _issue(entry, n, 'serial_number', 'este número de serie está repetido en la misma recepción.', 'duplicate')
     if seen_imeis.intersection(imeis):
         _issue(entry, n, 'imei', 'este IMEI está repetido en la misma recepción.', 'duplicate')
+    # SCAN-TO-STOCK-01 review H1 — one value is never a serial on one device and an IMEI on another (any product).
+    if cleaned['serial_number'] and cleaned['serial_number'] in seen_imeis:
+        _issue(entry, n, 'serial_number', 'esta serie es el IMEI de otro equipo de la misma recepción.', 'duplicate')
+    if set(imeis) & {serial for _pk, serial in seen_serials}:
+        _issue(entry, n, 'imei', 'este IMEI es la serie de otro equipo de la misma recepción.', 'duplicate')
     if cleaned['serial_number']:
         seen_serials.add(serial_key)
     seen_imeis.update(imeis)
-    _, where = units_service.find_conflict(company, product, cleaned)
+    why, where = units_service.find_conflict(company, product, cleaned)
     if not where:
         # INV-SERIAL-01 — the same serial on ANOTHER product: a warning (never the serial itself in the answer).
         elsewhere = units_service.serial_elsewhere(company, product, cleaned['serial_number'])
@@ -694,7 +699,10 @@ def _check_unit(company, product, row, n, entry, seen_serials, seen_imeis):
                                               for pk, serial in seen_serials):
             entry['warnings'].append(
                 f'Equipo {n + 1}: ese número de serie aparece también en otro producto de esta recepción.')
-    if where == 'serial_number':
+    if why in (units_service.SERIAL_IS_AN_IMEI, units_service.IMEI_IS_A_SERIAL):
+        # Review R1: its own words (they carry no identifier).
+        _issue(entry, n, where, why[0].lower() + why[1:], 'duplicate')
+    elif where == 'serial_number':
         _issue(entry, n, where, 'ese número de serie ya está registrado para este producto.', 'duplicate')
     elif where:
         _issue(entry, n, where, 'ese IMEI ya está registrado en otro equipo de la empresa.', 'duplicate')

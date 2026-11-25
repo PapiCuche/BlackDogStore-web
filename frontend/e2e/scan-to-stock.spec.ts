@@ -195,6 +195,10 @@ test.describe("registrar equipo por escaneo", () => {
 
     await page.getByTestId("scan-intake-confirm").click();
     await expect(page.getByTestId("scan-intake-done")).toBeVisible({ timeout: 20_000 });
+    // Review K1: removing the «atrás» guard after the registration leaves the person on this screen.
+    await page.waitForTimeout(500);
+    await expect(page).toHaveURL(/\/admin\/inventory\/scan$/);
+    await expect(page.getByTestId("scan-intake-done")).toBeVisible();
     const nuevo = unidad(NUEVO.imei);
     expect(nuevo).toMatchObject({ exists: true, status: "available", condition: "new", imei2: NUEVO.imei2,
       serial: NUEVO.serial, reason: "Inventario: registro por escaneo" });

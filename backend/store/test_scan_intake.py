@@ -647,6 +647,49 @@ class ImeiSerialCrossTest(ScanShop, TestCase):
         self.assertEqual((res.status_code, res.json()['code']), (409, 'duplicate_serial'), res.content)
 
 
+class ImeiSerialCrossInOneBatchTest(ScanShop, TestCase):
+    """Review H1 — inside ONE batch too: a row's serial is never another row's IMEI, nor its IMEI another's serial."""
+
+    def setUp(self):
+        self.build('scan-lote')
+        self.plain = _prod(self.company, 'Laptop del lote', 'scan-lote-laptop', price='10.00', inventory=0)
+        Product.objects.filter(pk=self.plain.pk).update(is_serialized=True, requires_imei=False)
+        self.plain.refresh_from_db()
+
+    def test_a_serial_then_the_same_value_as_an_imei_is_refused_on_the_second_row(self):
+        value = self.fresh()
+        with self.assertRaises(units.StockUnitError) as caught:
+            units.receive_units(branch=self.branch, product=self.plain, actor=self.manager, reason='Compra',
+                                units=[{'serial_number': value}, {'serial_number': 'LOTE0002X', 'imei': value}])
+        self.assertEqual((caught.exception.line, caught.exception.field), (2, 'imei'))
+        self.assertFalse(StockUnit.objects.filter(product=self.plain).exists())
+
+    def test_an_imei_then_the_same_value_as_a_serial_is_refused_on_the_second_row(self):
+        value = self.fresh()
+        with self.assertRaises(units.StockUnitError) as caught:
+            units.receive_units(branch=self.branch, product=self.plain, actor=self.manager, reason='Compra',
+                                units=[{'serial_number': 'LOTE0001X', 'imei': value}, {'serial_number': value}])
+        self.assertEqual((caught.exception.line, caught.exception.field), (2, 'serial_number'))
+
+    def test_a_fifty_row_batch_checks_the_identifiers_in_a_constant_number_of_queries(self):
+        # Review H2: the occupancy of the batch is read once, not three queries per row.
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        def lookups(count):
+            rows = [{'imei': self.fresh() if n < 30 else imei(f'36{count:02d}{n:010d}')} for n in range(count)]
+            with CaptureQueriesContext(connection) as ctx:
+                units.receive_units(branch=self.branch, product=self.existing, actor=self.manager, reason='Compra',
+                                    units=rows)
+            # The occupancy lookups: a SELECT of devices filtered BY an IMEI (the internal label's own uniqueness check
+            # per new device filters by label code and serial, and is not one of them).
+            return sum(1 for q in ctx.captured_queries
+                       if q['sql'].lstrip().upper().startswith('SELECT') and 'WHERE' in q['sql']
+                       and '"store_stockunit"."imei"' in q['sql'].split('WHERE', 1)[1])
+
+        self.assertLessEqual(lookups(50), lookups(5))
+
+
 class MaskingScopeTest(ScanShop, TestCase):
     """
     Review R3 — the 409 and the check are masked only for actors restricted to some branches. A company-wide actor

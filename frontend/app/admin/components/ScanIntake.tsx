@@ -37,6 +37,9 @@ type LogLine = { id: number; tone: Tone; text: string };
 type Ask = { value: string; options: Choice[]; message: string; method: EntryMethod };
 type Condition = "new" | "used";
 
+/** The refusals that mean «this identifier is already a device» (K4). */
+const DUPLICATE_CODES = new Set(["duplicate_imei", "duplicate_serial"]);
+
 /** Where a key is never routed to the scanner field (G2): someone is using that widget. */
 const BLOCKED_ROUTING = '[role="dialog"], [role="menu"], [role="combobox"], [role="searchbox"], [role="listbox"]';
 
@@ -121,6 +124,8 @@ export function ScanIntake({
   const keyBody = useRef<string | null>(null);
   // A second click before React re-renders must not send twice (the key would replay it, but nothing should go).
   const inFlight = useRef(false);
+  // K4: a 5xx (or a lost answer) left it unknown whether this device entered.
+  const uncertain = useRef(false);
   const logId = useRef(0);
 
   const grades = useCosmeticGrades(condition === "used", companyId);
@@ -301,8 +306,9 @@ export function ScanIntake({
       takeRead(value);
       return;
     }
-    if (event.key === "Tab" && value.trim()) {
+    if (event.key === "Tab" && !event.shiftKey && value.trim()) {
       // G5/G6: Tab leaves the field as always; what was typed and not read is not kept to glue onto the next read.
+      // K3: only forward. Shift+Tab goes back to fix something and keeps the text.
       resetRhythm(rhythm.current);
       setScanText("");
       say("info", `Se descartó lo escrito («${value.trim()}»): para leerlo, pulsa Enter o «Leer».`);
@@ -339,7 +345,9 @@ export function ScanIntake({
       if (event.ctrlKey || event.metaKey || event.altKey) return;
       const activates = tag === "BUTTON" || tag === "A" || target.getAttribute("role") === "button"
         || (tag === "INPUT" && ["radio", "checkbox", "button", "submit", "reset"].includes(type));
-      if (event.key === " " && activates) return;               // G1: native activation
+      // G1 + K2: Space activates a button, link, radio or checkbox and opens a select, as always; and from the page it
+      // only counts inside a read already begun (a scanner never starts a code with a space).
+      if (event.key === " " && (activates || tag === "SELECT" || (onPage && !scanTextRef.current))) return;
       if (event.key.length === 1) {
         event.preventDefault();
         rhythmKey(rhythm.current, event.key, event.timeStamp);
@@ -368,10 +376,13 @@ export function ScanIntake({
         say("warn", "Espera a que termine el registro del equipo antes de salir.");
       }
     };
-    // G8: «atrás» of the browser too — the history entry it would leave to is put back, and the person is told.
-    window.history.pushState(window.history.state, "", window.location.href);
+    // G8 + K1: «atrás» of the browser too. One guard entry for THIS page is pushed (the router's own state kept); when
+    // «atrás» leaves it, the page's address — captured now, not the one the browser already moved to — is pushed back.
+    const here = window.location.href;
+    const guard = { ...(window.history.state ?? {}), scanIntakeGuard: true };
+    window.history.pushState(guard, "", here);
     const onBack = () => {
-      window.history.pushState(window.history.state, "", window.location.href);
+      window.history.pushState(guard, "", here);
       say("warn", "Espera a que termine el registro del equipo antes de salir.");
     };
     window.addEventListener("beforeunload", onLeave);
@@ -381,6 +392,8 @@ export function ScanIntake({
       window.removeEventListener("beforeunload", onLeave);
       window.removeEventListener("popstate", onBack);
       document.removeEventListener("click", onClick, true);
+      // Done: the guard entry goes, so «atrás» is one step again.
+      if ((window.history.state as { scanIntakeGuard?: boolean } | null)?.scanIntakeGuard) window.history.back();
     };
   }, [say, submitting]);
 
@@ -428,6 +441,7 @@ export function ScanIntake({
     setSerialConfirmed(false);
     idemKey.current = newKey();
     keyBody.current = null;
+    uncertain.current = false;
     if (!keepModel) {
       configRequest.current += 1;
       setConfig(null);
@@ -450,6 +464,33 @@ export function ScanIntake({
     battery: condition === "used" ? battery : undefined,
     waitingHere: waiting.length > 0, orderChoice, stockReason,
   });
+
+  /** K4: the device this form describes, if the server already holds it in this branch under this variant. */
+  const registeredEarlier = async (): Promise<ScanReceived | null> => {
+    const code = ids.imei || ids.serial;
+    if (!code || !branchId) return null;
+    try {
+      const found = await scanCheck(companyId, code, { productId: variantProductId, expected: ids.imei ? "imei" : null });
+      const unit = found.unit;
+      const branchName = branches.find((b) => b.id === branchId)?.name;
+      if (!unit || unit.standing !== "registered" || !unit.id) return null;
+      if (variantProductId && unit.product_id !== variantProductId) return null;
+      if (unit.branch_name !== branchName) return null;
+      return {
+        replayed: true, mode: "stock", condition,
+        unit: {
+          id: unit.id, product_id: unit.product_id ?? 0, product_name: unit.product_name ?? "",
+          branch_name: unit.branch_name ?? "", label_code: unit.label_code ?? null,
+          imei: ids.imei || null, imei2: ids.imei2 || null, serial_number: ids.serial, status_label: unit.status_label ?? "",
+        },
+        branch: { id: branchId, name: branchName ?? "" }, created_variant: false, order: null,
+        method: methods.imei ?? methods.serial ?? "manual",
+        warnings: ["La respuesta del intento anterior no llegó, pero el equipo quedó registrado entonces: no lo registres otra vez."],
+      };
+    } catch {
+      return null;
+    }
+  };
 
   const confirm = async () => {
     if (!branchId || inFlight.current || problems.length) return;
@@ -492,9 +533,22 @@ export function ScanIntake({
       if (keyBody.current !== null && keyBody.current !== sent) idemKey.current = newKey();
       keyBody.current = sent;
       const answer = await scanReceive(companyId, branchId, body, idemKey.current);
+      uncertain.current = false;
       setResult(answer);
       say("ok", `Equipo registrado: ${answer.unit.label_code || `#${answer.unit.id}`}.`);
     } catch (err) {
+      if (err instanceof ScanIntakeError && uncertain.current && DUPLICATE_CODES.has(err.code)) {
+        // K4: the earlier attempt failed without an answer and the body (so the key) changed since. If the device the
+        // server now names is THIS one — same identifier, same variant, this branch — it entered then: say so.
+        const earlier = await registeredEarlier();
+        if (earlier) {
+          uncertain.current = false;
+          setResult(earlier);
+          say("ok", `Equipo registrado en el intento anterior: ${earlier.unit.label_code || `#${earlier.unit.id}`}.`);
+          return;
+        }
+      }
+      if (!(err instanceof ScanIntakeError) || err.status >= 500) uncertain.current = true;
       if (err instanceof ScanIntakeError) {
         if (err.code === "pending_order_line") {
           setServerLines(err.lines);
