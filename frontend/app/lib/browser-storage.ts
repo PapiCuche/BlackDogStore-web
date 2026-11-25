@@ -23,6 +23,7 @@ type Entry = { area: StorageArea; holds: string; prefix?: boolean };
 export const STORAGE_KEYS = {
   "internal-selected-company": { area: "local", holds: "the company a master is looking at (an id)" },
   "bds-inventory-mode": { area: "local", holds: "a display preference (quick or advanced)" },
+  "scan-intake-terminator": { area: "local", holds: "which key ends a scanner read (enter, tab or both)" },
   "ui-theme": { area: "local", holds: "light or dark" },
   "bd.consent.v2": { area: "local", holds: "the measurement consent answer" },
   "storefront_session_key": { area: "local", holds: "this browser's cart key (random)" },
