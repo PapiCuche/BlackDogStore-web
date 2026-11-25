@@ -19,18 +19,19 @@ function access(capabilities: string[]) {
 // INV-OPS-UX-04: the tasks of the day, in the order a shop does them, then the two quick ones.
 const TITLES = [
   'Recibir mercadería', 'Recuento físico', 'Consultar stock', 'Ver movimientos', 'Transferir entre sucursales',
-  'Importar archivos', 'Registrar un equipo rápidamente', 'Etiquetas pendientes',
+  'Importar archivos', 'Registrar un equipo rápidamente', 'Registrar equipo por escaneo', 'Etiquetas pendientes',
 ];
 
 describe('tarjetas', () => {
-  it('con todos los permisos hay ocho enlaces a sus pantallas, en el orden del trabajo', () => {
+  it('con todos los permisos hay nueve enlaces a sus pantallas, en el orden del trabajo', () => {
     render(<InventoryOperationsHub access={access(['inventory.view', 'inventory.adjust', 'inventory.labels.print', 'products.view'])} />);
     const list = screen.getByRole('list', { name: 'Tareas del inventario' });
     const links = within(list).getAllByRole('link');
-    expect(links).toHaveLength(8);
+    expect(links).toHaveLength(9);
     expect(links.map((a) => a.getAttribute('href'))).toEqual([
       '/admin/inventory/receive', '/admin/inventory/counts', '/admin/inventory/stock', '/admin/inventory/movements',
-      '/admin/inventory/transfers', '/admin/inventory/bulk', '/admin/inventory/units?register=1', '/admin/inventory/labels',
+      '/admin/inventory/transfers', '/admin/inventory/bulk', '/admin/inventory/units?register=1', '/admin/inventory/scan',
+      '/admin/inventory/labels',
     ]);
     for (const title of TITLES) expect(within(list).getByText(title)).toBeInTheDocument();
   });

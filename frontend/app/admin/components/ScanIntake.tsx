@@ -1,0 +1,710 @@
+"use client";
+
+/**
+ * SCAN-TO-STOCK-01 — «Registrar equipo por escaneo».
+ *
+ * Sucursal → nuevo o seminuevo → modelo y variante (o el código comercial de la caja) → IMEI 1 → IMEI 2 → serie →
+ * proveedor y datos → revisión → «Confirmar ingreso». Un solo campo recibe todas las lecturas del lector (o lo que se
+ * escribe a mano); el servidor dice qué es cada código y la pantalla lo coloca, o pregunta si no es seguro
+ * (`lib/scan-intake`). Ninguna lectura confirma: sólo el botón. El foco vuelve solo al campo del lector.
+ *
+ * Registrar usa lo que ya existe: un equipo nuevo es «Llegó el equipo» de la caja (variante de la paleta, pedido pagado
+ * que lo espera, Kardex, etiqueta), un seminuevo entra a su variante de seminuevos pendiente de inspección. El servidor
+ * decide todo otra vez (AGENTS §7).
+ */
+
+import Link from "next/link";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+
+import { ErrorBox } from "./InventoryUi";
+import { NextStepBar, extractLabelBatch } from "./NextStepBar";
+import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
+import type { PosModelHit, PosPendingOrderLine } from "../lib/internal-api";
+import {
+  NO_OPTION, autoFill, chosenCombination, optionState, pickOption, stepsToAsk, type Picked,
+} from "../lib/pos-device-picker";
+import {
+  CHOICE_LABEL, EMPTY_IDENTIFIERS, ReadQueue, SLOT_LABEL, ScanIntakeError, applyOutcome, decide, expectedSlot,
+  isTerminator, readTerminator, reviewProblems, saveTerminator, scanCheck, scanConfigurations, scanModelSearch,
+  scanReceive, type Choice, type Identifiers, type ScanConfigurations, type ScanProduct, type ScanReceived, type Slot,
+  type Terminator,
+} from "../lib/scan-intake";
+import { newRhythm, resetRhythm, rhythmChanged, rhythmKey, rhythmMethod, type EntryMethod } from "../lib/unit-entry";
+import { useCosmeticGrades } from "../lib/use-cosmetic-grades";
+
+type Tone = "ok" | "warn" | "error" | "info";
+type LogLine = { id: number; tone: Tone; text: string };
+type Ask = { value: string; options: Choice[]; message: string; method: EntryMethod };
+type Condition = "new" | "used";
+
+const TONE_CLASS: Record<Tone, string> = {
+  ok: "border-success-border bg-success-surface text-success",
+  warn: "border-warning-border bg-warning-surface text-foreground",
+  error: "border-danger-border bg-danger-surface text-danger",
+  info: "border-bd-border bg-surface text-foreground",
+};
+
+function newKey() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `scan-${Date.now()}-${Math.random()}`;
+}
+
+export function ScanIntake({
+  companyId, branches, defaultBranch, canPrintLabels,
+}: {
+  companyId: number | null;
+  branches: { id: number; name: string }[];
+  defaultBranch: number | null;
+  canPrintLabels: boolean;
+}) {
+  const scanId = useId();
+  const scanRef = useRef<HTMLInputElement>(null);
+  const rhythm = useRef(newRhythm());
+  const queue = useRef(new ReadQueue());
+
+  const [branchId, setBranchId] = useState<number | null>(defaultBranch ?? branches[0]?.id ?? null);
+  const [condition, setCondition] = useState<Condition>("new");
+  // Per browser (a scanner is configured once per counter); without storage, Enter.
+  const [terminator, setTerminator] = useState<Terminator>(() => (typeof window === "undefined" ? "enter" : readTerminator()));
+  const [modelQuery, setModelQuery] = useState("");
+  const [hits, setHits] = useState<PosModelHit[]>([]);
+  const [config, setConfig] = useState<ScanConfigurations | null>(null);
+  const [picked, setPicked] = useState<Picked>({});
+  const [usedVariantId, setUsedVariantId] = useState<number | null>(null);
+  const [ids, setIds] = useState<Identifiers>(EMPTY_IDENTIFIERS);
+  const idsRef = useRef<Identifiers>(EMPTY_IDENTIFIERS);
+  const [methods, setMethods] = useState<Partial<Record<Slot, EntryMethod>>>({});
+  const [noImei2, setNoImei2] = useState(false);
+  const [noSerial, setNoSerial] = useState(false);
+  const [scanText, setScanText] = useState("");
+  const [log, setLog] = useState<LogLine[]>([]);
+  const [ask, setAsk] = useState<Ask | null>(null);
+  const [busyReads, setBusyReads] = useState(0);
+  const [supplier, setSupplier] = useState("");
+  const [cost, setCost] = useState("");
+  const [price, setPrice] = useState("");
+  const [battery, setBattery] = useState("");
+  const [grade, setGrade] = useState("");
+  const [functional, setFunctional] = useState("full");
+  const [defects, setDefects] = useState("");
+  const [accessories, setAccessories] = useState("");
+  const [salePrice, setSalePrice] = useState("");
+  const [warranty, setWarranty] = useState("");
+  const [orderChoice, setOrderChoice] = useState<number | "stock" | null>(null);
+  const [stockReason, setStockReason] = useState("");
+  const [serverLines, setServerLines] = useState<PosPendingOrderLine[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<{ message: string; field: string } | null>(null);
+  const [result, setResult] = useState<ScanReceived | null>(null);
+  const idemKey = useRef(newKey());
+  // A second click before React re-renders must not send twice (the key would replay it, but nothing should go).
+  const inFlight = useRef(false);
+  const logId = useRef(0);
+
+  const grades = useCosmeticGrades(condition === "used", companyId);
+  const can = config?.can;
+  const combination = config && condition === "new" ? chosenCombination(config, picked) : null;
+  const usedVariant = config?.used_variants.find((v) => v.id === usedVariantId) ?? null;
+  const variantProductId = condition === "new" ? combination?.variant?.product_id ?? null : usedVariant?.id ?? null;
+  const variantChosen = condition === "new" ? Boolean(combination) : Boolean(usedVariant);
+  const requiresImei = condition === "new" ? combination?.variant?.requires_imei ?? true : usedVariant?.requires_imei ?? true;
+  const plan = useMemo(() => ({ requiresImei, noImei2, noSerial }), [requiresImei, noImei2, noSerial]);
+  const expected = expectedSlot(ids, plan);
+  const needsPrice = condition === "new" && Boolean(combination) && !combination?.variant;
+  const waiting = useMemo(() => {
+    const fromConfig = condition === "new" ? (combination?.pending_order_lines ?? []).filter((line) => line.here) : [];
+    return serverLines.length ? serverLines : fromConfig;
+  }, [condition, combination, serverLines]);
+
+  const focusScan = useCallback(() => {
+    window.setTimeout(() => scanRef.current?.focus(), 0);
+  }, []);
+
+  const say = useCallback((tone: Tone, text: string) => {
+    logId.current += 1;
+    const line = { id: logId.current, tone, text };
+    setLog((lines) => [line, ...lines].slice(0, 6));
+  }, []);
+
+  const writeIds = useCallback((next: Identifiers) => {
+    idsRef.current = next;
+    setIds(next);
+  }, []);
+
+  const loadModel = useCallback(async (modelId: number, preset?: ScanProduct) => {
+    if (!branchId) return;
+    try {
+      const data = await scanConfigurations(companyId, branchId, modelId);
+      setConfig(data);
+      setHits([]);
+      setModelQuery(data.model.name);
+      setServerLines([]);
+      setOrderChoice(null);
+      if (preset && preset.condition_line === "used") {
+        setCondition("used");
+        setUsedVariantId(preset.id);
+      } else if (preset) {
+        setCondition("new");
+        const next: Picked = {};
+        for (const attribute of data.attributes) {
+          const option = attribute.options.find((o) => preset.option_ids.includes(o.id));
+          if (option) next[attribute.id] = option.id;
+        }
+        setPicked(next);
+      } else {
+        setPicked(autoFill(data, {}));
+        setUsedVariantId(data.used_variants.length === 1 ? data.used_variants[0].id : null);
+      }
+    } catch (err) {
+      say("error", err instanceof Error ? err.message : "No se pudo leer el modelo.");
+    }
+    focusScan();
+  }, [branchId, companyId, focusScan, say]);
+
+  // The model search: from two letters, a short pause after the last key. Stale answers are dropped.
+  const searching = !branchId || modelQuery.trim().length < 2 || config?.model.name === modelQuery ? null : modelQuery.trim();
+  useEffect(() => {
+    if (!searching || !branchId) return;
+    let live = true;
+    const timer = window.setTimeout(() => {
+      scanModelSearch(companyId, branchId, searching)
+        .then((rows) => { if (live) setHits(rows); })
+        .catch(() => { if (live) setHits([]); });
+    }, 250);
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [branchId, companyId, searching]);
+  const shownHits = searching ? hits : [];
+
+  const handleCheck = useCallback((check: Awaited<ReturnType<typeof scanCheck>>, method: EntryMethod) => {
+    const outcome = decide(check, idsRef.current);
+    if (outcome.type === "filled") {
+      writeIds(applyOutcome(idsRef.current, outcome));
+      setMethods((m) => ({ ...m, [outcome.slot]: method }));
+      setError(null);
+      say("ok", outcome.message);
+      if (outcome.warning) say("warn", outcome.warning);
+    } else if (outcome.type === "repeat") {
+      say("info", outcome.message);
+    } else if (outcome.type === "product") {
+      say("ok", outcome.message);
+      const product = outcome.product;
+      if (!product.model_id) {
+        say("warn", "Esa variante no pertenece a un modelo: regístrala desde «Registrar artículo».");
+      } else {
+        void loadModel(product.model_id, product);
+      }
+    } else if (outcome.type === "ask") {
+      setAsk({ value: outcome.value, options: outcome.options, message: outcome.message, method });
+      return;
+    } else {
+      say("error", outcome.message);
+    }
+    focusScan();
+  }, [focusScan, loadModel, say, writeIds]);
+
+  const read = useCallback((text: string, method: EntryMethod, choice?: Choice) => {
+    setBusyReads((n) => n + 1);
+    void queue.current.push(async () => {
+      try {
+        const check = await scanCheck(companyId, text, { productId: variantProductId, choice });
+        handleCheck(check, method);
+      } catch (err) {
+        say("error", err instanceof Error ? err.message : "No se pudo consultar el código.");
+        focusScan();
+      } finally {
+        setBusyReads((n) => n - 1);
+      }
+    });
+  }, [companyId, focusScan, handleCheck, say, variantProductId]);
+
+  const onScanKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.nativeEvent.isComposing) return;
+    rhythmKey(rhythm.current, event.key, event.timeStamp);
+    const value = event.currentTarget.value;
+    if (event.key === "Enter" && !value.trim()) {
+      // A double Enter, or an Enter on an empty field: nothing — and never a confirmation.
+      event.preventDefault();
+      return;
+    }
+    if (!isTerminator(event.key, terminator, value)) return;
+    event.preventDefault();
+    const method = rhythmMethod(rhythm.current, value);
+    resetRhythm(rhythm.current);
+    setScanText("");
+    read(value.trim(), method);
+  };
+
+  const choose = (choice: Choice) => {
+    if (!ask) return;
+    const { value, method } = ask;
+    setAsk(null);
+    read(value, method, choice);
+  };
+
+  const clearSlot = (slot: Slot) => {
+    writeIds({ ...idsRef.current, [slot]: "" });
+    setMethods((m) => ({ ...m, [slot]: undefined }));
+    focusScan();
+  };
+
+  const resetDevice = (keepModel: boolean) => {
+    writeIds(EMPTY_IDENTIFIERS);
+    setMethods({});
+    setNoImei2(false);
+    setNoSerial(false);
+    setCost("");
+    setPrice("");
+    setBattery("");
+    setGrade("");
+    setFunctional("full");
+    setDefects("");
+    setAccessories("");
+    setSalePrice("");
+    setWarranty("");
+    setOrderChoice(null);
+    setStockReason("");
+    setServerLines([]);
+    setError(null);
+    setResult(null);
+    setAsk(null);
+    idemKey.current = newKey();
+    if (!keepModel) {
+      setConfig(null);
+      setPicked({});
+      setUsedVariantId(null);
+      setModelQuery("");
+    } else if (config && branchId) {
+      // Same model and variant; fresh stock and waiting orders.
+      scanConfigurations(companyId, branchId, config.model.id).then(setConfig).catch(() => undefined);
+    }
+    focusScan();
+  };
+
+  const problems = reviewProblems({
+    ids, plan, variantChosen, needsPrice, price, cost,
+    salePrice: condition === "used" ? salePrice : undefined,
+    battery: condition === "used" ? battery : undefined,
+    waitingHere: condition === "new" && waiting.length > 0, orderChoice, stockReason,
+  });
+
+  const confirm = async () => {
+    if (!branchId || inFlight.current || problems.length) return;
+    inFlight.current = true;
+    const method: EntryMethod = methods.imei ?? methods.serial ?? "manual";
+    const shared: Record<string, unknown> = {
+      method,
+      ...(ids.imei ? { imei: ids.imei } : {}),
+      ...(ids.imei2 ? { imei2: ids.imei2 } : {}),
+      ...(ids.serial ? { serial_number: ids.serial } : {}),
+      ...(supplier ? { supplier: Number(supplier) } : {}),
+      ...(cost.trim() ? { cost: cost.trim() } : {}),
+    };
+    let body: Record<string, unknown>;
+    if (condition === "new") {
+      body = {
+        ...shared, condition: "new", model: config?.model.id, option_ids: combination?.option_ids ?? [],
+        ...(needsPrice ? { price: price.trim() } : {}),
+        ...(typeof orderChoice === "number" ? { order_item: orderChoice } : {}),
+        ...(orderChoice === "stock" ? { confirm_stock: true, reason: stockReason.trim() } : {}),
+      };
+    } else {
+      body = {
+        ...shared, condition: "used", product_id: usedVariant?.id,
+        ...(battery.trim() ? { battery_health: Number(battery) } : {}),
+        ...(grade ? { cosmetic_grade: Number(grade) } : {}),
+        ...(functional ? { functional_state: functional } : {}),
+        ...(defects.trim() ? { defects: defects.trim() } : {}),
+        ...(accessories.trim() ? { accessories: accessories.trim() } : {}),
+        ...(salePrice.trim() ? { sale_price: salePrice.trim() } : {}),
+        ...(warranty.trim() ? { warranty_days: warranty.trim() } : {}),
+      };
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      const answer = await scanReceive(companyId, branchId, body, idemKey.current);
+      setResult(answer);
+      say("ok", `Equipo registrado: ${answer.unit.label_code || `#${answer.unit.id}`}.`);
+    } catch (err) {
+      if (err instanceof ScanIntakeError) {
+        if (err.code === "pending_order_line") {
+          setServerLines(err.lines);
+          setOrderChoice(null);
+        }
+        // A refused attempt leaves the key free (D-F-6), but a new one is safer after the body changes.
+        idemKey.current = newKey();
+        setError({ message: err.message, field: err.field });
+      } else {
+        setError({ message: err instanceof Error ? err.message : "No se pudo registrar el equipo.", field: "" });
+      }
+    } finally {
+      inFlight.current = false;
+      setSubmitting(false);
+    }
+  };
+
+  // ---------------------------------------------------------------------------
+
+  if (result) {
+    const labels = extractLabelBatch(result);
+    return (
+      <section aria-labelledby={`${scanId}-done`} className="space-y-4 rounded-xl border border-bd-border bg-surface p-4 sm:p-6">
+        <h2 id={`${scanId}-done`} className="text-lg font-bold text-foreground" data-testid="scan-intake-done">
+          {result.replayed ? "Este equipo ya estaba registrado con esta confirmación" : "Equipo registrado"}
+        </h2>
+        <dl className="grid gap-2 text-sm sm:grid-cols-2">
+          <div><dt className="text-muted">Código interno</dt><dd className="font-mono font-semibold">{result.unit.label_code || "—"}</dd></div>
+          <div><dt className="text-muted">Variante</dt><dd className="break-words">{result.unit.product_name}</dd></div>
+          <div><dt className="text-muted">Sucursal</dt><dd>{result.branch.name}</dd></div>
+          <div><dt className="text-muted">IMEI 1</dt><dd className="font-mono break-all">{result.unit.imei || "—"}</dd></div>
+          {result.order ? <div><dt className="text-muted">Pedido</dt><dd>Entregado al pedido #{result.order.id}</dd></div> : null}
+        </dl>
+        {result.warnings.map((warning) => (
+          <p key={warning} className={`rounded-lg border px-3 py-2 text-sm ${TONE_CLASS.warn}`}>{warning}</p>
+        ))}
+        <NextStepBar
+          product={{ id: result.unit.product_id, name: result.unit.product_name }}
+          showLabels={canPrintLabels} showPublication={false} showStorefront={false} labelBatch={labels}
+        >
+          <button type="button" className={internalPrimaryButtonClass} onClick={() => resetDevice(true)} data-testid="scan-intake-again">
+            Registrar otro de este modelo
+          </button>
+          <button type="button" className={internalButtonClass} onClick={() => resetDevice(false)}>Otro modelo</button>
+          {result.condition === "used" ? (
+            <Link href={`/admin/inventory/used?product=${result.unit.product_id}`} className={`${internalButtonClass} inline-flex items-center`}>
+              Inspección y fotos
+            </Link>
+          ) : null}
+        </NextStepBar>
+      </section>
+    );
+  }
+
+  const field = (name: string) => (error?.field === name ? error.message : "");
+
+  return (
+    <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
+      <div className="min-w-0 space-y-4">
+        {/* 1 · Sucursal y tipo */}
+        <section className="grid gap-3 rounded-xl border border-bd-border bg-surface p-4 sm:grid-cols-2">
+          <label className="grid gap-1 text-sm">
+            <span className="font-semibold">Sucursal</span>
+            <select
+              className={internalInputClass} value={branchId ?? ""} data-testid="scan-intake-branch"
+              onChange={(e) => { setBranchId(Number(e.target.value) || null); resetDevice(false); }}
+            >
+              {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </label>
+          <fieldset className="grid gap-1 text-sm">
+            <legend className="font-semibold">Equipo</legend>
+            <div className="flex gap-2">
+              {(["new", "used"] as Condition[]).map((value) => (
+                <button
+                  key={value} type="button" aria-pressed={condition === value}
+                  className={`${condition === value ? internalPrimaryButtonClass : internalButtonClass} min-h-11 flex-1`}
+                  onClick={() => { setCondition(value); setOrderChoice(null); setServerLines([]); focusScan(); }}
+                >
+                  {value === "new" ? "Nuevo" : "Seminuevo"}
+                </button>
+              ))}
+            </div>
+          </fieldset>
+        </section>
+
+        {/* 2 · Modelo y variante (o el código comercial de la caja, leído abajo) */}
+        <section className="space-y-3 rounded-xl border border-bd-border bg-surface p-4">
+          <label className="grid gap-1 text-sm">
+            <span className="font-semibold">Modelo</span>
+            <input
+              className={internalInputClass} value={modelQuery} data-testid="scan-intake-model"
+              placeholder="Busca el modelo (o escanea el código comercial de la caja)"
+              onChange={(e) => { setModelQuery(e.target.value); if (config) { setConfig(null); setPicked({}); setUsedVariantId(null); } }}
+            />
+          </label>
+          {shownHits.length ? (
+            <ul className="grid gap-1" aria-label="Modelos encontrados">
+              {shownHits.map((hit) => (
+                <li key={hit.id}>
+                  <button type="button" className={`${internalButtonClass} w-full text-left`} onClick={() => void loadModel(hit.id)}>
+                    {hit.name}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+
+          {config && condition === "new" ? (
+            <div className="space-y-3">
+              {stepsToAsk(config).map((attribute) => (
+                <fieldset key={attribute.id} className="space-y-1">
+                  <legend className="text-sm font-semibold">{attribute.name}</legend>
+                  <div className="flex flex-wrap gap-2">
+                    {attribute.options.map((option) => {
+                      const state = optionState(config, picked, attribute.id, option.id);
+                      const on = picked[attribute.id] === option.id;
+                      return (
+                        <button
+                          key={option.id} type="button" disabled={!state.possible} aria-pressed={on}
+                          className={`${on ? internalPrimaryButtonClass : internalButtonClass} min-h-11`}
+                          onClick={() => { setPicked(autoFill(config, pickOption(config, picked, attribute.id, option.id))); setOrderChoice(null); setServerLines([]); }}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                    {picked[attribute.id] === NO_OPTION ? <span className="text-xs text-muted">Sin {attribute.name.toLowerCase()}</span> : null}
+                  </div>
+                </fieldset>
+              ))}
+              {combination ? (
+                <p className="text-sm" data-testid="scan-intake-variant">
+                  {combination.variant
+                    ? <>Variante: <strong>{combination.variant.name}</strong> · {combination.variant.available} en esta sucursal</>
+                    : <>Esta combinación todavía no es una variante: se crea al confirmar (sin publicar en la web){can?.create_variant ? "" : ", y crearla requiere «Administrar productos»"}.</>}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+
+          {config && condition === "used" ? (
+            config.used_variants.length ? (
+              <fieldset className="space-y-1">
+                <legend className="text-sm font-semibold">Variante de seminuevos</legend>
+                <div className="grid gap-2">
+                  {config.used_variants.map((variant) => (
+                    <label key={variant.id} className={`flex min-h-11 items-center gap-2 rounded-lg border px-3 text-sm ${variant.is_serialized ? "" : "opacity-50"}`}>
+                      <input
+                        type="radio" name={`${scanId}-used`} disabled={!variant.is_serialized}
+                        checked={usedVariantId === variant.id} onChange={() => { setUsedVariantId(variant.id); focusScan(); }}
+                      />
+                      <span className="min-w-0 break-words">{variant.name}{variant.pending_draft ? " · borrador" : ""}{variant.is_serialized ? "" : " · sin control por serie"}</span>
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+            ) : (
+              <p className="text-sm text-muted">Este modelo no tiene variantes de seminuevos. Créala en «Registrar artículo» o Catálogo › Modelos.</p>
+            )
+          ) : null}
+        </section>
+        {/* 3 · El lector */}
+        <section className="space-y-3 rounded-xl border-2 border-foreground/20 bg-surface p-4" aria-labelledby={`${scanId}-label`}>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <label id={`${scanId}-label`} htmlFor={`${scanId}-input`} className="text-sm font-bold">Escanear o escribir</label>
+            <p className="text-sm" data-testid="scan-intake-expected" aria-live="polite">
+              Esperando:{" "}
+              <strong>
+                {!variantChosen && !ids.imei ? "código comercial de la caja o IMEI 1" : expected ? SLOT_LABEL[expected] : "nada más: revisa y confirma"}
+              </strong>
+            </p>
+          </div>
+          <input
+            id={`${scanId}-input`} ref={scanRef} value={scanText} autoFocus data-testid="scan-intake-input"
+            className={`${internalInputClass} min-h-12 font-mono text-base`}
+            placeholder="Pasa el lector por el código o escríbelo y pulsa Enter"
+            autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="next"
+            aria-describedby={`${scanId}-log`}
+            onChange={(e) => { setScanText(e.target.value); rhythmChanged(rhythm.current, e.target.value); }}
+            onKeyDown={onScanKeyDown}
+          />
+          <div className="flex flex-wrap items-center gap-3 text-xs text-muted">
+            <label className="inline-flex items-center gap-2">
+              El lector termina con
+              <select
+                className="rounded border border-bd-border bg-background px-2 py-1" value={terminator}
+                onChange={(e) => { const v = e.target.value as Terminator; setTerminator(v); saveTerminator(v); focusScan(); }}
+              >
+                <option value="enter">Enter</option>
+                <option value="tab">Tab</option>
+                <option value="both">Enter o Tab</option>
+              </select>
+            </label>
+            {busyReads > 0 ? <span role="status">Consultando…</span> : null}
+          </div>
+
+          {ask ? (
+            <div role="alertdialog" aria-labelledby={`${scanId}-ask`} className={`space-y-2 rounded-lg border p-3 ${TONE_CLASS.warn}`} data-testid="scan-intake-ask">
+              <p id={`${scanId}-ask`} className="text-sm"><span className="font-mono break-all">{ask.value}</span> — {ask.message}</p>
+              <div className="flex flex-wrap gap-2">
+                {ask.options.map((choice) => (
+                  <button key={choice} type="button" className={`${internalButtonClass} min-h-11`} onClick={() => choose(choice)} autoFocus={choice === ask.options[0]}>
+                    {CHOICE_LABEL[choice]}
+                  </button>
+                ))}
+                <button type="button" className={`${internalButtonClass} min-h-11`} onClick={() => { setAsk(null); say("info", "Lectura descartada."); focusScan(); }}>
+                  Descartar
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <ol className="grid gap-2 sm:grid-cols-3" aria-label="Identificadores del equipo">
+            {(["imei", "imei2", "serial"] as Slot[]).map((slot) => {
+              const skipped = (slot === "imei2" && noImei2) || (slot === "serial" && noSerial);
+              return (
+                <li
+                  key={slot} data-testid={`scan-intake-slot-${slot}`}
+                  className={`min-w-0 rounded-lg border p-3 ${expected === slot ? "border-foreground/50 ring-2 ring-foreground/10" : "border-bd-border"}`}
+                  aria-current={expected === slot ? "step" : undefined}
+                >
+                  <p className="text-xs font-semibold text-muted">
+                    {SLOT_LABEL[slot]}{slot === "imei" && requiresImei ? " *" : ""}
+                    {methods[slot] ? <span className="ml-1 font-normal">· {methods[slot] === "scanner" ? "lector" : "a mano"}</span> : null}
+                  </p>
+                  <p className="mt-1 break-all font-mono text-sm" data-testid={`scan-intake-value-${slot}`}>
+                    {ids[slot] || (skipped ? "No tiene" : "—")}
+                  </p>
+                  {field(slot === "serial" ? "serial_number" : slot) ? (
+                    <p className="mt-1 text-xs text-danger">{field(slot === "serial" ? "serial_number" : slot)}</p>
+                  ) : null}
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {ids[slot] ? (
+                      <button type="button" className="text-xs underline" onClick={() => clearSlot(slot)}>Borrar</button>
+                    ) : slot !== "imei" ? (
+                      <button
+                        type="button" className="text-xs underline" aria-pressed={skipped}
+                        onClick={() => { if (slot === "imei2") setNoImei2(!noImei2); else setNoSerial(!noSerial); focusScan(); }}
+                      >
+                        {skipped ? "Sí lo tiene" : "No tiene"}
+                      </button>
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })}
+          </ol>
+
+          <ul id={`${scanId}-log`} aria-live="polite" className="space-y-1" data-testid="scan-intake-log">
+            {log.map((line) => (
+              <li key={line.id} className={`rounded-md border px-3 py-1.5 text-sm ${TONE_CLASS[line.tone]}`}>{line.text}</li>
+            ))}
+          </ul>
+        </section>
+      </div>
+
+      {/* 4 · Datos y revisión */}
+      <aside className="min-w-0 space-y-4">
+        <section className="space-y-3 rounded-xl border border-bd-border bg-surface p-4">
+          <h2 className="text-sm font-bold">Datos del ingreso</h2>
+          {can?.choose_supplier ? (
+            <label className="grid gap-1 text-sm">
+              <span>Proveedor</span>
+              <select className={internalInputClass} value={supplier} onChange={(e) => setSupplier(e.target.value)} data-testid="scan-intake-supplier">
+                <option value="">Sin indicar</option>
+                {(config?.suppliers ?? []).map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </label>
+          ) : null}
+          {can?.view_costs ? (
+            <label className="grid gap-1 text-sm">
+              <span>Costo (opcional)</span>
+              <input className={internalInputClass} inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} placeholder="3100.00" />
+            </label>
+          ) : null}
+          {needsPrice ? (
+            <label className="grid gap-1 text-sm">
+              <span>Precio de venta de la variante nueva</span>
+              <input className={internalInputClass} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} data-testid="scan-intake-price" />
+            </label>
+          ) : null}
+          {condition === "used" ? (
+            <>
+              <label className="grid gap-1 text-sm">
+                <span>Batería (%)</span>
+                <input className={internalInputClass} inputMode="numeric" value={battery} onChange={(e) => setBattery(e.target.value)} data-testid="scan-intake-battery" />
+              </label>
+              {grades.length ? (
+                <label className="grid gap-1 text-sm">
+                  <span>Estado estético</span>
+                  <select className={internalInputClass} value={grade} onChange={(e) => setGrade(e.target.value)}>
+                    <option value="">Sin indicar</option>
+                    {grades.map((g) => <option key={g.id} value={g.id}>{g.label}</option>)}
+                  </select>
+                </label>
+              ) : null}
+              <label className="grid gap-1 text-sm">
+                <span>Estado funcional</span>
+                <select className={internalInputClass} value={functional} onChange={(e) => setFunctional(e.target.value)}>
+                  <option value="full">Sin fallas declaradas</option>
+                  <option value="with_faults">Con fallas declaradas</option>
+                </select>
+              </label>
+              <label className="grid gap-1 text-sm">
+                <span>Defectos{functional === "with_faults" ? " *" : ""}</span>
+                <textarea className={internalInputClass} rows={2} value={defects} onChange={(e) => setDefects(e.target.value)} />
+              </label>
+              <label className="grid gap-1 text-sm">
+                <span>Accesorios</span>
+                <input className={internalInputClass} value={accessories} onChange={(e) => setAccessories(e.target.value)} />
+              </label>
+              {can?.set_price ? (
+                <>
+                  <label className="grid gap-1 text-sm">
+                    <span>Precio de este equipo (opcional)</span>
+                    <input className={internalInputClass} inputMode="decimal" value={salePrice} onChange={(e) => setSalePrice(e.target.value)} />
+                  </label>
+                  <label className="grid gap-1 text-sm">
+                    <span>Garantía en días (opcional)</span>
+                    <input className={internalInputClass} inputMode="numeric" value={warranty} onChange={(e) => setWarranty(e.target.value)} />
+                  </label>
+                </>
+              ) : (
+                <p className="text-xs text-muted">El precio y la garantía del seminuevo los fija quien administra productos.</p>
+              )}
+            </>
+          ) : null}
+        </section>
+
+        {condition === "new" && waiting.length ? (
+          <section className={`space-y-2 rounded-xl border p-4 ${TONE_CLASS.warn}`} data-testid="scan-intake-waiting">
+            <h2 className="text-sm font-bold">Un pedido pagado espera este equipo</h2>
+            {waiting.map((line) => (
+              <label key={line.order_item} className="flex min-h-11 items-center gap-2 text-sm">
+                <input
+                  type="radio" name={`${scanId}-order`} disabled={!can?.receive_on_order || line.quantity !== 1}
+                  checked={orderChoice === line.order_item} onChange={() => setOrderChoice(line.order_item)}
+                />
+                Es del pedido #{line.order_number}{line.customer ? ` (${line.customer})` : ""}
+              </label>
+            ))}
+            <label className="flex min-h-11 items-center gap-2 text-sm">
+              <input type="radio" name={`${scanId}-order`} checked={orderChoice === "stock"} onChange={() => setOrderChoice("stock")} />
+              Ingresar como stock
+            </label>
+            {orderChoice === "stock" ? (
+              <textarea
+                className={internalInputClass} rows={2} value={stockReason} onChange={(e) => setStockReason(e.target.value)}
+                placeholder="Por qué entra como stock" aria-label="Motivo"
+              />
+            ) : null}
+          </section>
+        ) : null}
+
+        <section className="space-y-3 rounded-xl border border-bd-border bg-surface p-4" aria-labelledby={`${scanId}-review`}>
+          <h2 id={`${scanId}-review`} className="text-sm font-bold">Revisión</h2>
+          <dl className="grid gap-1 text-sm">
+            <div className="flex justify-between gap-2"><dt className="text-muted">Variante</dt>
+              <dd className="min-w-0 break-words text-right">{condition === "new" ? combination?.variant?.name ?? (combination ? "Nueva" : "—") : usedVariant?.name ?? "—"}</dd></div>
+            {(["imei", "imei2", "serial"] as Slot[]).map((slot) => (
+              <div key={slot} className="flex justify-between gap-2"><dt className="text-muted">{SLOT_LABEL[slot]}</dt>
+                <dd className="break-all font-mono">{ids[slot] || "—"}</dd></div>
+            ))}
+          </dl>
+          {problems.length ? (
+            <ul className="list-disc space-y-1 pl-5 text-xs text-muted" data-testid="scan-intake-problems">
+              {problems.map((p) => <li key={p}>{p}</li>)}
+            </ul>
+          ) : null}
+          {error ? <ErrorBox message={error.message} /> : null}
+          <button
+            type="button" className={`${internalPrimaryButtonClass} min-h-12 w-full`} data-testid="scan-intake-confirm"
+            disabled={submitting || busyReads > 0 || problems.length > 0 || !can?.receive} onClick={() => void confirm()}
+          >
+            {submitting ? "Registrando…" : "Confirmar ingreso"}
+          </button>
+          <button type="button" className={`${internalButtonClass} w-full`} onClick={() => resetDevice(true)}>Limpiar este equipo</button>
+        </section>
+      </aside>
+    </div>
+  );
+}

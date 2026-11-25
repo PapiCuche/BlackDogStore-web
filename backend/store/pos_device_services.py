@@ -68,6 +68,10 @@ REASON_MIN, REASON_MAX = 5, 500
 MAX_PENDING_LINES = 200
 #: What the Kardex line of a device received at the till says.
 REASON = 'Caja: llegó el equipo'
+#: SCAN-TO-STOCK-01 — the same reception from «Registrar equipo por escaneo» (`scan_intake`): what the Kardex line and
+#: the record say of where the device came in. The rules are the till's, unchanged.
+ORIGIN_POS, ORIGIN_SCAN = 'pos', 'scan'
+REASONS = {ORIGIN_POS: REASON, ORIGIN_SCAN: 'Inventario: registro por escaneo'}
 LINE = Product.CONDITION_NEW
 MAX_SEARCH = 25
 MAX_SUPPLIERS = 200
@@ -408,6 +412,11 @@ def _unit_brief(unit) -> dict:
             'branch_name': unit.branch.name}
 
 
+def duplicate(company, row: dict, product=None) -> QuickSaleError | None:
+    """SCAN-TO-STOCK-01 — the 409 of `_duplicate`, for the scan screen's used devices (the same words, the same unit)."""
+    return _duplicate(company, row, product)
+
+
 def _duplicate(company, row: dict, product=None) -> QuickSaleError | None:
     """409 naming the device of the company that already holds one of these identifiers, or None."""
     live = (StockUnit.objects.filter(company=company).exclude(status=StockUnit.Status.VOIDED)
@@ -581,16 +590,18 @@ def _refuse_over_waiting(company, actor, product, branch, confirmed: str | None)
     return lines
 
 
-def receive(*, company, branch, body, actor, request=None, authority: Authority) -> dict:
+def receive(*, company, branch, body, actor, request=None, authority: Authority, origin: str = ORIGIN_POS) -> dict:
     """
     «Llegó el equipo». All of it or none of it — the caller holds the transaction. Returns the RECORD.
 
-    `branch` is the till's, resolved by the caller within the caller's grants.
+    `branch` is the till's, resolved by the caller within the caller's grants. `origin` (SCAN-TO-STOCK-01) only
+    changes what the Kardex line says (`REASONS`) and is kept in the record.
     """
     if not isinstance(body, dict):
         raise QuickSaleError('Datos no válidos.')
     if body.get('order_item') not in (None, ''):
-        return _receive_order_line(company=company, body=body, actor=actor, request=request, authority=authority)
+        return {**_receive_order_line(company=company, body=body, actor=actor, request=request, authority=authority),
+                'origin': origin}
     if not authority.receive:
         raise QuickSaleError(RECEIVE_FORBIDDEN, code='receive_forbidden', status=403)
     method = _method(body)
@@ -686,7 +697,7 @@ def receive(*, company, branch, body, actor, request=None, authority: Authority)
         record = registration.register(
             company=company, body=reg_body, actor=actor, request=request, may_adjust=True,
             may_view_costs=authority.view_costs, branch_for=lambda _branch_id: branch, labels=True,
-            reason=REASON, entry_type=StockMovement.PURCHASE_ENTRY, unit_supplier=supplier,
+            reason=REASONS[origin], entry_type=StockMovement.PURCHASE_ENTRY, unit_supplier=supplier,
         )
     except registration.RegistrationError as exc:
         raise _registration_error(company, exc, row, product) from None
@@ -705,7 +716,7 @@ def receive(*, company, branch, body, actor, request=None, authority: Authority)
         'unit_id': unit_id, 'movement_ids': record['movement_ids'],
         'label_batch_ids': record['label_batch_ids'], 'supplier_id': supplier.pk if supplier else None,
         'price_changed': price_changed, 'order_id': None, 'order_item_id': None, 'method': method,
-        'over_pending_order_items': [line['order_item'] for line in waiting],
+        'over_pending_order_items': [line['order_item'] for line in waiting], 'origin': origin,
     }
 
 
@@ -816,7 +827,8 @@ def record_trail(*, company, actor, request, key, fingerprint, record) -> None:
 
 
 @transaction.atomic
-def receive_once(*, company, branch, body, actor, request, authority: Authority, key: str, fingerprint: str):
+def receive_once(*, company, branch, body, actor, request, authority: Authority, key: str, fingerprint: str,
+                 origin: str = ORIGIN_POS, present_with=None):
     """(answer, created) — the first call receives; the same key and body again answer the same, without writing."""
     lock_key(company.pk, actor.pk, key)
     earlier = previous(company, actor, key)
@@ -824,7 +836,9 @@ def receive_once(*, company, branch, body, actor, request, authority: Authority,
         if earlier.metadata.get('fingerprint') != fingerprint:
             raise QuickSaleError('Esa clave ya registró otro equipo. Vuelve a empezar.', code='idempotency_conflict',
                                  status=409)
-        return present(company, branch, earlier.metadata['record'], authority=authority, replayed=True), False
-    record = receive(company=company, branch=branch, body=body, actor=actor, request=request, authority=authority)
+        return (present_with or present)(company, branch, earlier.metadata['record'], authority=authority,
+                                          replayed=True), False
+    record = receive(company=company, branch=branch, body=body, actor=actor, request=request, authority=authority,
+                     origin=origin)
     record_trail(company=company, actor=actor, request=request, key=key, fingerprint=fingerprint, record=record)
-    return present(company, branch, record, authority=authority), True
+    return (present_with or present)(company, branch, record, authority=authority), True
