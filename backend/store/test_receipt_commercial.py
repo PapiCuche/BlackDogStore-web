@@ -119,7 +119,8 @@ class AuthorityTest(CommercialBase):
         [line] = self.preview(self.clerk, body, expect=200).json()['lines']
         self.assertEqual(line['commercial']['units_unpriced'], 2)
         self.assertIn('2 equipos sin precio propio: se reciben, pero no se venden en caja ni se ofrecen en línea hasta '
-                      'que alguien con permiso fije el precio.', line['warnings'])
+                      'que alguien con permiso fije el precio. Los demás equipos de la variante no esperan por ellos.',
+                      line['warnings'])
 
     def test_without_authority_the_device_is_still_received_unpriced_and_the_preview_says_so(self):
         body = self.body(self.dev(self.used, self.used_unit('SEMI00042', IMEIS[8], public_notes='Caja original')))
@@ -129,7 +130,8 @@ class AuthorityTest(CommercialBase):
         self.assertTrue(any('sin precio propio' in w for w in line['warnings']))
         # STOCK-UX-WALK: words agree with the count, and the till is named too (an unpriced device is not sold there).
         self.assertIn('1 equipo sin precio propio: se recibe, pero no se vende en caja ni se ofrece en línea hasta que '
-                      'alguien con permiso fije el precio.', line['warnings'])
+                      'alguien con permiso fije el precio. Los demás equipos de la variante no esperan por él.',
+                      line['warnings'])
         res = self.confirm(self.clerk, body, expect=201).json()
         [created] = StockUnit.objects.filter(product=self.used)
         self.assertIsNone(created.sale_price)
@@ -251,6 +253,11 @@ class CommercialDestinationTest(CommercialBase):
         # Complete product, but a device without its own price: still pending (the device would not be offered).
         [info] = self.commercial(self.clerk, self.dev(self.used, self.used_unit('SEMI00134', IMEIS[3])))
         self.assertEqual((info['state'], info['problems'], info['units_unpriced']), ('pending', [], 1))
+        # USED-UNIT-OWN-GATE-01 — one priced device and one without: the unpriced one waits by itself, the line is ready.
+        [info] = self.commercial(self.pricer, self.dev(self.used, self.priced('SEMI00135', IMEIS[4]),
+                                                       self.used_unit('SEMI00136', IMEIS[5])))
+        self.assertEqual((info['state'], info['problems'], info['units_priced'], info['units_unpriced']),
+                         ('ready', [], 1, 1))
         # Published and active.
         Product.objects.filter(pk=self.used.pk).update(is_published_online=True)
         [info] = self.commercial(self.pricer, self.dev(self.used, self.priced('SEMI00133', IMEIS[2])))

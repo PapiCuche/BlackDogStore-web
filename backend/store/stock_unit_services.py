@@ -1128,6 +1128,13 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
     if cost_reason is not None and not isinstance(cost_reason, str):
         # A list would reach the audit trail as "['…']".
         raise StockUnitError('El motivo de la corrección del costo debe ser un texto.', field='cost_reason')
+    unpricing = 'sale_price' in fields and clean_sale_price(fields['sale_price']) is None
+    if unpricing:
+        # USED-UNIT-OWN-GATE-01 — removing a used device's price may release a cart's hold of it, which writes a
+        # Kardex line on its shelf: THE MODULE'S ONE LOCK ORDER, the shelf row first and the device second.
+        plain = StockUnit.objects.select_related('branch', 'product').get(pk=unit.pk)
+        if plain.product.condition_line == Product.CONDITION_USED:
+            inventory_services._locked_branch_stocks(plain.branch, [plain.product])
     locked = StockUnit.objects.select_for_update().get(pk=unit.pk)
     if locked.status == StockUnit.Status.VOIDED and fields:
         # INV-UNIT-CORRECT-01: a voided row is a record of what should never have entered. Nothing of it changes.
@@ -1204,16 +1211,26 @@ def update_unit(unit, *, actor=None, request=None, cost_reason=None, require_cos
             changed.append(name)
     if used:
         refuse_undescribed_faults(locked.functional_state, locked.defects)
+    released = False
     if changed:
         locked.save(update_fields=[*changed, 'updated_at'])
+        if unpricing and 'sale_price' in changed and locked.product.condition_line == Product.CONDITION_USED:
+            # USED-UNIT-OWN-GATE-01 — without its price the device is not for sale anywhere: a cart that holds it
+            # gives it back now (as an unpublication does), and only it — its siblings keep their holds.
+            from .unit_hold_services import release_withdrawn
+
+            released = release_withdrawn(locked)
         AdminAuditLog.log(
             actor=actor, action='stock_unit_updated', target_type='stock_unit', target_id=locked.pk,
             metadata={
                 'changed': changed,
                 **({'cost_reason': reason} if 'cost' in changed and reason else {}),
+                **({'released_web_hold': True} if released else {}),
             },
             request=request, company=locked.company,
         )
+    if released:
+        return StockUnit.objects.get(pk=locked.pk)
     return locked
 
 

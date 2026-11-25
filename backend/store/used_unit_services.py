@@ -105,6 +105,51 @@ def web_ready_q() -> Q:
     return Q(sale_price__gt=0, inspection_status=StockUnit.Inspection.APPROVED, published_online=True) & real_photos_q()
 
 
+def till_sellable_q() -> Q:
+    """
+    USED-UNIT-OWN-GATE-01 — the used devices a sale may take, as a filter on `StockUnit` (status and branch are the
+    caller's): its OWN price > 0 and its inspection APPROVED. Each device answers for itself: a sibling without a
+    price is simply not in the set, and blocks nothing else of its variant.
+    """
+    return Q(sale_price__gt=0, inspection_status=StockUnit.Inspection.APPROVED)
+
+
+def till_sellable_units(branch, product):
+    """The AVAILABLE devices of a used `product` on `branch`'s shelf that a sale may take (`till_sellable_q`)."""
+    return StockUnit.objects.filter(company_id=branch.company_id, branch=branch, product=product,
+                                    status=StockUnit.Status.AVAILABLE).filter(till_sellable_q())
+
+
+#: USED-UNIT-OWN-GATE-01 — the 409 of a used device without its own price on a path that would sell or hand it over.
+NO_PRICE = 'no_price'
+
+
+def sale_refusal(unit) -> str:
+    """
+    THE ONE PREDICATE of «may this used device leave in a sale?» — '' when it may, else the code: `NOT_INSPECTED`
+    (inspection not approved) or `NO_PRICE` (no price of its own > 0). The same as `till_sellable_q`, for one device in
+    hand: the till, the payment and the hand-over of an order ask it, so the three agree. Publication and photos are
+    the shop window's, not the sale's. A new device: always ''.
+    """
+    if not is_used(unit):
+        return ''
+    if unit.inspection_status != StockUnit.Inspection.APPROVED:
+        return NOT_INSPECTED
+    if not has_usable_price(unit.sale_price):
+        return NO_PRICE
+    return ''
+
+
+def payment_refusal(unit) -> str:
+    """
+    '' when a web payment may still sell this used device (`sale_refusal`); otherwise why not, as the end of a
+    sentence and without amounts. A device already bound to a checked-out order is left to its payment
+    (`release_withdrawn`), which asks this.
+    """
+    return {NOT_INSPECTED: 'ya no tiene la inspección aprobada',
+            NO_PRICE: 'ya no tiene precio de venta'}.get(sale_refusal(unit), '')
+
+
 def offerable_q() -> Q:
     """Devices of either line the web may offer: a new one as always, a used one only when `web_ready_q`."""
     return Q(product__condition_line=Product.CONDITION_NEW) | (

@@ -471,7 +471,8 @@ WITHDRAWN_RELEASE_REASON = 'Apartado web liberado: el equipo se retiró de la ve
 
 def release_withdrawn(unit) -> bool:
     """
-    USED-READY-01 — a device the shop withdrew from the web (inspection rejected, unpublished) while a cart held it:
+    USED-READY-01 — a device the shop withdrew from the web (inspection rejected, unpublished; USED-UNIT-OWN-GATE-01:
+    its price removed) while a cart held it:
     the hold goes back to the shelf at once, with its Kardex line and audit row, so the buyer is told at checkout
     and nothing is charged. ONLY a hold no order carries yet: a checked-out order's device is left to its payment
     (which flags it instead of selling it). Called inside the caller's transaction, with the shelf already locked
@@ -485,6 +486,28 @@ def release_withdrawn(unit) -> bool:
             _release(current, reason=WITHDRAWN_RELEASE_REASON)
     except StockUnitError:
         return False      # it moved meanwhile: whoever moved it decided
+    return True
+
+
+def release_withdrawn_from_order(unit, order) -> bool:
+    """
+    USED-UNIT-OWN-GATE-01 — the twin of `release_withdrawn` for a device an order ALREADY carries, when that order's
+    payment is refused because the device is no longer for sale (`checkout_services._refuse_withdrawn_units`): the
+    order fails, so nothing keeps the device, and it goes back to the shelf now (Kardex line and audit row) instead
+    of staying reserved until its hold runs out. Only a hold of THAT order. Locks the shelf first, then the device —
+    the module's one lock order. True when it released.
+    """
+    plain = StockUnit.objects.select_related('branch', 'product').get(pk=unit.pk)
+    with transaction.atomic():
+        inventory_services._locked_branch_stocks(plain.branch, [plain.product])
+        current = StockUnit.objects.select_for_update().get(pk=unit.pk)
+        if current.status != StockUnit.Status.RESERVED or not current.hold_key or current.hold_order_id != order.pk:
+            return False
+        try:
+            with transaction.atomic():
+                _release(current, reason=WITHDRAWN_RELEASE_REASON)
+        except StockUnitError:
+            return False      # it moved meanwhile: whoever moved it decided
     return True
 
 

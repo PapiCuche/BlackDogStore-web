@@ -331,6 +331,8 @@ class CreateCheckoutSessionView(APIView):
             if not exc.code:
                 # A refusal with a code is «not now» (the gateway changed under
                 # this request, payments were paused): the order did not fail.
+                # `unit_withdrawn` (USED-UNIT-OWN-GATE-01) is the exception: the
+                # service itself failed the order and gave the device back.
                 checkout.mark_payment_failure(order, exc.args[0] if exc.args else '')
             return Response(exc.as_payload(), status=exc.status_code)
 

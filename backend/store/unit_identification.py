@@ -210,6 +210,26 @@ def _refuse_uninspected(unit) -> None:
         raise UnitIdentificationError(used_unit_services.NOT_INSPECTED, refusal[0].upper() + refusal[1:])
 
 
+#: What the hand-over says of a used device on the shelf that has no price of its own.
+UNPRICED_HAND_OVER = ('Este seminuevo no tiene precio de venta: no se entrega en lugar del equipo apartado. Fija su '
+                      'precio o entrega el equipo apartado.')
+
+
+def _refuse_unsellable(unit) -> None:
+    """
+    USED-UNIT-OWN-GATE-01 — a used device from the shelf leaves with an order only when a sale could take it
+    (`used_unit_services.sale_refusal`): inspection approved (409 `unit_not_inspected`) and its own price (409
+    `no_price`).
+    """
+    from . import used_unit_services
+
+    code = used_unit_services.sale_refusal(unit)
+    if code == used_unit_services.NOT_INSPECTED:
+        _refuse_uninspected(unit)
+    elif code:
+        raise UnitIdentificationError(code, UNPRICED_HAND_OVER)
+
+
 def record(*, order, unit, method, actor, request=None, left=False, **how) -> OrderUnit:
     """
     Write down that `unit` is the device of `order`, how it was identified and by whom.
@@ -408,7 +428,9 @@ def candidate_for_order(*, order, code, method):
     if _standing(order, unit) == SHELF:
         # USED-READY-01 — a device taken from the shelf for this order must be approved. One already out for a paid
         # order (MINE / THEIRS) left the shelf before: it was sold under the rule of its day and is handed over.
-        _refuse_uninspected(unit)
+        # USED-UNIT-OWN-GATE-01 — and priced: the swap and the second exit after a return take it in place of a
+        # device the payment set aside, so it must be one the payment could have taken (`sale_refusal`).
+        _refuse_unsellable(unit)
     return unit
 
 

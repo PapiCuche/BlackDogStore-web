@@ -212,12 +212,14 @@ class StockTemplateRegistryTest(LoadShop, TestCase):
             self.assertIn(said, help_text)
         self.assertTrue(book['Instrucciones'].protection.sheet)
 
-    def test_the_new_template_explains_why_it_has_no_sale_price(self):
+    def test_the_new_template_explains_that_its_sale_price_never_changes_the_variant_alone(self):
+        # NEW-TEMPLATE-PRICE — optional, a proposal for the variant (`test_unit_import_new_price`).
         book, headers = self.headers('new')
-        self.assertNotIn('Precio de venta', headers)
+        self.assertIn('Precio de venta', headers)
         help_text = ' '.join(str(cell.value) for row in book['Instrucciones'].iter_rows() for cell in row
                              if cell.value)
         self.assertIn('precio de su variante', help_text)
+        self.assertIn('no cambia solo', help_text)
 
     def test_notes_example_row_lists_and_widths(self):
         book, headers = self.headers('used')
@@ -325,7 +327,8 @@ class StockTemplateLoadTest(LoadShop, TestCase):
         self.assertIn('nuevo', self.errors(response.json())[3])
 
     def test_the_new_template_refuses_a_used_only_column(self):
-        for header in ('Garantía (días)', 'Estado estético', 'Precio de venta', 'Salud de batería (%)'):
+        # «Precio de venta» is in both templates since NEW-TEMPLATE-PRICE.
+        for header in ('Garantía (días)', 'Estado estético', 'Salud de batería (%)'):
             with self.subTest(header):
                 upload = filled(self.template('new').content, [self.new_row('NEW-0301')], extra_headers=[header])
                 response = self.loader_api.post(PREVIEW_URL, {'file': upload, 'reason': 'X'}, format='multipart')
@@ -869,6 +872,16 @@ class LineNeverGuessedTest(LoadShop, TestCase):
 
     def test_used_details_without_a_line_are_a_row_error_not_a_new_device(self):
         upload = self.renamed([self.used_row('GUESS-0001', **{'Garantía (días)': 90})])
+        response = self.loader_api.post(PREVIEW_URL, {'file': upload, 'reason': 'X'}, format='multipart')
+        self.assertEqual(response.status_code, 201, response.content)
+        payload = response.json()
+        self.assertEqual(payload['counts']['create'], 0, payload['rows'])
+        self.assertIn('nuevo o seminuevo', self.errors(payload)[3])
+
+    def test_a_sale_price_alone_without_a_line_is_a_row_error_not_a_new_device(self):
+        # NEW-TEMPLATE-PRICE review: «Precio de venta» left the used-only columns (it is in both templates now), but
+        # without a line it still says «seminuevo»: never a new device with its price dropped.
+        upload = self.renamed([self.used_row('GUESS-P001')])
         response = self.loader_api.post(PREVIEW_URL, {'file': upload, 'reason': 'X'}, format='multipart')
         self.assertEqual(response.status_code, 201, response.content)
         payload = response.json()

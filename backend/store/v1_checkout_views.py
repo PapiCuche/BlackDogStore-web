@@ -173,6 +173,12 @@ class V1CustomerCheckoutView(V1CustomerSurfaceMixin, APIView):
         try:
             payment = checkout.start_payment_attempt(order, credentials=credentials)
         except checkout.CheckoutError as exc:
+            if exc.code == 'unit_withdrawn':
+                # USED-UNIT-OWN-GATE-01 — not «not now»: a device of the order
+                # is no longer for sale, so the order FAILED (the service marked
+                # it). Said with its status, never as payable.
+                return Response({**exc.as_payload(), 'order_id': order.id, 'order_status': order.status},
+                                status=exc.status_code)
             if exc.code:
                 # «Not now», with its reason (the gateway changed under this
                 # request, payments were paused): nothing went wrong with the
