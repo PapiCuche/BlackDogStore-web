@@ -36,7 +36,7 @@ import {
   CatalogApiError, createAttributeOption, createCatalogAlias, createModelVariant, fetchCatalogAttributes, fetchCatalogVocabulary,
   addModelPaletteOptions, fetchCompanyConfiguration, fetchModelPalette, fetchSuppliers, resolveCatalogRows,
   type AdminCatalogAttribute, type AttributeRole, type CatalogAliasWrite, type CatalogVocabulary, type ResolveDoubt,
-  type ResolveRowResult, type SupplierRow,
+  type ResolveRowInput, type ResolveRowResult, type SupplierRow,
 } from "../lib/internal-api";
 import {
   DOUBT_ACTION_LABELS, DOUBT_REASON_HELP, DOUBT_REASON_LABELS, MODEL_READ_LABELS, aliasWriteError, doubtRoleLabel,
@@ -57,6 +57,9 @@ import {
   type AmountClass, type AmountContext, type AmountDecision, type ConfigEntry, type EntryInputs,
 } from "../lib/supplier-list-plan";
 import { ResolverStatusBadge } from "./CatalogVocabulary";
+import { SupplierLineSelector, type SpaceState } from "./SupplierLineSelector";
+import type { MultiPick } from "../lib/device-configurator";
+import { readingOf, selectionRows, spaceFromPalette } from "../lib/supplier-list-selector";
 import { SupplierOfferImport, type OfferImportHandoff } from "./SupplierOffersManager";
 import { ErrorBox, Panel } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
@@ -258,6 +261,15 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const [saveError, setSaveError] = useState("");
   const [handoff, setHandoff] = useState<OfferImportHandoff | null>(null);
   const [preparing, setPreparing] = useState(false);
+
+  // ── SELECTOR-UX-01 · the visual selector, line by line ──────────────────────────────────────────────────────────
+  /** Each model's palette as the selector's steps (read when a person opens its selector). */
+  const [spaces, setSpaces] = useState<Record<number, SpaceState>>({});
+  /** The choice a person made on a line's selector, and the server's reading of each row it sent. */
+  const [picks, setPicks] = useState<Record<string, MultiPick | undefined>>({});
+  const [pickResults, setPickResults] = useState<Record<string, ResolveRowResult[] | undefined>>({});
+  const [pickProblems, setPickProblems] = useState<Record<string, string[] | undefined>>({});
+  const [picking, setPicking] = useState(false);
   const run = useRef(0);
   const importerRef = useRef<HTMLElement>(null);
 
@@ -318,7 +330,15 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
   const inputs: EntryInputs = { decisions, prices, quantities, ignoredWords, confirmed };
   useEffect(() => { readingNow.current = reading; }, [reading]);
   const lines = useMemo(() => (reading ? withCorrections(reading.lines, corrections) : []), [reading, corrections]);
-  const entries = useMemo(() => configurationEntries(lines, results), [lines, results]);
+  const entries = useMemo(() => configurationEntries(lines, results, pickResults).map((entry) => {
+    if (!entry.bySelector) return entry;
+    // What a person marked that the line does not say: named on its card.
+    const modelId = results[entry.line.key]?.model?.model_id;
+    const space = modelId ? spaces[modelId] : undefined;
+    if (!space || space === "error") return entry;
+    const read = readingOf(space, results[entry.line.key]).recognised;
+    return { ...entry, handPicked: entry.configuration.options.filter((option) => !read.has(option.option_id)).map((option) => option.label) };
+  }), [lines, results, pickResults, spaces]);
   const issuesOf = (entry: ConfigEntry) => entryIssues(entry, inputs, ctx);
   // The selection, in list order; a variant already chosen earlier in the list blocks a later one.
   const chosen: ConfigEntry[] = [];
@@ -340,9 +360,9 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     return next;
   }
 
-  async function readList() {
-    if (!vocabulary || !text.trim()) return;
-    const asked = text;
+  async function readList(source: string = text) {
+    if (!vocabulary || !source.trim()) return;
+    const asked = source;
     const run = ++readingRun.current;
     dropDraft();
     setResolveError("");
@@ -375,6 +395,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
       setCorrections(corrected);
       setResults({});
       setDecisions({}); setPrices({}); setQuantities({}); setIgnoredWords({}); setSelected({}); setConfirmed({}); setPending(null);
+      setPicks({}); setPickResults({}); setPickProblems({});
       try {
         const answer = await resolve(parsed.lines, {});
         if (run === readingRun.current) setResults(answer);
@@ -411,6 +432,15 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     } catch {
       return false;
     }
+    // SELECTOR-UX-01: what a person marked on a line's selector is read again too, with the palette as it is now.
+    let freshPicks: Record<string, ResolveRowResult[] | undefined>;
+    let freshSpaces: Record<number, SpaceState>;
+    try {
+      freshSpaces = await reloadSpaces();
+      freshPicks = (await resolvePicks(parsed.lines, fresh, freshSpaces, lexiconSource)).results;
+    } catch {
+      return false;
+    }
     // The text was edited meanwhile: this answer is for an older text and is dropped.
     if (asked !== textNow.current) return true;
     const changed = (key: string) => {
@@ -444,6 +474,9 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setReading(parsed);
     setCorrections(corrected);
     setResults(fresh);
+    setSpaces(freshSpaces);
+    setPickResults(freshPicks);
+    setPicks((all) => Object.fromEntries(Object.entries(all).filter(([key]) => freshPicks[key])));
     setCreated({});
     setStaleReading("");
     return true;
@@ -466,6 +499,7 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
       // The text changed: what was read and decided belongs to the old text.
       setReading(null); setResults({}); setDecisions({}); setPrices({}); setCorrections({});
       setQuantities({}); setIgnoredWords({}); setSelected({}); setConfirmed({}); setPending(null); dropDraft();
+      setPicks({}); setPickResults({}); setPickProblems({});
     }
   }
 
@@ -520,6 +554,105 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
     setReceived(null);
     takenFromBox.current = new Set();
     textBox.current?.focus();
+  }
+
+  // ── SELECTOR-UX-01 · the visual selector ───────────────────────────────────────────────────────────────────────
+
+  /** A model's palette as the selector's steps; read once per model (and again after a catalogue write). */
+  function loadSpace(modelId: number) {
+    setSpaces((all) => ({ ...all, [modelId]: undefined }));
+    fetchModelPalette(modelId, companyId)
+      .then((palette) => setSpaces((all) => ({ ...all, [modelId]: spaceFromPalette(palette, "new") })))
+      .catch(() => setSpaces((all) => ({ ...all, [modelId]: "error" })));
+  }
+
+  /** The palettes already read, read again (a write may have changed them). One that fails is «error». */
+  async function reloadSpaces(): Promise<Record<number, SpaceState>> {
+    const ids = Object.keys(spaces).map(Number).filter((id) => spaces[id] !== undefined);
+    const out: Record<number, SpaceState> = {};
+    await Promise.all(ids.map(async (id) => {
+      try {
+        out[id] = spaceFromPalette(await fetchModelPalette(id, companyId), "new");
+      } catch {
+        out[id] = "error";
+      }
+    }));
+    return out;
+  }
+
+  /**
+   * The server's reading of what a person marked on each line's selector: the company's labels, one row per colour.
+   * A line whose model is no longer the one the selector showed, or whose palette is gone, loses its choice.
+   */
+  async function resolvePicks(lines: SupplierLine[], lineResults: Record<string, ResolveRowResult>,
+    spacesNow: Record<number, SpaceState>, source: CatalogVocabulary, only: Record<string, MultiPick | undefined> = picks) {
+    const results: Record<string, ResolveRowResult[] | undefined> = {};
+    const problems: Record<string, string[] | undefined> = {};
+    const rows: ResolveRowInput[] = [];
+    const owner = new Map<string, string>();
+    for (const [lineKey, pick] of Object.entries(only)) {
+      const line = lines.find((candidate) => candidate.key === lineKey);
+      const modelId = lineResults[lineKey]?.model?.model_id;
+      const space = modelId ? spacesNow[modelId] : undefined;
+      if (!pick || !line || !space || space === "error" || space.modelId !== modelId) continue;
+      const answer = selectionRows(space, line, pick, source);
+      problems[lineKey] = answer.problems;
+      for (const row of answer.rows) { rows.push(row); owner.set(row.key, lineKey); }
+      results[lineKey] = [];
+    }
+    for (let at = 0; at < rows.length; at += 300) {
+      const answer = await resolveCatalogRows(rows.slice(at, at + 300), companyId);
+      for (const row of answer.rows) {
+        const lineKey = owner.get(row.key);
+        if (lineKey) results[lineKey] = [...(results[lineKey] ?? []), row];
+      }
+    }
+    for (const key of Object.keys(results)) if (!results[key]?.length) delete results[key];
+    return { results, problems };
+  }
+
+  /** «Usar esta selección» (or, with null, «Volver a lo leído en la línea»). What was typed for the line is cleared. */
+  async function applyPick(line: SupplierLine, pick: MultiPick | null) {
+    if (!vocabulary) return;
+    const asked = textNow.current;
+    const forget = <T,>(all: Record<string, T>) => Object.fromEntries(
+      Object.entries(all).filter(([key]) => !key.startsWith(`${line.key}-`)),
+    ) as Record<string, T>;
+    dropDraft();
+    setPending(null);
+    setPrices(forget); setQuantities(forget); setSelected(forget);
+    if (!pick) {
+      setPicks((all) => ({ ...all, [line.key]: undefined }));
+      setPickResults((all) => ({ ...all, [line.key]: undefined }));
+      setPickProblems((all) => ({ ...all, [line.key]: undefined }));
+      return;
+    }
+    setPicking(true);
+    setActionError("");
+    try {
+      const answer = await resolvePicks(lines, results, spaces, vocabulary, { [line.key]: pick });
+      if (asked !== textNow.current) return;
+      setPickProblems((all) => ({ ...all, [line.key]: answer.problems[line.key] ?? [] }));
+      if (!answer.results[line.key]) return;
+      setPicks((all) => ({ ...all, [line.key]: pick }));
+      setPickResults((all) => ({ ...all, [line.key]: answer.results[line.key] }));
+    } catch (error) {
+      setActionError(readError(error, "No se pudo consultar el catálogo."));
+    } finally {
+      setPicking(false);
+    }
+  }
+
+  /** «Separar en N líneas»: the line's text becomes one offer per line, as proposed, and the list is read again. */
+  function splitLine(line: SupplierLine) {
+    const parts = line.offers?.parts;
+    if (!parts) return;
+    const all = splitLines(text);
+    if (line.number < 1 || line.number > all.length) return;
+    const next = [...all.slice(0, line.number - 1), ...parts.map((part) => part.text), ...all.slice(line.number)].join("\n");
+    if (next.length > MAX_LIST_CHARS) return;
+    changeText(next);
+    void readList(next);
   }
 
   function editText() {
@@ -844,6 +977,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
           onCreateOption={(target, role, label) => void createRoleOption(target, role, label)}
           onAddToPalette={(target, option) => void addOptionToPalette(target, option)}
           onEditText={editText}
+          spaces={spaces} onLoadSpace={loadSpace} picks={picks} pickProblems={pickProblems} picking={picking}
+          onApplyPick={(target, pick) => void applyPick(target, pick)} onSplit={splitLine}
         />
       ) : null}
 
@@ -998,6 +1133,14 @@ type ReadingProps = {
   onAddToPalette: (target: PaletteTarget, option: { id: number; label: string }) => void;
   /** «Corregir el texto»: back to the text box (for writing mistakes only). */
   onEditText: () => void;
+  /** SELECTOR-UX-01 — the visual selector of each line, and «Separar en N líneas». */
+  spaces: Record<number, SpaceState>;
+  onLoadSpace: (modelId: number) => void;
+  picks: Record<string, MultiPick | undefined>;
+  pickProblems: Record<string, string[] | undefined>;
+  picking: boolean;
+  onApplyPick: (line: SupplierLine, pick: MultiPick | null) => void;
+  onSplit: (line: SupplierLine) => void;
 };
 
 function ReadingView(props: ReadingProps) {
@@ -1110,6 +1253,8 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
 
       <LineProposals line={line} result={result} inputs={inputs} onConfirm={props.onConfirm} />
 
+      {line.offers ? <OffersView line={line} ctx={ctx} busy={props.actionBusy || props.picking} onSplit={props.onSplit} /> : null}
+
       {line.colourDoubt ? (
         <ColourDoubtView line={line} modelId={model?.model_id ?? null} canManage={canManage} vocabulary={props.vocabulary}
           pending={pending} actionBusy={props.actionBusy} onPending={props.onPending} onAlias={props.onAlias}
@@ -1203,6 +1348,14 @@ function LineView(props: ReadingProps & { line: SupplierLine; result: ResolveRow
 
       {result?.error ? <p role="alert" className="text-sm text-danger">{result.error}</p> : null}
       {line.model && !result && !props.lineEntries.length ? <p className="text-xs text-muted">Esperando la lectura del servidor…</p> : null}
+      {writeModelId && !line.offers ? (
+        <SupplierLineSelector
+          line={line} result={result} modelName={model?.model_name ?? line.model?.text ?? "el modelo"}
+          space={props.spaces[writeModelId]} onLoad={() => props.onLoadSpace(writeModelId)}
+          applied={props.picks[line.key] ?? null} problems={props.pickProblems[line.key] ?? []}
+          busy={props.picking || props.actionBusy} onApply={(pick) => props.onApplyPick(line, pick)}
+        />
+      ) : null}
       <div className="min-w-0 space-y-3">
         {props.lineEntries.map((entry) => <ConfigurationView key={entry.key} {...props} entry={entry} />)}
       </div>
@@ -1227,6 +1380,36 @@ function headerChangeText(header: NonNullable<LineCorrection["header"]>, ctx: Am
   const shown = (text: { display: string; displayWithoutAmounts: string }) => (ctx.canSeeCosts ? text.display : text.displayWithoutAmounts);
   const before = header.received ? `recibida «${shown(header.received)}»` : "sin línea recibida emparejada";
   return `La cabecera de esta línea se corrigió a mano: ${before}, ahora «${shown(header.current)}». Su modelo se confirma otra vez.`;
+}
+
+/**
+ * SELECTOR-UX-01 — a line that holds several offers: never saved as it is (an amount would stick to another offer's
+ * model or colour). With ONE clean way to write it, «Separar en N líneas» rewrites it in the text box and the list is
+ * read again; nothing else changes and nothing is classified. Amounts are masked for whoever may not see costs.
+ */
+function OffersView({ line, ctx, busy, onSplit }: { line: SupplierLine; ctx: AmountContext; busy: boolean; onSplit: (line: SupplierLine) => void }) {
+  const parts = line.offers?.parts ?? null;
+  return (
+    <div role="group" aria-label={`Varias ofertas en la línea ${line.number}`}
+      className="min-w-0 space-y-2 rounded-lg border border-warning-border bg-warning-surface p-3">
+      <p className="text-sm text-warning">
+        {parts
+          ? `Esta línea tiene ${parts.length} ofertas, cada una con su importe. No se guarda así: sepárala para que cada importe quede con su modelo y su color.`
+          : "Esta línea parece tener varias ofertas y se puede leer de más de una manera. Escribe una oferta por línea en el texto."}
+      </p>
+      {parts ? (
+        <>
+          <ol className="list-decimal space-y-0.5 pl-5 font-mono text-xs text-foreground">
+            {parts.map((part, index) => <li key={index} className="break-words">{ctx.canSeeCosts ? part.display : part.displayWithoutAmounts}</li>)}
+          </ol>
+          <p className="text-xs text-muted">Lo que una parte no dice (el modelo, la capacidad, la SIM o la región) se toma de la anterior; el color nunca.</p>
+          <button type="button" className={buttonClass} disabled={busy} onClick={() => onSplit(line)}>
+            {`Separar en ${parts.length} líneas`}<span className="sr-only">{` (línea ${line.number})`}</span>
+          </button>
+        </>
+      ) : null}
+    </div>
+  );
 }
 
 /**
@@ -1404,6 +1587,13 @@ function ConfigurationView(props: ReadingProps & { entry: ConfigEntry; result: R
         {configuration.colour_text ? <span className="break-words text-xs text-muted">{`Color dicho: «${configuration.colour_text}»`}</span> : null}
       </header>
       <p className="text-xs text-muted">{RESOLVER_STATUS_HELP[configuration.status] ?? ""}</p>
+      {entry.bySelector ? (
+        <p className="text-xs text-muted">
+          Elegida en el selector visual.
+          {entry.handPicked?.length
+            ? <span className="block text-warning">{`Elegido a mano (la lista no lo dice): ${entry.handPicked.join(", ")}.`}</span> : null}
+        </p>
+      ) : null}
 
       {configuration.product_id ? (
         <p className="text-sm">

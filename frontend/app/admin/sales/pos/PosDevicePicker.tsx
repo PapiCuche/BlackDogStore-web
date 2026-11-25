@@ -37,7 +37,6 @@ import {
   type PosProduct,
   type PosUnit,
 } from "../../lib/internal-api";
-import { ProductImage } from "@/app/components/ProductImage";
 import { newSaleKey } from "../../lib/pos-in-flight";
 import {
   NO_OPTION,
@@ -55,6 +54,7 @@ import {
 } from "../../lib/pos-device-picker";
 import { newRhythm, rhythmChanged, rhythmKey, rhythmMethod, type EntryMethod } from "../../lib/unit-entry";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "../../components/internal-ui";
+import { ConfiguratorStep } from "../../components/DeviceConfigurator";
 import { leadTimeText } from "./PosOnOrder";
 
 function money(value: string | number) {
@@ -362,6 +362,7 @@ export function PosDevicePicker({
   );
 }
 
+/** SELECTOR-UX-01: the till's step is THE configurator's step (`DeviceConfigurator`), in single mode. */
 function OptionStep({
   attribute, config, picked, onPick,
 }: {
@@ -370,59 +371,15 @@ function OptionStep({
   picked: Picked;
   onPick: (optionId: number) => void;
 }) {
-  const labelId = useId();
-  const colour = attribute.role === "color" || attribute.kind === "color";
   return (
-    <div>
-      <p id={labelId} className={LABEL}>{attribute.name}</p>
-      <div role="radiogroup" aria-label={attribute.name} className="flex flex-wrap gap-2">
-        {[...attribute.options, ...(isOptional(config, attribute.id)
-          // Re-review of #376: without a palette a variant may lack this role; «Sin …» reaches it (and unpicks).
-          ? [{ id: NO_OPTION, label: `Sin ${attribute.name}`, swatch_hex: "" }] : [])].map((option) => {
-          const state = optionState(config, picked, attribute.id, option.id);
-          const checked = picked[attribute.id] === option.id;
-          return (
-            <label
-              key={option.id}
-              className={`relative inline-flex min-h-11 cursor-pointer select-none items-center gap-2 rounded-lg border px-3 py-2 text-sm transition has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-foreground/30 has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-40 ${
-                checked ? "border-foreground bg-foreground/[0.06] font-semibold text-foreground" : "border-bd-border bg-surface text-foreground hover:border-foreground/30"
-              }`}
-            >
-              <input
-                type="radio"
-                className="sr-only"
-                name={`attribute-${attribute.id}`}
-                value={option.id}
-                checked={checked}
-                disabled={!state.possible}
-                onChange={() => onPick(option.id)}
-              />
-              {/* G (owner's visual order 4): finish picture → company swatch → the name alone. */}
-              {colour && "thumbnail" in option && option.thumbnail ? (
-                <span aria-hidden="true" data-testid="pos-chip-picture" className="relative h-5 w-5 shrink-0 overflow-hidden rounded-full border border-foreground/20 bg-background">
-                  {/* Review of #377: through the optimizer at chip size, never the original file. */}
-                  <ProductImage src={option.thumbnail} alt="" sizes="20px" className="scale-[2.2] object-cover" />
-                </span>
-              ) : colour && option.swatch_hex ? (
-                <span
-                  aria-hidden="true"
-                  className="h-4 w-4 shrink-0 rounded-full border border-foreground/20"
-                  style={{ backgroundColor: option.swatch_hex }}
-                />
-              ) : null}
-              <span>{option.label}</span>
-              {/* Only a real count is drawn: «sin stock» on every chip would be noise; the chosen device says it. */}
-              {state.possible && state.available > 0 ? (
-                <span className="rounded-full bg-success-surface px-1.5 font-mono text-[11px] text-success">
-                  {state.available}<span className="sr-only"> disponibles aquí</span>
-                </span>
-              ) : null}
-              {!state.possible ? <span className="sr-only">no existe</span> : null}
-            </label>
-          );
-        })}
-      </div>
-    </div>
+    <ConfiguratorStep
+      attribute={attribute}
+      // Re-review of #376: without a palette a variant may lack this role; «Sin …» reaches it (and unpicks).
+      extraOptions={isOptional(config, attribute.id) ? [{ id: NO_OPTION, label: `Sin ${attribute.name}`, swatch_hex: "" }] : []}
+      isChecked={(optionId) => picked[attribute.id] === optionId}
+      stateOf={(optionId) => optionState(config, picked, attribute.id, optionId)}
+      onToggle={onPick}
+    />
   );
 }
 

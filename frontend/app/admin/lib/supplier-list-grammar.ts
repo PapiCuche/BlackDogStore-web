@@ -292,7 +292,19 @@ export type SupplierLine = {
   ignorableWords: string[];
   /** What makes the line contradict itself («dos capacidades»): a doubt. */
   conflicts: string[];
+  /**
+   * SELECTOR-UX-01 — the line holds SEVERAL offers (two amounts, each with its own model, capacity or colour): a doubt
+   * that keeps it from being saved, so an amount never sticks to another offer's model or colour. `parts`: the ONE
+   * clean way to write it as one offer per line (shown, applied only when a person asks); null when there is more
+   * than one way to read it. Absent: one offer.
+   */
+  offers?: OfferSplit | null;
 };
+
+/** One proposed line of a split: its text (memory only, like the list) and how it may be shown. */
+export type OfferPart = { text: string; display: string; displayWithoutAmounts: string };
+
+export type OfferSplit = { parts: OfferPart[] | null };
 
 export type SkippedLine = { number: number; display: string; displayWithoutAmounts: string };
 
@@ -988,6 +1000,79 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
   };
 }
 
+// ── SELECTOR-UX-01 · several offers in one line ──────────────────────────────────────────────────────────────────
+
+/** Offers one line may be split into; a longer run is left for a person to write one per line. */
+const MAX_OFFER_PARTS = 4;
+/** Words of a line the split looks at (each split point is one more reading of the line). */
+const MAX_OFFER_WORDS = 40;
+/** Marks that only stand between two offers («4100 / 512gb …»): never part of either. */
+const OFFER_EDGE = /^[\s/|;,·•–-]+|[\s/|;,·•–-]+$/g;
+
+type OfferPiece = { text: string; line: SupplierLine };
+
+/** One piece read as a line of its own, when it is ONE clean offer: one clear amount, no doubt, something offered. */
+function cleanOffer(text: string, number: number, lexicon: SupplierLexicon): SupplierLine | null {
+  const { line } = readLine(text, number, lexicon, new Set());
+  if (!line || line.amounts.length !== 1 || line.amounts[0].value === null || line.amounts[0].problem) return null;
+  if (line.conflicts.length || line.colourDoubt || line.unknownWords.length || line.hidden.length || line.statedQuantity) return null;
+  if (!line.model && !line.capacityText && !line.simText && !line.regionText && !line.colourText) return null;
+  return line;
+}
+
+function piecesOf(words: string[], number: number, lexicon: SupplierLexicon, before: SupplierLine | null, depth: number): OfferPiece[][] {
+  const out: OfferPiece[][] = [];
+  /**
+   * A later piece takes what it does not say from the piece before it — the model, and the capacity, SIM and region —
+   * as a person reads «… negro 2500 azul 2600». Never the colour: colours are what an offer lists, not what it shares.
+   */
+  const read = (text: string): OfferPiece | null => {
+    const own = cleanOffer(text, number, lexicon);
+    if (!own) return null;
+    if (!before) return own.model ? { text, line: own } : null;
+    // What the piece does not say is taken from the one before; the piece's own words always win.
+    const shared = [
+      own.model ? "" : before.model?.text ?? "",
+      own.capacityText ? "" : before.capacityText,
+      own.simText ? "" : before.simText,
+      own.regionText ? "" : before.regionText,
+    ].filter(Boolean).join(" ");
+    const whole = shared ? `${shared} ${text}` : text;
+    const line = shared ? cleanOffer(whole, number, lexicon) : own;
+    return line?.model ? { text: whole, line } : null;
+  };
+  const whole = words.join(" ").replace(OFFER_EDGE, "");
+  if (depth > 0) {
+    const last = read(whole);
+    if (last) out.push([last]);
+  }
+  if (depth + 1 >= MAX_OFFER_PARTS) return out;
+  for (let cut = 1; cut < words.length; cut += 1) {
+    const head = read(words.slice(0, cut).join(" ").replace(OFFER_EDGE, ""));
+    if (!head) continue;
+    for (const rest of piecesOf(words.slice(cut), number, lexicon, head.line, depth + 1)) out.push([head, ...rest]);
+  }
+  return out;
+}
+
+/**
+ * Whether a line with several amounts is several offers, and the one way to write it one per line. Every split point
+ * is tried; each piece must read as ONE clean offer on its own (with what it shares from the piece before). Two or
+ * more different ways: the line is in doubt with no proposal. None: it is one offer (a cost and a sale price…).
+ */
+export function splitOffers(raw: string, number: number, lexicon: SupplierLexicon): OfferSplit | null {
+  const words = raw.trim().split(/\s+/).filter(Boolean);
+  if (words.length < 2 || words.length > MAX_OFFER_WORDS) return null;
+  const ways = piecesOf(words, number, lexicon, null, 0).filter((pieces) => pieces.length > 1);
+  const distinct = new Map(ways.map((pieces) => [pieces.map((piece) => piece.text).join("\n"), pieces]));
+  if (!distinct.size) return null;
+  if (distinct.size > 1) return { parts: null };
+  const [pieces] = distinct.values();
+  return {
+    parts: pieces.map(({ text, line }) => ({ text, display: line.display, displayWithoutAmounts: line.displayWithoutAmounts })),
+  };
+}
+
 /** A line that would take a header's model: an offer line with no model, no word where it goes, and no stop. */
 const mayInherit = (line: SupplierLine | null): line is SupplierLine =>
   Boolean(line && !line.model && !line.modelSlot && !line.conflicts.length);
@@ -1006,7 +1091,15 @@ export function readSupplierList(text: string, lexicon: SupplierLexicon): Suppli
   const headers: HeaderLine[] = [];
   const currencies = new Set<string>();
   let truncated = false;
-  const read = text.replace(/\r\n?/g, "\n").split("\n").map((raw, index) => readLine(raw, index + 1, lexicon, currencies));
+  const read = text.replace(/\r\n?/g, "\n").split("\n").map((raw, index) => {
+    const answer = readLine(raw, index + 1, lexicon, currencies);
+    // SELECTOR-UX-01: only a line with several amounts may be several offers.
+    if (answer.line && answer.line.amounts.length > 1) {
+      const split = splitOffers(cleanLine(raw), index + 1, lexicon);
+      if (split) answer.line.offers = split;
+    }
+    return answer;
+  });
   /** The header whose model the next line may inherit; null after anything that stops it. */
   let current: HeaderLine | null = null;
   read.forEach(({ line, skipped: left, header }, index) => {

@@ -219,13 +219,36 @@ export type ConfigEntry = {
   condition: CatalogLine | null;
   /** The model the server read for the line (review L3: a header's model is confirmed only against ONE model). */
   model: ResolveModel | null;
+  /**
+   * SELECTOR-UX-01 — the configuration comes from the visual selector (a person marked it), not from the text as read:
+   * the server resolved the company's labels of what was marked. `handPicked`: the options a person chose that the
+   * line does not say (shown on its card).
+   */
+  bySelector?: boolean;
+  handPicked?: string[];
 };
 
-export function configurationEntries(lines: SupplierLine[], results: Record<string, ResolveRowResult | undefined>): ConfigEntry[] {
-  return lines.flatMap((line) => (results[line.key]?.configurations ?? []).map((configuration, index) => ({
-    key: `${line.key}-C${index + 1}`, line, index, configuration, condition: results[line.key]?.line ?? null,
-    model: results[line.key]?.model ?? null,
-  })));
+/**
+ * The configurations of the reading: per line, the server's reading of its text — or, when a person used the visual
+ * selector on the line (`chosen`), the server's reading of each row the selector sent (one per colour marked). The
+ * line itself (its amounts, its doubts, its model) is the same either way.
+ */
+export function configurationEntries(lines: SupplierLine[], results: Record<string, ResolveRowResult | undefined>,
+  chosen: Record<string, ResolveRowResult[] | undefined> = {}): ConfigEntry[] {
+  return lines.flatMap((line) => {
+    const model = results[line.key]?.model ?? null;
+    const picked = chosen[line.key];
+    if (picked) {
+      return picked.flatMap((row) => row.configurations.map((configuration, part) => ({ row, configuration, part })))
+        .map(({ row, configuration, part }, index) => ({
+          key: part ? `${row.key}-${part + 1}` : row.key, line, index, configuration, condition: row.line ?? null, model,
+          bySelector: true,
+        }));
+    }
+    return (results[line.key]?.configurations ?? []).map((configuration, index) => ({
+      key: `${line.key}-C${index + 1}`, line, index, configuration, condition: results[line.key]?.line ?? null, model,
+    }));
+  });
 }
 
 export type EntryInputs = {
@@ -314,6 +337,12 @@ export function lineDoubts(line: SupplierLine, inputs: Pick<EntryInputs, "ignore
   const conditionKey = conditionConfirmKey(line);
   if (conditionKey && !inputs.confirmed?.[conditionKey]) {
     out.push(`Confirma el estado «${line.conditionHint!.line}» (por «${line.conditionHint!.word}»): la línea no dice «nuevo».`);
+  }
+  // SELECTOR-UX-01: several offers in one line — an amount never sticks to another offer's model or colour.
+  if (line.offers) {
+    out.push(line.offers.parts
+      ? `La línea tiene ${line.offers.parts.length} ofertas: sepárala (una oferta por línea) para que cada importe quede con su modelo y su color.`
+      : "La línea parece tener varias ofertas y se puede leer de más de una manera: escribe una oferta por línea.");
   }
   if (line.colourDoubt) out.push(COLOUR_DOUBT_TEXT[line.colourDoubt.reason](line.colourDoubt.text));
   if (line.correction?.blocked) out.push(line.correction.blocked);

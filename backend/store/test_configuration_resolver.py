@@ -684,3 +684,54 @@ class NoVocabularyInCodeTest(TestCase):
         source = Path(inventory_ai.__file__).read_text(encoding='utf-8')
         for word in ('CatalogAlias', 'catalog_aliases', 'configuration_resolver', 'Vocabulary'):
             self.assertNotIn(word, source)
+
+
+class ExcludedCombinationTest(TestCase):
+    """
+    SELECTOR-UX-01 — a pair the model EXCLUDES (CATALOG-REFERENCE-01 · PR B: «esta SIM no existe en ese color») is
+    never a valid configuration to create: the resolver says `combinacion_excluida`, so no screen offers «Crear
+    variante» for something `check_variant` refuses. A variant that already IS such a combination keeps its history.
+    """
+
+    def setUp(self):
+        cache.clear()
+        self.company = _p3_company('sel-excl', 'Exclusiones')
+        self.size = device_catalog.create_attribute(company=self.company, name='Memoria', role='capacity')
+        self.tone = device_catalog.create_attribute(company=self.company, name='Tono', kind='color', role='color')
+        self.sim = device_catalog.create_attribute(company=self.company, name='SIM', role='sim')
+        self.g64 = device_catalog.create_option(company=self.company, attribute_id=self.size.pk, label='64 GB')
+        self.grey = device_catalog.create_option(company=self.company, attribute_id=self.tone.pk, label='Gris',
+                                                 swatch_hex='#777777')
+        self.green = device_catalog.create_option(company=self.company, attribute_id=self.tone.pk, label='Verde',
+                                                  swatch_hex='#227722')
+        self.chip = device_catalog.create_option(company=self.company, attribute_id=self.sim.pk, label='Chip')
+        self.esim = device_catalog.create_option(company=self.company, attribute_id=self.sim.pk, label='eSIM')
+        self.model = device_catalog.create_model(company=self.company, name='Equipo X')
+        model_palette.set_palette(self.model, option_ids=[o.pk for o in (self.g64, self.grey, self.green, self.chip,
+                                                                         self.esim)])
+        model_palette.add_exclusions(self.model, pairs=[[self.green.pk, self.chip.pk]])
+
+    def statuses(self, colour, sim):
+        result = resolver.resolve_configuration(resolver.Vocabulary(self.company), model_text='Equipo X',
+                                                capacity_text='64gb', colour_text=colour, sim_text=sim)
+        return [(c['colour_text'], c['status']) for c in result['configurations']]
+
+    def test_an_excluded_pair_is_never_valid_to_create(self):
+        self.assertEqual(self.statuses('verde', 'chip'), [('verde', 'combinacion_excluida')])
+        self.assertNotIn('combinacion_excluida', resolver.COMPLETE)
+
+    def test_the_other_colours_of_the_same_line_are_not_affected(self):
+        self.assertEqual(self.statuses('gris, verde', 'chip'),
+                         [('gris', 'combinacion_valida_sin_variante'), ('verde', 'combinacion_excluida')])
+        self.assertEqual(self.statuses('verde', 'esim'), [('verde', 'combinacion_valida_sin_variante')])
+
+    def test_a_variant_that_already_is_the_combination_keeps_its_history(self):
+        model_palette.remove_exclusions(self.model, pairs=[[self.green.pk, self.chip.pk]])
+        product = _prod(self.company, 'Equipo X Verde Chip', 'sel-excl-held', price='1000.00', inventory=0)
+        device_catalog.set_variant(product, model_id=self.model.pk, condition_line='new',
+                                   option_ids=[self.g64.pk, self.green.pk, self.chip.pk])
+        model_palette.add_exclusions(self.model, pairs=[[self.green.pk, self.chip.pk]])
+        self.assertEqual(self.statuses('verde', 'chip'), [('verde', 'variante_existente')])
+
+    def test_the_statuses_list_and_the_summary_name_it(self):
+        self.assertIn('combinacion_excluida', resolver.STATUSES)

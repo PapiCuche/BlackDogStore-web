@@ -43,6 +43,7 @@ export const RESOLVER_STATUS_LABELS: Record<ResolverStatus, string> = {
   opcion_desconocida: "Opción desconocida",
   sin_paleta: "Sin paleta",
   variante_archivada: "Archivada",
+  combinacion_excluida: "No existe en este modelo",
 };
 
 /** One short sentence per state: what it means and what a person may do. Nothing is ever done by itself. */
@@ -57,12 +58,14 @@ export const RESOLVER_STATUS_HELP: Record<ResolverStatus, string> = {
   opcion_desconocida: "Hay un texto que no es ninguna opción ni alias de la empresa.",
   sin_paleta: "El modelo no tiene paleta y ninguna variante es exactamente esa configuración: no se puede validar.",
   variante_archivada: "Hay una variante que es exactamente esa configuración, pero está archivada: no se usa en cargas, caja ni tienda. Desarchívala en el modelo si vuelve a usarse.",
+  combinacion_excluida: "Las opciones están en la paleta, pero el modelo excluye esa combinación (por ejemplo, esa SIM no existe en ese color): no se puede crear ni guardar. Revisa la línea con el proveedor.",
 };
 
 /** The order the statuses are listed in (the resolver's precedence: the first that applies wins). */
 export const RESOLVER_STATUS_ORDER: ResolverStatus[] = [
   "modelo_desconocido", "ambigua", "nombre_con_opciones", "opcion_desconocida", "fuera_de_paleta", "incompleta",
   "variante_existente", "combinacion_valida_sin_variante", "sin_paleta", "variante_archivada",
+  "combinacion_excluida",
 ];
 
 /** The option ids the palette holds now. */
