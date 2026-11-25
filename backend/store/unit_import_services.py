@@ -23,7 +23,10 @@ with one serial.
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
+import logging
 import math
 from decimal import Decimal, InvalidOperation
 from collections import OrderedDict
@@ -39,6 +42,8 @@ from .import_services import CatalogueIndex, _safe_filename, _sha256
 from .models import (
     AdminAuditLog, Branch, BranchStock, BulkImportJob, BulkImportRow, Product, StockMovement, StockUnit, Supplier,
 )
+
+logger = logging.getLogger(__name__)
 
 TEMPLATE_FILENAME = 'carga-masiva-equipos.xlsx'
 SHEET = 'Equipos'
@@ -745,8 +750,8 @@ PRICES_FORBIDDEN = 'prices_forbidden'
 #: IMPORT-WARRANTY-AUTHORITY — the apply of a job that carries a warranty or a device's own price, by somebody without
 #: `products.manage` (403 `PRICES_FORBIDDEN`). Nothing was written.
 COMMERCIAL_TERMS_IN_JOB = ('Esta carga trae garantías o precios de venta de equipos y tu usuario no puede fijarlos: '
-                           'pide que la aplique alguien que administre productos, o vuelve a subir el archivo sin '
-                           'esas columnas. No se registró nada.')
+                           'pide que quien administra productos apruebe esos precios y garantías, o registra los '
+                           'equipos sin precios ni garantías. No se registró nada.')
 
 
 def _staged_rows_carry_commercial_terms(rows) -> list[int]:
@@ -759,6 +764,153 @@ def _staged_rows_carry_commercial_terms(rows) -> list[int]:
                 price is None or (isinstance(price, str) and not price.strip())):
             found.append(row.row_number)
     return found
+
+
+# ---------------------------------------------------------------------------
+# IMPORT-TERMS-APPROVAL — the explicit approval of a job's commercial terms
+# ---------------------------------------------------------------------------
+#
+# The owner's decision (2026-11-25): devices may always come in operationally without `products.manage`, but never
+# with the file's prices or warranties by implication. A job that stages them is registered by somebody without that
+# authority only after the EXPLICIT approval of somebody who holds it in the job's company — bound to what was approved
+# (`terms_digest`) and to its author still holding the authority when the load is registered — or with the terms
+# dropped (`without_commercial_terms`). Who prepared (`created_by`), approved and registered (`applied_by`) is kept.
+# The approval covers the devices' OWN terms only: a variant price proposal (NEW-TEMPLATE-PRICE) changes the price of
+# every device of the variant, in the shop and on the web, and still needs `products.manage` from whoever applies.
+
+#: The terms changed since they were approved (409). Nothing was written.
+TERMS_APPROVAL_STALE = 'terms_approval_stale'
+#: An approval of a job without commercial terms (400).
+NO_COMMERCIAL_TERMS = 'no_commercial_terms'
+#: An approval of a job that is no longer a preview (400).
+JOB_NOT_PREVIEWED = 'job_not_previewed'
+
+#: `commercial_terms` of an applied load (summary and audit): what happened to the file's prices and warranties.
+TERMS_APPLIED, TERMS_DROPPED, TERMS_NONE = 'applied', 'dropped', 'none'
+
+
+def _term_text(data, name):
+    """A staged price or warranty as canonical text; None when the row states none (0 days is one)."""
+    if name == 'warranty_days':
+        return str(data['warranty_days']).strip() if stock_unit_services.states_a_warranty(data) else None
+    value = data.get(name)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    return str(value).strip()
+
+
+def terms_digest(rows) -> str:
+    """
+    sha256 of the commercial terms of a job's CREATE rows, in file order: per row its number, variant and identifiers
+    (a price approved for one device never moves to another) and its sale price and warranty. What an approval binds.
+    """
+    canonical = []
+    for row in sorted(rows, key=lambda r: (r.row_number, r.pk)):
+        data = row.normalized_data if isinstance(row.normalized_data, dict) else {}
+        canonical.append([row.row_number, data.get('product_id'), data.get('serial_number') or '',
+                          data.get('imei') or '', _term_text(data, 'sale_price'), _term_text(data, 'warranty_days')])
+    return hashlib.sha256(json.dumps(canonical, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
+
+
+def _create_rows(job):
+    return list(job.rows.filter(action=BulkImportRow.CREATE).order_by('row_number', 'pk'))
+
+
+def _person(user) -> str:
+    if user is None:
+        return ''
+    return (user.get_full_name() or '').strip() or user.get_username()
+
+
+def _approval_problem(job, rows):
+    """(code, message) when the job's approval does not cover its terms now; None when it does."""
+    if not job.terms_approved_digest:
+        return None, None
+    name = _person(job.terms_approved_by) or 'Quien la aprobó'
+    if terms_digest(rows) != job.terms_approved_digest:
+        return TERMS_APPROVAL_STALE, (
+            f'Los precios o garantías de esta carga cambiaron desde que {name} los aprobó. No se registró nada: pide '
+            f'que los aprueben otra vez, o registra los equipos sin precios ni garantías.')
+    # Asked of the approver NOW, like of whoever applies. Known race (accepted, review of #434): a role change that
+    # commits between this read and the end of the apply is not seen — memberships and roles are not locked here,
+    # as nowhere else a capability is asked.
+    if not device_catalog.user_may_manage_products(job.terms_approved_by, job.company):
+        return PRICES_FORBIDDEN, (
+            f'{name} aprobó los precios y garantías de esta carga, pero ya no administra productos. No se registró '
+            f'nada: pide la aprobación de quien administre productos ahora, o registra los equipos sin precios ni '
+            f'garantías.')
+    # The reach the approval asked (the job's branches, `import_access`), asked again.
+    from .import_access import _job_within_reach
+
+    if not _job_within_reach(job.terms_approved_by, job.company, job):
+        return PRICES_FORBIDDEN, (
+            f'{name} aprobó los precios y garantías de esta carga, pero ya no tiene acceso a todas sus sucursales. No '
+            f'se registró nada: pide la aprobación de quien administre productos en esas sucursales, o registra los '
+            f'equipos sin precios ni garantías.')
+    return None, None
+
+
+def terms_state(job) -> dict:
+    """What the screen needs: whether the job stages commercial terms, and its approval (`valid` now)."""
+    rows = _create_rows(job)
+    carrying = _staged_rows_carry_commercial_terms(rows)
+    approval = None
+    if job.terms_approved_digest:
+        code, _message = _approval_problem(job, rows)
+        approval = {'by_name': _person(job.terms_approved_by), 'at': job.terms_approved_at,
+                    'valid': bool(carrying) and code is None}
+    return {'carries_commercial_terms': bool(carrying), 'commercial_terms_rows': carrying,
+            'terms_approval': approval}
+
+
+@transaction.atomic
+def approve_terms(*, job, actor, request=None):
+    """
+    Approve the devices' own sale prices and warranties this job stages. Returns `(job, changed)`.
+
+    Only somebody holding `products.manage` in the job's company (`PRICES_FORBIDDEN`), only a preview that can still be
+    registered, only a job that stages terms (`NO_COMMERCIAL_TERMS`). The preparer may approve their own job: allowed,
+    and said in the audit (`self_approval`). The same approver approving the same terms again changes nothing; anybody
+    else, or other terms, replaces the approval.
+    """
+    from . import import_freshness
+
+    job = BulkImportJob.objects.select_for_update().get(pk=job.pk)
+    if job.import_type != BulkImportJob.UNITS:
+        raise UnitImportError('Este trabajo no es una carga de equipos.')
+    if not device_catalog.user_may_manage_products(actor, job.company):
+        raise UnitImportError('Sólo quien administra productos puede aprobar precios y garantías.',
+                              code=PRICES_FORBIDDEN)
+    if job.status != BulkImportJob.PREVIEWED:
+        raise UnitImportError('Esta carga ya no está en vista previa: no hay nada que aprobar.', code=JOB_NOT_PREVIEWED)
+    if job.rows_error:
+        raise UnitImportError(
+            f'Hay {job.rows_error} fila(s) con error: esta carga no se puede registrar ni aprobar.')
+    import_freshness.refuse_if_expired(job, UnitImportError)
+    rows = _create_rows(job)
+    carrying = _staged_rows_carry_commercial_terms(rows)
+    if not carrying:
+        raise UnitImportError('Esta carga no trae precios ni garantías de equipos: no hay nada que aprobar.',
+                              code=NO_COMMERCIAL_TERMS)
+    digest = terms_digest(rows)
+    if job.terms_approved_by_id == actor.pk and job.terms_approved_digest == digest:
+        return job, False
+    replaced = job.terms_approved_by_id if job.terms_approved_digest else None
+    job.terms_approved_by = actor
+    job.terms_approved_at = timezone.now()
+    job.terms_approved_digest = digest
+    job.save(update_fields=['terms_approved_by', 'terms_approved_at', 'terms_approved_digest'])
+    self_approval = job.created_by_id == actor.pk
+    if self_approval:
+        logger.info('unit import %s: commercial terms approved by the user who prepared it (%s)', job.pk, actor.pk)
+    AdminAuditLog.log(
+        actor=actor, action='unit_import_terms_approved', target_type='bulk_import_job', target_id=job.pk,
+        metadata={'company_id': job.company_id, 'job_id': job.pk, 'rows': len(carrying), 'digest': digest[:12],
+                  'prepared_by_id': job.created_by_id, 'self_approval': self_approval,
+                  'replaced_approver_id': replaced},
+        request=request, company=job.company,
+    )
+    return job, True
 
 
 #: `price_updates` is not a confirmed copy of a proposal of this job (400). Nothing was written.
@@ -1389,7 +1541,7 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
 # ---------------------------------------------------------------------------
 
 @transaction.atomic
-def apply_units(*, job, actor, request=None, price_updates=None):
+def apply_units(*, job, actor, request=None, price_updates=None, without_commercial_terms=False):
     """
     Register every staged device. ALL OF THE FILE OR NONE OF IT.
 
@@ -1401,6 +1553,11 @@ def apply_units(*, job, actor, request=None, price_updates=None):
 
     `price_updates` (NEW-TEMPLATE-PRICE): the variant prices the person CONFIRMED, each a copy of a proposal of this
     job (`clean_price_updates`). Written in the same transaction as the devices: all of it or nothing.
+
+    `without_commercial_terms` (IMPORT-TERMS-APPROVAL): only `True` registers the devices WITHOUT the file's own sale
+    prices and warranties (unpriced, under the company's warranty policy) — the operational entry of somebody who may
+    not set them. Otherwise a job that stages them is registered only by somebody holding `products.manage`, or under
+    a still-valid explicit approval (`approve_terms`).
 
     Returns `(job, changed)`. A second apply of an applied job changes nothing (its proposals included).
     """
@@ -1429,11 +1586,29 @@ def apply_units(*, job, actor, request=None, price_updates=None):
     # IMPORT-WARRANTY-AUTHORITY — a device's warranty and its own sale price are the catalogue's (`products.manage`),
     # asked again of whoever APPLIES like the cost: a job staged by somebody who holds it is no way in for somebody
     # who does not. Refused whole (403 `prices_forbidden`), nothing written.
+    # IMPORT-TERMS-APPROVAL — …unless an explicit approval still covers them (its digest, its author's authority), or
+    # the person registers the devices WITHOUT them. A preview reused by somebody else is never an approval.
     may_set_terms = device_catalog.user_may_manage_products(actor, job.company)
-    carrying = [] if may_set_terms else _staged_rows_carry_commercial_terms(rows)
-    if carrying:
-        shown = ', '.join(str(n) for n in carrying[:10]) + (' …' if len(carrying) > 10 else '')
-        raise UnitImportError(f'{COMMERCIAL_TERMS_IN_JOB} Filas con garantía o precio: {shown}.', code=PRICES_FORBIDDEN)
+    carrying = _staged_rows_carry_commercial_terms(rows)
+    drop_terms = without_commercial_terms is True and bool(carrying)
+    terms_authority = None
+    if carrying and not drop_terms:
+        if may_set_terms:
+            terms_authority = 'applier'
+        elif job.terms_approved_digest:
+            code, message = _approval_problem(job, rows)
+            if code:
+                raise UnitImportError(message, code=code)
+            terms_authority = 'approval'
+        else:
+            shown = ', '.join(str(n) for n in carrying[:10]) + (' …' if len(carrying) > 10 else '')
+            raise UnitImportError(f'{COMMERCIAL_TERMS_IN_JOB} Filas con garantía o precio: {shown}.',
+                                  code=PRICES_FORBIDDEN)
+    commercial_terms = TERMS_DROPPED if drop_terms else TERMS_APPLIED if carrying else TERMS_NONE
+    # Review of #434 — the reviewer is recorded whenever a valid approval covers these terms, whoever applies.
+    # Nobody's approval is recorded for terms that were dropped (second review of #434).
+    approved = not drop_terms and (terms_authority == 'approval' or bool(
+        carrying and job.terms_approved_digest and _approval_problem(job, rows)[0] is None))
     # NEW-TEMPLATE-PRICE — asked of whoever APPLIES, before anything is written.
     price_updates = clean_price_updates(job, actor, price_updates)
 
@@ -1507,15 +1682,17 @@ def apply_units(*, job, actor, request=None, price_updates=None):
                         # DC2 — absent keys in a job staged before them: nothing.
                         'battery_health': data(row).get('battery_health'),
                         'cosmetic_grade': data(row).get('cosmetic_grade'),
-                        'sale_price': data(row).get('sale_price'),
+                        # IMPORT-TERMS-APPROVAL — the operational entry: no own price, the company's warranty.
+                        'sale_price': None if drop_terms else data(row).get('sale_price'),
                         # INV-LOAD-01 — absent in a job staged before them: nothing, as before.
                         'notes': data(row).get('notes'), 'public_notes': data(row).get('public_notes'),
                         # USED-READY-01 — never an inspection or a publication: they enter pending, unpublished.
-                        **{name: data(row)[name] for name in _USED_COLUMNS if name in data(row)},
+                        **{name: data(row)[name] for name in _USED_COLUMNS
+                           if name in data(row) and not (drop_terms and name == 'warranty_days')},
                     } for row in chunk],
                     actor=actor, reason=reason, movement_type=movement_type, request=request,
                     supplier=suppliers.get(supplier_id), received_on=received_on or None,
-                    may_set_warranty=may_set_terms,
+                    may_set_warranty=may_set_terms or terms_authority == 'approval',
                 )
             except stock_unit_services.StockUnitError as exc:
                 where = (
@@ -1551,6 +1728,8 @@ def apply_units(*, job, actor, request=None, price_updates=None):
         'units': registered, 'movements': movements, 'imei_on_unmarked_products': unmarked,
         'unit_ids': sorted(unit.pk for unit in received_units),
         **({'price_updates': price_changes} if price_changes else {}),
+        # IMPORT-TERMS-APPROVAL — what happened to the file's own prices and warranties.
+        'commercial_terms': commercial_terms,
         'shelves': [{'branch_id': branch_id, 'product_id': product_id, **counts}
                     for (branch_id, product_id), counts in sorted(after.items())],
         # Only when something failed, so the answer of a repeated apply can say so too.
@@ -1566,7 +1745,15 @@ def apply_units(*, job, actor, request=None, price_updates=None):
                   # IMEIs stored under a product not marked «lleva IMEI»: how many, never which.
                   'imei_on_unmarked_products': unmarked,
                   # NEW-TEMPLATE-PRICE — how many variant prices changed; each has its own `product_updated` line.
-                  **({'price_updates': len(price_changes)} if price_changes else {})},
+                  **({'price_updates': len(price_changes)} if price_changes else {}),
+                  # IMPORT-TERMS-APPROVAL — who prepared, who approved the terms (a valid approval of them, whoever
+                  # applied) and who registered; and what happened to the file's own prices and warranties.
+                  'prepared_by_id': job.created_by_id,
+                  'terms_approved_by_id': job.terms_approved_by_id if approved else None,
+                  'terms_digest': job.terms_approved_digest[:12] if approved else None,
+                  'executed_by_id': actor.pk,
+                  'commercial_terms': commercial_terms, 'terms_authority': terms_authority,
+                  **({'terms_rows_dropped': len(carrying)} if drop_terms else {})},
         request=request, company=job.company,
     )
     return job, True

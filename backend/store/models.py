@@ -6052,6 +6052,16 @@ class BulkImportJob(models.Model):
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     applied_at = models.DateTimeField(null=True, blank=True)
 
+    #: IMPORT-TERMS-APPROVAL (units only) — the explicit approval, by somebody holding `products.manage`, of the
+    #: devices' own sale prices and warranties this job stages, so that somebody without that authority may register
+    #: them. Bound to WHAT was approved (`terms_approved_digest`, `unit_import_services.terms_digest`) and to its
+    #: author still holding the authority when the load is registered. Empty: no approval.
+    terms_approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+',
+    )
+    terms_approved_at = models.DateTimeField(null=True, blank=True)
+    terms_approved_digest = models.CharField(max_length=64, blank=True, default='', db_default='')
+
     class Meta:
         ordering = ['-created_at', '-pk']
         indexes = [
