@@ -675,6 +675,9 @@ def apply(*, company, rows, approve, prices=None, category_id=None, without_imei
             metadata={'company_id': company.pk, 'idempotency_key': key, 'fingerprint': fingerprint,
                       'models_created': len(created['models']), 'options_created': len(created['options']),
                       'variants_created': len(created['variants']), 'variants_existing': len(existing['variants']),
+                      # The operator's «sin IMEI» choice, by name: the only way a proposal makes IMEI optional.
+                      'variants_without_imei': [{'ref': v['ref'], 'product_id': v['product_id'], 'name': v['name']}
+                                                for v in created['variants'] if v['ref'] in optional],
                       'result': body},
         )
     return body
