@@ -652,6 +652,8 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
       setPicks((all) => ({ ...all, [line.key]: undefined }));
       setPickResults((all) => ({ ...all, [line.key]: undefined }));
       setPickProblems((all) => ({ ...all, [line.key]: undefined }));
+      // This choice supersedes any still on its way: nothing is being picked any more.
+      setPicking(false);
       return;
     }
     setPicking(true);
@@ -666,9 +668,10 @@ export function SupplierListAssistant({ canManage, canSeeCosts, canViewCompany, 
       setPicks((all) => ({ ...all, [line.key]: pick }));
       setPickResults((all) => ({ ...all, [line.key]: answer.results[line.key] }));
     } catch (error) {
-      setActionError(readError(error, "No se pudo consultar el catálogo."));
+      if (mine === pickRun.current) setActionError(readError(error, "No se pudo consultar el catálogo."));
     } finally {
-      setPicking(false);
+      // Only the latest choice ends «picking»: an older one finishing first never re-enables the buttons early.
+      if (mine === pickRun.current) setPicking(false);
     }
   }
 

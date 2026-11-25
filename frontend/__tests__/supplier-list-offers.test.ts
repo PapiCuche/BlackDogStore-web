@@ -99,3 +99,16 @@ describe('rendimiento de la búsqueda de cortes', () => {
     expect(Date.now() - t0).toBeLessThan(500);
   });
 });
+
+describe('revisión de #438: búsqueda agotada', () => {
+  it('si se acaba el tope de lecturas sin ninguna manera encontrada, la línea queda en duda (nunca una sola oferta)', () => {
+    const text = 'iph 15 128gb negro 2500 azul 2600 256gb 2700 negro 2800 512gb 2900 azul 3000';
+    expect(text.split(' ').length).toBeLessThanOrEqual(16);
+    const stats = { reads: 0 };
+    const split = splitOffers(text, 1, lexicon, stats, 1);
+    expect(stats.reads).toBe(1);
+    expect(split).toEqual({ parts: null });
+    const line = { ...one(text), offers: split };
+    expect(lineDoubts(line, NONE).join(' ')).toMatch(/varias ofertas/);
+  });
+});
