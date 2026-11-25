@@ -533,8 +533,9 @@ Para un equipo que llega solo (no un archivo), **Inventario › Centro de operac
 2. Elige el **modelo** y la **variante**, o lee el **código comercial** (UPC/EAN) de la caja: elige la variante, nunca
    es un equipo.
 3. Lee con el lector (o escribe y pulsa Enter) el **IMEI 1**, el **IMEI 2** y la **serie**. La pantalla dice qué espera.
-   Un EID (32 dígitos) o un MEID nunca se toman por IMEI; un código dudoso se pregunta («¿Es la serie?»); una lectura
-   repetida se ignora. El lector puede terminar con Enter o Tab (se elige en la pantalla).
+   Un EID (32 dígitos) o un MEID nunca se toman por IMEI; un código dudoso se pregunta («¿Es la serie?»), también 15
+   dígitos que parecen un IMEI cuando se espera la serie; una lectura repetida se ignora. El lector puede terminar con
+   Enter o Tab (se elige en la pantalla; Tab sólo termina con un código entero escrito, y Esc vacía el campo).
 4. Proveedor y costo (con permiso); en un seminuevo, batería, estado, defectos y accesorios; precio y garantía sólo con
    «Administrar productos».
 5. Si un **pedido pagado** espera esa variante en la sucursal, primero se elige: «Es del pedido #N» o «Ingresar como
