@@ -538,6 +538,7 @@ def _pick_sheet(workbook) -> str:
 
 
 ZERO_PRICE = 'El precio de venta debe ser mayor que cero; déjalo vacío si aún no tiene precio.'
+WARRANTY_IGNORED = 'Garantía (días) ignorada: sólo quien administra productos fija la garantía.'
 _FLOAT_NOISE = 1e-9  # Excel noise is ~1e-13; a typed 1899.9999999 is not noise
 
 
@@ -1220,6 +1221,11 @@ def preview_units(*, company, actor, upload, filename, reachable_branch_ids,
         if used_details and product is not None and product.condition_line != 'used':
             warnings.append(f'{", ".join(_USED_COLUMNS[n] for n in used_details)}: ignorado en un equipo nuevo.')
             used_details = {}
+        elif 'warranty_days' in used_details and not prices_allowed:
+            # IMPORT-WARRANTY-AUTHORITY — the warranty is a commercial promise to the buyer: the price's authority, as
+            # on the device sheet (`stock_unit_views`). Without `products.manage` it is ignored and said, like the price.
+            warnings.append(WARRANTY_IGNORED)
+            used_details.pop('warranty_days')
 
         cleaned = None
         if product is not None:
