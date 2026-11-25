@@ -104,6 +104,8 @@ class ImportWarrantyAuthorityTest(DeviceShop, TestCase):
         with self.assertRaises(unit_import_services.UnitImportError) as caught:
             unit_import_services.apply_units(job=job, actor=self.stocker)
         self.assertEqual(caught.exception.code, unit_import_services.PRICES_FORBIDDEN)
+        row_number = job.rows.get().row_number
+        self.assertIn(f'Filas con garantía o precio: {row_number}.', str(caught.exception))
         self.assertFalse(StockUnit.objects.filter(company=self.company).exists())
 
     def test_a_manager_applies_the_warranty_and_price_they_staged(self):

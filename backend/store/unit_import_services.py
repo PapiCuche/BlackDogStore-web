@@ -749,16 +749,18 @@ COMMERCIAL_TERMS_IN_JOB = ('Esta carga trae garantías o precios de venta de equ
                            'esas columnas. No se registró nada.')
 
 
-def _staged_rows_carry_commercial_terms(rows) -> bool:
-    """Whether any staged row (its `normalized_data`) carries a warranty or a device's own sale price."""
+def _staged_rows_carry_commercial_terms(rows) -> list[int]:
+    """The file rows (`row_number`) whose staged data carries a warranty or a device's own sale price."""
+    found = []
     for row in rows:
         data = row.normalized_data if isinstance(row.normalized_data, dict) else {}
-        if stock_unit_services.states_a_warranty(data):
-            return True
         price = data.get('sale_price')
-        if not (price is None or (isinstance(price, str) and not price.strip())):
-            return True
-    return False
+        if stock_unit_services.states_a_warranty(data) or not (
+                price is None or (isinstance(price, str) and not price.strip())):
+            found.append(row.row_number)
+    return found
+
+
 #: `price_updates` is not a confirmed copy of a proposal of this job (400). Nothing was written.
 PRICE_UPDATE_INVALID = 'price_update_invalid'
 
@@ -1428,8 +1430,10 @@ def apply_units(*, job, actor, request=None, price_updates=None):
     # asked again of whoever APPLIES like the cost: a job staged by somebody who holds it is no way in for somebody
     # who does not. Refused whole (403 `prices_forbidden`), nothing written.
     may_set_terms = device_catalog.user_may_manage_products(actor, job.company)
-    if not may_set_terms and _staged_rows_carry_commercial_terms(rows):
-        raise UnitImportError(COMMERCIAL_TERMS_IN_JOB, code=PRICES_FORBIDDEN)
+    carrying = [] if may_set_terms else _staged_rows_carry_commercial_terms(rows)
+    if carrying:
+        shown = ', '.join(str(n) for n in carrying[:10]) + (' …' if len(carrying) > 10 else '')
+        raise UnitImportError(f'{COMMERCIAL_TERMS_IN_JOB} Filas con garantía o precio: {shown}.', code=PRICES_FORBIDDEN)
     # NEW-TEMPLATE-PRICE — asked of whoever APPLIES, before anything is written.
     price_updates = clean_price_updates(job, actor, price_updates)
 
