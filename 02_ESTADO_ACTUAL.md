@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-24 — R13.1 `bf6a3307` DESPLEGADA en prod-02; cron y kits de datos detenidos por sus guardas
+
+R13.1 desplegada a las 18:05 (Lima) con el GO exacto: sólo código, huellas idénticas, todo verde. El cron de cotizaciones y la normalización se detuvieron sin escribir nada (una guarda del `C=` del crontab y un fallo de shell en `backup()` del kit); kits corregidos y a la espera de reconfirmación. Muestras 167 y producto 12 no se ejecutaron. Después se fusionaron #426, #427 y #428 en `master` `b8610b07` (no desplegados). Detalle en `docs/NEXT_ACTION.md`.
+
 ## 2026-11-24 — POST-R13: sistema listo para recibir el inventario real (en `master` `bf6a3307`, sin desplegar)
 
 #420–#423 fusionados. Simulación del stock real 13/13 en CI, en local y sobre una copia aislada de producción. Candidata R13.1 `bf6a3307` (sólo código) ensayada; espera «GO despliegue bf6a330 prod-02». Kits de cron, normalización, muestras y producto 12 reensayados sobre R13. Detalle y GO en `docs/NEXT_ACTION.md`.
