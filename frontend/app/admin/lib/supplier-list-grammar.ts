@@ -1003,11 +1003,11 @@ function readLine(raw: string, number: number, lexicon: SupplierLexicon, currenc
 // ── SELECTOR-UX-01 · several offers in one line ──────────────────────────────────────────────────────────────────
 
 /** Offers one line may be split into; a longer run is left for a person to write one per line. */
-const MAX_OFFER_PARTS = 4;
-/** Words of a line the split looks at (each split point is one more reading of the line); a longer line is not split. */
-const MAX_OFFER_WORDS = 16;
+const MAX_OFFER_PARTS = 8;
+/** Words of a line the split looks at; a longer line with several amounts is in doubt (written one offer per line). */
+const MAX_OFFER_WORDS = 40;
 /** Readings one line's split may make; beyond it the line is in doubt with no proposal (never a long computation). */
-export const OFFER_READS_MAX = 400;
+export const OFFER_READS_MAX = 600;
 /** Marks that only stand between two offers («4100 / 512gb …»): never part of either. */
 const OFFER_EDGE = /^[\s/|;,·•–-]+|[\s/|;,·•–-]+$/g;
 
@@ -1022,33 +1022,51 @@ function cleanOffer(text: string, number: number, lexicon: SupplierLexicon): Sup
   return line;
 }
 
-/** One search: each (piece, what it inherits) is read once; the readings are counted against `OFFER_READS_MAX`. */
-type OfferSearch = { memo: Map<string, OfferPiece | null>; stats: { reads: number }; exhausted: boolean; budget: number };
+/**
+ * One search. Each (piece, what it inherits) is read once (`memo`), and each (where the rest starts, what it inherits,
+ * how many pieces so far) is solved once (`ways`): only up to TWO distinct ways are ever kept — one is a proposal, two
+ * are a doubt — so the search stays small however many offers a line holds. Readings count against `budget`.
+ */
+type OfferSearch = {
+  memo: Map<string, OfferPiece | null>;
+  ways: Map<string, OfferPiece[][]>;
+  stats: { reads: number };
+  /** The reading budget ran out: the answer is unknown. */
+  exhausted: boolean;
+  /** A way needed more than `MAX_OFFER_PARTS` pieces: the answer is unknown. */
+  capped: boolean;
+  /**
+   * The answer is already a doubt: a part of the line read two ways (every piece before it is a clean offer, so the
+   * whole line reads two ways too), the pieces ran out, or the budget did. Nothing more is read.
+   */
+  done: boolean;
+  budget: number;
+};
 
-function piecesOf(words: string[], number: number, lexicon: SupplierLexicon, before: SupplierLine | null, depth: number,
-  search: OfferSearch): OfferPiece[][] {
-  const out: OfferPiece[][] = [];
+const inheritedKey = (before: SupplierLine | null) =>
+  (before ? [before.model?.text ?? "", before.capacityText, before.simText, before.regionText].join("|") : "");
+const wayKey = (pieces: OfferPiece[]) => pieces.map((piece) => piece.text).join("\n");
+
+/** Up to two distinct ways to read `words[start..]` as one or more clean offers, each piece after `before`. */
+function waysFrom(words: string[], start: number, number: number, lexicon: SupplierLexicon, before: SupplierLine | null,
+  depth: number, search: OfferSearch): OfferPiece[][] {
+  const inherited = inheritedKey(before);
+  const solved = `${start}|${inherited}|${depth}`;
+  const known = search.ways.get(solved);
+  if (known) return known;
   /**
    * A later piece takes what it does not say from the piece before it — the model, and the capacity, SIM and region —
    * as a person reads «… negro 2500 azul 2600». Never the colour: colours are what an offer lists, not what it shares.
    */
-  const inherited = before ? [before.model?.text ?? "", before.capacityText, before.simText, before.regionText].join("|") : "";
-  const read = (text: string): OfferPiece | null => {
-    const key = `${inherited}#${text}`;
-    if (search.memo.has(key)) return search.memo.get(key)!;
-    if (search.stats.reads >= search.budget) { search.exhausted = true; return null; }
-    search.stats.reads += 1;
-    const piece = readPiece(text);
-    search.memo.set(key, piece);
-    return piece;
-  };
   const readPiece = (text: string): OfferPiece | null => {
     const own = cleanOffer(text, number, lexicon);
     if (!own) return null;
     if (!before) return own.model ? { text, line: own } : null;
+    // A piece that names its own model starts another offer: it takes nothing from the one before.
+    if (own.model) return { text, line: own };
     // What the piece does not say is taken from the one before; the piece's own words always win.
     const shared = [
-      own.model ? "" : before.model?.text ?? "",
+      before.model?.text ?? "",
       own.capacityText ? "" : before.capacityText,
       own.simText ? "" : before.simText,
       own.regionText ? "" : before.regionText,
@@ -1057,40 +1075,66 @@ function piecesOf(words: string[], number: number, lexicon: SupplierLexicon, bef
     const line = shared ? cleanOffer(whole, number, lexicon) : own;
     return line?.model ? { text: whole, line } : null;
   };
-  const whole = words.join(" ").replace(OFFER_EDGE, "");
+  const read = (from: number, to: number): OfferPiece | null => {
+    const text = words.slice(from, to).join(" ").replace(OFFER_EDGE, "");
+    if (!text) return null;
+    const key = `${inherited}#${text}`;
+    if (search.memo.has(key)) return search.memo.get(key)!;
+    if (search.stats.reads >= search.budget) { search.exhausted = true; search.done = true; return null; }
+    search.stats.reads += 1;
+    const piece = readPiece(text);
+    search.memo.set(key, piece);
+    return piece;
+  };
+  const out = new Map<string, OfferPiece[]>();
+  const keep = (pieces: OfferPiece[]) => {
+    if (out.size < 2) out.set(wayKey(pieces), pieces);
+    if (out.size >= 2) search.done = true;
+  };
   if (depth > 0) {
-    const last = read(whole);
-    if (last) out.push([last]);
+    const last = read(start, words.length);
+    if (last) keep([last]);
   }
-  if (depth + 1 >= MAX_OFFER_PARTS) return out;
-  for (let cut = 1; cut < words.length; cut += 1) {
-    const head = read(words.slice(0, cut).join(" ").replace(OFFER_EDGE, ""));
+  for (let cut = start + 1; cut < words.length && !search.done; cut += 1) {
+    const head = read(start, cut);
     if (!head) continue;
-    for (const rest of piecesOf(words.slice(cut), number, lexicon, head.line, depth + 1, search)) out.push([head, ...rest]);
+    if (depth + 1 >= MAX_OFFER_PARTS) {
+      // One more clean offer would start here, past the pieces a line may be split into: unknown, never «one offer».
+      search.capped = true;
+      search.done = true;
+      break;
+    }
+    for (const rest of waysFrom(words, cut, number, lexicon, head.line, depth + 1, search)) keep([head, ...rest]);
   }
-  return out;
+  const answer = [...out.values()];
+  search.ways.set(solved, answer);
+  return answer;
 }
 
 /**
- * Whether a line with several amounts is several offers, and the one way to write it one per line. Every split point
- * is tried; each piece must read as ONE clean offer on its own (with what it shares from the piece before). Two or
- * more different ways: the line is in doubt with no proposal. None: it is one offer (a cost and a sale price…).
+ * Whether a line with several amounts (the caller's rule) is several offers, and the one way to write it one per
+ * line. Every split point is tried; each piece must read as ONE clean offer on its own (with what it shares from the
+ * piece before).
+ *   * one way: the proposal;
+ *   * two or more, a line too long to search, or a search that could not end: in doubt, no proposal;
+ *   * none: it is one offer (a cost and a sale price of the same device…).
  */
 export function splitOffers(raw: string, number: number, lexicon: SupplierLexicon,
   stats: { reads: number } = { reads: 0 }, budget = OFFER_READS_MAX): OfferSplit | null {
   const words = raw.trim().split(/\s+/).filter(Boolean);
-  if (words.length < 2 || words.length > MAX_OFFER_WORDS) return null;
-  const search: OfferSearch = { memo: new Map(), stats, exhausted: false, budget };
-  const ways = piecesOf(words, number, lexicon, null, 0, search).filter((pieces) => pieces.length > 1);
-  // Too many readings to know (review of #438): a line with several amounts whose search did not end is in doubt —
-  // never one offer by default, never a proposal built on half a search.
-  if (search.exhausted) return { parts: null };
-  const distinct = new Map(ways.map((pieces) => [pieces.map((piece) => piece.text).join("\n"), pieces]));
-  if (!distinct.size) return null;
-  if (distinct.size > 1) return { parts: null };
-  const [pieces] = distinct.values();
+  if (words.length < 2) return null;
+  // Review of #438: a longer line with several amounts is never «one offer» by default.
+  if (words.length > MAX_OFFER_WORDS) return { parts: null };
+  const search: OfferSearch = {
+    memo: new Map(), ways: new Map(), stats, exhausted: false, capped: false, done: false, budget,
+  };
+  const ways = waysFrom(words, 0, number, lexicon, null, 0, search).filter((pieces) => pieces.length > 1);
+  if (ways.length > 1 || (search.done && !search.exhausted && !search.capped)) return { parts: null };
+  // A search that could not end (budget or pieces) knows nothing: in doubt — never one offer, never half a proposal.
+  if (search.exhausted || search.capped) return { parts: null };
+  if (!ways.length) return null;
   return {
-    parts: pieces.map(({ text, line }) => ({ text, display: line.display, displayWithoutAmounts: line.displayWithoutAmounts })),
+    parts: ways[0].map(({ text, line }) => ({ text, display: line.display, displayWithoutAmounts: line.displayWithoutAmounts })),
   };
 }
 

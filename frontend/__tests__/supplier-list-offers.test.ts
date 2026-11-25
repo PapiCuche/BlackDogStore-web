@@ -89,14 +89,48 @@ describe('rendimiento de la búsqueda de cortes', () => {
     expect(again.reads).toBeLessThanOrEqual(30);
   });
 
-  it('una línea larga no se parte (más de 16 palabras): ni una lectura, y queda como siempre', () => {
-    const stats = { reads: 0 };
+  it('una línea de 17 a 40 palabras con varias ofertas también se detecta y se propone partir', () => {
     const long = 'iph 15 negro 2500 iph 17 pro esim japan 3900 iph 18 pro 256gb esim LLA borgoña 4650 iph 18 pro max chip 256gb 5650';
-    expect(splitOffers(long, 1, lexicon, stats)).toBeNull();
+    expect(long.split(' ').length).toBeGreaterThan(16);
+    expect(one(long).offers?.parts?.map((part) => part.text)).toEqual([
+      'iph 15 negro 2500', 'iph 17 pro esim japan 3900', 'iph 18 pro 256gb esim LLA borgoña 4650', 'iph 18 pro max chip 256gb 5650',
+    ]);
+  });
+
+  it('el peor caso de 40 palabras termina la búsqueda entera, con margen bajo el tope y rápido', () => {
+    const worst = Array(8).fill('iph 15 128gb negro 2500').join(' ');
+    expect(worst.split(' ')).toHaveLength(40);
+    splitOffers(worst, 1, lexicon); // warm-up
+    const stats = { reads: 0 };
+    const t0 = performance.now();
+    const split = splitOffers(worst, 1, lexicon, stats);
+    const ms = performance.now() - t0;
+    expect(split?.parts).toHaveLength(8);
+    // Measured: 74 readings, ~20 ms. The budget keeps a wide margin above it.
+    expect(stats.reads).toBeLessThanOrEqual(100);
+    expect(OFFER_READS_MAX).toBeGreaterThanOrEqual(stats.reads * 5);
+    expect(ms).toBeLessThan(250);
+  });
+
+  it('las líneas normales de costo y precio de venta (10 a 20 palabras) siguen siendo una oferta', () => {
+    for (const text of [
+      'iph 15 128gb negro costo 2500 pvp 2900',
+      'iph 18 pro esim LLA 256gb borgoña costo 4650 precio de venta 4999',
+      'iph 15 128gb negro costo 2500 pvp 2900 muy buen estado garantia oficial entrega inmediata en tienda',
+    ]) {
+      const line = one(text);
+      expect(line.amounts).toHaveLength(2);
+      expect(line.offers ?? null).toBeNull();
+      expect(lineDoubts(line, { ignoredWords: { [line.key]: true }, confirmed: {} }).join(' ')).not.toMatch(/ofertas/);
+    }
+  });
+
+  it('más de 40 palabras con varios importes: en duda (escribe una oferta por línea), sin leer nada', () => {
+    const stats = { reads: 0 };
+    const long = Array(9).fill('iph 15 128gb negro 2500').join(' ');
+    expect(splitOffers(long, 1, lexicon, stats)).toEqual({ parts: null });
     expect(stats.reads).toBe(0);
-    const t0 = Date.now();
-    one(long);
-    expect(Date.now() - t0).toBeLessThan(500);
+    expect(lineDoubts(one(long), NONE).join(' ')).toMatch(/varias ofertas/);
   });
 });
 
