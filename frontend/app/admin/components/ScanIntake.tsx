@@ -340,6 +340,8 @@ export function ScanIntake({
     const onKey = (event: KeyboardEvent) => {
       const input = scanRef.current;
       if (!input || event.defaultPrevented || event.isComposing) return;
+      // While registering nothing is routed to the scanner field (review of #440).
+      if (inFlight.current) return;
       const target = event.target as HTMLElement | null;
       if (!target || target === input) return;
       const onPage = target === document.body || target === document.documentElement;
@@ -545,16 +547,17 @@ export function ScanIntake({
     // Review of #440: the device is the one on screen WHEN the person confirmed. The guard may wait for an earlier
     // traversal; if the device, model or branch changed meanwhile, nothing is sent.
     const born = generation.current;
+    // What the person reviewed when confirming: a read that lands during the wait changes it, and nothing is sent.
+    const clicked = idsRef.current;
     const endGuard = await startHistoryGuard();
-    if (born !== generation.current) {
+    if (born !== generation.current || JSON.stringify(idsRef.current) !== JSON.stringify(clicked)) {
       endGuard();
       inFlight.current = false;
       setSubmitting(false);
-      say("info", "No se envió: cambiaste de equipo, modelo o sucursal mientras se preparaba el registro. Revisa y confirma otra vez.");
+      say("info", "No se envió: cambió el equipo, el modelo, la sucursal o sus identificadores mientras se preparaba el registro. Revisa y confirma otra vez.");
       return;
     }
-    // The identifiers as they are NOW (a read may have landed during the wait), never those of the click's render.
-    const ids = idsRef.current;
+    const ids = clicked;
     const method: EntryMethod = methods.imei ?? methods.serial ?? "manual";
     const shared: Record<string, unknown> = {
       method,
@@ -841,12 +844,14 @@ export function ScanIntake({
             placeholder="Pasa el lector por el código o escríbelo y pulsa Enter"
             autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} enterKeyHint="next"
             aria-describedby={`${scanId}-log`}
+            // While registering, no read is taken: what was reviewed is what is sent (review of #440).
+            readOnly={submitting} aria-busy={submitting || undefined}
             onChange={(e) => { setScanText(e.target.value); rhythmChanged(rhythm.current, e.target.value); }}
             onKeyDown={onScanKeyDown}
           />
             <button
               type="button" className={`${internalButtonClass} min-h-12 shrink-0`} onClick={readTyped}
-              disabled={!scanText.trim()}
+              disabled={submitting || !scanText.trim()}
             >
               Leer
             </button>
@@ -878,7 +883,7 @@ export function ScanIntake({
               <p id={`${scanId}-ask`} className="text-sm"><span className="font-mono break-all">{ask.value}</span> — {ask.message}</p>
               <div className="flex flex-wrap gap-2">
                 {ask.options.map((choice) => (
-                  <button key={choice} type="button" className={`${internalButtonClass} min-h-11`} onClick={() => choose(choice)} onKeyDown={guardChoiceKey}>
+                  <button key={choice} type="button" className={`${internalButtonClass} min-h-11`} disabled={submitting} onClick={() => choose(choice)} onKeyDown={guardChoiceKey}>
                     {CHOICE_LABEL[choice]}
                   </button>
                 ))}

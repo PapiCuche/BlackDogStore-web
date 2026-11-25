@@ -297,3 +297,36 @@ describe('revisión de #440', () => {
     expect(screen.queryByRole('group', { name: 'Configuración del equipo' })).toBeNull();
   });
 });
+
+describe('revisión 2 de #440', () => {
+  it('una lectura que llega mientras espera la guarda anterior: no se envía nada y se dice', async () => {
+    await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+    let top: unknown = null;
+    const push = jest.spyOn(window.history, 'pushState').mockImplementation((value) => { top = value; });
+    const state = jest.spyOn(window.history, 'state', 'get').mockImplementation(() => top);
+    const back = jest.spyOn(window.history, 'back').mockImplementation(() => {
+      setTimeout(() => { top = null; window.dispatchEvent(new PopStateEvent('popstate', { state: null })); }, 150);
+    });
+    receive.mockRejectedValueOnce(new lib.ScanIntakeError('Revisa el IMEI', 'invalid', 'imei', 400));
+    renderScreen();
+    const group = await chooseModel();
+    fireEvent.click(radio(group, 'Capacidad', /128 GB/));
+    fireEvent.click(radio(group, 'Color', /Negro/));
+    fireEvent.click(radio(group, 'Tipo de SIM', /eSIM/));
+    await scan(IMEI_1);
+    const confirm = screen.getByTestId('scan-intake-confirm');
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await act(async () => { fireEvent.click(confirm); });
+    await waitFor(() => expect(confirm).toBeEnabled());
+    await act(async () => { fireEvent.click(confirm); });
+    // While it waits: the scanner field does not take a read, «Leer» is off — and a read that lands anyway is caught.
+    const input = screen.getByTestId('scan-intake-input') as HTMLInputElement;
+    expect(input).toHaveAttribute('readonly');
+    expect(screen.getByRole('button', { name: 'Leer' })).toBeDisabled();
+    await scan('350000000000022');
+    await act(async () => { await new Promise((r) => setTimeout(r, 250)); });
+    expect(receive).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('scan-intake-log')).toHaveTextContent('No se envió');
+    push.mockRestore(); state.mockRestore(); back.mockRestore();
+  });
+});
