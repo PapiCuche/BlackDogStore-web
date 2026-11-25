@@ -140,7 +140,7 @@ class _Base(TestCase):
     def receive(self, branch, *rows, product=None):
         return stock_unit_services.receive_units(
             branch=branch, product=product or self.phone, units=list(rows), actor=self.admin,
-            reason='Compra de prueba')
+            reason='Compra de prueba', may_set_warranty=True)     # the fixture's admin holds products.manage
 
     def member(self, name, *capabilities, branches=None, company=None):
         user, _ = _p2d_member(company or self.company, name, ['company.view', *capabilities], branches=branches)

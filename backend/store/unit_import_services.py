@@ -742,6 +742,23 @@ SUPPLIERS_FORBIDDEN = ('No tienes permiso para ver proveedores: deja vacía la c
 
 #: The apply refused the price updates for want of `products.manage` (403). Nothing was written.
 PRICES_FORBIDDEN = 'prices_forbidden'
+#: IMPORT-WARRANTY-AUTHORITY — the apply of a job that carries a warranty or a device's own price, by somebody without
+#: `products.manage` (403 `PRICES_FORBIDDEN`). Nothing was written.
+COMMERCIAL_TERMS_IN_JOB = ('Esta carga trae garantías o precios de venta de equipos y tu usuario no puede fijarlos: '
+                           'pide que la aplique alguien que administre productos, o vuelve a subir el archivo sin '
+                           'esas columnas. No se registró nada.')
+
+
+def _staged_rows_carry_commercial_terms(rows) -> bool:
+    """Whether any staged row (its `normalized_data`) carries a warranty or a device's own sale price."""
+    for row in rows:
+        data = row.normalized_data if isinstance(row.normalized_data, dict) else {}
+        if stock_unit_services.states_a_warranty(data):
+            return True
+        price = data.get('sale_price')
+        if not (price is None or (isinstance(price, str) and not price.strip())):
+            return True
+    return False
 #: `price_updates` is not a confirmed copy of a proposal of this job (400). Nothing was written.
 PRICE_UPDATE_INVALID = 'price_update_invalid'
 
@@ -1407,6 +1424,12 @@ def apply_units(*, job, actor, request=None, price_updates=None):
     if not cost_services.user_may_view_costs(actor, job.company) and cost_services.staged_rows_carry_cost(
             rows, ('cost',)):
         raise UnitImportError(cost_services.COSTS_IN_JOB, code=cost_services.COSTS_FORBIDDEN)
+    # IMPORT-WARRANTY-AUTHORITY — a device's warranty and its own sale price are the catalogue's (`products.manage`),
+    # asked again of whoever APPLIES like the cost: a job staged by somebody who holds it is no way in for somebody
+    # who does not. Refused whole (403 `prices_forbidden`), nothing written.
+    may_set_terms = device_catalog.user_may_manage_products(actor, job.company)
+    if not may_set_terms and _staged_rows_carry_commercial_terms(rows):
+        raise UnitImportError(COMMERCIAL_TERMS_IN_JOB, code=PRICES_FORBIDDEN)
     # NEW-TEMPLATE-PRICE — asked of whoever APPLIES, before anything is written.
     price_updates = clean_price_updates(job, actor, price_updates)
 
@@ -1488,6 +1511,7 @@ def apply_units(*, job, actor, request=None, price_updates=None):
                     } for row in chunk],
                     actor=actor, reason=reason, movement_type=movement_type, request=request,
                     supplier=suppliers.get(supplier_id), received_on=received_on or None,
+                    may_set_warranty=may_set_terms,
                 )
             except stock_unit_services.StockUnitError as exc:
                 where = (
