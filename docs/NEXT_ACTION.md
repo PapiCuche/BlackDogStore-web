@@ -1,4 +1,55 @@
-# NEXT ACTION — 2026-11-24
+# NEXT ACTION — 2026-11-25
+
+## R13.2 · CIERRE PRODUCTIVO CONTROLADO (2026-11-25) — producción SIN CAMBIOS; todo preparado, cada paso espera su GO
+
+Orden del propietario: cron → normalización → muestras 167 → producto 12 → R13.2. El mensaje del propietario del
+2026-11-25 **no concede** ningún GO. Antes de cada operación: SHA y esquema, candado, backup, preflight, huellas y alcance;
+sólo el cambio autorizado; datos antes y después; pruebas; evidencia.
+
+| # | Operación | GO exacto que falta | Kit | Estado |
+|---|---|---|---|---|
+| 1 | Cron de cotizaciones | «GO cron cotizaciones prod-02 kit v2» | `backups/release-r13-ops/cron_expire_quotes_install.sh` (v2, ensayo 33/33) | Listo; primero `--dry-run`, si da >0 cotizaciones se para y se pregunta |
+| 2 | Normalización del catálogo | «GO normalización catálogo prod-02 kit v131b» | `f11p_go.sh` (no toca las variantes #19, #22, #23) | Listo |
+| 3 | Muestras aproximadas, **sólo 167** | «GO muestras 167 prod-02 kit v131b» | `f12s_go.sh` (excluye las 38 dudosas) | Listo |
+| 4 | Imagen rota del producto 12 | «GO producto 12 prod-02 kit v131b» | `p12_go.sh` | Listo |
+| 5 | Despliegue R13.2 `c8a43215` | «GO despliegue c8a4321 prod-02» | `backups/release-r132/d_deploy_r132.sh` | Listo (ver abajo) |
+
+Los kits 2–4 fijan R13.1 `bf6a3307`: deben ir antes que R13.2, como pidió el propietario. Si R13.2 se desplegara antes,
+habría que refijarlos y volver a ensayarlos.
+
+**R13.2 reconfirmada (sólo lectura, 2026-11-25):** imágenes `rc-c8a4321` construidas desde un árbol limpio en
+`c8a4321538d9…` (backend `sha256:211010ebf1c9…`, frontend `sha256:085254fd4e4c…`); `git diff bf6a3307..c8a43215` sin
+cambios en `deploy/`, compose, Dockerfiles ni migraciones (43 archivos de código, pruebas y docs); ensayo: humo 32/32,
+simulación 19/19, exportaciones con IMEI ocultos y 403 `full_identifiers_forbidden` sin `inventory.adjust`, reimpresión
+de sólo lectura (7 notas A4, ticket y ESC/POS), vuelta atrás a `release-bf6a330` con humo 32/32. No se desplegará un SHA
+posterior de `master`.
+
+### Stock real — proceso final preparado · espera archivos del propietario
+- Orden: R13.2 desplegada → archivos del propietario en `backups/stock-real-inbox/` → vista previa en copia aislada
+  (`backups/stockreal-preview/`, `README-stockreal-preview.md`) → aprobación del informe por el propietario →
+  «GO carga stock real prod-02» → carga en el panel (`docs/carga-stock-real.md` §11).
+- Kit revisado de forma independiente (1 grave y 23 menores corregidos) y validado en prod-02 con archivos sintéticos
+  sobre el catálogo real: con R13.2, 4 equipos registrados en la copia, `check_unit_stock` 0, todo deshecho; aislamiento
+  179 destinos, 0 abiertos (sólo el sshd del host, sólo con clave); producción sin cambios (filas de equipos, movimientos
+  y cargas iguales; 0 filas insertadas, actualizadas o borradas).
+- Con R13.1, un archivo de nuevos con «Precio de venta» se rechaza entero: R13.2 primero.
+- Observado en el catálogo real (para el propietario): «iPhone 15 128Gb Negro» está publicada y no marcada «lleva IMEI».
+- Preguntas nuevas: ¿aplicar una carga con precios o garantías de seminuevos debe exigir `products.manage` también a
+  quien aplica (hoy, tras #432, sí; se rechaza indicando las filas)? En la recepción del proveedor el `sale_price` de
+  una fila sigue sin esa comprobación (sin efecto práctico: un seminuevo no se vende bajo pedido).
+
+### Siete notas — fuente `db-20261121-222417` (elegida por el propietario) · kit nuevo ENSAYADO 72/72 · espera GO
+- Kit `backups/release-notes7b/` (runbook `RUNBOOK-notes7b-prod02.md`). **Sustituye** al de `release-r13-ops`
+  (fuente `140538`, marcado `NOTES7-SUPERSEDED.txt`).
+- Encuesta (producción sólo lectura): mismos 7 ids, identidad igual, **sólo `pdf_generated_at` difiere** (md5 de las 15
+  columnas), 0 filas de auditoría sobre las notas desde el backup, cada original = última descarga hecha por una persona
+  (3–5 ms), **notas 5 y 7 → NULL** (nunca descargadas).
+- Actualización condicional e idempotente de un solo campo, una fila de auditoría por nota, diff exacto, backup previo.
+- Ensayo en copia aislada (`db-20261125-084236`): aplicar, repetir (NO-OP), 13 rechazos sin escribir, vuelta atrás,
+  reaplicar, serializador del panel y reimpresión de sólo lectura correctos; acepta R13.1 y R13.2. Producción intacta.
+- Huella antes `a42dfa17d6779f45` → después `c2be046bf7bce2d8`.
+- GO: **«GO restaurar sellos 7 notas prod-02 fuente 222417»**; vuelta atrás: **«GO vuelta atrás sellos 7 notas prod-02 fuente 222417»**.
+
 
 ## PRODUCCIÓN (prod-02) — `bf6a3307` (R13.1), esquema `0192_unit_photo_provenance`, imágenes `release-bf6a330`; sana
 
@@ -14,10 +65,10 @@
 
 Antes del intento, los tres kits de datos se reapuntaron a R13.1 (sólo SHA e imágenes; huellas de alcance sin tocar) y se reensayaron sobre una copia con las imágenes `release-bf6a330`: aplicar, repetir sin cambios, rechazo con huella equivocada, vuelta atrás y reaplicar (`backups/release-r13-ops/r131ops-rehearsal.log`). Las huellas de alcance de producción coinciden con las fijadas.
 
-### Siete notas de venta (`pdf_generated_at`)
-- Kit `backups/release-r13-ops/notes7_go.sh` listo y ensayado (60/60), acepta R13 o R13.1. **No ejecutado: no autorizado.**
+### Siete notas de venta (`pdf_generated_at`) — histórico; ver el kit nuevo arriba
+- Kit `backups/release-r13-ops/notes7_go.sh` (fuente `140538`) — **SUSTITUIDO** el 2026-11-25 por `release-notes7b`. No usar.
 - **Hallazgo:** la reimpresión de los kits escribió en producción tres veces: R12b (2026-11-21), Fase 1 (2026-11-22) y R13 (2026-11-24). El backup `db-20261124-140538` guarda los sellos de la reimpresión de Fase 1. Los sellos reales de los usuarios están en `db-20261121-222417` (coinciden con su última descarga auditada; las notas 5 y 7 nunca se descargaron: vacío). Usar esa fuente exige refijar el manifiesto y reensayar.
-- GO del propietario pendiente, eligiendo la fuente.
+- 2026-11-25: el propietario eligió `db-20261121-222417`.
 
 ## RELEASE R13.2 — candidata `c8a43215` PREPARADA Y ENSAYADA · espera «GO despliegue c8a4321 prod-02»
 
