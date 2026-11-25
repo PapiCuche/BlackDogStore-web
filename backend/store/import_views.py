@@ -62,10 +62,12 @@ from .tenancy import (
     NoTenantError,
     has_branch_access,
     has_capability,
-    has_company_wide_scope,
     resolve_company_for_user,
     visible_branches,
 )
+
+# SEC-IMPORT-01 — the reach of a job lives in `import_access` (also asked by `unit_import_services`).
+from .import_access import _job_branch_ids, _job_within_reach, _Reach  # noqa: F401 (also read from here)
 
 logger = logging.getLogger(__name__)
 
@@ -190,18 +192,49 @@ def _suggestion(workbook, granted) -> dict:
     }
 
 
-def _public_summary(summary):
+def _public_summary(summary, *, include_terms=True):
     """
     INV-LOAD-02 — the summary without `applied.unit_ids`: the list backs the annulment of a load on the server; the
     screen reads counts, and a history of fifty loads would otherwise carry thousands of ids.
+
+    IMPORT-TERMS-APPROVAL (review of #434) — without `include_terms`, neither the variant price review of the file nor
+    the variant prices a load changed.
     """
-    if not isinstance(summary, dict) or not isinstance(summary.get('applied'), dict) or (
-            'unit_ids' not in summary['applied']):
+    if not isinstance(summary, dict):
         return summary
-    return {**summary, 'applied': {k: v for k, v in summary['applied'].items() if k != 'unit_ids'}}
+    if not include_terms:
+        summary = {k: v for k, v in summary.items() if k != 'price_review'}
+    applied = summary.get('applied')
+    if not isinstance(applied, dict):
+        return summary
+    hidden = {'unit_ids'} | (set() if include_terms else {'price_updates'})
+    if not hidden & set(applied):
+        return summary
+    return {**summary, 'applied': {k: v for k, v in applied.items() if k not in hidden}}
 
 
-def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS, include_cost=False):
+#: IMPORT-TERMS-APPROVAL — a device row's own sale price and warranty, and the file's price for its variant.
+_TERM_KEYS = ('sale_price', 'warranty_days', 'file_price')
+
+
+def _may_read_terms(request, company) -> bool:
+    """IMPORT-TERMS-APPROVAL — whether the caller may read a device load's prices and warranties (`products.manage`)."""
+    from .device_catalog import user_may_manage_products
+
+    return user_may_manage_products(request.user, company)
+
+
+def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS, include_cost=False, include_terms=False):
+    """
+    A job as the screens read it.
+
+    `include_terms` (IMPORT-TERMS-APPROVAL, review of #434) — only for a device load, which otherwise goes out WITHOUT
+    its commercial terms: no row's sale price, warranty or file price, no note naming a price
+    (`import_exports.terms_free_messages`), no variant price review or changed variant prices. Fails closed: every
+    caller states it from the reader's `products.manage` (`_may_read_terms`), except the preview answer of one's own
+    upload (whose rows already dropped what the uploader may not set).
+    """
+    hide_terms = job.import_type == BulkImportJob.UNITS and not include_terms
     payload = {
         'id': job.pk,
         'import_type': job.import_type,
@@ -216,7 +249,7 @@ def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS, include_cost=False)
             'update': job.rows_update, 'no_change': job.rows_no_change,
             'skip': job.rows_skip, 'error': job.rows_error,
         },
-        'summary': _public_summary(job.summary),
+        'summary': _public_summary(job.summary, include_terms=not hide_terms),
         'created_at': job.created_at,
         'applied_at': job.applied_at,
         'created_by': getattr(job.created_by, 'username', ''),
@@ -237,14 +270,22 @@ def _job_payload(job, *, rows=False, limit=MAX_PREVIEW_ROWS, include_cost=False)
             remaining = limit - len(ordered)
             if remaining > 0:
                 ordered += list(more[:remaining])
+        def data(row):
+            # DC1 + SEC-IMPORT-01: a cost — the one the file states included —
+            # travels only to `costs.view`, as a key or inside a sentence.
+            values = row.normalized_data if include_cost else import_exports.without_costs(row.normalized_data)
+            if hide_terms and isinstance(values, dict):
+                values = {key: value for key, value in values.items() if key not in _TERM_KEYS}
+            return values
+
+        def said(messages):
+            messages = messages if include_cost else import_exports.cost_free_messages(messages)
+            return import_exports.terms_free_messages(messages) if hide_terms else messages
+
         payload['rows'] = [{
             'sheet': r.sheet_name, 'row': r.row_number, 'action': r.action,
             'match_key': r.match_key,
-            # DC1 + SEC-IMPORT-01: a cost — the one the file states included —
-            # travels only to `costs.view`, as a key or inside a sentence.
-            'data': r.normalized_data if include_cost else import_exports.without_costs(r.normalized_data),
-            'errors': r.errors if include_cost else import_exports.cost_free_messages(r.errors),
-            'warnings': r.warnings if include_cost else import_exports.cost_free_messages(r.warnings),
+            'data': data(r), 'errors': said(r.errors), 'warnings': said(r.warnings),
         } for r in ordered]
         payload['rows_truncated'] = job.rows_total > len(ordered)
     return payload
@@ -687,7 +728,9 @@ class AdminUnitImportPreviewView(APIView):
         except (xlsx_reader.XlsxError, unit_import_services.UnitImportError) as exc:
             return _error(exc)
         return Response({
-            **_job_payload(job, rows=True, include_cost=may_view_costs(request)),
+            # One's own upload: its rows already dropped what the uploader may not set (IMPORT-WARRANTY-AUTHORITY),
+            # and the variant price review is read by whoever uploaded it (NEW-TEMPLATE-PRICE).
+            **_job_payload(job, rows=True, include_cost=may_view_costs(request), include_terms=True),
             **_unit_terms_payload(request, company, job),
         }, status=status.HTTP_201_CREATED)
 
@@ -746,7 +789,7 @@ class AdminUnitImportApplyView(APIView):
         failed = (job.summary or {}).get('applied', {}).get('label_failed', 0)
         batches = [*label_batches.summaries_for_job(company, job.pk), *label_batches.failures(failed)]
         return Response({
-            **_job_payload(job),
+            **_job_payload(job, include_terms=_may_read_terms(request, company)),
             'label_batches': batches,
             'label_error': bool(failed) or label_batches.has_error(batches),
         })
@@ -775,7 +818,8 @@ class AdminUnitImportApproveTermsView(APIView):
             job, _changed = unit_import_services.approve_terms(job=job, actor=request.user, request=request)
         except unit_import_services.UnitImportError as exc:
             return _unit_import_refusal(exc)
-        return Response({**_job_payload(job), **_unit_terms_payload(request, company, job)})
+        return Response({**_job_payload(job, include_terms=_may_read_terms(request, company)),
+                         **_unit_terms_payload(request, company, job)})
 
 
 def _applied_units_job(request, pk):
@@ -827,7 +871,7 @@ class AdminUnitImportVoidView(APIView):
 
     @answers_busy
     def post(self, request, pk):
-        _company, job, error = _applied_units_job(request, pk)
+        company, job, error = _applied_units_job(request, pk)
         if error:
             return error
         from . import unit_import_batch
@@ -838,7 +882,8 @@ class AdminUnitImportVoidView(APIView):
                                                       request=request, confirm_used=data.get('confirm_used') is True)
         except unit_import_batch.BatchError as exc:
             return _batch_refusal(exc)
-        return Response({**_job_payload(job), 'changed': changed, 'voided': (job.summary or {}).get('voided')})
+        return Response({**_job_payload(job, include_terms=_may_read_terms(request, company)), 'changed': changed,
+                         'voided': (job.summary or {}).get('voided')})
 
 
 class AdminUnitImportReportView(APIView):
@@ -1001,6 +1046,7 @@ class AdminImportHistoryView(APIView):
         # jobs of their own branches existed. Read in batches, up to a bound,
         # with the caller's scope asked once (review of PR #236).
         reach = _Reach(request.user, company)
+        include_terms = _may_read_terms(request, company)
         results, seen = [], set()
         for start in range(0, HISTORY_SCAN, HISTORY_BATCH):
             batch = list(queryset[start:start + HISTORY_BATCH])
@@ -1008,7 +1054,7 @@ class AdminImportHistoryView(APIView):
                 if job.pk in seen or not reach.allows(job):
                     continue
                 seen.add(job.pk)
-                results.append(_job_payload(job))
+                results.append(_job_payload(job, include_terms=include_terms))
                 if len(results) == HISTORY_LIMIT:
                     break
             if len(results) == HISTORY_LIMIT or len(batch) < HISTORY_BATCH:
@@ -1023,31 +1069,13 @@ class AdminImportJobView(APIView):
         company, job, error = _job_or_error(request, pk)
         if error:
             return error
-        payload = _job_payload(job, rows=True, include_cost=may_view_costs(request))
+        payload = _job_payload(job, rows=True, include_cost=may_view_costs(request),
+                               include_terms=_may_read_terms(request, company))
         if job.import_type == BulkImportJob.UNITS:
-            # IMPORT-TERMS-APPROVAL — a load reopened by its link: what it needs before it can be registered.
+            # IMPORT-TERMS-APPROVAL — a load reopened by its link: what it needs before it can be registered (which
+            # rows carry terms and the approval; their values only to `products.manage`, above).
             payload.update(_unit_terms_payload(request, company, job))
-            if not payload['can_update_prices']:
-                payload = _without_commercial_terms(payload)
         return Response(payload)
-
-
-#: Review of #434 — the prices and warranties a reopened device load stages, hidden from whoever may not set them.
-_TERM_KEYS = ('sale_price', 'warranty_days', 'file_price')
-
-
-def _without_commercial_terms(payload: dict) -> dict:
-    """
-    The reopened job without the file's own prices and warranties (each row's) nor the variant price review: who does
-    not hold `products.manage` learns WHICH rows carry terms (`commercial_terms_rows`) and the approval, not the values.
-    The preview answer of their own upload is not this one: their preview already dropped them.
-    """
-    summary = payload.get('summary')
-    if isinstance(summary, dict) and 'price_review' in summary:
-        summary = {key: value for key, value in summary.items() if key != 'price_review'}
-    rows = [{**row, 'data': {key: value for key, value in (row.get('data') or {}).items() if key not in _TERM_KEYS}}
-            for row in payload.get('rows') or []]
-    return {**payload, 'summary': summary, **({'rows': rows} if 'rows' in payload else {})}
 
 
 class AdminImportErrorReportView(APIView):
@@ -1070,7 +1098,10 @@ class AdminImportErrorReportView(APIView):
             return response
 
         response = HttpResponse(
-            import_exports.error_report_csv(job, include_cost=may_view_costs(request)),
+            import_exports.error_report_csv(
+                job, include_cost=may_view_costs(request),
+                # IMPORT-TERMS-APPROVAL — a device load's price notes only to `products.manage`.
+                include_terms=job.import_type != BulkImportJob.UNITS or _may_read_terms(request, company)),
             content_type='text/csv; charset=utf-8',
         )
         response['Content-Disposition'] = (
@@ -1166,108 +1197,6 @@ def _job_or_error(request, pk):
             {'detail': _NOT_FOUND}, status=status.HTTP_404_NOT_FOUND,
         )
     return company, job, None
-
-
-def _job_branch_ids(job):
-    """
-    The branches a job touches, as its snapshot recorded them at preview.
-
-    `None` when the snapshot cannot say — not a mapping, a branch map that is
-    missing, empty or not a map, an id that is not a number. That FAILS CLOSED
-    (review of PR #236): a job whose branches are unknown is a job of the whole
-    company, and only somebody holding every branch reaches it. An empty set is
-    a job that names no branch by design (a product load without old
-    quantities, a load of pictures).
-    """
-    if job.import_type not in (BulkImportJob.UNITS, BulkImportJob.STOCK, BulkImportJob.PRODUCTS):
-        return set()
-    snapshot = job.mapping_snapshot
-    if not isinstance(snapshot, dict):
-        return None
-    if job.import_type == BulkImportJob.UNITS:
-        raw = snapshot.get('branch_ids') or []
-        if not isinstance(raw, (list, tuple)):
-            return None
-    elif job.import_type == BulkImportJob.STOCK:
-        # A stock load always names its branches: the preview refuses one that does not.
-        raw = snapshot.get('branch_map')
-        if not isinstance(raw, dict) or not raw:
-            return None
-        raw = raw.values()
-    else:
-        # MIGRATION-B — a historical load assigns old quantities to branches.
-        raw = snapshot.get('quantity_branches') or {}
-        if not isinstance(raw, dict):
-            return None
-        raw = raw.values()
-    branch_ids = set()
-    for value in raw:
-        if isinstance(value, bool):
-            return None
-        try:
-            branch_ids.add(int(value))
-        except (TypeError, ValueError):
-            return None
-    return branch_ids
-
-
-class _Reach:
-    """
-    The caller's branch scope inside one company, asked ONCE per request.
-
-    A job exists for the caller only inside the branches they may operate in.
-    A job of DEVICES carries their serials and IMEIs, row by row; a job of
-    STOCK carries a branch's name, its shelf as it stood and who counted it; a
-    historical PRODUCT job, the old quantities of each branch it was given.
-    Those are readable elsewhere only inside the caller's branches, so a
-    staged file is too (SEC-IMPORT-01): a job that touches a branch out of the
-    caller's reach is not there for them — 404 on its detail, its report and
-    its apply, absent from the history. A product job that names no branch is
-    the catalogue's, and keeps the rule it always had.
-
-    Both answers are computed lazily and kept, so the history asks them once
-    for fifty jobs, not fifty times.
-    """
-
-    def __init__(self, user, company):
-        self.user = user
-        self.company = company
-        self._company_wide = None
-        self._reachable = None
-
-    @property
-    def company_wide(self) -> bool:
-        if self._company_wide is None:
-            self._company_wide = has_company_wide_scope(self.user, self.company)
-        return self._company_wide
-
-    @property
-    def reachable(self) -> set:
-        if self._reachable is None:
-            self._reachable = set(visible_branches(self.user, self.company).values_list('pk', flat=True))
-        return self._reachable
-
-    def allows(self, job) -> bool:
-        wanted = _job_branch_ids(job)
-        if wanted is None:
-            return self.company_wide
-        if job.import_type == BulkImportJob.UNITS:
-            # A device job that names no branch is its uploader's (the rule it always had).
-            if not wanted:
-                return job.created_by_id == self.user.pk
-            return wanted <= self.reachable
-        if not wanted:
-            return True
-        if self.company_wide:
-            # The whole company, as before: a branch closed since the load does
-            # not hide its history from somebody who holds every branch.
-            return True
-        return wanted <= self.reachable
-
-
-def _job_within_reach(user, company, job) -> bool:
-    """Whether `job` exists for `user` (see `_Reach`)."""
-    return _Reach(user, company).allows(job)
 
 
 def _xlsx(payload: bytes, filename: str) -> HttpResponse:

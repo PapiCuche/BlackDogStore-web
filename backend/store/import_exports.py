@@ -532,6 +532,18 @@ def cost_free_messages(messages) -> list:
     return [cost_free_message(message) for message in messages or []]
 
 
+#: IMPORT-TERMS-APPROVAL (review of #434) — the device load's notes that name a sale price from the file
+#: (`unit_import_services._price_note`), and what a reader without `products.manage` reads instead.
+_PRICE_NOTE = re.compile(r'^(Precio del archivo S/ |«.*» aún no tiene precio de venta; el archivo propone S/ )')
+PRICE_NOTE_HIDDEN = ('El archivo trae un precio de venta distinto del de la variante: lo revisa quien administra '
+                     'productos.')
+
+
+def terms_free_messages(messages) -> list:
+    """`messages` as a reader without `products.manage` may read them: a note that names the file's price, redacted."""
+    return [PRICE_NOTE_HIDDEN if _PRICE_NOTE.match(str(message)) else message for message in messages or []]
+
+
 def history_report_csv(job, *, include_cost=False) -> str:
     """
     LABEL-MIGRATION-01 — the reconciliation report: every row of a historical job.
@@ -708,7 +720,7 @@ def inventory_export_bytes(*, company, branches, include_quantities: bool) -> by
     return buffer.getvalue()
 
 
-def error_report_csv(job, *, include_cost=False) -> str:
+def error_report_csv(job, *, include_cost=False, include_terms=True) -> str:
     """
     The rows that failed, as CSV (§63).
 
@@ -717,11 +729,15 @@ def error_report_csv(job, *, include_cost=False) -> str:
     without it Excel on Windows renders every accented product name as mojibake
     and the report becomes unreadable in the one program that will open it.
 
-    A message that names a cost names it only for `costs.view` (SEC-IMPORT-01).
+    A message that names a cost names it only for `costs.view` (SEC-IMPORT-01); one that names a sale price of the
+    file, only for `products.manage` (`include_terms`, IMPORT-TERMS-APPROVAL).
     """
     from .xlsx_reader import guard_text
 
-    messages = (lambda texts: list(texts or [])) if include_cost else cost_free_messages
+    by_cost = (lambda texts: list(texts or [])) if include_cost else cost_free_messages
+
+    def messages(texts):
+        return by_cost(texts) if include_terms else terms_free_messages(by_cost(texts))
 
     buffer = io.StringIO()
     writer = csv.writer(buffer)

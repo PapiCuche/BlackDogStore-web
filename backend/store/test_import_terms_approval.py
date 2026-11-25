@@ -367,3 +367,94 @@ class ReviewFollowUpTest(TermsApprovalBase, TestCase):
         self.assertEqual(res.json()['code'], 'prices_forbidden')
         self.assertIn('sucursales', res.json()['detail'])
         self.assert_nothing_registered(job)
+
+
+PRICE_NOTE = ('Precio del archivo S/ 3199.90 distinto del de la variante «Teléfono X 128 GB Azul usado» (S/ 3000.00; '
+              'diferencia +199.90). No se aplica solo: revisa la propuesta antes de registrar.')
+NO_PRICE_NOTE = ('«Teléfono X 128 GB Azul usado» aún no tiene precio de venta; el archivo propone S/ 3199.90. No se aplica '
+                 'solo: revisa la propuesta antes de registrar.')
+
+
+class EveryPayloadHidesTheTermsTest(TermsApprovalBase, TestCase):
+    """Second review of #434: every answer about a device load hides its terms from whoever may not set them."""
+
+    def staged_with_review(self):
+        job = self.staged_with_terms()
+        job.summary = {**job.summary, 'price_review': [{'variant_id': self.used128.pk, 'proposed_price': '3199.90'}]}
+        job.save(update_fields=['summary'])
+        return job
+
+    def history(self, user):
+        body = client_for(user).get('/api/admin/imports/?type=units').json()
+        return {entry['id']: entry for entry in body['results']}
+
+    def test_the_history_hides_the_price_review_from_a_stocker(self):
+        job = self.staged_with_review()
+        self.assertNotIn('price_review', self.history(self.stocker)[job.pk]['summary'])
+        self.assertIn('price_review', self.history(self.manager)[job.pk]['summary'])
+
+    def test_the_apply_answer_hides_the_price_review_from_a_stocker(self):
+        job = self.staged_with_review()
+        res = self.apply(job, self.stocker, without_commercial_terms=True)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertNotIn('price_review', res.json()['summary'])
+
+    def test_the_apply_answer_keeps_the_price_review_for_a_manager(self):
+        job = self.staged_with_review()
+        res = self.apply(job, self.manager)
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertIn('price_review', res.json()['summary'])
+
+    def test_the_void_answer_hides_the_price_review_from_a_stocker(self):
+        job = self.staged_with_review()
+        self.assertEqual(self.apply(job, self.stocker, without_commercial_terms=True).status_code, 200)
+        res = client_for(self.stocker).post(f'/api/admin/inventory/units/import/{job.pk}/void/',
+                                            {'reason': 'Archivo equivocado', 'confirm_used': True}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertNotIn('price_review', res.json()['summary'])
+
+    def with_price_notes(self, job, *, errors=()):
+        rows = list(job.rows.order_by('row_number'))
+        rows[0].warnings = [PRICE_NOTE, 'Otro aviso.']
+        rows[1].warnings = [NO_PRICE_NOTE]
+        rows[0].errors = list(errors)
+        for row in rows:
+            row.save(update_fields=['warnings', 'errors'])
+        return job
+
+    def test_the_reopened_job_redacts_the_price_notes_for_a_stocker(self):
+        job = self.with_price_notes(self.staged_with_terms())
+        body = client_for(self.stocker).get(f'/api/admin/imports/{job.pk}/').json()
+        said = ' '.join(w for row in body['rows'] for w in row['warnings'])
+        self.assertNotIn('3199.90', said)
+        self.assertNotIn('3000.00', said)
+        self.assertIn('Otro aviso.', said)
+        self.assertIn('quien administra productos', said)
+        body = client_for(self.manager).get(f'/api/admin/imports/{job.pk}/').json()
+        self.assertIn(PRICE_NOTE, [w for row in body['rows'] for w in row['warnings']])
+
+    def test_the_error_report_redacts_the_price_notes_for_a_stocker(self):
+        job = self.with_price_notes(self.staged_with_terms(), errors=['Fila con error.'])
+        stocker_csv = client_for(self.stocker).get(f'/api/admin/imports/{job.pk}/errors.csv/')
+        self.assertEqual(stocker_csv.status_code, 200)
+        text = stocker_csv.content.decode('utf-8')
+        self.assertIn('Fila con error.', text)
+        self.assertNotIn('3199.90', text)
+        manager_csv = client_for(self.manager).get(f'/api/admin/imports/{job.pk}/errors.csv/').content.decode('utf-8')
+        self.assertIn('3199.90', manager_csv)
+
+    def test_terms_free_messages(self):
+        from store import import_exports
+        redacted = import_exports.terms_free_messages([PRICE_NOTE, NO_PRICE_NOTE, 'Otro aviso.'])
+        self.assertEqual(len(redacted), 3)
+        self.assertEqual(redacted[2], 'Otro aviso.')
+        self.assertFalse(any('S/' in message for message in redacted))
+
+    def test_dropping_with_a_valid_approval_records_no_reviewer(self):
+        job = self.staged_with_terms()
+        self.approve(job, self.manager)
+        self.assertEqual(self.apply(job, self.stocker, without_commercial_terms=True).status_code, 200)
+        log = AdminAuditLog.objects.get(action='stock_units_import_applied')
+        self.assertEqual(log.metadata['commercial_terms'], 'dropped')
+        self.assertIsNone(log.metadata['terms_approved_by_id'])
+        self.assertIsNone(log.metadata['terms_digest'])

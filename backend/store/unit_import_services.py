@@ -839,8 +839,8 @@ def _approval_problem(job, rows):
             f'{name} aprobó los precios y garantías de esta carga, pero ya no administra productos. No se registró '
             f'nada: pide la aprobación de quien administre productos ahora, o registra los equipos sin precios ni '
             f'garantías.')
-    # The reach the approval asked (the job's branches, `import_views._job_within_reach`), asked again.
-    from .import_views import _job_within_reach
+    # The reach the approval asked (the job's branches, `import_access`), asked again.
+    from .import_access import _job_within_reach
 
     if not _job_within_reach(job.terms_approved_by, job.company, job):
         return PRICES_FORBIDDEN, (
@@ -1606,8 +1606,9 @@ def apply_units(*, job, actor, request=None, price_updates=None, without_commerc
                                   code=PRICES_FORBIDDEN)
     commercial_terms = TERMS_DROPPED if drop_terms else TERMS_APPLIED if carrying else TERMS_NONE
     # Review of #434 — the reviewer is recorded whenever a valid approval covers these terms, whoever applies.
-    approved = (terms_authority == 'approval' or bool(carrying and job.terms_approved_digest
-                                                       and _approval_problem(job, rows)[0] is None))
+    # Nobody's approval is recorded for terms that were dropped (second review of #434).
+    approved = not drop_terms and (terms_authority == 'approval' or bool(
+        carrying and job.terms_approved_digest and _approval_problem(job, rows)[0] is None))
     # NEW-TEMPLATE-PRICE — asked of whoever APPLIES, before anything is written.
     price_updates = clean_price_updates(job, actor, price_updates)
 

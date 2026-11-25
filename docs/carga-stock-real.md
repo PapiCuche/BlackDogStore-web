@@ -379,8 +379,9 @@ El servidor vuelve a comprobarlo al registrar:
 - la aprobación cubre sólo los precios y garantías **de cada equipo**: cambiar el precio de una variante (§5.1) sigue
   exigiendo `products.manage` a quien registra.
 
-Al reabrir la carga por el enlace, quien no administra productos ve qué filas traen precio o garantía y la aprobación,
-pero no los valores.
+Quien no administra productos ve qué filas traen precio o garantía y la aprobación, pero no los valores: ni al reabrir
+la carga, ni en el historial, ni en la respuesta del registro o de la anulación, ni en el CSV de errores (los avisos que
+nombran el precio del archivo se le muestran sin el importe).
 
 Auditoría: `unit_import_terms_approved` (carga, filas con precio o garantía, inicio de la huella, quién preparó, si fue
 su misma persona) y, en `stock_units_import_applied`, `prepared_by_id`, `terms_approved_by_id` y `terms_digest` (si
