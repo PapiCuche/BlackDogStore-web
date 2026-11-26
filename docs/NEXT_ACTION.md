@@ -16,7 +16,7 @@ de sólo lectura, huellas y diff esperado.
 | 3 | «GO despliegue c176bfe prod-02» | 16:51:51–16:53:22 | **HECHO.** Exactamente `c176bfea`, imágenes ensayadas; plan = sólo 0193, migrada antes del cambio en el primer intento (7,4 s); sanos en ~9 s; huella de datos igual salvo la hoja; Kardex idéntico (50 líneas, 13 cadenas, 0 rupturas); rutas sin sorpresas (`/admin/inventory/scan` 200); healthcheck 0 ATENCIÓN; reimpresión de sólo lectura; 0 errores; Caddy, CRM, SUNAT, enrutamiento y crontab sin cambios | `db-20261126-165157` (+ evidencias) | `backups/d-r14-go.log` |
 
 **Antes del GO 1 se encontró un cambio desde el ensayo del 25/11:** #23 la desactivó el usuario 1 el 2026-11-25 a las
-14:40 (auditoría `product_deactivated`), y su ficha pública responde 404. Las precondiciones del kit (identidad,
+14:40 (auditoría `product_deactivated`, fila 787, consulta de sólo lectura), y su ficha pública responde 404. Las precondiciones del kit (identidad,
 serializada, sin IMEI, 0 equipos, huella de alcance `cc02e755…`) no cambiaron. Se repitió el ensayo del kit validado,
 sin tocar sus archivos, sobre una copia de ese momento: 118/119. El único fallo es la comprobación del ensayo que
 esperaba la ficha de #23 en 200; aplicar, repetir, rechazos, vuelta atrás y reaplicar pasaron.
@@ -146,7 +146,7 @@ archivos reales.
   mano; que una pieza que nombra otro modelo no herede nada; el límite de 40 palabras por oferta.
 - **Cargas (#434):** si `public_notes` y `cosmetic_grade` cuentan como términos comerciales; si un almacenero puede ver
   el precio actual de la variante en su vista previa.
-- GO pendientes: siete notas, #22/#23, archivos del stock real.
+- GO pendientes entonces: siete notas, #22/#23 (ambos HECHOS el 2026-11-26), archivos del stock real.
 
 ## (Histórico) R13.2 · EJECUCIÓN CONTROLADA (2026-11-25) — los cinco GO del propietario, HECHOS en orden
 
@@ -168,7 +168,7 @@ Después: `check_unit_stock` 0 diferencias tras cada operación; finanzas y conc
 
 ## (Histórico) GO de datos preparados el 2026-11-25 — IMEI #22/#23 y sellos de las 7 notas HECHOS el 2026-11-26; stock real arriba
 
-### GO pendientes
+### GO (estado al 2026-11-25; los dos primeros se ejecutaron el 2026-11-26, ver arriba)
 | Operación | GO exacto | Kit | Estado |
 |---|---|---|---|
 | Sellos de las 7 notas (fuente `222417`) | «GO restaurar sellos 7 notas prod-02 fuente 222417» | `backups/release-notes7b/` | Ensayo 72/72 (con R13.2 en la copia); `check` sobre la producción en R13.2 OK (13:56) |
