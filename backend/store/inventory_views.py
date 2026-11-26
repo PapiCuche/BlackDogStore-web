@@ -642,18 +642,14 @@ class AdminStockMovementListView(APIView):
         movement_type = (request.query_params.get('movement_type') or '').strip()
         if movement_type:
             # STOCK-EXISTING-01 — «Ingreso de inventario existente» is a filter of its own, and a purchase filter
-            # never lists it: what a person reads as a type is what the filter means.
-            if movement_type == StockMovement.EXISTING_STOCK:
-                qs = qs.filter(StockMovement.existing_stock_q())
-            elif movement_type not in dict(StockMovement.MOVEMENT_TYPE_CHOICES):
+            # never lists it: what a person reads as a type is what the filter means (`StockMovement.of_type`).
+            if (movement_type != StockMovement.EXISTING_STOCK
+                    and movement_type not in dict(StockMovement.MOVEMENT_TYPE_CHOICES)):
                 return Response(
                     {'detail': 'Tipo de movimiento inválido.'},
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            elif movement_type == StockMovement.PURCHASE_ENTRY:
-                qs = qs.filter(movement_type=movement_type).exclude(StockMovement.existing_stock_q())
-            else:
-                qs = qs.filter(movement_type=movement_type)
+            qs = StockMovement.of_type(qs, movement_type)
 
         order_id = request.query_params.get('order')
         if order_id:

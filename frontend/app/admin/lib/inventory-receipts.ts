@@ -135,8 +135,8 @@ export function countingPatch(line: DraftLine, byUnit: boolean): Partial<DraftLi
 
 /**
  * INV-OPENING-01 — what the entry IS in the Kardex: a purchase (default) or the stock the shop already had.
- * STOCK-EXISTING-01 — «existing»: what the shop already had, for an article that already has other movements in the
- * branch (the opening is closed). The server keeps it as a purchase entry marked apart; it never reads as a purchase.
+ * STOCK-EXISTING-01 — «existing»: what the shop already had, on any shelf; like a purchase it closes the shelf's
+ * opening. The server keeps it as a purchase entry marked apart; it never reads as a purchase.
  */
 export type EntryKind = "purchase" | "opening" | "existing";
 export const ENTRY_KINDS: { value: EntryKind; label: string; help: string }[] = [
@@ -147,7 +147,7 @@ export const ENTRY_KINDS: { value: EntryKind; label: string; help: string }[] = 
   },
   {
     value: "existing", label: "Ingreso de inventario existente",
-    help: "Equipos que ya tenías; no es una compra. Úsalo cuando el artículo ya tiene otros movimientos en esta sucursal.",
+    help: "Equipos que ya tenías; no es una compra. Vale para cualquier artículo y, como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige inventario inicial.",
   },
 ];
 export const entryKindLabel = (kind?: string | null): string =>

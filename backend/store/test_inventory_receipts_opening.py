@@ -73,7 +73,7 @@ class OpeningPreconditionTest(OpeningBase):
         data = self.preview(self.costed, body, expect=200).json()
         self.assertFalse(data['ok'], data)
         self.assertIn('opening_has_history', data['lines'][0].get('codes', []), data)
-        self.assertTrue(any('compra' in e for e in data['lines'][0]['errors']), data['lines'][0]['errors'])
+        self.assertTrue(any('inventario existente' in e for e in data['lines'][0]['errors']), data['lines'][0]['errors'])
         res = self.confirm(self.costed, body, expect=400)
         self.assertEqual(res.json()['code'], 'invalid_lines')
         self.assertEqual(self.snapshot(), before)

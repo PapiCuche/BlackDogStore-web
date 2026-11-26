@@ -1920,6 +1920,18 @@ class StockMovement(models.Model):
         """
         return models.Q(movement_type=cls.PURCHASE_ENTRY, metadata__contains={'entry_kind': cls.EXISTING_STOCK})
 
+    @classmethod
+    def of_type(cls, queryset, movement_type: str):
+        """
+        STOCK-EXISTING-01 — `queryset` filtered by the type a person reads: `existing_stock` is its own filter, and a
+        `purchase_entry` filter never lists it. Every Kardex filter (admin and v1) goes through here.
+        """
+        if movement_type == cls.EXISTING_STOCK:
+            return queryset.filter(cls.existing_stock_q())
+        if movement_type == cls.PURCHASE_ENTRY:
+            return queryset.filter(movement_type=movement_type).exclude(cls.existing_stock_q())
+        return queryset.filter(movement_type=movement_type)
+
     @property
     def is_existing_stock(self) -> bool:
         metadata = self.metadata if isinstance(self.metadata, dict) else {}

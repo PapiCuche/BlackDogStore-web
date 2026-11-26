@@ -28,6 +28,7 @@ from store import unit_import_batch
 from store import unit_import_services as unit_import
 from store.models import BranchStock, LabelBatch, Order, OrderItem, StockMovement, StockUnit
 from store.serializers import StockMovementSerializer
+from store.test_import_terms_approval import TermsApprovalBase
 from store.test_inv_load import LoadBase
 from store.test_inventory_receipts import ReceiptBase, unit
 from store.test_stock_units import UnitsBase, imei
@@ -111,6 +112,18 @@ class KardexLabelTest(UnitsBase):
         self.assertEqual(labels(movement_type='existing_stock'), [LABEL])
         self.assertEqual(labels(movement_type='purchase_entry'), ['Entrada por compra'])
 
+        # The v1 Kardex (`/api/v1/internal/<slug>/inventory/movements/`) filters the same way.
+        from store.tests import _m7_url
+
+        def v1_labels(**params):
+            res = self.client.get(_m7_url('m7-shop', 'movements'), {'product_slug': self.phone.slug, **params})
+            self.assertEqual(res.status_code, 200, res.content)
+            return sorted(row['movement_type_label'] for row in res.json()['results'])
+
+        self.assertEqual(v1_labels(), sorted(['Entrada por compra', LABEL]))
+        self.assertEqual(v1_labels(movement_type='existing_stock'), [LABEL])
+        self.assertEqual(v1_labels(movement_type='purchase_entry'), ['Entrada por compra'])
+
 
 # ---------------------------------------------------------------------------
 # 2. «Recibir mercadería»
@@ -138,6 +151,10 @@ class ReceiptExistingTest(ReceiptBase):
                                                       entry_kind='opening'), expect=200).json()
         self.assertFalse(opening['ok'])
         self.assertIn(receipt_services.OPENING_HAS_HISTORY, opening['lines'][0]['codes'])
+        # The refusal points to the kind that fits, never to a purchase.
+        said = ' '.join(opening['lines'][0]['errors'])
+        self.assertIn('Ingreso de inventario existente', said)
+        self.assertNotIn('compra', said)
 
         body = self.body(self.dev(self.phone, unit('EXR-0002', next(self._imeis), cost='3100.00')),
                          entry_kind='existing')
@@ -183,6 +200,13 @@ class ReceiptExistingTest(ReceiptBase):
         missing = self.body(self.dev(self.phone, unit('EXR-0102')), entry_kind='existing')
         self.assertFalse(self.preview(self.costed, missing, expect=200).json()['ok'])
         self.assertEqual(self.snapshot(), before)
+
+    def test_a_fresh_shelf_takes_existing_stock_too_and_it_closes_the_opening(self):
+        body = self.body(self.qty(self.case, 3), entry_kind='existing')
+        res = self.confirm(self.costed, body, expect=201).json()
+        self.assertTrue(_is_existing(StockMovement.objects.get(pk=res['lines'][0]['movement_id'])))
+        opening = self.preview(self.costed, self.body(self.qty(self.case, 1), entry_kind='opening'), expect=200).json()
+        self.assertIn(receipt_services.OPENING_HAS_HISTORY, opening['lines'][0]['codes'])
 
     def test_the_authority_is_a_purchase_s(self):
         body = self.body(self.qty(self.case, 2), entry_kind='existing')
@@ -255,6 +279,15 @@ class RegisterExistingTest(UnitsBase):
         self.assertEqual(res.status_code, 400, res.content)
         self.assertFalse(StockUnit.objects.filter(product=self.laptop).exists())
 
+    def test_a_price_or_a_warranty_without_products_manage_is_refused(self):
+        for serial, extra in (('EXU-0401', {'sale_price': '3900.00'}), ('EXU-0402', {'warranty_days': 90})):
+            res = self.api.post(self.URL, {
+                'product_id': self.phone.pk, 'branch': self.branch_a.pk, 'reason': 'Vitrina', 'entry_kind': 'existing',
+                'units': [{'serial_number': serial, 'imei': next(self._imeis), **extra}]}, format='json')
+            self.assertEqual(res.status_code, 403, res.content)
+            self.assertEqual(res.json().get('code'), 'prices_forbidden')
+        self.assertFalse(StockUnit.objects.filter(product=self.phone).exists())
+
     def test_a_product_of_another_company_is_404(self):
         res = self.api.post(self.URL, {'product_id': self.foreign_phone.pk, 'branch': self.branch_a.pk,
                                        'reason': 'Vitrina', 'entry_kind': 'existing',
@@ -291,6 +324,7 @@ class ImportExistingTest(LoadBase):
         self.assertEqual(applied['summary']['applied']['movements'], 1)
         movement = StockMovement.objects.filter(product=self.phone, branch=self.branch_a).latest('pk')
         self.assertTrue(_is_existing(movement), movement.metadata)
+        self.assertEqual(movement.reason, 'Inventario existente · Conteo inicial')
         self.assertEqual(LabelBatch.objects.filter(source_key=label_batches.job_key(payload['id'], self.branch_a.pk)).count(), 1)
         self.assertEqual(mismatches(company=self.company)['mismatches'], [])
 
@@ -325,3 +359,30 @@ class ImportExistingTest(LoadBase):
         self.apply(self.upload([self.phone_cells('EXI-0401')], entry_kind='existing'))
         self.assertFalse(StockMovement.objects.filter(company=self.other, metadata__entry_kind=MARK).exists())
         self.assertFalse(BranchStock.objects.filter(branch__company=self.other, product=self.phone).exists())
+
+
+class ImportTermsExistingTest(TermsApprovalBase, TestCase):
+    """The device file's own prices and warranties: approved by `products.manage`, then registered as existing stock."""
+
+    def existing_job(self):
+        from store.test_cost_imports import upload
+        from store.test_import_terms_approval import H
+
+        return unit_import.preview_units(
+            company=self.company, actor=self.manager, upload=upload(H, [self.row(0, '90', '1500.00'), self.row(1)],
+                                                                    title='Equipos'),
+            filename='equipos.xlsx', reachable_branch_ids=[self.branch.pk], default_branch=self.branch.pk,
+            default_reason='Vitrina', entry_kind='existing')
+
+    def test_approved_terms_then_applied_by_a_stocker(self):
+        job = self.existing_job()
+        self.assertEqual(job.options_snapshot.get('entry_kind'), 'existing')
+        self.assertEqual(self.apply(job, self.stocker).status_code, 403)          # not approved yet
+        self.assertEqual(self.approve(job, self.second_manager).status_code, 200)
+        res = self.apply(job, self.stocker)
+        self.assertEqual(res.status_code, 200, res.content)
+        device = StockUnit.objects.get(serial_number='SERAPR00')
+        self.assertEqual((device.warranty_days, str(device.sale_price)), (90, '1500.00'))
+        movement = StockMovement.objects.get(metadata__unit_ids__contains=[device.pk])
+        self.assertTrue(_is_existing(movement), movement.metadata)
+        self.assertTrue(movement.reason.startswith('Inventario existente'), movement.reason)

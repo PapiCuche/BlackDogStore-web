@@ -564,11 +564,11 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
                     checked={entryKind === "opening"} onChange={() => { setEntryKind("opening"); setJob(null); }} />
                   Inventario inicial (equipos que ya tenías; se puede cargar en varias tandas mientras el artículo no tenga otros movimientos en esa sucursal)
                 </label>
-                {/* STOCK-EXISTING-01 — what the shop already had, once the article has other movements there. */}
+                {/* STOCK-EXISTING-01 — what the shop already had, on any shelf (it closes the opening, like a purchase). */}
                 <label className="flex items-center gap-2">
                   <input type="radio" name="unit-import-entry-kind" value="existing" disabled={working}
                     checked={entryKind === "existing"} onChange={() => { setEntryKind("existing"); setJob(null); }} />
-                  Ingreso de inventario existente (equipos que ya tenías; no es una compra)
+                  Ingreso de inventario existente (equipos que ya tenías; no es una compra. Vale en cualquier estante y, como una compra, cierra su inventario inicial: si el artículo aún no tiene movimientos en esa sucursal, elige inventario inicial)
                 </label>
               </div>
             </fieldset>

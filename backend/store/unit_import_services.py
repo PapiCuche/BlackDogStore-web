@@ -600,6 +600,16 @@ def _is_zero(text: str) -> bool:
 ENTRY_PURCHASE, ENTRY_OPENING, ENTRY_EXISTING = 'purchase', 'opening', 'existing'
 
 
+def existing_reason(reason: str) -> str:
+    """
+    STOCK-EXISTING-01 review — the Kardex reason of existing stock reads «Inventario existente · <motivo>», like
+    «Recibir mercadería»'s (`receipt_services.reason_for`), cut to what `receive_units` accepts.
+    """
+    text = f'Inventario existente · {reason}' if reason else 'Inventario existente'
+    limit = stock_unit_services.MAX_REASON
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + '…'
+
+
 def _entry_kind(value) -> str:
     if value in (None, ''):
         return ENTRY_PURCHASE
@@ -1714,8 +1724,8 @@ def apply_units(*, job, actor, request=None, price_updates=None, without_commerc
                         **{name: data(row)[name] for name in _USED_COLUMNS
                            if name in data(row) and not (drop_terms and name == 'warranty_days')},
                     } for row in chunk],
-                    actor=actor, reason=reason, movement_type=movement_type, request=request,
-                    supplier=suppliers.get(supplier_id), received_on=received_on or None,
+                    actor=actor, reason=existing_reason(reason) if marks else reason, movement_type=movement_type,
+                    request=request, supplier=suppliers.get(supplier_id), received_on=received_on or None,
                     may_set_warranty=may_set_terms or terms_authority == 'approval',
                     metadata=marks,
                 )

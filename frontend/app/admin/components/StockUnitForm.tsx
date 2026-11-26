@@ -50,7 +50,7 @@ const plural = (n: number) => (n === 1 ? "1 equipo" : `${n} equipos`);
 
 /**
  * INV-LOAD-01 — the entry types this form offers: the stock the shop already had, or a purchase (the default).
- * STOCK-EXISTING-01 — and the devices the shop already had once the product has other movements in the branch.
+ * STOCK-EXISTING-01 — and the devices the shop already had, on any shelf (like a purchase, it closes the opening).
  */
 const ENTRY_TYPES: { value: UnitEntryKind; label: string }[] = [
   { value: "opening", label: "Inventario inicial" },
@@ -433,7 +433,7 @@ export function StockUnitForm({
             {entryKind === "opening"
               ? "Equipos que ya tenías. Se pueden registrar en varias tandas mientras el producto no tenga otros movimientos (ventas, compras, traslados) en esta sucursal."
               : entryKind === "existing"
-                ? "Equipos que ya tenías; no es una compra. Para un producto que ya tiene otros movimientos en esta sucursal."
+                ? "Equipos que ya tenías; no es una compra. Vale para cualquier producto y, como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige inventario inicial."
                 : "Equipos que llegan comprados. Quedan como compra en el Kardex."}
           </p>
           {errorFor("entry_kind") ? <p role="alert" className="mt-1 text-xs text-danger">{errorFor("entry_kind")}</p> : null}

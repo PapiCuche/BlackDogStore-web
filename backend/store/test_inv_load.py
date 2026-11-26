@@ -125,7 +125,7 @@ class OpeningInBatchesImportTest(LoadBase):
         self.assertEqual(payload['counts']['error'], 1)
         errors = ' '.join(payload['rows'][0]['errors'])
         self.assertIn('inventario inicial', errors)
-        self.assertIn('compra', errors)
+        self.assertIn('inventario existente', errors)
 
     def test_a_purchase_closes_the_opening(self):
         self.apply(self.upload([self.phone_cells('OPB-0201')], entry_kind='opening'))

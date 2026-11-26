@@ -299,13 +299,15 @@ def opening_problem(branch, product) -> str:
     """
     lines = StockMovement.objects.filter(branch=branch, product=product)
     if _closes_the_opening(lines):
+        # STOCK-EXISTING-01 review — the kind that fits is named, never a purchase that did not happen.
         return (f'«{product.name}» ya tiene movimientos en {branch.name}: no es inventario inicial. Regístralo como '
-                'compra.')
+                '«Ingreso de inventario existente».')
     shelf = BranchStock.objects.filter(branch=branch, product=product).values_list('quantity', flat=True).first() or 0
     last = lines.order_by('-pk').values_list('stock_after', flat=True).first()
     if shelf > 0 and shelf != (last or 0):
         return (f'«{product.name}» ya tiene stock en {branch.name} sin un movimiento que lo explique: no se puede '
-                'declarar como inventario inicial. Regístralo como compra o corrige su stock.')
+                'declarar como inventario inicial. Regístralo como «Ingreso de inventario existente» o corrige su '
+                'stock.')
     return ''
 
 
