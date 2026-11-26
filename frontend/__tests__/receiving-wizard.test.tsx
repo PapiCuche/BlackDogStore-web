@@ -165,7 +165,7 @@ describe('paso 1 · Procedencia', () => {
 
   it('INV-OPENING-01: «Inventario inicial» viaja como opening y la revisión lo dice', async () => {
     const u = await renderWizard();
-    await u.click(screen.getByRole('radio', { name: /Inventario inicial/ }));
+    await u.click(screen.getByRole('radio', { name: /^Inventario inicial/ }));
     expect(screen.getByText(/stock que ya tenías/)).toBeInTheDocument();
     await toArticles(u);
     await addProduct(u, CABLE);
@@ -180,6 +180,8 @@ describe('paso 1 · Procedencia', () => {
     const u = await renderWizard();
     const existing = screen.getByRole('radio', { name: /Ingreso de inventario existente/ });
     expect(existing).toHaveAccessibleDescription(/no es una compra/);
+    expect(existing).toHaveAccessibleDescription(/^Artículos que ya tenías; no es una compra/);
+    expect(existing).toHaveAccessibleDescription(/elige «Inventario inicial»/);
     await u.click(existing);
     await toArticles(u);
     await addProduct(u, CABLE);

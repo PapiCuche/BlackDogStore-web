@@ -559,17 +559,32 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
                     checked={entryKind === "purchase"} onChange={() => { setEntryKind("purchase"); setJob(null); }} />
                   Compra a proveedor
                 </label>
-                <label className="flex items-center gap-2">
-                  <input type="radio" name="unit-import-entry-kind" value="opening" disabled={working}
-                    checked={entryKind === "opening"} onChange={() => { setEntryKind("opening"); setJob(null); }} />
-                  Inventario inicial (equipos que ya tenías; se puede cargar en varias tandas mientras el artículo no tenga otros movimientos en esa sucursal)
-                </label>
+                {/* The help sits OUTSIDE the <label> and is linked by aria-describedby, so the radio's name stays short. */}
+                <div className="max-w-md">
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="unit-import-entry-kind" value="opening" disabled={working}
+                      aria-describedby="unit-import-entry-opening-help"
+                      checked={entryKind === "opening"} onChange={() => { setEntryKind("opening"); setJob(null); }} />
+                    Inventario inicial
+                  </label>
+                  <p id="unit-import-entry-opening-help" className="ml-6 text-xs text-muted">
+                    Equipos que ya tenías. Se pueden cargar en varias tandas mientras el artículo no tenga otros movimientos
+                    en esa sucursal.
+                  </p>
+                </div>
                 {/* STOCK-EXISTING-01 — what the shop already had, on any shelf (it closes the opening, like a purchase). */}
-                <label className="flex items-center gap-2">
-                  <input type="radio" name="unit-import-entry-kind" value="existing" disabled={working}
-                    checked={entryKind === "existing"} onChange={() => { setEntryKind("existing"); setJob(null); }} />
-                  Ingreso de inventario existente (equipos que ya tenías; no es una compra. Vale en cualquier estante y, como una compra, cierra su inventario inicial: si el artículo aún no tiene movimientos en esa sucursal, elige inventario inicial)
-                </label>
+                <div className="max-w-md">
+                  <label className="flex items-center gap-2">
+                    <input type="radio" name="unit-import-entry-kind" value="existing" disabled={working}
+                      aria-describedby="unit-import-entry-existing-help"
+                      checked={entryKind === "existing"} onChange={() => { setEntryKind("existing"); setJob(null); }} />
+                    Ingreso de inventario existente
+                  </label>
+                  <p id="unit-import-entry-existing-help" className="ml-6 text-xs text-muted">
+                    Equipos que ya tenías; no es una compra. Vale en cualquier estante y, como una compra, cierra su
+                    inventario inicial: si el artículo aún no tiene movimientos en esa sucursal, elige «Inventario inicial».
+                  </p>
+                </div>
               </div>
             </fieldset>
             <label className="block text-xs font-semibold text-muted">
