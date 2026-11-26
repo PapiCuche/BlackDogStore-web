@@ -1130,9 +1130,8 @@ class StockMovementSerializer(serializers.ModelSerializer):
     product_name = serializers.CharField(source='product.name', read_only=True)
     product_slug = serializers.CharField(source='product.slug', read_only=True)
     branch_name = serializers.CharField(source='branch.name', read_only=True)
-    movement_type_label = serializers.CharField(
-        source='get_movement_type_display', read_only=True,
-    )
+    # STOCK-EXISTING-01 — «Ingreso de inventario existente» for a marked purchase entry.
+    movement_type_label = serializers.CharField(source='kardex_label', read_only=True)
     actor_username = serializers.SerializerMethodField()
     signed_quantity = serializers.IntegerField(read_only=True)
     is_entry = serializers.BooleanField(read_only=True)

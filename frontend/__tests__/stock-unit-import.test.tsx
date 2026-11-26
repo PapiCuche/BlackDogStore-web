@@ -219,6 +219,17 @@ test('INV-OPENING-01: a purchase by default, and «Inventario inicial» travels 
   expect(calls[1].form?.get('entry_kind')).toBe('opening');
 });
 
+test('STOCK-EXISTING-01: «Ingreso de inventario existente» travels as existing', async () => {
+  render(<StockUnitImport branches={BRANCHES} />);
+  const existing = screen.getByRole('radio', { name: /Ingreso de inventario existente/ });
+  expect(existing).toHaveAccessibleName(/no es una compra/);
+  attach();
+  fireEvent.click(existing);
+  fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
+  await waitFor(() => expect(calls).toHaveLength(1));
+  expect(calls[0].form?.get('entry_kind')).toBe('existing');
+});
+
 // ---------------------------------------------------------------------------
 // INV-LOAD-02 — two stock templates, the before/after and annulling a load whole
 // ---------------------------------------------------------------------------

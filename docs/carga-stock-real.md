@@ -191,9 +191,41 @@ Al subir el archivo eliges el «Tipo de ingreso»:
   que llegue es compra. Anular un ingreso de inventario inicial (un equipo o una carga entera) **no** lo cierra: el
   archivo corregido se vuelve a cargar como inventario inicial.
 - **«Compra a proveedor»**: mercadería que llega comprada.
+- **«Ingreso de inventario existente»** (STOCK-EXISTING-01): equipos que ya tenías; **no es una compra**. Se acepta en
+  cualquier estante y, como una compra, cierra su inventario inicial. Pensado para los estantes cuyo inventario inicial
+  ya está cerrado (§4.1); en un estante **sin movimientos** usa «Inventario inicial».
 
 Escribe también el «Motivo para las filas sin motivo», por ejemplo «Inventario inicial diciembre 2026». Queda en el
 Kardex de cada equipo.
+
+### 4.1 Estantes con historial: «Ingreso de inventario existente»
+
+El inventario inicial de un estante (sucursal × producto) se cierra en cuanto el estante tiene **cualquier** otra
+línea de Kardex: una venta, una compra (también «Caja: llegó el equipo»), un traslado, una reserva o una baja. Desde
+ahí, «Inventario inicial» se rechaza con «ya tiene movimientos… no es inventario inicial». Antes, el stock real que
+faltaba sólo podía entrar como «Entrada por compra», que se leía como una compra que no existió.
+
+Para esos estantes elige **«Ingreso de inventario existente»**. Está en las tres puertas que ya preguntan «compra o
+inventario inicial»: la carga por Excel de equipos, «Registrar equipos» y «Recibir mercadería». El rechazo de
+«Inventario inicial» ya lo nombra («Regístralo como «Ingreso de inventario existente»»).
+
+- Se acepta en **cualquier** estante, tenga historial o no (decisión del propietario: así un Excel que mezcla
+  estantes nuevos y con historial no hay que partirlo). Como una compra, **cierra** el inventario inicial de ese
+  estante: en un estante sin movimientos se recomienda «Inventario inicial». Las reglas del equipo no cambian: IMEI válido y no repetido, una serie
+  nunca es el IMEI de otro equipo vivo (R1), costo sólo con «Ver costos».
+- En el Kardex se lee «Ingreso de inventario existente», con su propio filtro (también en la API v1,
+  `movement_type=existing_stock`); el filtro «Entrada por compra» ya no lo lista. El motivo empieza con «Inventario
+  existente» (Excel: «Inventario existente · <motivo>»). El gráfico de movimientos por tipo y la vista previa del Excel lo cuentan **aparte** de las compras
+  («N de inventario existente»).
+- Por dentro sigue siendo una entrada (`purchase_entry`) marcada con `metadata.entry_kind = 'existing_stock'`: sin
+  migración, y el costo, las etiquetas, la anulación por equipo o por carga y la corrección funcionan como en una
+  compra. **No** crea documento de compra, cuenta por pagar ni asiento: tampoco lo hacía la «Entrada por compra».
+- Los permisos son los de una compra («Mover inventario»). Precio de venta y garantía propios de cada equipo siguen
+  pidiendo «Gestionar productos» (o su aprobación, en el Excel), como en cualquier ingreso.
+- No uses «Entrada manual» (Movimientos) para esto: una entrada manual no imprime etiquetas.
+- Después de cargar, `check_unit_stock` debe salir con 0 como siempre (§8).
+
+Las líneas «Entrada por compra» escritas antes de esta opción no cambian: no se reescribe historial.
 
 ## 5. Previsualizar y leer el resultado
 
@@ -214,7 +246,8 @@ Kardex de cada equipo.
 5. **Avisos** (en gris): se registra igual. Léelos: «Fila de ejemplo de la plantilla», serie repetida en otra variante,
    IMEI en un producto sin «lleva IMEI».
 6. **«Resultado si registras el archivo»**: por sucursal y producto, los equipos disponibles y el stock antes → después,
-   y cuántos movimientos de inventario inicial y de compra escribirá. Compáralo con tu conteo físico.
+   y cuántos movimientos de inventario inicial, de compra y de inventario existente escribirá. Compáralo con tu conteo
+   físico.
 
 Una vista previa caduca a los 60 minutos: si caducó, súbela otra vez.
 

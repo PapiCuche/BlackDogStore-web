@@ -3,6 +3,22 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-26 (tarde) — R14 desplegada
+
+**Deployed**
+- R14 `c176bfea` en prod-02 (#432, #434 con `0193`, #435, #437, #438–#440).
+
+**Data** (prod-02, con GO)
+- «lleva IMEI» en las variantes #22 y #23.
+- Sellos de generación (`pdf_generated_at`) de las 7 notas de venta restaurados desde `db-20261121-222417`.
+
+**Tests** (en `master`)
+- Pruebas de navegador de los flujos de R14 en escritorio y teléfono (#442).
+
+**Ops** (prod-02 `backups/`)
+- `release-r14-post/`: verificación posterior al despliegue sobre copias aisladas.
+- `stockreal-preview/` adaptado a R14, con el informe de estantes cerrados para inventario inicial.
+
 ## 2026-11-26 — Release candidata R14 `c176bfea` (en `master`, sin desplegar)
 
 **Added**

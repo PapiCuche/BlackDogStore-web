@@ -224,7 +224,8 @@ class V1InventoryMovementsView(V1InventorySurfaceMixin, APIView):
 
         movement_type = request.query_params.get('movement_type', '').strip()
         if movement_type:
-            movements = movements.filter(movement_type=movement_type)
+            # STOCK-EXISTING-01 — the admin Kardex's filter: `existing_stock` apart, never inside `purchase_entry`.
+            movements = StockMovement.of_type(movements, movement_type)
 
         page, size = _paginate(request.query_params)
         total = movements.count()

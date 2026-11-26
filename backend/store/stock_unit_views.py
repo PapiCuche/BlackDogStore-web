@@ -158,7 +158,8 @@ def _refusal(exc) -> Response:
     return Response(body, status=getattr(exc, 'status', None) or status.HTTP_400_BAD_REQUEST)
 
 
-ENTRY_KINDS = ('purchase', 'opening')
+#: STOCK-EXISTING-01 — `existing`: devices the shop already had, on a shelf whose opening is closed (receipt_services).
+ENTRY_KINDS = ('purchase', 'opening', 'existing')
 
 
 SUPPLIERS_FORBIDDEN = 'suppliers_forbidden'
@@ -166,7 +167,8 @@ SUPPLIERS_FORBIDDEN = 'suppliers_forbidden'
 
 def _entry_of(company, data, request) -> tuple[dict, Response | None]:
     """
-    INV-LOAD-01 — `entry_kind` («purchase» by default, or «opening»), the optional `supplier` (an id of THIS company:
+    INV-LOAD-01 — `entry_kind` («purchase» by default, «opening», or STOCK-EXISTING-01's «existing»), the optional
+    `supplier` (an id of THIS company:
     another company's answers 404, like one that does not exist) and the optional `received_on` (a date, never future).
 
     D-F-3 — naming a supplier needs what reading one needs (`may_see_suppliers`), asked BEFORE any lookup: otherwise the
@@ -174,7 +176,8 @@ def _entry_of(company, data, request) -> tuple[dict, Response | None]:
     """
     kind = data.get('entry_kind') or 'purchase'
     if kind not in ENTRY_KINDS:
-        return {}, Response({'detail': 'Indica si es una compra o inventario inicial.', 'field': 'entry_kind'},
+        return {}, Response({'detail': 'Indica si es una compra, inventario inicial o inventario existente.',
+                             'field': 'entry_kind'},
                             status=status.HTTP_400_BAD_REQUEST)
     supplier = None
     wanted = data.get('supplier')
@@ -196,7 +199,8 @@ def _entry_of(company, data, request) -> tuple[dict, Response | None]:
         received_on = units.clean_received_on(data.get('received_on'))
     except InventoryError as exc:
         return {}, _refusal(exc)
-    return {'opening': kind == 'opening', 'supplier': supplier, 'received_on': received_on}, None
+    return {'opening': kind == 'opening', 'existing': kind == 'existing', 'supplier': supplier,
+            'received_on': received_on}, None
 
 
 class StockUnitListView(APIView):
@@ -380,6 +384,8 @@ class StockUnitListView(APIView):
                     # IMPORT-WARRANTY-AUTHORITY — a warranty is the price's authority: a stated one without
                     # `products.manage` refuses the batch (403 `prices_forbidden`), like the price just above.
                     may_set_warranty=may_manage_products(request),
+                    # STOCK-EXISTING-01 — a purchase entry marked as stock the shop already had.
+                    metadata={'entry_kind': StockMovement.EXISTING_STOCK} if entry['existing'] else None,
                 )
         except InventoryError as exc:
             return _refusal(exc)

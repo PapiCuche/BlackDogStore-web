@@ -133,13 +133,21 @@ export function countingPatch(line: DraftLine, byUnit: boolean): Partial<DraftLi
   return { byUnit: false, quantity: line.quantity || "1" };
 }
 
-/** INV-OPENING-01 — what the entry IS in the Kardex: a purchase (default) or the stock the shop already had. */
-export type EntryKind = "purchase" | "opening";
+/**
+ * INV-OPENING-01 — what the entry IS in the Kardex: a purchase (default) or the stock the shop already had.
+ * STOCK-EXISTING-01 — «existing»: what the shop already had, on any shelf; like a purchase it closes the shelf's
+ * opening. The server keeps it as a purchase entry marked apart; it never reads as a purchase.
+ */
+export type EntryKind = "purchase" | "opening" | "existing";
 export const ENTRY_KINDS: { value: EntryKind; label: string; help: string }[] = [
   { value: "purchase", label: "Compra a proveedor", help: "Mercadería que llega comprada. Queda como compra en el Kardex." },
   {
     value: "opening", label: "Inventario inicial",
     help: "El stock que ya tenías antes de usar el sistema. Se puede cargar en varias tandas mientras el artículo no tenga otros movimientos (ventas, compras, traslados) en esta sucursal.",
+  },
+  {
+    value: "existing", label: "Ingreso de inventario existente",
+    help: "Equipos que ya tenías; no es una compra. Vale para cualquier artículo y, como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige inventario inicial.",
   },
 ];
 export const entryKindLabel = (kind?: string | null): string =>
@@ -742,7 +750,7 @@ function reviveOrigin(raw: unknown): ReceiptOrigin {
   return {
     branch: anId(o.branch), supplier: anId(o.supplier),
     document_ref: text(o.document_ref).slice(0, DOCUMENT_REF_MAX), notes: text(o.notes).slice(0, NOTES_MAX),
-    entry_kind: o.entry_kind === "opening" ? "opening" : "purchase",
+    entry_kind: o.entry_kind === "opening" || o.entry_kind === "existing" ? o.entry_kind : "purchase",
   };
 }
 

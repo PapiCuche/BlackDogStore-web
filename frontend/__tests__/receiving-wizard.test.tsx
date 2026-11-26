@@ -176,6 +176,20 @@ describe('paso 1 · Procedencia', () => {
     expect(await screen.findByText('Inventario inicial')).toBeInTheDocument();
   });
 
+  it('STOCK-EXISTING-01: «Ingreso de inventario existente» viaja como existing, con su ayuda, y la revisión lo dice', async () => {
+    const u = await renderWizard();
+    const existing = screen.getByRole('radio', { name: /Ingreso de inventario existente/ });
+    expect(existing).toHaveAccessibleDescription(/no es una compra/);
+    await u.click(existing);
+    await toArticles(u);
+    await addProduct(u, CABLE);
+    preview.mockImplementation(async (body) => ({ ...previewFor(body), entry_kind: body.entry_kind }));
+    await next(u, /Siguiente: revisar/);
+    await waitFor(() => expect(preview).toHaveBeenCalled());
+    expect(preview.mock.calls[0][0].entry_kind).toBe('existing');
+    expect(await screen.findByText('Ingreso de inventario existente')).toBeInTheDocument();
+  });
+
   it('muestra los cuatro pasos y marca el actual', async () => {
     await renderWizard();
     const steps = within(screen.getByRole('navigation', { name: 'Pasos de la recepción' })).getAllByRole('listitem');
