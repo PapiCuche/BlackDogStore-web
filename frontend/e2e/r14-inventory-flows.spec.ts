@@ -9,6 +9,11 @@ import { apiBase, BACKEND_DIR, call, RUN, shell } from "./inventory-first-suppor
 /**
  * R14-E2E — los recorridos de la R14 (#432–#440) de punta a punta, en ESCRITORIO y en TELÉFONO, con el backend real.
  *
+ * NO LO CORRE EL CI (no hay un trabajo de Playwright): se corre a mano contra un backend local y una base desechable,
+ *
+ *   E2E_BACKEND_DIR=<backend> E2E_BASE_URL=http://localhost:<web> E2E_API_BASE=http://127.0.0.1:<api>/api \
+ *     npx playwright test e2e/r14-inventory-flows.spec.ts
+ *
  * QUÉ ES REAL: navegador, frontend, API de Django y base (desechable: la guarda de `inventory-first-support` se niega a
  * sembrar en otra). Nada se simula con `page.route`. El lector de códigos es lo que es: un teclado que escribe el código
  * de golpe en el campo de escaneo y pulsa Enter.
@@ -22,28 +27,35 @@ import { apiBase, BACKEND_DIR, call, RUN, shell } from "./inventory-first-suppor
  *   · reponedor (rol «Inventario»: `inventory.adjust` SIN `products.manage`): escanea y carga equipos;
  *   · consulta (sólo `inventory.view`): no registra nada.
  *
- * Por entorno (escritorio 1280×800 y Pixel 7 con pantalla táctil), en orden:
+ * Por entorno (escritorio 1280×800 y Pixel 7 con pantalla táctil), cada uno con SU modelo y SUS identificadores:
  *
- *   1 · permisos: sólo `inventory.view` no llega a escanear, a cargar equipos ni a «Registrar artículo» (y la API dice 403);
+ *   1 · permisos: sólo `inventory.view` no llega a escanear, a cargar equipos ni a «Registrar artículo» (la API dice 403);
  *   2 · escaneo de un nuevo por el reponedor: el código de caja de la otra empresa no identifica nada, el propio elige la
  *       variante; una combinación nueva le pide «Administrar productos»; el IMEI de un equipo de la otra empresa no
  *       choca; confirmar registra el equipo en la variante existente (Kardex «Inventario: registro por escaneo»);
  *   3 · escaneo de un seminuevo por el reponedor: sin precio ni garantía, pendiente de inspección y sin publicar;
- *   4 · caja: el configurador de equipos de la caja ve el equipo escaneado, y la caja lo vende leyendo su IMEI;
+ *   4 · caja (DEPENDE DE 2: vende el equipo que 2 escaneó, es el recorrido): el configurador de la caja lo ve, y la caja
+ *       lo vende leyendo su IMEI;
  *   5 · «Registrar artículo» → equipo seminuevo, uno a uno: entra a la variante existente, pendiente y sin publicar;
  *   6 · lista de proveedor por WhatsApp con varios colores: la variante existente se reconoce, sólo las que faltan se
  *       crean (borradores ocultos, sin precio) y no se mueve stock;
  *   7 · carga de seminuevos con precio y garantía (#434): aprobada por quien administra, la registra el reponedor con
- *       ellos; sin aprobación, el reponedor no puede registrarlos con ellos (403 al aprobar) y los registra sin ellos.
+ *       ellos; sin aprobación, el reponedor no puede registrarlos con ellos (403 al aprobar) y los registra sin ellos;
+ *   8 · (sólo teléfono) el fallo conocido del enlace de la carga, medido.
+ *
+ * ORDEN: las pruebas corren en serie (`mode: "serial"`). Sólo 4 depende de otra (de 2), y lo comprueba al empezar.
+ * Las demás comparan con lo que había al empezar cada una (antes/después), no con cuentas absolutas.
  *
  * IMEI sintéticos 3500000… con dígito de control válido; códigos de caja inventados con su dígito de control.
- * Capturas en `R14_SHOTS` (por defecto `test-results/r14-inventory-flows`). Al terminar, las empresas y los usuarios
- * de la corrida quedan desactivados.
+ * Capturas en `R14_SHOTS` (por defecto `test-results/r14-inventory-flows`).
+ *
+ * LIMPIEZA: al terminar, las dos empresas y los tres usuarios de la corrida quedan DESACTIVADOS (no se borran: lo
+ * protegen secuencias, roles y el Kardex). Sus productos, equipos, ventas y cargas quedan en la base desechable, bajo
+ * esas empresas inactivas; nada de la empresa `black-dog-store` se toca.
  */
 
 const SHOTS = process.env.R14_SHOTS ?? "test-results/r14-inventory-flows";
-fs.mkdirSync(SHOTS, { recursive: true });
-const WORK = fs.mkdtempSync(path.join(os.tmpdir(), "r14-e2e-"));
+let WORK = "";
 
 const SLUG = `r14-${RUN.toLowerCase()}`;
 const OTHER = `r14-otra-${RUN.toLowerCase()}`;
@@ -54,6 +66,10 @@ const USERS = {
   viewer: `qaer14_${RUN.toLowerCase()}_ver`,
 } as const;
 type Who = keyof typeof USERS;
+
+/** What the server answers a caller without the capability (inventory views; product-authority views). */
+const NO_INVENTORY = "No tienes permisos sobre el inventario.";
+const NO_OPERATION = "No tienes permisos para esta operación.";
 
 type Env = { name: string; code: "D" | "M"; touch: boolean; options: Parameters<Browser["newContext"]>[0] };
 const pixel = (() => { const { defaultBrowserType: _ignored, ...rest } = devices["Pixel 7"]; void _ignored; return rest; })();
@@ -82,7 +98,7 @@ function gtin(n: number): string {
   return body + String((10 - (total % 10)) % 10);
 }
 
-/** Per environment: every identifier it reads, none shared with the other environment. */
+/** Per environment: every identifier it reads, none shared with the other environment (seeds 1–6 and 21–26). */
 const IDS = Object.fromEntries(ENVS.map((env, index) => {
   const base = index * 20;
   const serial = (suffix: string) => `R14${RUN.slice(-6)}${env.code}${suffix}`.toUpperCase();
@@ -98,6 +114,8 @@ const IDS = Object.fromEntries(ENVS.map((env, index) => {
   box: string; otherBox: string; otherImei: string; scanImei2: string; scanSerial: string; usedScan: string;
   wizardImei: string; wizardSerial: string; approved: { imei: string; serial: string }; dropped: { imei: string; serial: string };
 }>;
+/** The device of the known-bug test (8): a seed of its own, away from the environments' 1–6 and 21–26. */
+const KNOWN_BUG_SEED = 90;
 
 type Seed = { branch: number; branchName: string; models: Record<string, number>; otherModels: Record<string, number> };
 let SEED: Seed;
@@ -200,6 +218,7 @@ out({
 `, { s: SLUG, o: OTHER, model: MODEL[env.code] });
 }
 
+/** Cleanup scope: the run's two companies and three users are deactivated, never deleted (see the header). */
 function desactivar() {
   return shell(`
 from django.contrib.auth import get_user_model
@@ -210,13 +229,16 @@ out({'ok': True})
 `, { slugs: [SLUG, OTHER], users: Object.values(USERS) });
 }
 
+/** The login admits 5 a minute: a 429 waits a minute and retries, at most twice (the hook's budget counts it). */
+const LOGIN_RETRY_MS = 62_000;
+const LOGIN_ATTEMPTS = 3;
 async function login(browser: Browser, who: Who) {
   const context = await browser.newContext();
-  for (let attempt = 0; ; attempt++) {
+  for (let attempt = 1; ; attempt++) {
     const answer = await context.request.post(`${apiBase()}/auth/login/`, { data: { username: USERS[who], password: PASSWORD } });
     if (answer.status() === 200) break;
-    if (answer.status() !== 429 || attempt === 2) throw new Error(`R14-E2E: ${who} no pudo iniciar sesión: ${answer.status()}`);
-    await new Promise((resolve) => setTimeout(resolve, 62_000));
+    if (answer.status() !== 429 || attempt === LOGIN_ATTEMPTS) throw new Error(`R14-E2E: ${who} no pudo iniciar sesión: ${answer.status()}`);
+    await new Promise((resolve) => setTimeout(resolve, LOGIN_RETRY_MS));
   }
   await context.request.get(`${apiBase()}/auth/csrf/`);
   STATES[who] = await context.storageState();
@@ -236,8 +258,26 @@ async function press(target: Locator, env: Env) {
   if (env.touch) await target.tap({ timeout: 30_000 }); else await target.click({ timeout: 30_000 });
 }
 
-async function noOverflow(page: Page, where: string) {
-  const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+/**
+ * How far the page scrolls sideways. With `wrapKnownLink`, the load's link of «Precios y garantías del archivo»
+ * (the known bug, StockUnitImport.tsx:180) is measured as if it wrapped — only that element; everything else counts.
+ */
+async function overflow(page: Page, wrapKnownLink = false) {
+  return page.evaluate((wrap) => {
+    const prefix = `${window.location.origin}/admin/inventory/units/import?job=`;
+    const links = wrap
+      ? [...document.querySelectorAll<HTMLElement>("span.font-mono")].filter((span) => (span.textContent ?? "").startsWith(prefix))
+      : [];
+    const saved = links.map((span) => span.style.wordBreak);
+    links.forEach((span) => { span.style.wordBreak = "break-all"; });
+    const over = document.documentElement.scrollWidth - document.documentElement.clientWidth;
+    links.forEach((span, index) => { span.style.wordBreak = saved[index]; });
+    return { over, wrapped: links.length };
+  }, wrapKnownLink);
+}
+
+async function noOverflow(page: Page, where: string, { exceptKnownLink = false } = {}) {
+  const { over } = await overflow(page, exceptKnownLink);
   expect(over, `desborde horizontal en ${where}`).toBeLessThanOrEqual(1);
 }
 
@@ -245,13 +285,13 @@ async function shot(page: Page, env: Env, name: string) {
   await page.screenshot({ path: path.join(SHOTS, `${env.code === "D" ? "desktop" : "mobile"}-${name}.png`), fullPage: true });
 }
 
-/** The scanner: the whole code at once, then Enter, into the scan field. */
-async function leer(page: Page, code: string) {
+/** The scanner: the whole code at once, then Enter, into the scan field; then the screen's answer to THAT read. */
+async function leer(page: Page, code: string, answered: () => Promise<void>) {
   const input = page.getByTestId("scan-intake-input");
   await input.focus();
   await page.keyboard.type(code, { delay: 0 });
   await page.keyboard.press("Enter");
-  await expect(page.getByText("Consultando…")).toHaveCount(0);
+  await answered();
 }
 
 /** A chip of the configurator (the radio inside is visually hidden): a person presses its label. */
@@ -287,7 +327,7 @@ async function usedTemplate(page: Page, env: Env): Promise<string> {
 
 /** Previews a load of used devices bringing their own price and warranty; answers the address that reopens it. */
 async function previewUsedLoad(page: Page, env: Env, unit: { imei: string; serial: string }, price: number, warranty: number) {
-  await page.goto("/admin/inventory/units/import", { waitUntil: "networkidle" });
+  await page.goto("/admin/inventory/units/import");
   await expect(page.getByLabel("Archivo de equipos (.xlsx)"), "la carga de equipos no cargó").toBeVisible({ timeout: 90_000 });
   const file = fill(await usedTemplate(page, env), [{
     Sucursal: SEED.branchName, Modelo: MODEL[env.code], Capacidad: "128 GB", Color: "Negro", "IMEI 1": unit.imei,
@@ -305,17 +345,27 @@ async function previewUsedLoad(page: Page, env: Env, unit: { imei: string; seria
   return { terms, link: `/admin/inventory/units/import?job=${link}`, job: Number(link) };
 }
 
+/** A staged load as `api`'s person reads it, as raw text (what that person's browser receives). */
+async function loadAsText(api: BrowserContext["request"], job: number) {
+  const answer = await call(api, "GET", `/admin/imports/${job}/`);
+  expect(answer.status).toBe(200);
+  return JSON.stringify(answer.body);
+}
+
 test.describe.configure({ mode: "serial" });
 
 test.beforeAll(async ({ browser }) => {
-  test.setTimeout(300_000);
+  // Seeding plus three logins, each of which may wait out the login rate limit twice.
+  test.setTimeout(120_000 + Object.keys(USERS).length * (LOGIN_ATTEMPTS - 1) * LOGIN_RETRY_MS);
+  fs.mkdirSync(SHOTS, { recursive: true });
+  WORK = fs.mkdtempSync(path.join(os.tmpdir(), "r14-e2e-"));
   SEED = sembrar();
   for (const who of Object.keys(USERS) as Who[]) await login(browser, who);
 });
 
 test.afterAll(() => {
   desactivar();
-  fs.rmSync(WORK, { recursive: true, force: true });
+  if (WORK) fs.rmSync(WORK, { recursive: true, force: true });
 });
 
 for (const env of ENVS) {
@@ -329,26 +379,26 @@ for (const env of ENVS) {
     const before = estado(env);
     const { context, page } = await session(browser, "viewer", env);
     try {
-      await page.goto("/admin/inventory/scan", { waitUntil: "networkidle" });
+      await page.goto("/admin/inventory/scan");
       await expect(page.getByText(/Registrar un equipo mueve el stock y pide el permiso de ajustar inventario/))
         .toBeVisible({ timeout: 60_000 });
       await expect(page.getByTestId("scan-intake-input")).toHaveCount(0);
       await noOverflow(page, `${env.name} escaneo denegado`);
 
-      await page.goto("/admin/inventory/units/import", { waitUntil: "networkidle" });
+      await page.goto("/admin/inventory/units/import");
       await expect(page.getByText("Para registrar equipos hace falta el permiso de ajustar inventario.")).toBeVisible({ timeout: 60_000 });
       await expect(page.getByLabel("Archivo de equipos (.xlsx)")).toHaveCount(0);
 
-      await page.goto("/admin/products/register", { waitUntil: "networkidle" });
+      await page.goto("/admin/products/register");
       await expect(page.getByText(/no tiene permiso para esta sección/)).toBeVisible({ timeout: 60_000 });
       await expect(page.getByRole("radiogroup", { name: "Tipo de artículo" })).toHaveCount(0);
 
-      // The server says the same, whatever the screen shows.
+      // The server says the same, whatever the screen shows: refused for lack of the inventory's authority.
       const check = await call(context.request, "POST", "/admin/inventory/scan/check/", { code: ids.otherImei });
-      expect(check.status).toBe(403);
+      expect(check).toEqual({ status: 403, body: { detail: NO_INVENTORY } });
       const receive = await call(context.request, "POST", `/admin/inventory/scan/receive/?branch=${SEED.branch}`,
         { condition: "new", imei: ids.otherImei }, { "Idempotency-Key": `r14-viewer-${env.code}-${RUN}` });
-      expect(receive.status).toBe(403);
+      expect(receive).toEqual({ status: 403, body: { detail: NO_INVENTORY } });
       const after = estado(env);
       expect(after.companyUnits).toBe(before.companyUnits);
       expect(after.companyMovements).toBe(before.companyMovements);
@@ -361,8 +411,10 @@ for (const env of ENVS) {
     test.setTimeout(240_000);
     const before = estado(env);
     const { context, page } = await session(browser, "stocker", env);
+    const log = page.getByTestId("scan-intake-log");
+    const newest = log.getByRole("listitem").first();
     try {
-      await page.goto("/admin/inventory/scan", { waitUntil: "networkidle" });
+      await page.goto("/admin/inventory/scan");
       await expect(page.getByTestId("scan-intake-input"), "la pantalla de escaneo no cargó").toBeVisible({ timeout: 60_000 });
       await noOverflow(page, `${env.name} escaneo vacío`);
 
@@ -374,30 +426,29 @@ for (const env of ENVS) {
       await page.getByTestId("scan-intake-model").fill("");
       const foreign = await call(context.request, "GET",
         `/admin/inventory/scan/models/${SEED.otherModels[env.code]}/configurations/?branch=${SEED.branch}`);
-      expect(foreign.status).toBe(404);
+      expect(foreign).toEqual({ status: 404, body: { detail: "No encontrado." } });
 
       // The other company's box code identifies nothing here, and names nothing of theirs.
-      await leer(page, ids.otherBox);
-      await expect(page.getByTestId("scan-intake-log").getByRole("listitem").first())
-        .toContainText("ningún producto de la empresa lo tiene");
+      await leer(page, ids.otherBox, () => expect(newest).toContainText("ningún producto de la empresa lo tiene"));
       await expect(page.getByTestId("scan-intake-variant")).toHaveCount(0);
 
       // This company's box code chooses the variant on the configurator.
-      await leer(page, ids.box);
-      await expect(page.getByTestId("scan-intake-variant")).toContainText(existing, { timeout: 30_000 });
+      await leer(page, ids.box, () => expect(page.getByTestId("scan-intake-variant")).toContainText(existing, { timeout: 30_000 }));
+      await expect(newest).toContainText(`Código comercial de «${existing}»`);
       const config = page.getByRole("group", { name: "Configuración del equipo" });
       await expect(config.getByRole("radiogroup", { name: "Capacidad" }).getByRole("radio", { name: /128 GB/ })).toBeChecked();
       await expect(config.getByRole("radiogroup", { name: "Color" }).getByRole("radio", { name: /Negro/ })).toBeChecked();
       await expect(page.getByTestId("scan-intake-expected")).toContainText("IMEI 1");
 
       // The IMEI of the other company's device is free here: its device is never read.
-      await leer(page, ids.otherImei);
-      await expect(page.getByTestId("scan-intake-value-imei")).toHaveText(ids.otherImei);
-      await leer(page, ids.scanImei2);
-      await expect(page.getByTestId("scan-intake-value-imei2")).toHaveText(ids.scanImei2);
-      await leer(page, ids.scanSerial);
-      await expect(page.getByTestId("scan-intake-value-serial")).toHaveText(ids.scanSerial);
-      await expect(page.getByTestId("scan-intake-log")).not.toContainText("ya está registrado");
+      await leer(page, ids.otherImei, () => expect(page.getByTestId("scan-intake-value-imei")).toHaveText(ids.otherImei));
+      await expect(newest).toContainText(`IMEI 1 leído: ${ids.otherImei}`);
+      await leer(page, ids.scanImei2, () => expect(page.getByTestId("scan-intake-value-imei2")).toHaveText(ids.scanImei2));
+      await leer(page, ids.scanSerial, () => expect(page.getByTestId("scan-intake-value-serial")).toHaveText(ids.scanSerial));
+      await expect(newest).toContainText(`Serie leída: ${ids.scanSerial}`);
+      // Every read answered (above): the log holds them, and none of them said the IMEI was taken or named the other's.
+      await expect(log.getByRole("listitem")).toHaveCount(5);
+      await expect(log).not.toContainText("ya está registrado");
       await expect(page.locator("body")).not.toContainText("OTRA");
 
       // A combination that is not a variant yet: creating it needs «Administrar productos», and nothing is confirmed.
@@ -412,6 +463,7 @@ for (const env of ENVS) {
       await press(chip(config, "Color", "Negro"), env);
       await expect(page.getByTestId("scan-intake-variant")).toContainText(existing);
       await expect(page.getByTestId("scan-intake-value-imei")).toHaveText(ids.otherImei);
+      await expect(page.getByTestId("scan-intake-confirm")).toBeEnabled();
       expect(estado(env).units[ids.otherImei], "nada entra antes de confirmar").toBeUndefined();
       await noOverflow(page, `${env.name} revisión del escaneo`);
 
@@ -422,9 +474,10 @@ for (const env of ENVS) {
         status: "available", condition: "new", imei2: ids.scanImei2, serial: ids.scanSerial, product: existing,
         reason: "Inventario: registro por escaneo",
       });
-      // Into the EXISTING variant: no product created; the other company's device is untouched.
+      // Into the EXISTING variant: no product created, one device more; the other company's device is untouched.
       expect(Object.keys(after.products).sort()).toEqual(Object.keys(before.products).sort());
-      expect(after.otherUnits).toContain(ids.otherImei);
+      expect(after.companyUnits - before.companyUnits).toBe(1);
+      expect(after.otherUnits).toEqual(before.otherUnits);
       await noOverflow(page, `${env.name} equipo registrado`);
       await shot(page, env, "r14-scan-registrado");
     } finally {
@@ -434,17 +487,17 @@ for (const env of ENVS) {
 
   test(`${env.name} · 3 · reponedor: un seminuevo por escaneo, sin precio, pendiente de inspección y sin publicar`, async ({ browser }) => {
     test.setTimeout(180_000);
+    const before = estado(env);
     const { context, page } = await session(browser, "stocker", env);
     try {
-      await page.goto("/admin/inventory/scan", { waitUntil: "networkidle" });
+      await page.goto("/admin/inventory/scan");
       await expect(page.getByTestId("scan-intake-input")).toBeVisible({ timeout: 60_000 });
       await page.getByTestId("scan-intake-model").fill(model);
       await press(page.getByRole("list", { name: "Modelos encontrados" }).getByRole("button", { name: model, exact: true }), env);
       await expect(page.getByRole("group", { name: "Configuración del equipo" })).toBeVisible({ timeout: 30_000 });
       await press(page.getByRole("button", { name: "Seminuevo" }), env);
       await expect(page.getByTestId("scan-intake-used-variant")).toContainText(usedVariant, { timeout: 30_000 });
-      await leer(page, ids.usedScan);
-      await expect(page.getByTestId("scan-intake-value-imei")).toHaveText(ids.usedScan);
+      await leer(page, ids.usedScan, () => expect(page.getByTestId("scan-intake-value-imei")).toHaveText(ids.usedScan));
       await page.getByTestId("scan-intake-battery").fill("86");
       // Without products.manage the used device's price and warranty are not even offered.
       await expect(page.getByText("El precio y la garantía del seminuevo los fija quien administra productos.")).toBeVisible();
@@ -453,43 +506,54 @@ for (const env of ENVS) {
       await press(page.getByTestId("scan-intake-confirm"), env);
       await expect(page.getByTestId("scan-intake-done")).toHaveText("Equipo registrado", { timeout: 30_000 });
       await expect(page.getByText(/pendiente de inspección/)).toBeVisible();
-      expect(estado(env).units[ids.usedScan]).toMatchObject({
+      const after = estado(env);
+      expect(after.units[ids.usedScan]).toMatchObject({
         status: "available", condition: "used", inspection: "pending", published: false, price: null, product: usedVariant,
       });
+      expect(after.companyUnits - before.companyUnits).toBe(1);
     } finally {
       await context.close();
     }
   });
 
-  test(`${env.name} · 4 · caja: el configurador ve el equipo escaneado y la caja lo vende leyendo su IMEI`, async ({ browser }) => {
+  test(`${env.name} · 4 · caja (usa el equipo escaneado en 2): el configurador lo ve y la caja lo vende leyendo su IMEI`, async ({ browser }) => {
     test.setTimeout(240_000);
+    const before = estado(env);
+    expect(before.units[ids.otherImei]?.status, "precondición: la prueba 2 registró este equipo y sigue disponible").toBe("available");
+    const onShelf = Object.values(before.units).filter((unit) => unit.product === existing && unit.status === "available").length;
     const { context, page } = await session(browser, "manager", env);
     try {
-      await page.goto("/admin/sales/pos", { waitUntil: "networkidle" });
+      await page.goto("/admin/sales/pos");
       const scan = page.getByLabel("Escanear código");
       await expect(scan, "el punto de venta no cargó").toBeVisible({ timeout: 60_000 });
 
-      // The till's device configurator: the same model, the chips of its palette, the scanned device on the shelf.
-      await press(page.getByRole("button", { name: "Vender equipo por modelo" }), env);
-      await page.getByLabel("Modelo", { exact: true }).fill(model);
-      await press(page.getByRole("button", { name: new RegExp(model) }).first(), env);
-      await expect(page.getByRole("radiogroup", { name: "Capacidad" })).toBeVisible({ timeout: 30_000 });
-      await press(chip(page.locator("body"), "Capacidad", "128 GB"), env);
-      await press(chip(page.locator("body"), "Color", "Negro"), env);
-      await expect(page.getByRole("region", { name: "Equipo elegido" }).getByText("1 en esta sucursal")).toBeVisible({ timeout: 30_000 });
-      await expect(page.locator("body")).not.toContainText("OTRA");
+      // The till's device configurator (its own panel): the same model, the chips of its palette, the shelf count.
+      const toggle = page.getByRole("button", { name: "Vender equipo por modelo" });
+      await press(toggle, env);
+      const picker = page.locator(`[id="${await toggle.getAttribute("aria-controls")}"]`);
+      await expect(picker).toBeVisible();
+      await picker.getByLabel("Modelo", { exact: true }).fill(model);
+      const hit = picker.getByRole("listitem").getByRole("button").filter({ hasText: model });
+      await expect(hit, "sólo el modelo de esta empresa").toHaveCount(1, { timeout: 30_000 });
+      await press(hit, env);
+      await expect(picker.getByRole("radiogroup", { name: "Capacidad" })).toBeVisible({ timeout: 30_000 });
+      await press(chip(picker, "Capacidad", "128 GB"), env);
+      await press(chip(picker, "Color", "Negro"), env);
+      await expect(picker.getByRole("region", { name: "Equipo elegido" }).getByText(`${onShelf} en esta sucursal`)).toBeVisible({ timeout: 30_000 });
+      await expect(picker).not.toContainText("OTRA");
       await noOverflow(page, `${env.name} configurador de la caja`);
       await shot(page, env, "r14-caja-configurador");
 
-      // The scanner at the till: the IMEI the stockroom registered.
-      await page.goto("/admin/sales/pos", { waitUntil: "networkidle" });
+      // The scanner at the till: the IMEI the stockroom registered lands in the cart, identified.
+      await page.goto("/admin/sales/pos");
       await expect(scan).toBeVisible({ timeout: 60_000 });
       await scan.focus();
       await page.keyboard.type(ids.otherImei, { delay: 0 });
       await page.keyboard.press("Enter");
-      await expect(page.getByText(new RegExp(`IMEI ${ids.otherImei}`)).first()).toBeVisible({ timeout: 30_000 });
+      const cart = page.locator("#pos-step-products");
+      await expect(cart.getByText(new RegExp(`IMEI ${ids.otherImei}`))).toBeVisible({ timeout: 30_000 });
       await noOverflow(page, `${env.name} caja con el equipo`);
-      await page.getByRole("checkbox").first().check();
+      await page.getByRole("checkbox", { name: /Confirmo que informé al cliente las condiciones de venta/ }).check();
       await page.getByLabel("Tipo de comprobante").selectOption("sales_note");
       await page.getByLabel("Efectivo recibido").fill("99999");
       const charge = page.getByRole("button", { name: /^cobrar$/i });
@@ -497,11 +561,11 @@ for (const env of ENVS) {
       await press(charge, env);
       await expect(page.getByText(/Venta registrada/i), "la venta no se completó").toBeVisible({ timeout: 60_000 });
       await shot(page, env, "r14-caja-vendido");
-      const seen = estado(env);
-      expect(seen.units[ids.otherImei].status).toBe("sold");
-      expect(seen.sold[ids.otherImei]).toHaveLength(1);
+      const after = estado(env);
+      expect(after.units[ids.otherImei].status).toBe("sold");
+      expect(after.sold[ids.otherImei]).toHaveLength(1);
       // The other company's device with the same IMEI is still theirs.
-      expect(seen.otherUnits).toContain(ids.otherImei);
+      expect(after.otherUnits).toEqual(before.otherUnits);
     } finally {
       await context.close();
     }
@@ -512,7 +576,8 @@ for (const env of ENVS) {
     const before = estado(env);
     const { context, page } = await session(browser, "manager", env);
     try {
-      await page.goto("/admin/products/register", { waitUntil: "networkidle" });
+      await page.goto("/admin/products/register");
+      await expect(page.getByRole("radiogroup", { name: "Tipo de artículo" })).toBeVisible({ timeout: 60_000 });
       await press(page.getByRole("radio", { name: /Equipo seminuevo/ }), env);
       await press(page.getByRole("button", { name: "Continuar" }), env);
       const palette = page.waitForResponse((res) => /\/palette\/?$/.test(new URL(res.url()).pathname) && res.status() !== 308);
@@ -547,6 +612,7 @@ for (const env of ENVS) {
         serial: ids.wizardSerial, product: usedVariant,
       });
       expect(Object.keys(after.products).sort()).toEqual(Object.keys(before.products).sort());
+      expect(after.companyUnits - before.companyUnits).toBe(1);
     } finally {
       await context.close();
     }
@@ -557,7 +623,7 @@ for (const env of ENVS) {
     const before = estado(env);
     const { context, page } = await session(browser, "manager", env);
     try {
-      await page.goto("/admin/products/suppliers/offers/update-list", { waitUntil: "networkidle" });
+      await page.goto("/admin/products/suppliers/offers/update-list");
       await expect(page.getByRole("heading", { name: "Actualizar lista de proveedor" })).toBeVisible({ timeout: 60_000 });
       await page.getByLabel("Texto de la lista del proveedor").fill(`${model.toLowerCase()} 128gb negro, azul, verde 2500`);
       const resolved = page.waitForResponse((res) => /\/admin\/catalog\/resolve\/?$/.test(new URL(res.url()).pathname)
@@ -595,7 +661,7 @@ for (const env of ENVS) {
       // No physical stock moved: the same devices and the same Kardex, and the existing variant kept its price.
       expect(after.companyUnits).toBe(before.companyUnits);
       expect(after.companyMovements).toBe(before.companyMovements);
-      expect(after.products[existing].price).toBe("3000.00");
+      expect(after.products[existing].price).toBe(before.products[existing].price);
     } finally {
       await context.close();
     }
@@ -605,23 +671,30 @@ for (const env of ENVS) {
     test.setTimeout(360_000);
     const manager = await session(browser, "manager", env);
     const stocker = await session(browser, "stocker", env);
+    // At phone width the load's link overflows (known bug, test 8): only that element is excused, the rest is measured.
+    const exceptKnownLink = env.touch;
     try {
       // A · whoever administers products approves; the stockroom registers WITH the file's price and warranty.
       const first = await previewUsedLoad(manager.page, env, ids.approved, 1900, 90);
       await expect(first.terms).toContainText("Tú administras productos");
-      // At phone width the load's link overflows the page (known bug, test «8 · fallo conocido» below).
-      if (!env.touch) await noOverflow(manager.page, `${env.name} vista previa con precios`);
+      await noOverflow(manager.page, `${env.name} vista previa con precios`, { exceptKnownLink });
       await press(first.terms.getByRole("button", { name: "Aprobar precios y garantías" }), env);
       await expect(first.terms).toContainText("ya están aprobados", { timeout: 30_000 });
       await expect(first.terms).toContainText(`Aprobados por ${USERS.manager}`);
       await shot(manager.page, env, "r14-carga-aprobada");
 
-      await stocker.page.goto(first.link, { waitUntil: "networkidle" });
+      await stocker.page.goto(first.link);
       const approved = stocker.page.getByRole("group", { name: "Precios y garantías del archivo" });
       await expect(approved).toContainText("ya están aprobados", { timeout: 60_000 });
-      // Who does not administer products sees that the rows carry terms, never their amounts.
-      await expect(stocker.page.locator("body")).not.toContainText(/1,?900/);
-      if (!env.touch) await noOverflow(stocker.page, `${env.name} carga aprobada reabierta`);
+      // Who does not administer products sees that the rows carry terms, never their amounts: not in the terms block,
+      // not in the rows of the load (which ARE on screen), not in what the server sends — while the manager's has them.
+      const rows = stocker.page.getByRole("table", { name: "Equipos del archivo" });
+      await expect(rows).toContainText(ids.approved.serial);
+      await expect(approved).not.toContainText(/1,?900/);
+      await expect(rows).not.toContainText(/1,?900/);
+      expect(await loadAsText(manager.context.request, first.job)).toMatch(/1900/);
+      expect(await loadAsText(stocker.context.request, first.job)).not.toMatch(/1900/);
+      await noOverflow(stocker.page, `${env.name} carga aprobada reabierta`, { exceptKnownLink });
       await press(stocker.page.getByRole("button", { name: "Registrar 1 equipo" }), env);
       await expect(stocker.page.getByRole("status").filter({ hasText: /Se registr(ó|aron) 1 equipo/ })).toBeVisible({ timeout: 60_000 });
       expect(estado(env).units[ids.approved.imei]).toMatchObject({
@@ -631,14 +704,14 @@ for (const env of ENVS) {
       // B · without the approval: no «Registrar», the server refuses an approval from the stockroom, and the devices
       //     enter without the file's price and warranty.
       const second = await previewUsedLoad(manager.page, env, ids.dropped, 1950, 60);
-      await stocker.page.goto(second.link, { waitUntil: "networkidle" });
+      await stocker.page.goto(second.link);
       const pending = stocker.page.getByRole("group", { name: "Precios y garantías del archivo" });
       await expect(pending).toContainText("Necesita la aprobación de quien administra productos", { timeout: 60_000 });
       await expect(pending.getByRole("button", { name: "Aprobar precios y garantías" })).toHaveCount(0);
       await expect(stocker.page.getByRole("button", { name: "Registrar 1 equipo" })).toHaveCount(0);
       const refused = await call(stocker.context.request, "POST", `/admin/inventory/units/import/${second.job}/approve-terms/`, {});
-      expect(refused.status).toBe(403);
-      if (!env.touch) await noOverflow(stocker.page, `${env.name} carga sin aprobar`);
+      expect(refused).toEqual({ status: 403, body: { detail: NO_OPERATION } });
+      await noOverflow(stocker.page, `${env.name} carga sin aprobar`, { exceptKnownLink });
       await shot(stocker.page, env, "r14-carga-sin-aprobar");
       await press(pending.getByRole("button", { name: "Registrar sin precios ni garantías" }), env);
       await expect(stocker.page.getByRole("note", { name: "Sin precios ni garantías" })).toBeVisible({ timeout: 60_000 });
@@ -652,17 +725,22 @@ for (const env of ENVS) {
   });
 
   // KNOWN BUG (R14, StockUnitImport.tsx:180): «Enlace de esta carga» is one unbreakable monospace line, wider than a
-  // phone, so the whole page scrolls sideways. `test.fail` keeps it visible: when it is fixed this test reports an
-  // unexpected pass, and the `env.touch` exceptions in test 7 go away with it.
+  // phone, so the whole page scrolls sideways. This test proves the bug is still there AND that the link is its only
+  // cause. When the link is fixed, the last assertion fails: delete this test and the `exceptKnownLink` of test 7.
   if (env.touch) {
     test(`${env.name} · 8 · fallo conocido: el enlace de la carga desborda la página en el teléfono`, async ({ browser }) => {
-      test.fail(true, "StockUnitImport.tsx:180 — el enlace de la carga no se parte y desborda a lo ancho en un teléfono");
+      test.info().annotations.push({ type: "known-bug", description: "StockUnitImport.tsx:180 — el enlace de la carga no se parte" });
       test.setTimeout(180_000);
       const { context, page } = await session(browser, "manager", env);
       try {
-        const load = await previewUsedLoad(page, env, { imei: syntheticImei(90 + env.code.length), serial: `R14${RUN.slice(-6)}K1` }, 1700, 30);
+        const unit = { imei: syntheticImei(KNOWN_BUG_SEED), serial: `R14${RUN.slice(-6)}${env.code}K1`.toUpperCase() };
+        const load = await previewUsedLoad(page, env, unit, 1700, 30);
         await expect(load.terms).toContainText("Enlace de esta carga");
-        await noOverflow(page, `${env.name} vista previa con precios`);
+        const wrapped = await overflow(page, true);
+        expect(wrapped.wrapped, "el enlace de la carga está en la página").toBe(1);
+        expect(wrapped.over, "con el enlace partido, nada más desborda").toBeLessThanOrEqual(1);
+        const raw = await overflow(page);
+        expect(raw.over, "FALLO CONOCIDO: si esto falla, el enlace ya no desborda — borra esta prueba").toBeGreaterThan(1);
       } finally {
         await context.close();
       }
