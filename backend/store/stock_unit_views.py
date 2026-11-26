@@ -473,6 +473,9 @@ class ProductSerializationView(APIView):
 
     Decide whether a product is counted by unit. Refused while it has stock:
     see `stock_unit_services.set_serialized`.
+
+    SERIALIZATION-IMEI-GUARD-01 — an omitted `requires_imei` keeps the product's; changing it on a product already
+    counted by device needs `products.manage` (403) and, to turn it on, every device with a valid IMEI (409).
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -493,11 +496,20 @@ class ProductSerializationView(APIView):
                 {'detail': 'Indica si el producto se controla por número de serie.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # SERIALIZATION-IMEI-GUARD-01 — omitted (or null) keeps what the product has; anything else must be a boolean
+        # (a string «false» is truthy). Changing it on a product already counted by device needs `products.manage`,
+        # decided by the service under the product's lock (`set_serialized`).
+        wanted_imei = request.data.get('requires_imei')
+        if wanted_imei is not None and not isinstance(wanted_imei, bool):
+            return Response(
+                {'detail': 'Indica si el producto lleva IMEI (sí o no).', 'field': 'requires_imei'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             updated = units.set_serialized(
-                product, serialized=serialized,
-                requires_imei=bool(request.data.get('requires_imei')),
+                product, serialized=serialized, requires_imei=wanted_imei,
                 actor=request.user, request=request,
+                may_change_requires_imei=may_manage_products(request),
             )
         except InventoryError as exc:
             return _refusal(exc)

@@ -554,8 +554,11 @@ def register(*, company, body: dict, actor, request=None, may_adjust: bool, may_
             if not may_adjust:
                 raise RegistrationError(ADJUST_REQUIRED, step='stock', status=403, code='forbidden')
             try:
+                # SERIALIZATION-IMEI-GUARD-01 — an existing product only takes a first switch here (it never turns
+                # «lleva IMEI» off); one created by this same registration has nothing to protect yet.
                 product = units_service.set_serialized(product, serialized=True, requires_imei=requires_imei,
-                                                       actor=actor, request=request)
+                                                       actor=actor, request=request,
+                                                       may_change_requires_imei=created)
             except InventoryError as exc:
                 raise RegistrationError(str(exc), step='stock', field='is_serialized') from None
 
