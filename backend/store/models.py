@@ -1800,6 +1800,14 @@ class StockMovement(models.Model):
         MANUAL_EXIT, CORRECTION_NEGATIVE, DAMAGED_EXIT,
     ])
 
+    # STOCK-EXISTING-01 — stock the shop ALREADY HAD, entered on a shelf whose opening balance is closed (it has a
+    # sale, a purchase, a transfer…). It is written as PURCHASE_ENTRY — cost, labels, annulment and correction are a
+    # purchase's, and no migration is needed — with `metadata['entry_kind'] = EXISTING_STOCK`. Every reader that names
+    # the line (Kardex, chart, import preview) says EXISTING_STOCK_LABEL and counts it apart from purchases. The mark
+    # is written only by the three doors that ask «compra / inventario inicial / existente»; nobody edits it later.
+    EXISTING_STOCK = 'existing_stock'
+    EXISTING_STOCK_LABEL = 'Ingreso de inventario existente'
+
     # Phase 2D — explicit tenant and location.
     #
     # `company` is denormalised from product.company rather than joined on every
@@ -1903,6 +1911,24 @@ class StockMovement(models.Model):
 
     def __str__(self):
         return f"{self.movement_type} {self.signed_quantity:+d} product={self.product_id}"
+
+    @classmethod
+    def existing_stock_q(cls) -> models.Q:
+        """
+        STOCK-EXISTING-01 — the lines that are «Ingreso de inventario existente», as a filter. By containment, never by
+        key: a key lookup is NULL on a line without the key, and `exclude()` would then drop every plain purchase too.
+        """
+        return models.Q(movement_type=cls.PURCHASE_ENTRY, metadata__contains={'entry_kind': cls.EXISTING_STOCK})
+
+    @property
+    def is_existing_stock(self) -> bool:
+        metadata = self.metadata if isinstance(self.metadata, dict) else {}
+        return self.movement_type == self.PURCHASE_ENTRY and metadata.get('entry_kind') == self.EXISTING_STOCK
+
+    @property
+    def kardex_label(self) -> str:
+        """What a person reads for this line: its type's label, or «Ingreso de inventario existente»."""
+        return self.EXISTING_STOCK_LABEL if self.is_existing_stock else self.get_movement_type_display()
 
     @property
     def is_entry(self) -> bool:

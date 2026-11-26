@@ -250,9 +250,16 @@ def _unit(raw, where: str, *, may_view_costs: bool, may_set_prices: bool = False
 
 #: INV-OPENING-01 — what the entry IS in the Kardex. A purchase from a supplier (the default, as before) or the stock
 #: the shop already had when it started here. Other authorised entries keep their own door (Movimientos).
+#: STOCK-EXISTING-01 — `existing`: stock the shop already had, entered on a shelf whose opening is closed (it has a
+#: sale, a purchase, a transfer…). A PURCHASE_ENTRY marked `existing_stock` (`existing_stock_metadata`), allowed
+#: whatever the shelf's history, with a purchase's authority; the Kardex reads «Ingreso de inventario existente».
+#: The same three kinds on the three doors that ask: this module, «Registrar equipos» and the device file.
 ENTRY_PURCHASE = 'purchase'
 ENTRY_OPENING = 'opening'
-ENTRY_KINDS = (ENTRY_PURCHASE, ENTRY_OPENING)
+ENTRY_EXISTING = 'existing'
+ENTRY_KINDS = (ENTRY_PURCHASE, ENTRY_OPENING, ENTRY_EXISTING)
+ENTRY_KIND_REFUSAL = ('Indica si es una compra («purchase»), inventario inicial («opening») o inventario existente '
+                      '(«existing»).')
 OPENING_HAS_HISTORY = 'opening_has_history'
 
 
@@ -260,13 +267,23 @@ def _entry_kind(value) -> str:
     if value in (None, ''):
         return ENTRY_PURCHASE
     if value not in ENTRY_KINDS:
-        raise ReceiptError('Indica si es una compra («purchase») o inventario inicial («opening»).', field='entry_kind')
+        raise ReceiptError(ENTRY_KIND_REFUSAL, field='entry_kind')
     return value
 
 
 def movement_type_for(normalised: dict) -> str:
     return (StockMovement.INITIAL_STOCK if normalised.get('entry_kind') == ENTRY_OPENING
             else StockMovement.PURCHASE_ENTRY)
+
+
+def existing_stock_metadata() -> dict:
+    """STOCK-EXISTING-01 — the mark a PURCHASE_ENTRY of stock the shop already had carries in its metadata."""
+    return {'entry_kind': StockMovement.EXISTING_STOCK}
+
+
+def movement_metadata_for(entry_kind) -> dict | None:
+    """What the entry's Kardex line carries besides its type: the mark of existing stock, or nothing."""
+    return existing_stock_metadata() if entry_kind == ENTRY_EXISTING else None
 
 
 def opening_problem(branch, product) -> str:
@@ -733,10 +750,13 @@ def preview(company, resolved: Resolved, normalised: dict) -> dict:
 # 5. The writes
 # ---------------------------------------------------------------------------
 
-def reason_for(document_ref: str, supplier_name: str, notes: str, *, opening: bool = False) -> str:
+def reason_for(document_ref: str, supplier_name: str, notes: str, *, opening: bool = False,
+               existing: bool = False) -> str:
     """The Kardex reason of every line: «Recepción [doc] · proveedor [name] · [notes]», cut to the field. An opening
-    count (INV-OPENING-01) reads «Inventario inicial …» instead."""
-    parts = [('Inventario inicial' if opening else 'Recepción') + (f' {document_ref}' if document_ref else '')]
+    count (INV-OPENING-01) reads «Inventario inicial …» instead, and stock the shop already had (STOCK-EXISTING-01)
+    «Inventario existente …»."""
+    head = 'Inventario inicial' if opening else 'Inventario existente' if existing else 'Recepción'
+    parts = [head + (f' {document_ref}' if document_ref else '')]
     if supplier_name:
         parts.append(f'proveedor {supplier_name}')
     if notes:
@@ -767,7 +787,9 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
 
     branch = resolved.branch
     reason = reason_for(normalised['document_ref'], resolved.supplier.name if resolved.supplier else '',
-                        normalised['notes'], opening=normalised.get('entry_kind') == ENTRY_OPENING)
+                        normalised['notes'], opening=normalised.get('entry_kind') == ENTRY_OPENING,
+                        existing=normalised.get('entry_kind') == ENTRY_EXISTING)
+    marks = movement_metadata_for(normalised.get('entry_kind'))
     lines = normalised['lines']
     written = {}
     first_units = _first_units(normalised)
@@ -780,7 +802,8 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
                 movement = inventory_services.apply_manual_stock_movement(
                     branch=branch, product_id=product.pk, movement_type=movement_type_for(normalised),
                     quantity=line['quantity'], reason=reason, actor=actor, request=request,
-                    unit_cost=line['unit_cost'], opening=normalised.get('entry_kind') == ENTRY_OPENING)
+                    unit_cost=line['unit_cost'], opening=normalised.get('entry_kind') == ENTRY_OPENING,
+                    metadata=marks)
                 batch = label_batches.create_for_movement(movement, actor=actor)
                 received, count = line['quantity'], 0
             else:
@@ -796,7 +819,8 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
                 created = units_service.receive_units(
                     branch=branch, product=product, units=line['units'], actor=actor, reason=reason,
                     request=request, movement_type=movement_type_for(normalised),
-                    supplier=resolved.supplier)     # D-F-3 (PR F): each device keeps its supplier
+                    supplier=resolved.supplier,     # D-F-3 (PR F): each device keeps its supplier
+                    metadata=marks)
                 movement = created.movement
                 batch = label_batches.create_for_movement(movement, units=created, actor=actor)
                 received = count = len(created)

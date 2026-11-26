@@ -745,7 +745,7 @@ class ReceivedUnits(list):
 @transaction.atomic
 def receive_units(*, branch, product, units, actor=None, reason: str = '',
                   movement_type: str = StockMovement.PURCHASE_ENTRY, request=None, supplier=None,
-                  received_on=None, may_set_warranty: bool = False) -> ReceivedUnits:
+                  received_on=None, may_set_warranty: bool = False, metadata: dict | None = None) -> ReceivedUnits:
     """
     Units arrive. ALL OF THEM OR NONE: one bad line refuses the batch, and the
     error names the line.
@@ -761,6 +761,9 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
     `may_set_warranty` (IMPORT-WARRANTY-AUTHORITY): whether the person receiving holds `products.manage` in the
     company — each caller decides it from its actor. False by default: a row that states a warranty is then refused
     (`refuse_unauthorised_warranty`), so a door that forgets to ask can never store one.
+
+    `metadata` (STOCK-EXISTING-01): what the batch's Kardex line carries besides the unit ids — the mark of stock the
+    shop already had (`{'entry_kind': StockMovement.EXISTING_STOCK}`) on a PURCHASE_ENTRY. Never an identifier.
     """
     if product.company_id != branch.company_id:
         raise StockUnitError('El producto no pertenece a la empresa de esta sucursal.')
@@ -854,13 +857,15 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
     movement = create_stock_movement(
         branch=branch, product_id=product.pk, movement_type=movement_type,
         quantity=len(created), reason=reason, actor=actor,
-        reference_type='stock_units', units=created,
+        reference_type='stock_units', units=created, metadata=metadata,
     )
+    kind = (metadata or {}).get('entry_kind')
     AdminAuditLog.log(
         actor=actor, action='stock_units_received', target_type='product', target_id=product.pk,
         # How many and where. Not the identifiers: the units are the record.
         metadata={'product_id': product.pk, 'branch_id': branch.pk, 'count': len(created),
-                  **({'supplier_id': supplier.pk} if supplier is not None else {})},
+                  **({'supplier_id': supplier.pk} if supplier is not None else {}),
+                  **({'entry_kind': kind} if kind else {})},
         request=request, company=branch.company,
     )
     received = ReceivedUnits(created)

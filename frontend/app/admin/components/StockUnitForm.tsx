@@ -48,10 +48,14 @@ export type UnitSaved = {
 
 const plural = (n: number) => (n === 1 ? "1 equipo" : `${n} equipos`);
 
-/** INV-LOAD-01 — the entry types this form offers: the stock the shop already had, or a purchase (the default). */
+/**
+ * INV-LOAD-01 — the entry types this form offers: the stock the shop already had, or a purchase (the default).
+ * STOCK-EXISTING-01 — and the devices the shop already had once the product has other movements in the branch.
+ */
 const ENTRY_TYPES: { value: UnitEntryKind; label: string }[] = [
   { value: "opening", label: "Inventario inicial" },
   { value: "purchase", label: "Compra" },
+  { value: "existing", label: "Ingreso de inventario existente" },
 ];
 
 /** The supplier pages read for the picker (25 each): past it the form says the list is partial. */
@@ -255,7 +259,7 @@ export function StockUnitForm({
       const response = await receiveStockUnits({
         product_id: product.id, branch: Number(branchId), reason: reason.trim(), units,
         // INV-LOAD-01 — only what the person chose: the server's defaults (purchase, no supplier, today) stand otherwise.
-        ...(entryKind === "opening" ? { entry_kind: entryKind } : {}),
+        ...(entryKind !== "purchase" ? { entry_kind: entryKind } : {}),
         ...(canSeeSuppliers && supplier ? { supplier: Number(supplier) } : {}),
         ...(receivedOn ? { received_on: receivedOn } : {}),
       });
@@ -428,7 +432,9 @@ export function StockUnitForm({
           <p className="mt-1 text-xs text-muted">
             {entryKind === "opening"
               ? "Equipos que ya tenías. Se pueden registrar en varias tandas mientras el producto no tenga otros movimientos (ventas, compras, traslados) en esta sucursal."
-              : "Equipos que llegan comprados. Quedan como compra en el Kardex."}
+              : entryKind === "existing"
+                ? "Equipos que ya tenías; no es una compra. Para un producto que ya tiene otros movimientos en esta sucursal."
+                : "Equipos que llegan comprados. Quedan como compra en el Kardex."}
           </p>
           {errorFor("entry_kind") ? <p role="alert" className="mt-1 text-xs text-danger">{errorFor("entry_kind")}</p> : null}
         </fieldset>
