@@ -16,6 +16,7 @@
  * El servidor vuelve a decidirlo todo al confirmar (AGENTS §7).
  */
 
+import type { ConfiguratorCombination, ConfiguratorSpace, Picked } from "./device-configurator";
 import { fetchWithAuth } from "../../lib/auth";
 import { API_BASE } from "../../lib/api";
 import { storageGet, storageSet } from "../../lib/browser-storage";
@@ -367,4 +368,56 @@ export function saveTerminator(value: Terminator): void {
   } catch {
     /* sin almacenamiento: se queda para esta visita */
   }
+}
+
+// ---------------------------------------------------------------------------
+// SELECTOR-UX-01 · C — the used line on THE device configurator
+// ---------------------------------------------------------------------------
+
+export type UsedVariant = ScanConfigurations["used_variants"][number];
+export type UsedSpace = ConfiguratorSpace<ConfiguratorCombination & { variant: UsedVariant }>;
+
+/**
+ * The used variants that exist, as the configurator's steps: only the options they carry, one combination per variant
+ * (a used device enters a variant that exists — none is created here). Only serialized variants can be chosen. Null
+ * when a variant cannot be told apart by its options (none, or two with the same ones): then the list of always.
+ */
+export function usedSpace(config: ScanConfigurations): UsedSpace | null {
+  const usable = config.used_variants.filter((variant) => variant.is_serialized);
+  if (!usable.length) return null;
+  const keys = new Set<string>();
+  for (const variant of config.used_variants) {
+    if (!variant.option_ids.length) return null;
+    const key = [...variant.option_ids].sort((a, b) => a - b).join("-");
+    if (keys.has(key)) return null;
+    keys.add(key);
+  }
+  const used = new Set(usable.flatMap((variant) => variant.option_ids));
+  const attributes = config.attributes
+    .map((attribute) => {
+      const options = attribute.options.filter((option) => used.has(option.id));
+      return { ...attribute, options, varies: options.length > 1 };
+    })
+    .filter((attribute) => attribute.options.length > 0);
+  const known = new Set(attributes.flatMap((attribute) => attribute.options.map((option) => option.id)));
+  if (usable.some((variant) => variant.option_ids.some((id) => !known.has(id)))) return null;
+  // Review of #440: a variant that lacks a step another has (A = 128 · Azul · eSIM, B = 128 · Azul) cannot be told
+  // apart by chips without a «Sin …» answer; the list names each variant instead.
+  if (attributes.some((attribute) => usable.some((variant) => !variant.option_ids.some((id) => attribute.options.some((o) => o.id === id))))) {
+    return null;
+  }
+  return {
+    attributes,
+    combinations: usable.map((variant) => ({ key: `u${variant.id}`, option_ids: variant.option_ids, variant })),
+  };
+}
+
+/** A used variant as the configurator's choice (every step it carries). */
+export function pickOfVariant(space: UsedSpace, variant: UsedVariant): Picked {
+  const picked: Picked = {};
+  for (const attribute of space.attributes) {
+    const option = attribute.options.find((o) => variant.option_ids.includes(o.id));
+    if (option) picked[attribute.id] = option.id;
+  }
+  return picked;
 }

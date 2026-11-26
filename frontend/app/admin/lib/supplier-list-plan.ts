@@ -219,13 +219,36 @@ export type ConfigEntry = {
   condition: CatalogLine | null;
   /** The model the server read for the line (review L3: a header's model is confirmed only against ONE model). */
   model: ResolveModel | null;
+  /**
+   * SELECTOR-UX-01 — the configuration comes from the visual selector (a person marked it), not from the text as read:
+   * the server resolved the company's labels of what was marked. `handPicked`: the options a person chose that the
+   * line does not say (shown on its card).
+   */
+  bySelector?: boolean;
+  handPicked?: string[];
 };
 
-export function configurationEntries(lines: SupplierLine[], results: Record<string, ResolveRowResult | undefined>): ConfigEntry[] {
-  return lines.flatMap((line) => (results[line.key]?.configurations ?? []).map((configuration, index) => ({
-    key: `${line.key}-C${index + 1}`, line, index, configuration, condition: results[line.key]?.line ?? null,
-    model: results[line.key]?.model ?? null,
-  })));
+/**
+ * The configurations of the reading: per line, the server's reading of its text — or, when a person used the visual
+ * selector on the line (`chosen`), the server's reading of each row the selector sent (one per colour marked). The
+ * line itself (its amounts, its doubts, its model) is the same either way.
+ */
+export function configurationEntries(lines: SupplierLine[], results: Record<string, ResolveRowResult | undefined>,
+  chosen: Record<string, ResolveRowResult[] | undefined> = {}): ConfigEntry[] {
+  return lines.flatMap((line) => {
+    const model = results[line.key]?.model ?? null;
+    const picked = chosen[line.key];
+    if (picked) {
+      return picked.flatMap((row) => row.configurations.map((configuration, part) => ({ row, configuration, part })))
+        .map(({ row, configuration, part }, index) => ({
+          key: part ? `${row.key}-${part + 1}` : row.key, line, index, configuration, condition: row.line ?? null, model,
+          bySelector: true,
+        }));
+    }
+    return (results[line.key]?.configurations ?? []).map((configuration, index) => ({
+      key: `${line.key}-C${index + 1}`, line, index, configuration, condition: results[line.key]?.line ?? null, model,
+    }));
+  });
 }
 
 export type EntryInputs = {
@@ -315,6 +338,12 @@ export function lineDoubts(line: SupplierLine, inputs: Pick<EntryInputs, "ignore
   if (conditionKey && !inputs.confirmed?.[conditionKey]) {
     out.push(`Confirma el estado «${line.conditionHint!.line}» (por «${line.conditionHint!.word}»): la línea no dice «nuevo».`);
   }
+  // SELECTOR-UX-01: several offers in one line — an amount never sticks to another offer's model or colour.
+  if (line.offers) {
+    out.push(line.offers.parts
+      ? `La línea tiene ${line.offers.parts.length} ofertas: sepárala (una oferta por línea) para que cada importe quede con su modelo y su color.`
+      : "La línea parece tener varias ofertas y se puede leer de más de una manera: escribe una oferta por línea.");
+  }
   if (line.colourDoubt) out.push(COLOUR_DOUBT_TEXT[line.colourDoubt.reason](line.colourDoubt.text));
   if (line.correction?.blocked) out.push(line.correction.blocked);
   const stuck = line.unknownWords.length > line.ignorableWords.length;
@@ -339,6 +368,50 @@ export const COLOUR_DOUBT_TEXT: Record<NonNullable<SupplierLine["colourDoubt"]>[
 export function mayCreateVariant(entry: ConfigEntry, inputs: Pick<EntryInputs, "ignoredWords" | "confirmed">): boolean {
   return entry.configuration.status === "combinacion_valida_sin_variante" && entry.condition !== "used"
     && !entry.line.conflicts.length && !lineDoubts(entry.line, inputs, entry.model).length;
+}
+
+/** One variant the reading lacks: a valid configuration no variant is yet, wherever the list names it. */
+export type MissingVariant = {
+  /** `<model>:<option ids>`: two lines that name the same configuration are ONE variant to create. */
+  key: string;
+  modelId: number;
+  optionIds: number[];
+  /** «Modelo · 128 GB · Negro · eSIM · J/A», in the reading order of the roles. */
+  words: string;
+  lines: number[];
+  entries: ConfigEntry[];
+};
+
+const ROLE_RANK: Record<string, number> = { capacity: 0, color: 1, sim: 2, region: 3, other: 4 };
+
+/**
+ * SELECTOR-UX-01 — the variants a person may create at once (the same rule as «Crear variante» on a card: a complete
+ * valid configuration of a NEW line with no doubt left, on a model the line may write to), one per configuration by
+ * the server's option ids — never by how it was spelt.
+ */
+export function missingVariants(entries: ConfigEntry[], inputs: Pick<EntryInputs, "ignoredWords" | "confirmed">,
+  writableModel: (entry: ConfigEntry) => number | null, done: Record<string, boolean | undefined> = {}): MissingVariant[] {
+  const out = new Map<string, MissingVariant>();
+  for (const entry of entries) {
+    if (done[entry.key] || !mayCreateVariant(entry, inputs)) continue;
+    const modelId = writableModel(entry);
+    const ids = [...entry.configuration.option_ids].sort((a, b) => a - b);
+    if (!modelId || !ids.length) continue;
+    const key = `${modelId}:${ids.join(",")}`;
+    const found = out.get(key);
+    if (found) {
+      found.entries.push(entry);
+      if (!found.lines.includes(entry.line.number)) found.lines.push(entry.line.number);
+      continue;
+    }
+    const labels = [...entry.configuration.options].sort((a, b) => (ROLE_RANK[a.role] ?? 9) - (ROLE_RANK[b.role] ?? 9))
+      .map((option) => option.label);
+    out.set(key, {
+      key, modelId, optionIds: ids, entries: [entry], lines: [entry.line.number],
+      words: [entry.model?.model_name ?? "", ...labels].filter(Boolean).join(" · "),
+    });
+  }
+  return [...out.values()];
 }
 
 /** The selected configuration that already offers the same variant, if any (the same variant twice is refused). */

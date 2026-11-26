@@ -23,6 +23,10 @@ Statuses, in precedence order (the first that applies wins):
     combinacion_valida_sin_variante   …and no variant is it yet (the A1b-2 «Crear variante» may make it)
     sin_paleta          the model has no palette and no variant is exactly that: nothing can be validated
     variante_archivada  VARIANT-SAFE-01: a variant IS it, but it is archived — never offered, never created again
+    combinacion_excluida SELECTOR-UX-01: every role said, inside the palette, but two of its options are a pair the
+                        model EXCLUDES (CATALOG-REFERENCE-01 · PR B) and no variant is it: it does not exist, so it is
+                        never offered to be created (`check_variant` would refuse it). A variant that already is
+                        such a combination stays `variante_existente` (history is kept).
 
 R-COL — reading the colour text (owner's P3/P5):
   1. the longest phrase among the labels of the model's PALETTE colours;
@@ -44,7 +48,8 @@ import unicodedata
 
 from .catalog_constants import CAPACITY_NAME as _CAPACITY_NAME
 from .models import (
-    CatalogAlias, ModelOption, Product, ProductModel, ProductVariantOption, VariantAttribute, VariantOption,
+    CatalogAlias, ModelOption, ModelOptionExclusion, Product, ProductModel, ProductVariantOption, VariantAttribute,
+    VariantOption,
 )
 
 STATUS_UNKNOWN_MODEL = 'modelo_desconocido'
@@ -57,8 +62,9 @@ STATUS_EXISTING = 'variante_existente'
 STATUS_VALID = 'combinacion_valida_sin_variante'
 STATUS_NO_PALETTE = 'sin_paleta'
 STATUS_ARCHIVED = 'variante_archivada'
+STATUS_EXCLUDED = 'combinacion_excluida'
 STATUSES = (STATUS_UNKNOWN_MODEL, STATUS_AMBIGUOUS, STATUS_NAME_WITH_OPTIONS, STATUS_UNKNOWN_OPTION, STATUS_OUTSIDE, STATUS_INCOMPLETE,
-            STATUS_EXISTING, STATUS_VALID, STATUS_NO_PALETTE, STATUS_ARCHIVED)
+            STATUS_EXISTING, STATUS_VALID, STATUS_NO_PALETTE, STATUS_ARCHIVED, STATUS_EXCLUDED)
 COMPLETE = (STATUS_EXISTING, STATUS_VALID)
 
 CAPACITY = VariantAttribute.ROLE_CAPACITY
@@ -184,6 +190,7 @@ class Vocabulary:
             self.models_by_phrase.setdefault(phrase_key(model.name), model)
         self._palettes: dict[int, dict] = {}
         self._variants: dict[tuple, list] = {}
+        self._exclusions: dict[int, set] = {}
 
     @staticmethod
     def roles_of(attributes) -> dict[int, str]:
@@ -261,6 +268,13 @@ class Vocabulary:
                 palette.setdefault(attribute_id, set()).add(option_id)
             self._palettes[model_id] = palette
         return self._palettes[model_id]
+
+    def exclusions(self, model_id) -> set[frozenset]:
+        """SELECTOR-UX-01: the option pairs `model_id` excludes, read once per model and only when a status needs them."""
+        if model_id not in self._exclusions:
+            self._exclusions[model_id] = {frozenset(pair) for pair in ModelOptionExclusion.objects.filter(
+                model_id=model_id, company=self.company).values_list('option_a_id', 'option_b_id')}
+        return self._exclusions[model_id]
 
     def preload(self, model_ids, lines) -> None:
         """Palettes and variants of many models in three queries (a request with many models, finding 10)."""
@@ -782,6 +796,8 @@ def resolve_configuration(vocabulary, *, model_text='', line='', capacity_text='
                 status = STATUS_EXISTING
                 config.update(product_id=product.pk, product_name=product.name,
                               draft_pending=product.is_pending_draft)
+            elif palette and any(pair <= set(config['option_ids']) for pair in vocabulary.exclusions(model_id)):
+                status = STATUS_EXCLUDED
             else:
                 status = STATUS_VALID if palette else STATUS_NO_PALETTE
         if status in (STATUS_INCOMPLETE, STATUS_NO_PALETTE):

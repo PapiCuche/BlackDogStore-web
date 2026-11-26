@@ -3255,7 +3255,9 @@ export type ResolverStatus =
   | "opcion_desconocida"
   | "sin_paleta"
   /** VARIANT-SAFE-01: a variant IS it, but it is archived — never acted on. */
-  | "variante_archivada";
+  | "variante_archivada"
+  /** SELECTOR-UX-01: two of its options are a pair the model excludes — it does not exist, never created. */
+  | "combinacion_excluida";
 
 export type ResolveModelStatus = "exact" | "alias" | "model_word" | "name_with_options" | "ambiguous" | "unknown";
 
