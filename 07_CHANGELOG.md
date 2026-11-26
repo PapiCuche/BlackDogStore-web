@@ -12,7 +12,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 
 **Fixed**
 - Fijar una garantía de seminuevo exige `products.manage` en todas las puertas (#432).
-- Una serie ya no puede ser el IMEI de otro equipo vivo, ni al revés (#437).
+- Una serie ya no puede ser el IMEI de otro equipo vivo, ni al revés, en ninguna puerta de entrada (escaneo, carga Excel, «Registrar equipos», recepción del proveedor); esas filas se rechazan (#437).
 
 **Ops** (prod-02 `backups/release-r14/`; nada desplegado)
 - Kit R14 fijado a `c176bfea`, imágenes `rc-c176bfe`, ensayo `fails=0`, preflights OK.

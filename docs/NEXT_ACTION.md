@@ -16,8 +16,8 @@ posterior de `master` necesita otro kit fijado, compilado y ensayado.
 | #432 | Fijar una garantía de seminuevo exige `products.manage` en todas las puertas (carga Excel, «Registrar equipos», recepción del proveedor, escaneo) | no |
 | #434 | Una carga de equipos con precios o garantías de seminuevos necesita la aprobación explícita de quien tiene `products.manage` (quedan registrados quien prepara, quien aprueba y quien registra); el almacenero puede registrarla «sin precios ni garantías»; una aprobación deja de valer si la carga cambia | **0193** |
 | #435 | La auditoría de la propuesta de catálogo registra qué variantes se crearon «sin IMEI» | no |
-| #437 | SCAN-TO-STOCK-01: pantalla «Registrar equipo por escaneo» (`/admin/inventory/scan`); clasifica IMEI, IMEI 2, serie, EID, MEID, IMEISV y códigos comerciales; nada entra hasta «Confirmar ingreso»; una serie nunca es el IMEI de otro equipo vivo (regla R1); un seminuevo entra pendiente de inspección y sin publicar | no |
-| #438, #439, #440 | SELECTOR-UX-01: selector visual compartido (caja, listas de proveedor, «Registrar artículo», escaneo). Una unidad física = selección única; una oferta de proveedor = selección múltiple; la lista de WhatsApp revisa las variantes que existen y sólo propone las que faltan; una oferta nunca crea stock físico; una combinación excluida responde `combinacion_excluida` | no |
+| #437 | SCAN-TO-STOCK-01: pantalla «Registrar equipo por escaneo» (`/admin/inventory/scan`); clasifica IMEI, IMEI 2, serie, EID, MEID, IMEISV y códigos comerciales; nada entra hasta «Confirmar ingreso»; un seminuevo entra pendiente de inspección y sin publicar. Además, en **todas** las puertas de entrada (escaneo, carga Excel, «Registrar equipos», recepción del proveedor) una serie ya no puede ser el IMEI de otro equipo vivo, ni al revés (revisión R1 de SCAN-TO-STOCK-01): las filas así se rechazan | no |
+| #438, #439, #440 | SELECTOR-UX-01 (#438 y #439 entraron a `master` dentro de #440): selector visual compartido (caja, listas de proveedor, «Registrar artículo», escaneo). Una unidad física = selección única; en una oferta de proveedor sólo los colores pueden ser varios (capacidad, SIM y región, uno); la lista de WhatsApp revisa las variantes que existen y sólo propone las que faltan; una oferta nunca crea stock físico; una combinación excluida responde `combinacion_excluida` | no |
 
 **Migración `0193_unit_import_terms_approval`:** tres columnas nulas o con valor constante en `store_bulkimportjob`, un
 índice y una FK a `auth_user`. No reescribe la tabla y no toca datos. Corre antes del cambio de código, con
@@ -31,7 +31,7 @@ Backup nuevo verificado y dos copias aisladas de producción (red sin salida). L
 - **Migración:** 6,2 s en el primer intento (con el arranque del contenedor). Con un bloqueo retenido, el intento se
   cancela sin aplicar nada; en el camino de reintento, el segundo intento migra.
 - **Pruebas:** 646 pruebas en la imagen OK; humo profundo 32/32 antes y después; simulación de stock real 19/19.
-- **Sondas R14** (75 OK, 0 fallos, todo deshecho): escaneo por un almacenero, idempotencia, 409 por IMEI duplicado, un
+- **Sondas R14** (75 OK, 0 fallos, 1 omitida, todo deshecho): escaneo por un almacenero, idempotencia, 409 por IMEI duplicado, un
   almacenero de otra sucursal sólo ve «en otra sucursal», 404 fuera de sus sucursales, la caja vende lo escaneado, un
   seminuevo escaneado queda pendiente y la caja lo rechaza, precio o garantía sin `products.manage` = 403, aprobación
   de términos (almacenero no aprueba, gerente sí, aprobación vencida 409, otra empresa 404), selector y permisos
@@ -44,10 +44,11 @@ Backup nuevo verificado y dos copias aisladas de producción (red sin salida). L
 - Corridas 1 y 2 descartadas por fallos del propio kit (una sonda y un `date` sin comillas que también habría afectado
   al despliegue real); corregidos y kit refijado.
 
-### Preflights en producción (2026-11-26 14:20, sólo lectura)
+### Preflights en producción (2026-11-26 14:20–14:40, sólo lectura)
 `d_deploy_r14.sh … --preflight`: `PREFLIGHT OK — nothing written, nothing switched`, incluido el `migrate --plan` de la
 imagen candidata contra la base real (= sólo 0193). `rollback_r14_code.sh --preflight`: `ROLLBACK PREFLIGHT OK`.
-`rollback_r14_schema.sh --preflight`: `NOTHING TO DO` (hoja 0192). Manifiesto del kit verificado.
+`rollback_r14_schema.sh --preflight`: `NOTHING TO DO` (hoja 0192). Logs `backups/release-r14/r14-preflight.log`,
+`r14-rollback-preflight.log` y `r14-schema-rollback-preflight.log`. Manifiesto del kit verificado.
 
 ### Ejecución con el GO
 - Kit `backups/release-r14/`, runbook `RUNBOOK-r14-prod02.md`.
@@ -59,10 +60,10 @@ imagen candidata contra la base real (= sólo 0193). `rollback_r14_code.sh --pre
   de proveedor, «Registrar artículo», caja) y aviso al personal (texto en el runbook).
 
 ### Orden con los GO de datos pendientes
-Los kits de las 7 notas (`release-notes7b`) y de «lleva IMEI» en #22/#23 (`release-imei22`) aceptan **sólo R13.2**:
-después de R14 sus guardas abortan sin escribir. Si se quieren, ejecutarlos **antes** del despliegue (cada uno con su
+El kit de las 7 notas (`release-notes7b`) acepta sólo R13.1 o R13.2, y el de «lleva IMEI» en #22/#23
+(`release-imei22`) sólo R13.2: después de R14 sus guardas abortan sin escribir. Si se quieren, ejecutarlos **antes** del despliegue (cada uno con su
 GO), o después de reapuntarlos a R14 y reensayarlos. Lo mismo para la vista previa del stock real
-(`stockreal-preview`): tras R14 hay que añadir el SHA nuevo y revalidarla con archivos sintéticos antes de usar los
+(`stockreal-preview`, que acepta R13.1 o R13.2): tras R14 hay que añadir el SHA nuevo y revalidarla con archivos sintéticos antes de usar los
 archivos reales.
 
 ### Preguntas abiertas para el propietario (ninguna bloquea el despliegue)
@@ -93,7 +94,9 @@ Después: `check_unit_stock` 0 diferencias tras cada operación; finanzas y conc
 
 **Trampa aprendida:** los kits de datos comparan instantáneas de toda la app `store`; ejecutarlos lejos de :00/:15/:30/:45 (finanzas), de los minutos 2/7/12… (conciliación) y de las :41 (cotizaciones). El crontab completo (horarios) está en `backups/ops/schedule-evidence-20261125.txt`; hay además tareas cada minuto y cada 5 que pueden tocar otras tablas. Un despliegue no debe caer entre :35 y :50.
 
-### GO pendientes (preparados y ensayados; ninguno ejecutado)
+## GO DE DATOS PENDIENTES (vigentes al 2026-11-26; preparados y ensayados, ninguno ejecutado)
+
+### GO pendientes
 | Operación | GO exacto | Kit | Estado |
 |---|---|---|---|
 | Sellos de las 7 notas (fuente `222417`) | «GO restaurar sellos 7 notas prod-02 fuente 222417» | `backups/release-notes7b/` | Ensayo 72/72 (con R13.2 en la copia); `check` sobre la producción en R13.2 OK (13:56) |

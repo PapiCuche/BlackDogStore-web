@@ -5,7 +5,7 @@ documentación real, sin reemplazar su historial.
 
 ## 2026-11-26 — Release comercial unificada R14 `c176bfea` ensayada; espera «GO despliegue c176bfe prod-02»
 
-`master` `c176bfea` reúne #432, #434 (migración `0193`), #435, SCAN-TO-STOCK-01 (#437) y SELECTOR-UX-01 (#438–#440). El ensayo sobre una copia aislada y reciente de producción terminó sin fallos: datos históricos, Kardex y notas idénticos; sólo `store_bulkimportjob` gana tres columnas; 646 pruebas en la imagen, humo 32/32, simulación 19/19, 75 sondas R14; vuelta atrás de código y de esquema ensayadas. Preflights en producción OK el 2026-11-26 (sólo lectura). Producción sigue en R13.2, sana. Los kits de las 7 notas y de #22/#23 sólo aceptan R13.2: correrlos antes o reapuntarlos. Detalle en `docs/NEXT_ACTION.md`.
+`master` `c176bfea` reúne #432, #434 (migración `0193`), #435, SCAN-TO-STOCK-01 (#437) y SELECTOR-UX-01 (#438–#440). El ensayo sobre una copia aislada y reciente de producción terminó sin fallos: datos históricos, Kardex y notas idénticos; sólo `store_bulkimportjob` gana tres columnas; 646 pruebas en la imagen, humo 32/32, simulación 19/19, 75 sondas R14; vuelta atrás de código y de esquema ensayadas. Preflights en producción OK el 2026-11-26 (sólo lectura). Producción sigue en R13.2, sana. Los kits de las 7 notas (R13.1 o R13.2), de #22/#23 (sólo R13.2) y la vista previa del stock real no aceptan R14: correrlos antes o reapuntarlos y reensayarlos. Desde R14, ninguna puerta de entrada acepta una serie que sea el IMEI de otro equipo vivo. Detalle en `docs/NEXT_ACTION.md`.
 
 ## 2026-11-25 — R13.2 `c8a43215` DESPLEGADA en prod-02; cron, normalización, muestras 167 y producto 12 aplicados
 
