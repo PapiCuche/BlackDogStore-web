@@ -52,7 +52,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from django.db import IntegrityError, transaction
-from django.db.models import Count, DecimalField, F, Max, Q, Sum
+from django.db.models import Case, CharField, Count, DecimalField, F, Max, Q, Sum, Value, When
 from django.db.models.functions import Coalesce, Least
 from django.utils import timezone
 
@@ -533,9 +533,13 @@ def apply_manual_stock_movement(
     request=None,
     unit_cost=None,
     opening: bool = False,
+    metadata: dict | None = None,
 ) -> StockMovement:
     """
     Operator-initiated entry or exit in one branch. Requires actor + reason.
+
+    `metadata` (STOCK-EXISTING-01): what the line carries besides its type — «Recibir mercadería» marks an entry of
+    stock the shop already had (`{'entry_kind': StockMovement.EXISTING_STOCK}`). The admin movement API never passes it.
 
     `opening` (INV-OPENING-01): «Recibir mercadería» may write an INITIAL_STOCK line once it has checked the shelf has
     no history (`receipt_services.opening_problem`). The admin movement API never passes it: an opening balance is not
@@ -573,6 +577,7 @@ def apply_manual_stock_movement(
         actor=actor,
         reference_type='manual',
         unit_cost=unit_cost,
+        metadata=metadata,
     )
 
     action = (
@@ -596,6 +601,8 @@ def apply_manual_stock_movement(
             'stock_before': movement.stock_before,
             'stock_after': movement.stock_after,
             'reason': movement.reason,
+            **({'entry_kind': movement.metadata['entry_kind']}
+               if isinstance(movement.metadata, dict) and movement.metadata.get('entry_kind') else {}),
         },
         request=request,
         company=movement.company,
@@ -2879,16 +2886,20 @@ def get_movement_type_distribution(branches, days: int = 30, limit: int = 8):
     if not ids:
         return []
     cutoff = timezone.now() - timedelta(days=days)
-    labels = dict(StockMovement.MOVEMENT_TYPE_CHOICES)
+    labels = {**dict(StockMovement.MOVEMENT_TYPE_CHOICES),
+              StockMovement.EXISTING_STOCK: StockMovement.EXISTING_STOCK_LABEL}
     rows = (
         StockMovement.objects
         .filter(branch_id__in=ids, created_at__gte=cutoff)
-        .values('movement_type')
+        # STOCK-EXISTING-01 — stock the shop already had is its own slice, never counted as a purchase.
+        .annotate(kind=Case(When(StockMovement.existing_stock_q(), then=Value(StockMovement.EXISTING_STOCK)),
+                            default=F('movement_type'), output_field=CharField()))
+        .values('kind')
         .annotate(units=Coalesce(Sum('quantity'), 0))
-        .order_by('-units')[:limit]
+        .order_by('-units', 'kind')[:limit]
     )
     return [
-        {'label': labels.get(r['movement_type'], r['movement_type']), 'value': r['units']}
+        {'label': labels.get(r['kind'], r['kind']), 'value': r['units']}
         for r in rows
     ]
 

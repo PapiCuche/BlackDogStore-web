@@ -71,7 +71,7 @@ class UnitImportOpeningTest(DeviceShop, TestCase):
         unit_import_services.apply_units(job=first, actor=self.staff)
         job, [row] = self.units_file([self.row('OPNX0202', IMEIS[4], product)], entry_kind='opening')
         self.assertEqual(row.action, 'error')
-        self.assertTrue(any('inventario inicial' in e and 'compra' in e for e in row.errors), row.errors)
+        self.assertTrue(any('inventario inicial' in e and 'inventario existente' in e for e in row.errors), row.errors)
 
     def test_history_written_after_the_preview_refuses_the_whole_file(self):
         product = self.clean_new_variant()

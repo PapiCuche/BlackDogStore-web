@@ -106,6 +106,16 @@ test('the preview shows the simulated shelves before → after and the Kardex li
   expect(kardex).toHaveTextContent('0 de compra');
 });
 
+test('STOCK-EXISTING-01: the simulation counts existing stock apart from purchases', async () => {
+  previewBody = job({ summary: { units: 3, simulation: { ...SIMULATION, entry_kind: 'existing', entry_type: 'purchase_entry',
+    movements: { initial_stock: 0, purchase_entry: 0, existing_stock: 2 },
+    units: { initial_stock: 0, purchase_entry: 0, existing_stock: 3 } } } });
+  await previewFile();
+  const kardex = await screen.findByRole('note', { name: 'Movimientos en el Kardex' });
+  expect(kardex).toHaveTextContent('2 de inventario existente');
+  expect(kardex).toHaveTextContent('0 de compra');
+});
+
 test('the rows show the supplier and the entry date the file stated', async () => {
   await previewFile();
   const rows = await screen.findByRole('table', { name: 'Equipos del archivo' });
@@ -176,6 +186,20 @@ test('an opening entry with supplier and date is sent as such', async () => {
   expect(posted()).toEqual([expect.objectContaining({ body: expect.objectContaining({
     entry_kind: 'opening', supplier: 8, received_on: '2026-10-01',
   }) })]);
+});
+
+test('STOCK-EXISTING-01: «Ingreso de inventario existente» is offered with its help and sent as existing', async () => {
+  const { onSaved } = mountForm();
+  await pickPhone();
+  const group = screen.getByRole('group', { name: 'Tipo de ingreso' });
+  const existing = within(group).getByRole('radio', { name: /Ingreso de inventario existente/ });
+  fireEvent.click(existing);
+  expect(screen.getByText(/no es una compra/)).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText(/^IMEI \*/), { target: { value: IMEI_A } });
+  fireEvent.change(screen.getByLabelText(/^Motivo o documento de ingreso/), { target: { value: 'Vitrina' } });
+  fireEvent.click(screen.getByRole('button', { name: 'Guardar equipo' }));
+  await waitFor(() => expect(onSaved).toHaveBeenCalled());
+  expect(posted()).toEqual([expect.objectContaining({ body: expect.objectContaining({ entry_kind: 'existing' }) })]);
 });
 
 test('without the supplier permission no supplier list is asked for or shown', async () => {

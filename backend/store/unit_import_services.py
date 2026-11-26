@@ -595,14 +595,26 @@ def _is_zero(text: str) -> bool:
         return False
 
 
-ENTRY_PURCHASE, ENTRY_OPENING = 'purchase', 'opening'
+#: STOCK-EXISTING-01 — `existing`: devices the shop already had, on a shelf whose opening is closed. Written as
+#: PURCHASE_ENTRY with the mark `existing_stock` (receipt_services), counted apart in the simulation.
+ENTRY_PURCHASE, ENTRY_OPENING, ENTRY_EXISTING = 'purchase', 'opening', 'existing'
+
+
+def existing_reason(reason: str) -> str:
+    """
+    STOCK-EXISTING-01 review — the Kardex reason of existing stock reads «Inventario existente · <motivo>», like
+    «Recibir mercadería»'s (`receipt_services.reason_for`), cut to what `receive_units` accepts.
+    """
+    text = f'Inventario existente · {reason}' if reason else 'Inventario existente'
+    limit = stock_unit_services.MAX_REASON
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + '…'
 
 
 def _entry_kind(value) -> str:
     if value in (None, ''):
         return ENTRY_PURCHASE
-    if value not in (ENTRY_PURCHASE, ENTRY_OPENING):
-        raise UnitImportError('Indica si es una compra o inventario inicial.')
+    if value not in (ENTRY_PURCHASE, ENTRY_OPENING, ENTRY_EXISTING):
+        raise UnitImportError('Indica si es una compra, inventario inicial o inventario existente.')
     return value
 
 
@@ -657,6 +669,11 @@ def simulate(company, staged: list[dict], *, entry_kind: str) -> dict:
     Built from the rows that WILL be registered, grouped exactly as `apply_units` groups them (`_reception_key`,
     `MAX_BATCH`): the test suite holds the two to the same numbers.
     """
+    # STOCK-EXISTING-01 — the counts are keyed by what a person reads: opening, purchase, or existing stock (a
+    # PURCHASE_ENTRY with its mark, never counted as a purchase).
+    counted = (StockMovement.INITIAL_STOCK if entry_kind == ENTRY_OPENING
+               else StockMovement.EXISTING_STOCK if entry_kind == ENTRY_EXISTING
+               else StockMovement.PURCHASE_ENTRY)
     movement_type = StockMovement.INITIAL_STOCK if entry_kind == ENTRY_OPENING else StockMovement.PURCHASE_ENTRY
     receptions: dict[tuple, int] = {}
     shelves: dict[tuple, int] = {}
@@ -692,12 +709,12 @@ def simulate(company, staged: list[dict], *, entry_kind: str) -> dict:
             'stock_before': stock_before, 'stock_after': stock_before + adds,
         })
     movements = sum(_chunks(count) for count in receptions.values())
-    other = (StockMovement.PURCHASE_ENTRY if movement_type == StockMovement.INITIAL_STOCK
-             else StockMovement.INITIAL_STOCK)
+    kinds = (StockMovement.PURCHASE_ENTRY, StockMovement.INITIAL_STOCK, StockMovement.EXISTING_STOCK)
     return {
         'entry_type': movement_type,
-        'movements': {movement_type: movements, other: 0},
-        'units': {movement_type: len(staged), other: 0},
+        'entry_kind': entry_kind,
+        'movements': {kind: movements if kind == counted else 0 for kind in kinds},
+        'units': {kind: len(staged) if kind == counted else 0 for kind in kinds},
         'shelves': rows,
     }
 
@@ -1669,6 +1686,9 @@ def apply_units(*, job, actor, request=None, price_updates=None, without_commerc
     # INV-OPENING-01 — a job staged before the option has none: a purchase, as it was.
     opening = (job.options_snapshot or {}).get('entry_kind') == ENTRY_OPENING
     movement_type = StockMovement.INITIAL_STOCK if opening else StockMovement.PURCHASE_ENTRY
+    # STOCK-EXISTING-01 — devices the shop already had: the purchase entry carries the mark.
+    marks = ({'entry_kind': StockMovement.EXISTING_STOCK}
+             if (job.options_snapshot or {}).get('entry_kind') == ENTRY_EXISTING else None)
     if opening:
         # INV-LOAD-01 review — every shelf of the file is locked BEFORE the check (rows created where missing), so a
         # sale, a hold or a write-off cannot commit between the check and the INITIAL_STOCK lines.
@@ -1704,9 +1724,10 @@ def apply_units(*, job, actor, request=None, price_updates=None, without_commerc
                         **{name: data(row)[name] for name in _USED_COLUMNS
                            if name in data(row) and not (drop_terms and name == 'warranty_days')},
                     } for row in chunk],
-                    actor=actor, reason=reason, movement_type=movement_type, request=request,
-                    supplier=suppliers.get(supplier_id), received_on=received_on or None,
+                    actor=actor, reason=existing_reason(reason) if marks else reason, movement_type=movement_type,
+                    request=request, supplier=suppliers.get(supplier_id), received_on=received_on or None,
                     may_set_warranty=may_set_terms or terms_authority == 'approval',
+                    metadata=marks,
                 )
             except stock_unit_services.StockUnitError as exc:
                 where = (
