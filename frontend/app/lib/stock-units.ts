@@ -294,8 +294,10 @@ export const setProductTracking = (productId: number, body: { is_serialized: boo
  * INV-LOAD-01 — `entry_kind`: «purchase» (the default) or «opening», the stock the shop already had (only while that
  * product's Kardex in that branch holds nothing but opening lines). `supplier` and `received_on` (AAAA-MM-DD, never
  * future) are optional.
+ * STOCK-EXISTING-01 — «existing»: devices the shop already had, when the opening is closed. A purchase entry marked
+ * apart: the Kardex reads «Ingreso de inventario existente», never a purchase.
  */
-export type UnitEntryKind = "purchase" | "opening";
+export type UnitEntryKind = "purchase" | "opening" | "existing";
 
 export const receiveStockUnits = (body: {
   product_id: number; branch: number; reason: string; units: NewUnit[];
@@ -473,8 +475,11 @@ export type UnitImportShelf = {
 /** INV-LOAD-01 — what registering the file would do, read from the shop as it is now. */
 export type UnitImportSimulation = {
   entry_type: "initial_stock" | "purchase_entry";
-  movements: { initial_stock: number; purchase_entry: number };
-  units: { initial_stock: number; purchase_entry: number };
+  /** STOCK-EXISTING-01 — absent in a job previewed before it. */
+  entry_kind?: UnitEntryKind;
+  /** `existing_stock` (STOCK-EXISTING-01) is absent in a job previewed before it. */
+  movements: { initial_stock: number; purchase_entry: number; existing_stock?: number };
+  units: { initial_stock: number; purchase_entry: number; existing_stock?: number };
   shelves: UnitImportShelf[];
 };
 
@@ -504,7 +509,7 @@ export type UnitImportJob = {
     voided?: UnitImportVoided;
   };
   /** INV-LOAD-02 — `line`: the line the file loads («new», «used»), or "" for the combined template. */
-  options?: { line?: UnitImportLine | ""; entry_kind?: "purchase" | "opening" };
+  options?: { line?: UnitImportLine | ""; entry_kind?: UnitEntryKind };
   is_applicable: boolean;
   rows?: UnitImportRow[];
   rows_truncated?: boolean;
@@ -642,7 +647,7 @@ export function unitImportErrorsUrl(jobId: number): string {
 /** Stage the file. Registers nothing: the answer is what WOULD happen to each row. */
 export function previewUnitImport(
   file: File,
-  defaults: { branch?: number | null; reason?: string; entryKind?: "purchase" | "opening"; line?: UnitImportLine } = {},
+  defaults: { branch?: number | null; reason?: string; entryKind?: UnitEntryKind; line?: UnitImportLine } = {},
 ): Promise<UnitImportJob> {
   const form = new FormData();
   form.append("file", file);

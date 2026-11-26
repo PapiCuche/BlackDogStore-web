@@ -158,7 +158,8 @@ def _refusal(exc) -> Response:
     return Response(body, status=getattr(exc, 'status', None) or status.HTTP_400_BAD_REQUEST)
 
 
-ENTRY_KINDS = ('purchase', 'opening')
+#: STOCK-EXISTING-01 — `existing`: devices the shop already had, on a shelf whose opening is closed (receipt_services).
+ENTRY_KINDS = ('purchase', 'opening', 'existing')
 
 
 SUPPLIERS_FORBIDDEN = 'suppliers_forbidden'
@@ -166,7 +167,8 @@ SUPPLIERS_FORBIDDEN = 'suppliers_forbidden'
 
 def _entry_of(company, data, request) -> tuple[dict, Response | None]:
     """
-    INV-LOAD-01 — `entry_kind` («purchase» by default, or «opening»), the optional `supplier` (an id of THIS company:
+    INV-LOAD-01 — `entry_kind` («purchase» by default, «opening», or STOCK-EXISTING-01's «existing»), the optional
+    `supplier` (an id of THIS company:
     another company's answers 404, like one that does not exist) and the optional `received_on` (a date, never future).
 
     D-F-3 — naming a supplier needs what reading one needs (`may_see_suppliers`), asked BEFORE any lookup: otherwise the
@@ -174,7 +176,8 @@ def _entry_of(company, data, request) -> tuple[dict, Response | None]:
     """
     kind = data.get('entry_kind') or 'purchase'
     if kind not in ENTRY_KINDS:
-        return {}, Response({'detail': 'Indica si es una compra o inventario inicial.', 'field': 'entry_kind'},
+        return {}, Response({'detail': 'Indica si es una compra, inventario inicial o inventario existente.',
+                             'field': 'entry_kind'},
                             status=status.HTTP_400_BAD_REQUEST)
     supplier = None
     wanted = data.get('supplier')
@@ -196,7 +199,8 @@ def _entry_of(company, data, request) -> tuple[dict, Response | None]:
         received_on = units.clean_received_on(data.get('received_on'))
     except InventoryError as exc:
         return {}, _refusal(exc)
-    return {'opening': kind == 'opening', 'supplier': supplier, 'received_on': received_on}, None
+    return {'opening': kind == 'opening', 'existing': kind == 'existing', 'supplier': supplier,
+            'received_on': received_on}, None
 
 
 class StockUnitListView(APIView):
@@ -380,6 +384,8 @@ class StockUnitListView(APIView):
                     # IMPORT-WARRANTY-AUTHORITY — a warranty is the price's authority: a stated one without
                     # `products.manage` refuses the batch (403 `prices_forbidden`), like the price just above.
                     may_set_warranty=may_manage_products(request),
+                    # STOCK-EXISTING-01 — a purchase entry marked as stock the shop already had.
+                    metadata={'entry_kind': StockMovement.EXISTING_STOCK} if entry['existing'] else None,
                 )
         except InventoryError as exc:
             return _refusal(exc)
@@ -467,6 +473,9 @@ class ProductSerializationView(APIView):
 
     Decide whether a product is counted by unit. Refused while it has stock:
     see `stock_unit_services.set_serialized`.
+
+    SERIALIZATION-IMEI-GUARD-01 — an omitted `requires_imei` keeps the product's; changing it on a product already
+    counted by device needs `products.manage` (403) and, to turn it on, every device with a valid IMEI (409).
     """
 
     permission_classes = [permissions.IsAuthenticated]
@@ -487,11 +496,20 @@ class ProductSerializationView(APIView):
                 {'detail': 'Indica si el producto se controla por número de serie.'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        # SERIALIZATION-IMEI-GUARD-01 — omitted (or null) keeps what the product has; anything else must be a boolean
+        # (a string «false» is truthy). Changing it on a product already counted by device needs `products.manage`,
+        # decided by the service under the product's lock (`set_serialized`).
+        wanted_imei = request.data.get('requires_imei')
+        if wanted_imei is not None and not isinstance(wanted_imei, bool):
+            return Response(
+                {'detail': 'Indica si el producto lleva IMEI (sí o no).', 'field': 'requires_imei'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         try:
             updated = units.set_serialized(
-                product, serialized=serialized,
-                requires_imei=bool(request.data.get('requires_imei')),
+                product, serialized=serialized, requires_imei=wanted_imei,
                 actor=request.user, request=request,
+                may_change_requires_imei=may_manage_products(request),
             )
         except InventoryError as exc:
             return _refusal(exc)

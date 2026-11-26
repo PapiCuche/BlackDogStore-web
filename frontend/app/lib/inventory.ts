@@ -324,6 +324,13 @@ export const MANUAL_MOVEMENT_TYPES: { value: MovementType; label: string; isEntr
   { value: "correction_negative", label: "Corrección negativa", isEntry: false },
 ];
 
+/**
+ * STOCK-EXISTING-01 — «Ingreso de inventario existente»: a `purchase_entry` the server marks as stock the shop already
+ * had. Not a type of its own (the line keeps `purchase_entry`), but the Kardex filter accepts it and the server's
+ * `movement_type_label` names it; filtering by «Entrada por compra» never lists it.
+ */
+export const EXISTING_STOCK_FILTER = { value: "existing_stock", label: "Ingreso de inventario existente" } as const;
+
 export const MOVEMENT_TYPE_LABELS: Record<MovementType, string> = {
   initial_stock: "Stock inicial",
   transfer_in: "Entrada por transferencia",

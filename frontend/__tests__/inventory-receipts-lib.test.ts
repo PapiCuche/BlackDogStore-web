@@ -124,6 +124,11 @@ describe('buildReceiptBody', () => {
     expect(withCosts.lines[1]).toMatchObject({ unit_cost: '2.5' });
   });
 
+  it('STOCK-EXISTING-01: el tipo «existing» viaja tal cual', () => {
+    const { body } = buildReceiptBody({ ...origin, entry_kind: 'existing' }, [{ ...newLine(cable), quantity: '1' }], { costs: false });
+    expect(body.entry_kind).toBe('existing');
+  });
+
   it('un equipo seminuevo abre en «Usado»', () => {
     expect(newLine({ ...phone, condition_line: 'used' }).units[0].condition).toBe('used');
   });

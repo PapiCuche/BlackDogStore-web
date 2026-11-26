@@ -824,7 +824,7 @@ export function ReceivingWizard({
           <fieldset>
             {/* INV-OPENING-01 — what this entry IS in the Kardex. */}
             <legend className="block text-xs font-semibold text-foreground">Tipo de ingreso</legend>
-            <div className="mt-1.5 grid gap-2 sm:grid-cols-2">
+            <div className="mt-1.5 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
               {ENTRY_KINDS.map((kind) => (
                 <label key={kind.value} className="flex min-h-11 items-start gap-2 rounded-lg border border-bd-border p-3 text-sm">
                   <input
@@ -1188,6 +1188,7 @@ function ReceivingDone({ result, access, usedProducts, onAnother, headingRef }: 
           {branch ? ` en ${branch}` : ""}{supplier ? `, de ${supplier}` : ""}
           {result.document_ref ? ` (${result.document_ref})` : ""}.
           {result.entry_kind === "opening" ? " Quedó como inventario inicial en el Kardex." : ""}
+          {result.entry_kind === "existing" ? " Quedó como ingreso de inventario existente en el Kardex (no es una compra)." : ""}
         </p>
         <ul className="mt-3 space-y-1 text-sm text-foreground" aria-label="Lo que se registró">
           {result.lines.map((l) => (

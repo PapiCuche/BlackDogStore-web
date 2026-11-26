@@ -28,6 +28,7 @@ import {
   movementReference,
 } from "../../components/InventoryUi";
 import {
+  EXISTING_STOCK_FILTER,
   MOVEMENT_TYPE_LABELS,
   fetchStockMovements,
   type InventoryScope,
@@ -230,6 +231,8 @@ function MovementsContent({ user, access }: { user: AuthUser; access: InternalAc
                 {(Object.keys(MOVEMENT_TYPE_LABELS) as MovementType[]).map((key) => (
                   <option key={key} value={key}>{MOVEMENT_TYPE_LABELS[key]}</option>
                 ))}
+                {/* STOCK-EXISTING-01 — a purchase entry marked as stock the shop already had: its own filter. */}
+                <option value={EXISTING_STOCK_FILTER.value}>{EXISTING_STOCK_FILTER.label}</option>
               </select>
             </div>
 

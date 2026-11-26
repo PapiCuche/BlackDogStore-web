@@ -125,7 +125,7 @@ class OpeningInBatchesImportTest(LoadBase):
         self.assertEqual(payload['counts']['error'], 1)
         errors = ' '.join(payload['rows'][0]['errors'])
         self.assertIn('inventario inicial', errors)
-        self.assertIn('compra', errors)
+        self.assertIn('inventario existente', errors)
 
     def test_a_purchase_closes_the_opening(self):
         self.apply(self.upload([self.phone_cells('OPB-0201')], entry_kind='opening'))
@@ -334,8 +334,8 @@ class SimulationTest(LoadBase):
         phone_a = shelves[(self.branch_a.pk, self.phone.pk)]
         self.assertEqual((phone_a['units_before'], phone_a['units_after']), (1, 3))
         self.assertEqual((phone_a['stock_before'], phone_a['stock_after']), (1, 3))
-        self.assertEqual(simulation['movements'], {'purchase_entry': 4, 'initial_stock': 0})
-        self.assertEqual(simulation['units'], {'purchase_entry': 5, 'initial_stock': 0})
+        self.assertEqual(simulation['movements'], {'purchase_entry': 4, 'initial_stock': 0, 'existing_stock': 0})
+        self.assertEqual(simulation['units'], {'purchase_entry': 5, 'initial_stock': 0, 'existing_stock': 0})
 
         before = StockMovement.objects.count()
         applied = self.apply(payload)
@@ -352,7 +352,7 @@ class SimulationTest(LoadBase):
         payload = self.upload([self.phone_cells('SIM-0101'), self.phone_cells('SIM-0102')], entry_kind='opening')
         simulation = payload['summary']['simulation']
         self.assertEqual(simulation['entry_type'], StockMovement.INITIAL_STOCK)
-        self.assertEqual(simulation['movements'], {'purchase_entry': 0, 'initial_stock': 1})
+        self.assertEqual(simulation['movements'], {'purchase_entry': 0, 'initial_stock': 1, 'existing_stock': 0})
         self.apply(payload)
         self.assertEqual(self.kinds(), [StockMovement.INITIAL_STOCK])
 

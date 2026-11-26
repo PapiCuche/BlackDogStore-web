@@ -19,7 +19,7 @@ import {
   applyUnitImport, approveUnitImportTerms, fetchUnitImportJob, fetchUnitImportVoidPreview, previewUnitImport,
   unitImportErrorsUrl, unitImportJobPath, unitImportReportUrl, unitImportTemplateUrl, voidUnitImport,
   UnitImportVoidError,
-  type UnitImportBlocking, type UnitImportJob, type UnitImportLine, type UnitImportPriceReview,
+  type UnitEntryKind, type UnitImportBlocking, type UnitImportJob, type UnitImportLine, type UnitImportPriceReview,
   type UnitImportPriceUpdate, type UnitImportRow, type UnitImportSimulation, type UnitImportVoidPreview,
 } from "@/app/lib/stock-units";
 
@@ -66,7 +66,8 @@ function Simulation({ simulation }: { simulation: UnitImportSimulation }) {
     <section className="mb-4 space-y-3" aria-labelledby="unit-import-simulation">
       <h3 id="unit-import-simulation" className="text-sm font-semibold text-foreground">Resultado si registras el archivo</h3>
       <p role="note" aria-label="Movimientos en el Kardex" className="text-sm text-muted">
-        Movimientos en el Kardex: {movements.initial_stock} de inventario inicial · {movements.purchase_entry} de compra.
+        Movimientos en el Kardex: {movements.initial_stock} de inventario inicial · {movements.purchase_entry} de compra
+        {movements.existing_stock !== undefined ? ` · ${movements.existing_stock} de inventario existente` : ""}.
       </p>
       <TableWrap>
         <caption className="sr-only">Resultado si registras el archivo</caption>
@@ -381,7 +382,7 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
   const [file, setFile] = useState<File | null>(null);
   const [branch, setBranch] = useState("");
   const [reason, setReason] = useState("");
-  const [entryKind, setEntryKind] = useState<"purchase" | "opening">("purchase");
+  const [entryKind, setEntryKind] = useState<UnitEntryKind>("purchase");
   // INV-LOAD-02 review — which devices the file loads, ALWAYS said: a renamed or pasted sheet no longer says it, and
   // a used device must never enter as new by default. «mixed» = the combined template, row by row (its «Línea»).
   const [line, setLine] = useState<UnitImportLine | "mixed" | "">("");
@@ -562,6 +563,12 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
                   <input type="radio" name="unit-import-entry-kind" value="opening" disabled={working}
                     checked={entryKind === "opening"} onChange={() => { setEntryKind("opening"); setJob(null); }} />
                   Inventario inicial (equipos que ya tenías; se puede cargar en varias tandas mientras el artículo no tenga otros movimientos en esa sucursal)
+                </label>
+                {/* STOCK-EXISTING-01 — what the shop already had, on any shelf (it closes the opening, like a purchase). */}
+                <label className="flex items-center gap-2">
+                  <input type="radio" name="unit-import-entry-kind" value="existing" disabled={working}
+                    checked={entryKind === "existing"} onChange={() => { setEntryKind("existing"); setJob(null); }} />
+                  Ingreso de inventario existente (equipos que ya tenías; no es una compra. Vale en cualquier estante y, como una compra, cierra su inventario inicial: si el artículo aún no tiene movimientos en esa sucursal, elige inventario inicial)
                 </label>
               </div>
             </fieldset>
