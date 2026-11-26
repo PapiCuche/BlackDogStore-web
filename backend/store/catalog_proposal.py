@@ -549,7 +549,9 @@ def _create_variant(company, variant, *, model, options, price, category, actor,
     )
     product_codes.ensure_code(product, actor=actor, request=request)
     product = stock_unit_services.set_serialized(
-        product, serialized=True, requires_imei=variant['requires_imei'], actor=actor, request=request)
+        product, serialized=True, requires_imei=variant['requires_imei'], actor=actor, request=request,
+        # SERIALIZATION-IMEI-GUARD-01 — a product created in this same call, behind `products.manage` (the view).
+        may_change_requires_imei=True)
     AdminAuditLog.log(
         actor=actor, action='product_created', target_type='product', target_id=product.pk, request=request,
         company=company,

@@ -15,11 +15,26 @@ Now, on a product that is ALREADY serialized:
   * an accepted change is audited with the value before and after.
 
 The first switch of a product with no stock (the panel's «activar control por equipo») is unchanged.
+
+Review of #444 — the same rule on every door, without a history column:
+
+  * turning «lleva IMEI» OFF needs `products.manage` however it is asked: `requires_imei=false` on a serialized
+    product, or un-serializing a product that carries it (`is_serialized=false` turns it off by consequence). So a
+    product that had it only ever loses it by the catalogue's decision, and a later first switch that leaves it off is
+    keeping that decision, not changing it (the receipt, the registration and the POS only ever make a first switch);
+  * turning it ON on a product already counted by device needs `products.manage`; on a first switch it does not (the
+    receipt, the registration, the POS and the panel do it with «Mover inventario», as before);
+  * turning it ON — first switch or not — is refused while a device of the product (any state but voided, e.g. one
+    sold during an earlier serialized period) has no valid IMEI;
+  * `set_serialized(..., may_change_requires_imei=False)` by default: every caller says it;
+  * `receive_units` reads «lleva IMEI» again under the product row its Kardex line holds: a switch that commits while
+    devices are being received cannot leave devices without IMEI under a product that says they carry one.
 """
 from store import stock_unit_services as units
 from store.models import AdminAuditLog, Product, StockUnit
-from store.test_inventory_receipts import ReceiptBase
-from store.test_registration import _client
+from store.models import BranchStock
+from store.test_inventory_receipts import ReceiptBase, unit
+from store.test_registration import RegistrationFixture, _client
 from store.test_stock_units import imei
 from store.tests import _p2d_member, _prod
 
@@ -167,13 +182,126 @@ class UnitsWithoutImeiTest(GuardBase):
     def test_the_service_refuses_it_too(self):
         self.laptop_unit('GRD-0501')
         with self.assertRaises(units.StockUnitError) as caught:
-            units.set_serialized(self.laptop, serialized=True, requires_imei=True, actor=self.manager)
+            units.set_serialized(self.laptop, serialized=True, requires_imei=True, actor=self.manager,
+                                 may_change_requires_imei=True)
         self.assertEqual((caught.exception.status, caught.exception.code), (409, units.UNITS_WITHOUT_IMEI))
         self.assertFalse(self.reread(self.laptop).requires_imei)
 
     def test_the_service_keeps_the_value_when_none_is_given(self):
         units.set_serialized(self.phone, serialized=True, requires_imei=None, actor=self.manager)
         self.assertTrue(self.reread(self.phone).requires_imei)
+
+    def test_the_service_refuses_by_default(self):
+        with self.assertRaises(units.StockUnitError) as caught:
+            units.set_serialized(self.phone, serialized=True, requires_imei=False, actor=self.manager)
+        self.assertEqual((caught.exception.status, caught.exception.code), (403, units.REQUIRES_IMEI_FORBIDDEN))
+        self.assertTrue(self.reread(self.phone).requires_imei)
+
+
+class UnserializeTest(GuardBase):
+    """Review of #444 — un-serializing turns «lleva IMEI» off: the catalogue's decision, like turning it off."""
+
+    def test_unserializing_a_product_with_imei_without_products_manage_is_403(self):
+        before = self.audits().count()
+        res = self.post(self.clerk, self.phone, {'is_serialized': False})
+        self.assertEqual(res.status_code, 403, res.content)
+        self.assertEqual(res.json().get('code'), units.REQUIRES_IMEI_FORBIDDEN)
+        phone = self.reread(self.phone)
+        self.assertEqual((phone.is_serialized, phone.requires_imei), (True, True))
+        self.assertEqual(self.audits().count(), before)
+
+    def test_the_two_call_sequence_cannot_drop_the_imei(self):
+        self.assertEqual(self.post(self.clerk, self.phone, {'is_serialized': False}).status_code, 403)
+        res = self.post(self.clerk, self.phone, {'is_serialized': True, 'requires_imei': False})
+        self.assertEqual(res.status_code, 403, res.content)
+        phone = self.reread(self.phone)
+        self.assertEqual((phone.is_serialized, phone.requires_imei), (True, True))
+
+    def test_the_service_refuses_it_too(self):
+        with self.assertRaises(units.StockUnitError) as caught:
+            units.set_serialized(self.phone, serialized=False, actor=self.manager)
+        self.assertEqual((caught.exception.status, caught.exception.code), (403, units.REQUIRES_IMEI_FORBIDDEN))
+
+    def test_with_products_manage_it_is_unserialized_and_audited(self):
+        res = self.post(self.manager, self.phone, {'is_serialized': False})
+        self.assertEqual(res.status_code, 200, res.content)
+        phone = self.reread(self.phone)
+        self.assertEqual((phone.is_serialized, phone.requires_imei), (False, False))
+        audit = self.audits().last()
+        self.assertEqual((audit.metadata['is_serialized_before'], audit.metadata['requires_imei_before']),
+                         (True, True))
+        # Then a first switch that leaves it off keeps the catalogue's decision: «Mover inventario» is enough.
+        res = self.post(self.clerk, self.phone, {'is_serialized': True, 'requires_imei': False})
+        self.assertEqual(res.status_code, 200, res.content)
+
+    def test_unserializing_a_product_without_imei_needs_no_catalogue_authority(self):
+        res = self.post(self.clerk, self.laptop, {'is_serialized': False})
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertFalse(self.reread(self.laptop).is_serialized)
+
+
+class FirstSwitchTest(GuardBase):
+    """Review of #444 — the first switch sets «lleva IMEI» as before, but never over devices without one."""
+
+    def laptop_with_a_sold_device_and_no_stock(self):
+        device = self.laptop_unit('GRD-OLD-1')
+        StockUnit.objects.filter(pk=device.pk).update(status=StockUnit.Status.SOLD)
+        BranchStock.objects.filter(product=self.laptop).update(quantity=0)
+        Product.objects.filter(pk=self.laptop.pk).update(inventory=0)
+        res = self.post(self.clerk, self.laptop, {'is_serialized': False})
+        self.assertEqual(res.status_code, 200, res.content)
+
+    def test_a_first_switch_on_with_old_devices_without_imei_is_409(self):
+        self.laptop_with_a_sold_device_and_no_stock()
+        res = self.post(self.clerk, self.laptop, {'is_serialized': True, 'requires_imei': True})
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual(res.json().get('code'), units.UNITS_WITHOUT_IMEI)
+        self.assertFalse(self.reread(self.laptop).is_serialized)
+
+    def test_a_first_switch_on_without_old_devices_needs_no_catalogue_authority(self):
+        empty = _prod(self.company, 'Watch Guard 2', 'watch-guard-2', inventory=0)
+        res = self.post(self.clerk, empty, {'is_serialized': True, 'requires_imei': True})
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertTrue(self.reread(empty).requires_imei)
+
+    def test_the_receipt_s_first_switch_refuses_over_old_devices_without_imei(self):
+        self.laptop_with_a_sold_device_and_no_stock()
+        body = self.body(self.dev(self.laptop, unit('GRD-NEW-1', next(self._imeis))))
+        self.assertEqual(self.confirm(self.costed, body).status_code, 409)
+        laptop = self.reread(self.laptop)
+        self.assertEqual((laptop.is_serialized, laptop.requires_imei), (False, False))
+        self.assertFalse(StockUnit.objects.filter(serial_number='GRD-NEW-1').exists())
+
+    def test_the_receipt_never_turns_the_imei_off(self):
+        body = self.body(self.dev(self.phone, unit('GRD-NO-IMEI')))
+        self.assertFalse(self.preview(self.costed, body, expect=200).json()['ok'])
+        self.confirm(self.costed, body, expect=400)
+        self.assertTrue(self.reread(self.phone).requires_imei)
+
+
+class ReceiveRaceTest(GuardBase):
+    """Review of #444 — «lleva IMEI» switched on while devices are received: read again under the product row."""
+
+    def test_a_stale_product_cannot_bring_devices_without_imei_under_a_product_that_requires_one(self):
+        stale = Product.objects.get(pk=self.laptop.pk)              # read before the switch
+        self.laptop_unit('GRD-R-0', next(self._imeis))               # every device so far has an IMEI
+        units.set_serialized(self.laptop, serialized=True, requires_imei=True, actor=self.manager,
+                             may_change_requires_imei=True)          # committed meanwhile
+        movements = self.snapshot()
+        with self.assertRaises(units.StockUnitError) as caught:
+            units.receive_units(branch=self.centro, product=stale, units=[{'serial_number': 'GRD-R-1'}],
+                                actor=self.manager, reason='Compra')
+        self.assertEqual(caught.exception.code, units.UNITS_WITHOUT_IMEI)
+        self.assertEqual(self.snapshot(), movements)
+        self.assertEqual(units.units_without_valid_imei(self.laptop), 0)
+
+    def test_a_stale_product_with_imeis_is_received(self):
+        stale = Product.objects.get(pk=self.laptop.pk)
+        units.set_serialized(self.laptop, serialized=True, requires_imei=True, actor=self.manager,
+                             may_change_requires_imei=True)
+        units.receive_units(branch=self.centro, product=stale, actor=self.manager, reason='Compra',
+                            units=[{'serial_number': 'GRD-R-2', 'imei': next(self._imeis)}])
+        self.assertTrue(StockUnit.objects.filter(serial_number='GRD-R-2').exists())
 
 
 class CompanyIsolationTest(GuardBase):
@@ -194,3 +322,19 @@ class CompanyIsolationTest(GuardBase):
         StockUnit.objects.filter(serial_number='GRD-F-1').update(imei=None)
         res = self.post(self.manager, self.laptop, {'is_serialized': True, 'requires_imei': True})
         self.assertEqual(res.status_code, 200, res.content)
+
+
+class RegistrationDoorTest(RegistrationFixture):
+    """Review of #444 — the guided registration (and the POS, which calls it) never turns «lleva IMEI» off."""
+
+    def test_an_existing_variant_with_imei_keeps_it_when_the_registration_says_otherwise(self):
+        self.post(self.clerk, self.new_device(), expect=201)
+        product = Product.objects.get(company=self.company, product_model=self.model)
+        self.assertTrue(product.requires_imei)
+        body = self.new_device(requires_imei=False, units=[{'serial_number': 'SNREG-NOIMEI'}])
+        body['product'] = {k: v for k, v in body['product'].items() if k != 'sku'}
+        res = self.post(self.clerk, body)
+        self.assertGreaterEqual(res.status_code, 400, res.content)
+        product.refresh_from_db()
+        self.assertTrue(product.requires_imei)
+        self.assertFalse(StockUnit.objects.filter(serial_number='SNREG-NOIMEI').exists())

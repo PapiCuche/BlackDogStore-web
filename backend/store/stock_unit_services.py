@@ -699,7 +699,7 @@ def units_without_valid_imei(product) -> int:
 
 @transaction.atomic
 def set_serialized(product, *, serialized: bool, requires_imei: bool | None = None,
-                   actor=None, request=None, may_change_requires_imei: bool = True) -> Product:
+                   actor=None, request=None, may_change_requires_imei: bool = False) -> Product:
     """
     Decide whether a product is counted by units. ONLY WHILE IT HAS NO STOCK.
 
@@ -708,12 +708,20 @@ def set_serialized(product, *, serialized: bool, requires_imei: bool | None = No
     Either way the invariant is false from the first second, so both are
     refused and the shelf has to be emptied (or the units written off) first.
 
-    SERIALIZATION-IMEI-GUARD-01 — `requires_imei=None` keeps what the product has. On a product that is ALREADY
-    counted by device (and stays so), changing «lleva IMEI»:
-      * needs `may_change_requires_imei` (the view passes `products.manage`): 403 `requires_imei_forbidden`;
-      * turning it ON is refused (409 `units_without_imei`) while a device of the product has no valid IMEI
-        (`units_without_valid_imei`): the product would say every device carries one, and some do not.
-    Both decided under the product's lock. The audit line says the values before and after.
+    SERIALIZATION-IMEI-GUARD-01 — «lleva IMEI» (`requires_imei`; `None` keeps what the product has). One rule for every
+    door, decided here under the product's lock:
+
+      * OFF (True → False) needs `may_change_requires_imei` (the catalogue's authority, `products.manage`) however it
+        is asked: `requires_imei=False`, or un-serializing a product that carries it (which turns it off by
+        consequence). A product that had it therefore only loses it by that decision, and a later first switch that
+        leaves it off keeps the decision instead of changing it — no history column needed;
+      * ON on a product ALREADY counted by device needs it too; ON on a FIRST switch (not serialized → serialized)
+        does not: the receipt, the guided registration, the POS and the panel do it with «Mover inventario»;
+      * ON, first switch or not, is refused (409 `units_without_imei`) while a device of the product (any state but
+        VOIDED, e.g. one sold during an earlier serialized period) has no valid IMEI (`units_without_valid_imei`).
+
+    `may_change_requires_imei` is False by default: every caller says whether its actor holds that authority. A
+    refusal is 403 `requires_imei_forbidden`; the audit line says the values before and after.
     """
     locked = Product.objects.select_for_update().get(pk=product.pk)
     was_serialized, required_before = locked.is_serialized, locked.requires_imei
@@ -724,22 +732,25 @@ def set_serialized(product, *, serialized: bool, requires_imei: bool | None = No
                 'Deja el stock en cero primero.'
             )
         locked.is_serialized = bool(serialized)
-    if requires_imei is not None:
-        wanted = bool(requires_imei) and locked.is_serialized
-        if was_serialized and locked.is_serialized and wanted != required_before:
-            if not may_change_requires_imei:
-                raise StockUnitError(
-                    'Cambiar si este producto lleva IMEI requiere el permiso «Gestionar productos».',
-                    field='requires_imei', code=REQUIRES_IMEI_FORBIDDEN, status=403)
-            missing = units_without_valid_imei(locked) if wanted else 0
-            if missing:
-                raise StockUnitError(
-                    f'No se puede marcar que lleva IMEI: {missing} equipo(s) de este producto no tienen un IMEI '
-                    'válido. Corrígelos o anúlalos primero.',
-                    field='requires_imei', code=UNITS_WITHOUT_IMEI, status=409)
-        locked.requires_imei = wanted
+    wanted = required_before if requires_imei is None else bool(requires_imei)
     if not locked.is_serialized:
-        locked.requires_imei = False
+        wanted = False
+    if wanted != required_before:
+        if (was_serialized or required_before) and not may_change_requires_imei:
+            unserializing = was_serialized and not locked.is_serialized
+            raise StockUnitError(
+                'Quitar el control por equipo a un producto que lleva IMEI requiere el permiso «Gestionar productos».'
+                if unserializing else
+                'Cambiar si este producto lleva IMEI requiere el permiso «Gestionar productos».',
+                field='is_serialized' if unserializing else 'requires_imei',
+                code=REQUIRES_IMEI_FORBIDDEN, status=403)
+        missing = units_without_valid_imei(locked) if wanted else 0
+        if missing:
+            raise StockUnitError(
+                f'No se puede marcar que lleva IMEI: {missing} equipo(s) de este producto no tienen un IMEI '
+                'válido. Corrígelos o anúlalos primero.',
+                field='requires_imei', code=UNITS_WITHOUT_IMEI, status=409)
+    locked.requires_imei = wanted
     locked.save(update_fields=['is_serialized', 'requires_imei', 'updated_at'])
     AdminAuditLog.log(
         actor=actor, action='product_serialization_changed', target_type='product',
@@ -901,6 +912,14 @@ def receive_units(*, branch, product, units, actor=None, reason: str = '',
         quantity=len(created), reason=reason, actor=actor,
         reference_type='stock_units', units=created,
     )
+    # SERIALIZATION-IMEI-GUARD-01 review — the movement's UPDATE holds the product row until this transaction ends, and
+    # `set_serialized` takes that row before it switches «lleva IMEI» on. Read again under it: if the switch committed
+    # after the rows above were cleaned against the old value, a device without a valid IMEI is undone with the batch.
+    if (Product.objects.filter(pk=product.pk).values_list('requires_imei', flat=True).get()
+            and any(not _valid_imei(unit.imei) for unit in created)):
+        raise StockUnitError(
+            f'«{product.name}» pasó a llevar IMEI mientras se registraban estos equipos: indica el IMEI de cada uno y '
+            'vuelve a intentarlo.', field='imei', code=UNITS_WITHOUT_IMEI, status=409)
     AdminAuditLog.log(
         actor=actor, action='stock_units_received', target_type='product', target_id=product.pk,
         # How many and where. Not the identifiers: the units are the record.

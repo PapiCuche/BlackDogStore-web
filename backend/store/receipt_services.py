@@ -792,7 +792,9 @@ def confirm(*, company, resolved: Resolved, normalised: dict, actor, request=Non
                     # the whole receipt). Same transaction: a later failure leaves the product as it was.
                     product = switched[product.pk] = units_service.set_serialized(
                         product, serialized=True, requires_imei=first_units[product.pk]['with'],
-                        actor=actor, request=request)
+                        actor=actor, request=request,
+                        # SERIALIZATION-IMEI-GUARD-01 — a first switch only: it never turns «lleva IMEI» off.
+                        may_change_requires_imei=False)
                 created = units_service.receive_units(
                     branch=branch, product=product, units=line['units'], actor=actor, reason=reason,
                     request=request, movement_type=movement_type_for(normalised),
