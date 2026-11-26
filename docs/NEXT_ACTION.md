@@ -1,10 +1,82 @@
-# NEXT ACTION — 2026-11-26
+# NEXT ACTION — 2026-11-26 (tarde)
 
-## PRODUCCIÓN (prod-02) — R13.2 `c8a43215` desde 2026-11-25 10:51 (Lima), esquema `0192_unit_photo_provenance`; sana
-Comprobado el 2026-11-26 a las 14:20 (Lima), sólo lectura: guardas, rutas, Kardex (0 rupturas), `check_unit_stock` 0
-diferencias, healthcheck sin ATENCIÓN, Caddy, CRM, enrutamiento y crontab sin cambios.
+## PRODUCCIÓN (prod-02) — R14 `c176bfea` desde 2026-11-26 16:52 (Lima), esquema `0193_unit_import_terms_approval`; sana
+Imágenes `release-c176bfe` (backend `795edce8…`, frontend `acf35935…`). Vuelta atrás de código preparada (preflight
+posterior OK, destino R13.2 `c8a43215`, deja 0193); la de esquema sólo con «GO vuelta atrás esquema 0193 prod-02».
 
-## RELEASE COMERCIAL UNIFICADA — candidata R14 `c176bfea` ENSAYADA · espera **«GO despliegue c176bfe prod-02»**
+## AUTORIZACIONES CONTROLADAS 2026-11-26 — los tres GO del propietario, HECHOS en orden
+
+Ejecutor: Claude (sesión principal), cada operación bajo `backups/ops/prod_lock.sh`, con su backup previo, comprobación
+de sólo lectura, huellas y diff esperado.
+
+| # | GO exacto | Hora (Lima) | Resultado | Backup previo | Log |
+|---|---|---|---|---|---|
+| 1 | «GO IMEI variantes 22 y 23 prod-02» | 16:48–16:49 | **HECHO.** #22 «iPhone 15 128Gb Negro» y #23 «iPhone 17 Pro JPN 256Gb Plata» pasan a `requires_imei=True`; 0 equipos; 4 auditorías (2 del servicio, 2 del kit); `EXPECTED_DIFF OK`; repetición NO-OP; vista pública idéntica; panel OK; `check_unit_stock` 0 | `db-20261126-164855` | `backups/imei22-go-20261126.log` |
+| 2 | «GO restaurar sellos 7 notas prod-02 fuente 222417» | 16:49–16:50 | **HECHO.** Sólo `SalesNote.pdf_generated_at` de las 7 notas, valores de `db-20261121-222417` (notas 5 y 7 en NULL); contenido, numeración e importes iguales; 7 auditorías; `EXPECTED_DIFF OK`; repetición NO-OP; huella `a42dfa17d6779f45` → `c2be046bf7bce2d8` | `db-20261126-164955` | `backups/notes7b-go-20261126.log` |
+| 3 | «GO despliegue c176bfe prod-02» | 16:51:51–16:53:22 | **HECHO.** Exactamente `c176bfea`, imágenes ensayadas; plan = sólo 0193, migrada antes del cambio en el primer intento (7,4 s); sanos en ~9 s; huella de datos igual salvo la hoja; Kardex idéntico (50 líneas, 13 cadenas, 0 rupturas); rutas sin sorpresas (`/admin/inventory/scan` 200); healthcheck 0 ATENCIÓN; reimpresión de sólo lectura; 0 errores; Caddy, CRM, SUNAT, enrutamiento y crontab sin cambios | `db-20261126-165157` (+ evidencias) | `backups/d-r14-go.log` |
+
+**Antes del GO 1 se encontró un cambio desde el ensayo del 25/11:** #23 la desactivó el usuario 1 el 2026-11-25 a las
+14:40 (auditoría `product_deactivated`), y su ficha pública responde 404. Las precondiciones del kit (identidad,
+serializada, sin IMEI, 0 equipos, huella de alcance `cc02e755…`) no cambiaron. Se repitió el ensayo del kit validado,
+sin tocar sus archivos, sobre una copia de ese momento: 118/119. El único fallo es la comprobación del ensayo que
+esperaba la ficha de #23 en 200; aplicar, repetir, rechazos, vuelta atrás y reaplicar pasaron.
+
+**Incidencias:**
+- El primer lanzamiento del despliegue (16:51:02) lo rechazó el candado con rc=75 sin ejecutar nada: la línea de
+  comando del lanzador contenía el nombre del script y `busy()` la tomó por otra operación. Se relanzó a las 16:51:42
+  con un lanzador por `sh -s`.
+- Un agente adaptaba los kits de IMEI y de notas a R14 cuando llegó la autorización. Se detuvo y se repusieron los
+  archivos validados (sha256 comprobado); sus borradores quedan en `r14-draft/` y los originales en `pre-r14/`.
+
+## VERIFICACIÓN DESPUÉS DEL DESPLIEGUE (2026-11-26 17:10–17:25) — `R14POST_DONE fails=0`
+Kit `backups/release-r14-post/`, log `r14post-run.log`, sobre copias aisladas de `db-20261126-171248` (esquema 0193).
+- **Copia que se deshace:** sondas R14 sobre la empresa real 75 OK, 0 fallos, 1 omitida (no hay cargas de equipos en
+  producción todavía): escaneo de un equipo nuevo por un almacenero, repetición idempotente, IMEI duplicado 409,
+  aislamiento entre sucursales y empresas, la caja encuentra y vende el equipo escaneado, un seminuevo queda pendiente
+  y sin publicar y la caja lo rechaza, precio o garantía sin `products.manage` 403, aprobación de términos,
+  `combinacion_excluida` en una exclusión real y en una sintética. Simulación de stock real 19/19; humo 32/32.
+- **Copia desechable (escrituras reales):** el escaneo escribe una sola línea de Kardex por equipo (`purchase_entry`,
+  «registro por escaneo») y **ningún** documento de compra, cuenta por pagar, pago ni fila de finanzas. Lista de
+  WhatsApp «iPhone 17 256 GB Negro / Azul neblina / Blanco / Lavanda»: reconoce la variante existente (Negro), crea sólo
+  las 3 que faltan como borradores (precio 0, sin publicar) y 0 equipos ni movimientos. Después: `check_unit_stock` 0,
+  Kardex sin rupturas y ningún identificador compartido entre equipos vivos.
+- **Producción, sólo lectura:** 4 equipos vivos, cada uno con identificadores únicos; #22/#23 siguen exigiendo IMEI.
+
+## STOCK REAL — vista previa lista para R14 · espera archivos, aprobación y «GO carga stock real prod-02»
+- Kit `backups/stockreal-preview/` adaptado a R14 (sólo acepta `c176bfea`; imagen elegida por id fijado). Validado con
+  archivos sintéticos: inventario inicial escribe `initial_stock`; «compra» escribe `purchase_entry`; todo deshecho,
+  producción sin cambios.
+- **Nuevo informe «ESTANTES CERRADOS PARA INVENTARIO INICIAL».** 12 de los 13 estantes con historial ya no admiten
+  inventario inicial. Entre los equipos: #7, #19, #24 y #25 (ventas, compras de caja o ajustes). Una fila de inventario
+  inicial en esos estantes detiene su archivo entero. Por ahora esas filas van en un archivo aparte como «Compra a
+  proveedor», sin proveedor ni costo. Cuando se despliegue «Ingreso de inventario existente» (PR #443), irán con esa
+  opción.
+- La entrada en una compra es sólo una línea de Kardex: no crea documento de compra, deuda ni asiento.
+- No usar la caja ni el escaneo para la carga inicial: siempre escriben compra.
+- Pendiente: los archivos del propietario en `backups/stock-real-inbox/`, su aprobación del informe y el GO exacto.
+
+## DESARROLLO EN CURSO (en `master` o en PR; nada desplegado)
+- **#442 fusionado** (`101788a2`): pruebas de navegador de los flujos de R14 en escritorio y teléfono (15/15, cuatro
+  corridas); no corren en CI, sólo en local.
+- **PR #443 «Ingreso de inventario existente»:** etiqueta propia en Kardex, informes y vista previa; sigue escribiendo
+  `purchase_entry`. Revisión sin hallazgos graves; ajustes en curso (filtro de la API v1, texto del rechazo de
+  inventario inicial).
+- **PR #444 «lleva IMEI» protegido:** la revisión encontró y reprodujo un hueco **que también existe en producción**: con
+  sólo `inventory.adjust`, quitar la serialización de un producto sin stock apaga «lleva IMEI» (válido para #22/#23).
+  Corrección en curso en el mismo PR. Hasta desplegarla, vigilar en la auditoría `product_serialization_changed` de
+  #22/#23.
+- Arreglo pendiente de PR: el «Enlace de esta carga» desborda en teléfonos.
+- Cuando estén fusionados, se preparará una release R15 (kit, ensayo, GO propio). No se despliega sin GO.
+
+### Preguntas abiertas para el propietario
+- Texto de la opción «Ingreso de inventario existente» y su ayuda («Equipos que ya tenías; no es una compra»).
+- Escaneo: D-SCAN-1..4 y la prueba en iPad o Android de que el teclado no aparece al escanear.
+- Selector: valores fijados por el texto de la lista, colores marcados a mano, piezas que nombran otro modelo, límite
+  de 40 palabras.
+- Cargas (#434): si `public_notes` y `cosmetic_grade` cuentan como términos comerciales; si un almacenero ve el precio
+  actual de la variante en su vista previa.
+
+## (Histórico) RELEASE COMERCIAL UNIFICADA — candidata R14 `c176bfea` ensayada; DESPLEGADA el 2026-11-26 (arriba)
 
 Un PR fusionado no es un GO. Este GO vale para una operación y para este SHA exacto:
 `c176bfeaccf727e24e6ed3eb2d1577a4ff3c43f5`, imágenes `rc-c176bfe` (backend `795edce8…`, frontend `acf35935…`). Un SHA
@@ -94,7 +166,7 @@ Después: `check_unit_stock` 0 diferencias tras cada operación; finanzas y conc
 
 **Trampa aprendida:** los kits de datos comparan instantáneas de toda la app `store`; ejecutarlos lejos de :00/:15/:30/:45 (finanzas), de los minutos 2/7/12… (conciliación) y de las :41 (cotizaciones). El crontab completo (horarios) está en `backups/ops/schedule-evidence-20261125.txt`; hay además tareas cada minuto y cada 5 que pueden tocar otras tablas. Un despliegue no debe caer entre :35 y :50.
 
-## GO DE DATOS PENDIENTES (vigentes al 2026-11-26; preparados y ensayados, ninguno ejecutado)
+## (Histórico) GO de datos preparados el 2026-11-25 — IMEI #22/#23 y sellos de las 7 notas HECHOS el 2026-11-26; stock real arriba
 
 ### GO pendientes
 | Operación | GO exacto | Kit | Estado |

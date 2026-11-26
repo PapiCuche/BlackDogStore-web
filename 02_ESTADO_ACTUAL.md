@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-26 (tarde) — R14 `c176bfea` DESPLEGADA en prod-02; IMEI de #22/#23 y sellos de las 7 notas aplicados
+
+Los tres GO exactos del propietario, en su orden, entre las 16:48 y las 16:53 (Lima), cada uno bajo el candado con backup previo y diff esperado: «lleva IMEI» en #22 y #23 (0 equipos), sellos de generación de las 7 notas desde `db-20261121-222417` (5 y 7 en NULL) y el despliegue de R14 con la migración 0193 (7,4 s, primer intento). Producción sana: Kardex idéntico, 0 errores, Caddy, CRM y crontab sin cambios. La verificación posterior sobre copias aisladas salió sin fallos: el escaneo no crea compras ni deudas, la lista de WhatsApp sólo crea las variantes que faltan y ningún equipo comparte identificador. La vista previa del stock real ya funciona con R14 y lista los estantes cerrados para inventario inicial. Hueco conocido, ya existía antes de R14: con sólo `inventory.adjust` se puede apagar «lleva IMEI» quitando la serialización a un producto sin stock (corrección en el PR #444). Detalle en `docs/NEXT_ACTION.md`.
+
 ## 2026-11-26 — Release comercial unificada R14 `c176bfea` ensayada; espera «GO despliegue c176bfe prod-02»
 
 `master` `c176bfea` reúne #432, #434 (migración `0193`), #435, SCAN-TO-STOCK-01 (#437) y SELECTOR-UX-01 (#438–#440). El ensayo sobre una copia aislada y reciente de producción terminó sin fallos: datos históricos, Kardex y notas idénticos; sólo `store_bulkimportjob` gana tres columnas; 646 pruebas en la imagen, humo 32/32, simulación 19/19, 75 sondas R14; vuelta atrás de código y de esquema ensayadas. Preflights en producción OK el 2026-11-26 (sólo lectura). Producción sigue en R13.2, sana. Los kits de las 7 notas (R13.1 o R13.2), de #22/#23 (sólo R13.2) y la vista previa del stock real no aceptan R14: correrlos antes o reapuntarlos y reensayarlos. Desde R14, ninguna puerta de entrada acepta una serie que sea el IMEI de otro equipo vivo. Detalle en `docs/NEXT_ACTION.md`.
