@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-26 — Release comercial unificada R14 `c176bfea` ensayada; espera «GO despliegue c176bfe prod-02»
+
+`master` `c176bfea` reúne #432, #434 (migración `0193`), #435, SCAN-TO-STOCK-01 (#437) y SELECTOR-UX-01 (#438–#440). El ensayo sobre una copia aislada y reciente de producción terminó sin fallos: datos históricos, Kardex y notas idénticos; sólo `store_bulkimportjob` gana tres columnas; 646 pruebas en la imagen, humo 32/32, simulación 19/19, 75 sondas R14; vuelta atrás de código y de esquema ensayadas. Preflights en producción OK el 2026-11-26 (sólo lectura). Producción sigue en R13.2, sana. Los kits de las 7 notas y de #22/#23 sólo aceptan R13.2: correrlos antes o reapuntarlos. Detalle en `docs/NEXT_ACTION.md`.
+
 ## 2026-11-25 — R13.2 `c8a43215` DESPLEGADA en prod-02; cron, normalización, muestras 167 y producto 12 aplicados
 
 Los cinco GO exactos del propietario, en su orden, entre las 10:28 y las 10:52 (Lima), cada uno bajo el candado con backup previo y diff esperado. En las muestras el kit imprimió `EXPECTED_DIFF NO`: además de lo esperado cambió `FinanceReminderPolicy.last_run_at` (1 fila), que el ejecutor revisó y atribuyó a la tarea de finanzas de las 10:30 (el kit no toca finanzas). Producción sana, 0 errores, Caddy y CRM sin cambios. Pendientes con su propio GO: sellos de las 7 notas (kit 72/72), «lleva IMEI» en #22/#23 (kit 119/119) y la carga del stock real. En desarrollo: #435 fusionado (auditoría «sin IMEI» de la propuesta), #434 aprobación de precios y garantías en cargas (0193, en revisión). Detalle en `docs/NEXT_ACTION.md`.

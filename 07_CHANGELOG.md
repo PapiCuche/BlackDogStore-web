@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-26 — Release candidata R14 `c176bfea` (en `master`, sin desplegar)
+
+**Added**
+- Pantalla «Registrar equipo por escaneo» (`/admin/inventory/scan`): clasifica cada código leído y registra el equipo sólo al confirmar; un seminuevo entra pendiente de inspección (#437).
+- Selector visual de equipos compartido por caja, listas de proveedor, «Registrar artículo» y escaneo; la lista de WhatsApp sólo propone las variantes que faltan (#438–#440).
+- Aprobación explícita de precios y garantías en las cargas de equipos, con la migración `0193_unit_import_terms_approval` (#434).
+
+**Fixed**
+- Fijar una garantía de seminuevo exige `products.manage` en todas las puertas (#432).
+- Una serie ya no puede ser el IMEI de otro equipo vivo, ni al revés (#437).
+
+**Ops** (prod-02 `backups/release-r14/`; nada desplegado)
+- Kit R14 fijado a `c176bfea`, imágenes `rc-c176bfe`, ensayo `fails=0`, preflights OK.
+
 ## 2026-11-25 (tarde) — R13.2 desplegada
 
 **Deployed**

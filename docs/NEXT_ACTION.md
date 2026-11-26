@@ -1,8 +1,81 @@
-# NEXT ACTION — 2026-11-25 (tarde)
+# NEXT ACTION — 2026-11-26
 
 ## PRODUCCIÓN (prod-02) — R13.2 `c8a43215` desde 2026-11-25 10:51 (Lima), esquema `0192_unit_photo_provenance`; sana
+Comprobado el 2026-11-26 a las 14:20 (Lima), sólo lectura: guardas, rutas, Kardex (0 rupturas), `check_unit_stock` 0
+diferencias, healthcheck sin ATENCIÓN, Caddy, CRM, enrutamiento y crontab sin cambios.
 
-## R13.2 · EJECUCIÓN CONTROLADA (2026-11-25) — los cinco GO del propietario, HECHOS en orden
+## RELEASE COMERCIAL UNIFICADA — candidata R14 `c176bfea` ENSAYADA · espera **«GO despliegue c176bfe prod-02»**
+
+Un PR fusionado no es un GO. Este GO vale para una operación y para este SHA exacto:
+`c176bfeaccf727e24e6ed3eb2d1577a4ff3c43f5`, imágenes `rc-c176bfe` (backend `795edce8…`, frontend `acf35935…`). Un SHA
+posterior de `master` necesita otro kit fijado, compilado y ensayado.
+
+### Qué entra (R13.2 → R14: 76 archivos, sin cambios de `deploy/` ni compose)
+| PR | Qué | Migración |
+|---|---|---|
+| #432 | Fijar una garantía de seminuevo exige `products.manage` en todas las puertas (carga Excel, «Registrar equipos», recepción del proveedor, escaneo) | no |
+| #434 | Una carga de equipos con precios o garantías de seminuevos necesita la aprobación explícita de quien tiene `products.manage` (quedan registrados quien prepara, quien aprueba y quien registra); el almacenero puede registrarla «sin precios ni garantías»; una aprobación deja de valer si la carga cambia | **0193** |
+| #435 | La auditoría de la propuesta de catálogo registra qué variantes se crearon «sin IMEI» | no |
+| #437 | SCAN-TO-STOCK-01: pantalla «Registrar equipo por escaneo» (`/admin/inventory/scan`); clasifica IMEI, IMEI 2, serie, EID, MEID, IMEISV y códigos comerciales; nada entra hasta «Confirmar ingreso»; una serie nunca es el IMEI de otro equipo vivo (regla R1); un seminuevo entra pendiente de inspección y sin publicar | no |
+| #438, #439, #440 | SELECTOR-UX-01: selector visual compartido (caja, listas de proveedor, «Registrar artículo», escaneo). Una unidad física = selección única; una oferta de proveedor = selección múltiple; la lista de WhatsApp revisa las variantes que existen y sólo propone las que faltan; una oferta nunca crea stock físico; una combinación excluida responde `combinacion_excluida` | no |
+
+**Migración `0193_unit_import_terms_approval`:** tres columnas nulas o con valor constante en `store_bulkimportjob`, un
+índice y una FK a `auth_user`. No reescribe la tabla y no toca datos. Corre antes del cambio de código, con
+`lock_timeout` 5 s y hasta 3 intentos; un intento cancelado no aplica nada.
+
+### Ensayo (2026-11-25 23:48 → 2026-11-26 00:08 Lima) — `R14_REHEARSAL_DONE fails=0`
+Backup nuevo verificado y dos copias aisladas de producción (red sin salida). Log: `backups/release-r14/r14-rehearsal.log`.
+- **Datos históricos:** sólo cambian `store_bulkimportjob` (sus tres campos nuevos) y `django_migrations`. Huella
+  global, Kardex (48 líneas, 12 cadenas, 0 rupturas) y las 7 notas (`a42dfa17d6779f45`) idénticos con R13.2 en 0192
+  y R14 en 0193.
+- **Migración:** 6,2 s en el primer intento (con el arranque del contenedor). Con un bloqueo retenido, el intento se
+  cancela sin aplicar nada; en el camino de reintento, el segundo intento migra.
+- **Pruebas:** 646 pruebas en la imagen OK; humo profundo 32/32 antes y después; simulación de stock real 19/19.
+- **Sondas R14** (75 OK, 0 fallos, todo deshecho): escaneo por un almacenero, idempotencia, 409 por IMEI duplicado, un
+  almacenero de otra sucursal sólo ve «en otra sucursal», 404 fuera de sus sucursales, la caja vende lo escaneado, un
+  seminuevo escaneado queda pendiente y la caja lo rechaza, precio o garantía sin `products.manage` = 403, aprobación
+  de términos (almacenero no aprueba, gerente sí, aprobación vencida 409, otra empresa 404), selector y permisos
+  multiempresa.
+- **Vuelta atrás de código:** R13.2 funciona sobre 0193 (plan vacío, rutas, reimpresión de sólo lectura, Kardex y
+  notas iguales). R13.2 también lee lo que R14 escribió (equipos escaneados en dos empresas).
+- **Vuelta atrás de esquema (opcional, GO propio):** sólo la imagen de R14 puede deshacer 0193 (8 s); se pierden las
+  aprobaciones registradas.
+- Producción sin cambios al terminar.
+- Corridas 1 y 2 descartadas por fallos del propio kit (una sonda y un `date` sin comillas que también habría afectado
+  al despliegue real); corregidos y kit refijado.
+
+### Preflights en producción (2026-11-26 14:20, sólo lectura)
+`d_deploy_r14.sh … --preflight`: `PREFLIGHT OK — nothing written, nothing switched`, incluido el `migrate --plan` de la
+imagen candidata contra la base real (= sólo 0193). `rollback_r14_code.sh --preflight`: `ROLLBACK PREFLIGHT OK`.
+`rollback_r14_schema.sh --preflight`: `NOTHING TO DO` (hoja 0192). Manifiesto del kit verificado.
+
+### Ejecución con el GO
+- Kit `backups/release-r14/`, runbook `RUNBOOK-r14-prod02.md`.
+- Empezar entre **:51 y :29**, nunca entre :30 y :50 ni entre 03:10 y 03:59 (el script se niega).
+- Corte: sólo el reinicio de backend y frontend. No toca Caddy, CRM, SUNAT ni crontab.
+- Vuelta atrás de código: forma parte del mismo GO si el despliegue falla; deja 0193 aplicada.
+- Vuelta atrás de esquema: GO propio, «GO vuelta atrás esquema 0193 prod-02».
+- Tras el despliegue: verificación manual (escaneo con y sin `inventory.adjust`, carga con precio de seminuevo, lista
+  de proveedor, «Registrar artículo», caja) y aviso al personal (texto en el runbook).
+
+### Orden con los GO de datos pendientes
+Los kits de las 7 notas (`release-notes7b`) y de «lleva IMEI» en #22/#23 (`release-imei22`) aceptan **sólo R13.2**:
+después de R14 sus guardas abortan sin escribir. Si se quieren, ejecutarlos **antes** del despliegue (cada uno con su
+GO), o después de reapuntarlos a R14 y reensayarlos. Lo mismo para la vista previa del stock real
+(`stockreal-preview`): tras R14 hay que añadir el SHA nuevo y revalidarla con archivos sintéticos antes de usar los
+archivos reales.
+
+### Preguntas abiertas para el propietario (ninguna bloquea el despliegue)
+- **Escaneo:** prefijos de serie que conviene reconocer (D-SCAN-1); confirmar que el escaneo registra como entrada de
+  compra (D-SCAN-2); si el EID se guarda (D-SCAN-3); lectores que envían un espacio delante (D-SCAN-4); probar en un
+  iPad o Android que el teclado no aparece al escanear.
+- **Selector:** si capacidad, SIM o región fijadas por el texto de la lista pueden cambiarse a mano; colores marcados a
+  mano; que una pieza que nombra otro modelo no herede nada; el límite de 40 palabras por oferta.
+- **Cargas (#434):** si `public_notes` y `cosmetic_grade` cuentan como términos comerciales; si un almacenero puede ver
+  el precio actual de la variante en su vista previa.
+- GO pendientes: siete notas, #22/#23, archivos del stock real.
+
+## (Histórico) R13.2 · EJECUCIÓN CONTROLADA (2026-11-25) — los cinco GO del propietario, HECHOS en orden
 
 Ejecutor: Claude (sesión principal), cada operación bajo `backups/ops/prod_lock.sh`, con su backup previo, preflight, huellas y diff esperado. Ninguna operación dependiente se ejecutó sobre una fallida.
 
