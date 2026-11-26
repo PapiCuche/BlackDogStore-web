@@ -294,6 +294,16 @@ async function leer(page: Page, code: string, answered: () => Promise<void>) {
   await answered();
 }
 
+/** One step of «Registrar artículo»: the innermost section headed by `heading`. */
+const wizardStep = (page: Page, heading: string) =>
+  page.locator("section").filter({ has: page.getByRole("heading", { name: heading, exact: true }) }).last();
+
+/**
+ * The amount 1900 as an amount — «1900», «1,900», «1900.00», «S/1900» or a JSON value — never digits inside a longer
+ * number or code such as an IMEI or a serial (the synthetic IMEIs are 3500000… and may hold «1900» anywhere).
+ */
+const AMOUNT_1900 = /(?<![\w.]|\d,)1,?900(?:\.\d{1,2})?(?!\d|,\d)/;
+
 /** A chip of the configurator (the radio inside is visually hidden): a person presses its label. */
 const chip = (scope: Locator, step: string, option: string) =>
   scope.getByRole("radiogroup", { name: step }).locator("label").filter({ hasText: option }).first();
@@ -553,10 +563,11 @@ for (const env of ENVS) {
       const cart = page.locator("#pos-step-products");
       await expect(cart.getByText(new RegExp(`IMEI ${ids.otherImei}`))).toBeVisible({ timeout: 30_000 });
       await noOverflow(page, `${env.name} caja con el equipo`);
-      await page.getByRole("checkbox", { name: /Confirmo que informé al cliente las condiciones de venta/ }).check();
-      await page.getByLabel("Tipo de comprobante").selectOption("sales_note");
-      await page.getByLabel("Efectivo recibido").fill("99999");
-      const charge = page.getByRole("button", { name: /^cobrar$/i });
+      // The sale's steps (customer, payment, receipt, review, «Cobrar») live in the cart's column.
+      await cart.getByRole("checkbox", { name: /Confirmo que informé al cliente las condiciones de venta/ }).check();
+      await cart.getByLabel("Tipo de comprobante").selectOption("sales_note");
+      await cart.getByLabel("Efectivo recibido").fill("99999");
+      const charge = cart.getByRole("button", { name: /^cobrar$/i });
       await expect(charge).toBeEnabled({ timeout: 20_000 });
       await press(charge, env);
       await expect(page.getByText(/Venta registrada/i), "la venta no se completó").toBeVisible({ timeout: 60_000 });
@@ -577,33 +588,38 @@ for (const env of ENVS) {
     const { context, page } = await session(browser, "manager", env);
     try {
       await page.goto("/admin/products/register");
-      await expect(page.getByRole("radiogroup", { name: "Tipo de artículo" })).toBeVisible({ timeout: 60_000 });
-      await press(page.getByRole("radio", { name: /Equipo seminuevo/ }), env);
-      await press(page.getByRole("button", { name: "Continuar" }), env);
+      const kindStep = wizardStep(page, "¿Qué vas a registrar?");
+      await expect(kindStep.getByRole("radiogroup", { name: "Tipo de artículo" })).toBeVisible({ timeout: 60_000 });
+      await press(kindStep.getByRole("radio", { name: /Equipo seminuevo/ }), env);
+      await press(kindStep.getByRole("button", { name: "Continuar" }), env);
+      const dataStep = wizardStep(page, "Datos del artículo");
       const palette = page.waitForResponse((res) => /\/palette\/?$/.test(new URL(res.url()).pathname) && res.status() !== 308);
-      await page.getByLabel("Modelo").selectOption({ label: model });
+      await dataStep.getByLabel("Modelo").selectOption({ label: model });
       expect((await palette).status()).toBe(200);
-      const config = page.getByRole("group", { name: "Configuración del equipo" });
+      const config = dataStep.getByRole("group", { name: "Configuración del equipo" });
       await expect(config).toBeVisible();
       await press(chip(config, "Capacidad", "128 GB"), env);
       await press(chip(config, "Color", "Negro"), env);
       await expect(config).toContainText(`Ya existe: ${usedVariant}`);
       await noOverflow(page, `${env.name} registrar artículo · configurador`);
-      await page.getByLabel(/^Nombre/).fill(model);
-      await page.getByLabel(/^Precio de venta/).fill("2000");
-      await press(page.getByRole("button", { name: "Continuar" }), env);
+      await dataStep.getByLabel(/^Nombre/).fill(model);
+      await dataStep.getByLabel(/^Precio de venta/).fill("2000");
+      await press(dataStep.getByRole("button", { name: "Continuar" }), env);
 
-      await page.getByLabel("Número de serie").fill(ids.wizardSerial);
+      const stockStep = wizardStep(page, "Stock");
+      await stockStep.getByLabel("Número de serie").fill(ids.wizardSerial);
       // The IMEI field takes a scanner too: the whole code and its Enter, which never submits the step.
-      await page.getByLabel("IMEI", { exact: true }).focus();
+      const imeiField = stockStep.getByLabel("IMEI", { exact: true });
+      await imeiField.focus();
       await page.keyboard.type(ids.wizardImei, { delay: 0 });
       await page.keyboard.press("Enter");
-      await expect(page.getByLabel("IMEI", { exact: true })).toHaveValue(ids.wizardImei);
-      await page.getByLabel("Batería (%)").fill("91");
-      await page.getByLabel("Precio de este equipo (S/)").fill("1850");
+      await expect(imeiField).toHaveValue(ids.wizardImei);
+      await expect(stockStep).toBeVisible();
+      await stockStep.getByLabel("Batería (%)").fill("91");
+      await stockStep.getByLabel("Precio de este equipo (S/)").fill("1850");
       await noOverflow(page, `${env.name} registrar artículo · equipo`);
-      await press(page.getByRole("button", { name: "Revisar" }), env);
-      await press(page.getByRole("button", { name: "Registrar artículo" }), env);
+      await press(stockStep.getByRole("button", { name: "Revisar" }), env);
+      await press(wizardStep(page, "Revisar y registrar").getByRole("button", { name: "Registrar artículo" }), env);
       await expect(page.getByRole("heading", { name: "Artículo registrado" })).toBeVisible({ timeout: 60_000 });
       await shot(page, env, "r14-registrar-articulo-seminuevo");
       const after = estado(env);
@@ -690,10 +706,10 @@ for (const env of ENVS) {
       // not in the rows of the load (which ARE on screen), not in what the server sends — while the manager's has them.
       const rows = stocker.page.getByRole("table", { name: "Equipos del archivo" });
       await expect(rows).toContainText(ids.approved.serial);
-      await expect(approved).not.toContainText(/1,?900/);
-      await expect(rows).not.toContainText(/1,?900/);
-      expect(await loadAsText(manager.context.request, first.job)).toMatch(/1900/);
-      expect(await loadAsText(stocker.context.request, first.job)).not.toMatch(/1900/);
+      await expect(approved).not.toContainText(AMOUNT_1900);
+      await expect(rows).not.toContainText(AMOUNT_1900);
+      expect(await loadAsText(manager.context.request, first.job)).toMatch(AMOUNT_1900);
+      expect(await loadAsText(stocker.context.request, first.job)).not.toMatch(AMOUNT_1900);
       await noOverflow(stocker.page, `${env.name} carga aprobada reabierta`, { exceptKnownLink });
       await press(stocker.page.getByRole("button", { name: "Registrar 1 equipo" }), env);
       await expect(stocker.page.getByRole("status").filter({ hasText: /Se registr(ó|aron) 1 equipo/ })).toBeVisible({ timeout: 60_000 });
@@ -726,7 +742,8 @@ for (const env of ENVS) {
 
   // KNOWN BUG (R14, StockUnitImport.tsx:180): «Enlace de esta carga» is one unbreakable monospace line, wider than a
   // phone, so the whole page scrolls sideways. This test proves the bug is still there AND that the link is its only
-  // cause. When the link is fixed, the last assertion fails: delete this test and the `exceptKnownLink` of test 7.
+  // cause. IT IS MEANT TO GO RED WHEN THE BUG IS FIXED: its last assertion then fails on purpose. That red is the signal
+  // to delete this test and the `exceptKnownLink` of test 7 in the same PR as the fix.
   if (env.touch) {
     test(`${env.name} · 8 · fallo conocido: el enlace de la carga desborda la página en el teléfono`, async ({ browser }) => {
       test.info().annotations.push({ type: "known-bug", description: "StockUnitImport.tsx:180 — el enlace de la carga no se parte" });

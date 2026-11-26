@@ -320,20 +320,6 @@ export function apiBase(): string {
 
 export type Reply<T = unknown> = { status: number; body: T };
 
-/**
- * The origin the pages are served from — the configuration's `baseURL`, which the browser sends as Origin — so a
- * write through `call()` comes from where the pages come from. Outside a test (no `test.info()`), `E2E_BASE_URL`.
- */
-function pageOrigin(): string {
-  try {
-    const base = test.info().project.use.baseURL;
-    if (base) return new URL(base).origin;
-  } catch {
-    // Not inside a test or a hook.
-  }
-  return new URL(process.env.E2E_BASE_URL ?? "http://localhost:3002").origin;
-}
-
 /** Una llamada a la API con la sesión del contexto (cookies) y el CSRF que el servidor pide para escribir. */
 export async function call<T = unknown>(
   api: APIRequestContext, method: "GET" | "POST" | "PATCH" | "PUT", path: string, body?: unknown, extra: Record<string, string> = {},
@@ -342,7 +328,7 @@ export async function call<T = unknown>(
   if (method !== "GET") {
     const csrf = (await api.storageState()).cookies.find((cookie) => cookie.name === "csrftoken")?.value;
     if (csrf) headers["X-CSRFToken"] = csrf;
-    headers.Origin = pageOrigin();
+    headers.Origin = new URL(process.env.E2E_BASE_URL ?? "http://localhost:3002").origin;
   }
   const res = await api.fetch(`${apiBase()}${path}`, {
     method, headers, ...(body === undefined ? {} : { data: body }),
