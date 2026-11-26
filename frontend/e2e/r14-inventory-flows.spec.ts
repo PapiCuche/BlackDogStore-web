@@ -541,7 +541,17 @@ for (const env of ENVS) {
       await page.keyboard.type(ids.otherImei, { delay: 0 });
       await page.keyboard.press("Enter");
       const cart = page.locator("#pos-step-products");
-      await expect(cart.getByText(new RegExp(`IMEI ${ids.otherImei}`))).toBeVisible({ timeout: 30_000 });
+      const inCart = cart.getByText(new RegExp(`IMEI ${ids.otherImei}`));
+      // Outcome, not method: the till takes a read as the scanner's only when EVERY keystroke came in a burst
+      // (UnitEntry's rhythm); on a loaded dev server one slow keystroke makes it «typed by hand», which first asks to
+      // confirm the device. Either way the same device must reach the cart — a confirmation only for THIS IMEI.
+      const confirmStep = page.getByRole("group", { name: "Confirma el equipo" });
+      await expect(inCart.or(confirmStep).first()).toBeVisible({ timeout: 30_000 });
+      if (await confirmStep.isVisible()) {
+        await expect(confirmStep).toContainText(`IMEI ${ids.otherImei}`);
+        await press(confirmStep.getByRole("button", { name: "Confirmar este equipo" }), env);
+      }
+      await expect(inCart).toBeVisible({ timeout: 30_000 });
       await noOverflow(page, `${env.name} caja con el equipo`);
       // The sale's steps (customer, payment, receipt, review, «Cobrar») live in the cart's column.
       await cart.getByRole("checkbox", { name: /Confirmo que informé al cliente las condiciones de venta/ }).check();
