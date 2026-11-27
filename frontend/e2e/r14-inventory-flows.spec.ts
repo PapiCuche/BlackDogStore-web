@@ -40,8 +40,7 @@ import { apiBase, BACKEND_DIR, call, RUN, shell } from "./inventory-first-suppor
  *   6 · lista de proveedor por WhatsApp con varios colores: la variante existente se reconoce, sólo las que faltan se
  *       crean (borradores ocultos, sin precio) y no se mueve stock;
  *   7 · carga de seminuevos con precio y garantía (#434): aprobada por quien administra, la registra el reponedor con
- *       ellos; sin aprobación, el reponedor no puede registrarlos con ellos (403 al aprobar) y los registra sin ellos;
- *   8 · (sólo teléfono) el fallo conocido del enlace de la carga, medido.
+ *       ellos; sin aprobación, el reponedor no puede registrarlos con ellos (403 al aprobar) y los registra sin ellos.
  *
  * ORDEN: las pruebas corren en serie (`mode: "serial"`). Sólo 4 depende de otra (de 2), y lo comprueba al empezar.
  * Las demás comparan con lo que había al empezar cada una (antes/después), no con cuentas absolutas.
@@ -114,8 +113,6 @@ const IDS = Object.fromEntries(ENVS.map((env, index) => {
   box: string; otherBox: string; otherImei: string; scanImei2: string; scanSerial: string; usedScan: string;
   wizardImei: string; wizardSerial: string; approved: { imei: string; serial: string }; dropped: { imei: string; serial: string };
 }>;
-/** The device of the known-bug test (8): a seed of its own, away from the environments' 1–6 and 21–26. */
-const KNOWN_BUG_SEED = 90;
 
 type Seed = { branch: number; branchName: string; models: Record<string, number>; otherModels: Record<string, number> };
 let SEED: Seed;
@@ -258,26 +255,9 @@ async function press(target: Locator, env: Env) {
   if (env.touch) await target.tap({ timeout: 30_000 }); else await target.click({ timeout: 30_000 });
 }
 
-/**
- * How far the page scrolls sideways. With `wrapKnownLink`, the load's link of «Precios y garantías del archivo»
- * (the known bug, StockUnitImport.tsx:180) is measured as if it wrapped — only that element; everything else counts.
- */
-async function overflow(page: Page, wrapKnownLink = false) {
-  return page.evaluate((wrap) => {
-    const prefix = `${window.location.origin}/admin/inventory/units/import?job=`;
-    const links = wrap
-      ? [...document.querySelectorAll<HTMLElement>("span.font-mono")].filter((span) => (span.textContent ?? "").startsWith(prefix))
-      : [];
-    const saved = links.map((span) => span.style.wordBreak);
-    links.forEach((span) => { span.style.wordBreak = "break-all"; });
-    const over = document.documentElement.scrollWidth - document.documentElement.clientWidth;
-    links.forEach((span, index) => { span.style.wordBreak = saved[index]; });
-    return { over, wrapped: links.length };
-  }, wrapKnownLink);
-}
-
-async function noOverflow(page: Page, where: string, { exceptKnownLink = false } = {}) {
-  const { over } = await overflow(page, exceptKnownLink);
+/** How far the page scrolls sideways: every element counts, the load's link included. */
+async function noOverflow(page: Page, where: string) {
+  const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
   expect(over, `desborde horizontal en ${where}`).toBeLessThanOrEqual(1);
 }
 
@@ -561,7 +541,17 @@ for (const env of ENVS) {
       await page.keyboard.type(ids.otherImei, { delay: 0 });
       await page.keyboard.press("Enter");
       const cart = page.locator("#pos-step-products");
-      await expect(cart.getByText(new RegExp(`IMEI ${ids.otherImei}`))).toBeVisible({ timeout: 30_000 });
+      const inCart = cart.getByText(new RegExp(`IMEI ${ids.otherImei}`));
+      // Outcome, not method: the till takes a read as the scanner's only when EVERY keystroke came in a burst
+      // (UnitEntry's rhythm); on a loaded dev server one slow keystroke makes it «typed by hand», which first asks to
+      // confirm the device. Either way the same device must reach the cart — a confirmation only for THIS IMEI.
+      const confirmStep = page.getByRole("group", { name: "Confirma el equipo" });
+      await expect(inCart.or(confirmStep).first()).toBeVisible({ timeout: 30_000 });
+      if (await confirmStep.isVisible()) {
+        await expect(confirmStep).toContainText(`IMEI ${ids.otherImei}`);
+        await press(confirmStep.getByRole("button", { name: "Confirmar este equipo" }), env);
+      }
+      await expect(inCart).toBeVisible({ timeout: 30_000 });
       await noOverflow(page, `${env.name} caja con el equipo`);
       // The sale's steps (customer, payment, receipt, review, «Cobrar») live in the cart's column.
       await cart.getByRole("checkbox", { name: /Confirmo que informé al cliente las condiciones de venta/ }).check();
@@ -687,13 +677,11 @@ for (const env of ENVS) {
     test.setTimeout(360_000);
     const manager = await session(browser, "manager", env);
     const stocker = await session(browser, "stocker", env);
-    // At phone width the load's link overflows (known bug, test 8): only that element is excused, the rest is measured.
-    const exceptKnownLink = env.touch;
     try {
       // A · whoever administers products approves; the stockroom registers WITH the file's price and warranty.
       const first = await previewUsedLoad(manager.page, env, ids.approved, 1900, 90);
       await expect(first.terms).toContainText("Tú administras productos");
-      await noOverflow(manager.page, `${env.name} vista previa con precios`, { exceptKnownLink });
+      await noOverflow(manager.page, `${env.name} vista previa con precios`);
       await press(first.terms.getByRole("button", { name: "Aprobar precios y garantías" }), env);
       await expect(first.terms).toContainText("ya están aprobados", { timeout: 30_000 });
       await expect(first.terms).toContainText(`Aprobados por ${USERS.manager}`);
@@ -710,7 +698,7 @@ for (const env of ENVS) {
       await expect(rows).not.toContainText(AMOUNT_1900);
       expect(await loadAsText(manager.context.request, first.job)).toMatch(AMOUNT_1900);
       expect(await loadAsText(stocker.context.request, first.job)).not.toMatch(AMOUNT_1900);
-      await noOverflow(stocker.page, `${env.name} carga aprobada reabierta`, { exceptKnownLink });
+      await noOverflow(stocker.page, `${env.name} carga aprobada reabierta`);
       await press(stocker.page.getByRole("button", { name: "Registrar 1 equipo" }), env);
       await expect(stocker.page.getByRole("status").filter({ hasText: /Se registr(ó|aron) 1 equipo/ })).toBeVisible({ timeout: 60_000 });
       expect(estado(env).units[ids.approved.imei]).toMatchObject({
@@ -727,7 +715,7 @@ for (const env of ENVS) {
       await expect(stocker.page.getByRole("button", { name: "Registrar 1 equipo" })).toHaveCount(0);
       const refused = await call(stocker.context.request, "POST", `/admin/inventory/units/import/${second.job}/approve-terms/`, {});
       expect(refused).toEqual({ status: 403, body: { detail: NO_OPERATION } });
-      await noOverflow(stocker.page, `${env.name} carga sin aprobar`, { exceptKnownLink });
+      await noOverflow(stocker.page, `${env.name} carga sin aprobar`);
       await shot(stocker.page, env, "r14-carga-sin-aprobar");
       await press(pending.getByRole("button", { name: "Registrar sin precios ni garantías" }), env);
       await expect(stocker.page.getByRole("note", { name: "Sin precios ni garantías" })).toBeVisible({ timeout: 60_000 });
@@ -739,28 +727,4 @@ for (const env of ENVS) {
       await stocker.context.close();
     }
   });
-
-  // KNOWN BUG (R14, StockUnitImport.tsx:180): «Enlace de esta carga» is one unbreakable monospace line, wider than a
-  // phone, so the whole page scrolls sideways. This test proves the bug is still there AND that the link is its only
-  // cause. IT IS MEANT TO GO RED WHEN THE BUG IS FIXED: its last assertion then fails on purpose. That red is the signal
-  // to delete this test and the `exceptKnownLink` of test 7 in the same PR as the fix.
-  if (env.touch) {
-    test(`${env.name} · 8 · fallo conocido: el enlace de la carga desborda la página en el teléfono`, async ({ browser }) => {
-      test.info().annotations.push({ type: "known-bug", description: "StockUnitImport.tsx:180 — el enlace de la carga no se parte" });
-      test.setTimeout(180_000);
-      const { context, page } = await session(browser, "manager", env);
-      try {
-        const unit = { imei: syntheticImei(KNOWN_BUG_SEED), serial: `R14${RUN.slice(-6)}${env.code}K1`.toUpperCase() };
-        const load = await previewUsedLoad(page, env, unit, 1700, 30);
-        await expect(load.terms).toContainText("Enlace de esta carga");
-        const wrapped = await overflow(page, true);
-        expect(wrapped.wrapped, "el enlace de la carga está en la página").toBe(1);
-        expect(wrapped.over, "con el enlace partido, nada más desborda").toBeLessThanOrEqual(1);
-        const raw = await overflow(page);
-        expect(raw.over, "FALLO CONOCIDO: si esto falla, el enlace ya no desborda — borra esta prueba").toBeGreaterThan(1);
-      } finally {
-        await context.close();
-      }
-    });
-  }
 }

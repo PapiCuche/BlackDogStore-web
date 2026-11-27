@@ -78,7 +78,8 @@ test('without products.manage and without an approval: the block says so and off
   expect(block).toHaveTextContent(
     'Esta carga trae precios o garantías de seminuevos. Necesita la aprobación de quien administra productos.');
   expect(block).toHaveTextContent('Preparó: ana');
-  expect(within(block).getByText(`${window.location.origin}/admin/inventory/units/import?job=41`)).toBeInTheDocument();
+  // The link is one long unbroken word: it must wrap, or a phone scrolls the whole page sideways.
+  expect(within(block).getByText(`${window.location.origin}/admin/inventory/units/import?job=41`)).toHaveClass('break-all');
   // Registering WITH the terms is not offered: the server would refuse it.
   expect(screen.queryByRole('button', { name: 'Registrar 1 equipo' })).not.toBeInTheDocument();
   expect(within(block).queryByRole('button', { name: 'Aprobar precios y garantías' })).not.toBeInTheDocument();
