@@ -18,9 +18,9 @@ existente» no existe y no se carga nada.
 Lo marcado «lo confirma el operador» lo hace la persona que opera el servidor (no el propietario): ella corre las
 comprobaciones y te envía el resumen del informe para que lo apruebes.
 
-### Paso 1. Espera a que R15 esté en producción
+### Paso 1. Comprueba que R15 está en producción
 
-R15 se despliega sólo con tu GO exacto «GO despliegue af23e3b prod-02». Después, en «Inventario › Más herramientas ›
+R15 está en producción desde el 2026-11-27 (02:52, Lima). En «Inventario › Más herramientas ›
 Carga de equipos», el «Tipo de ingreso» ofrece **tres** opciones: «Compra a proveedor», «Inventario inicial» e
 «Ingreso de inventario existente». Si sólo ves dos, R15 no está desplegada: no sigas.
 
@@ -122,9 +122,10 @@ Sólo acepta producción en R15 exacta.
 
 **Duplicados entre las dos carpetas.** Cada ejecución sólo previsualiza su carpeta, así que no vería un mismo IMEI
 escrito en un archivo de cada carpeta. Por eso cada una lee también la otra carpeta con `STOCK_INBOX_ALSO` (sólo sus
-IMEI y series, sin previsualizarla ni registrarla) y lista los identificadores que aparecen en las dos. Si la otra
-carpeta está vacía o todavía no existe, se omite esa variable; entonces, antes del GO, el operador repite la primera
-vista previa con la variable puesta.
+IMEI y series, sin previsualizarla ni registrarla) y lista los identificadores que aparecen en las dos. **El kit se
+detiene sin hacer nada** si `STOCK_INBOX_ALSO` apunta a una carpeta que no existe o que no tiene ningún `.xlsx`. Si
+sólo tienes archivos de una de las dos carpetas, el operador quita esa línea del comando; no hay nada con qué
+comparar.
 
 ### Paso 7. Lee el informe
 
@@ -698,7 +699,8 @@ Es el mismo recorrido de §0, visto desde el servidor.
    (fuera del repositorio; nunca en git).
 3. **Vista previa sobre una copia aislada** con el kit `backups/stockreal-preview-r15/` (runbook
    `README-stockreal-preview.md`), una ejecución por carpeta (`STOCK_ENTRY_KIND=opening` y `existing`), cada una con
-   el motivo exacto del panel (`STOCK_REASON`) y la otra carpeta en `STOCK_INBOX_ALSO` (duplicados entre carpetas):
+   el motivo exacto del panel (`STOCK_REASON`) y la otra carpeta en `STOCK_INBOX_ALSO` (duplicados entre carpetas; sólo
+   si esa carpeta tiene algún `.xlsx`, si no el kit se detiene):
    backup nuevo,
    copia en una red sin salida, las mismas vistas del panel con el usuario real que cargará y sus permisos reales, sin
    elevar nada. Informe por archivo: estantes cerrados para inventario inicial y filas rechazadas por eso (con la
