@@ -139,6 +139,12 @@ export function countingPatch(line: DraftLine, byUnit: boolean): Partial<DraftLi
  * opening. The server keeps it as a purchase entry marked apart; it never reads as a purchase.
  */
 export type EntryKind = "purchase" | "opening" | "existing";
+/**
+ * STOCK-EXISTING-01 — the owner's approved help of «Ingreso de inventario existente» (2026-11-27), ONE wording on every
+ * screen that offers it: «Recibir mercadería», «Registrar equipos» and the bulk upload of devices.
+ */
+export const EXISTING_STOCK_HELP =
+  "Equipos que ya tenías; no es una compra. Vale en cualquier estante, también con ventas o compras; como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige «Inventario inicial».";
 export const ENTRY_KINDS: { value: EntryKind; label: string; help: string }[] = [
   { value: "purchase", label: "Compra a proveedor", help: "Mercadería que llega comprada. Queda como compra en el Kardex." },
   {
@@ -147,7 +153,7 @@ export const ENTRY_KINDS: { value: EntryKind; label: string; help: string }[] = 
   },
   {
     value: "existing", label: "Ingreso de inventario existente",
-    help: "Artículos que ya tenías; no es una compra. Vale para cualquier artículo y, como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige «Inventario inicial».",
+    help: EXISTING_STOCK_HELP,
   },
 ];
 export const entryKindLabel = (kind?: string | null): string =>

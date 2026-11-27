@@ -235,6 +235,16 @@ class OfferRulesTest(SupplyShop, TestCase):
             supply.update_offer(self.offer, actor=self.staff, confirmed_quantity=2, may_view_costs=True)
         supply.update_offer(self.offer, actor=self.staff, confirmed_quantity=3, may_view_costs=True)
 
+    def test_editing_an_offer_never_changes_its_supplier_or_variant(self):
+        # SELECTOR-UX-01 (owner, 2026-11-27): an edited offer keeps the variant it was validated for.
+        other = _prod(self.company, 'Cable USB-C', 'dc3-tienda-cable', price='30.00', inventory=0)
+        other_supplier = supply.create_supplier(company=self.company, name='Otro mayorista', actor=self.staff)
+        supply.update_offer(self.offer, actor=self.staff, may_view_costs=True, commercial_price='115.00',
+                            product_id=other.pk, supplier_id=other_supplier.pk)
+        self.offer.refresh_from_db()
+        self.assertEqual((self.offer.product_id, self.offer.supplier_id, self.offer.commercial_price),
+                         (self.case.pk, self.supplier.pk, D('115.00')))
+
     def test_history_is_audited_and_a_used_offer_is_never_deleted(self):
         supply.update_offer(self.offer, actor=self.staff, commercial_price='105.00', may_view_costs=True)
         supply.deactivate_offer(self.offer, actor=self.staff, reason='Proveedor sin stock')
