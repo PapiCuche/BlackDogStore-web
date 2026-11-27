@@ -1,11 +1,12 @@
 /**
  * INV-INTAKE-BULK-01 — reglas puras del ingreso rápido en «Recibir mercadería»: lector de lo pegado en una línea por
  * equipo (Luhn, repetidos, límite, enmascarado), «Aplicar a todos», +1 al volver a escanear, el atajo de teclado y la
- * sugerencia de la «S» inicial de la caja de Apple.
+ * series tal como llegan (D-SCAN-1: ningún prefijo de una marca se quita ni se propone quitar).
  */
 import { blankUnit, newLine, type DraftLine, type DraftUnit } from '@/app/admin/lib/inventory-receipts';
+import * as bulk from '@/app/admin/lib/receive-bulk';
 import {
-  addOneMore, appleBoxSerialFix, applyProblems, applyToAllUnits, isReviewShortcut, maskIdentifier, mergePastedUnits,
+  addOneMore, applyProblems, applyToAllUnits, isReviewShortcut, maskIdentifier, mergePastedUnits,
   parseUnitPaste, PASTE_MAX_TOKENS,
 } from '@/app/admin/lib/receive-bulk';
 
@@ -103,14 +104,15 @@ describe('parseUnitPaste · límite', () => {
   });
 });
 
-describe('parseUnitPaste · «S» inicial de la caja de Apple', () => {
-  it('cuenta las series de 13 caracteres con S + serie Apple de 12, y sólo las quita si se pide', () => {
-    const text = `SF2LXK1ABCD12\nSG7QXK1ABCD99\nSHORT1234`;
-    const kept = parseUnitPaste(text, []);
-    expect(kept.sPrefixed).toBe(2);
-    expect(kept.units.map((u) => u.serial)).toEqual(['SF2LXK1ABCD12', 'SG7QXK1ABCD99', 'SHORT1234']);
-    const stripped = parseUnitPaste(text, [], { stripS: true });
-    expect(stripped.units.map((u) => u.serial)).toEqual(['F2LXK1ABCD12', 'G7QXK1ABCD99', 'SHORT1234']);
+describe('D-SCAN-1 · sin equivalencias de serie sin fuente verificada', () => {
+  it('una serie de 13 con «S» delante se lee tal cual: nada la cuenta ni la recorta', () => {
+    const preview = parseUnitPaste(`SF2LXK1ABCD12\nSG7QXK1ABCD99\nSHORT1234`, []);
+    expect(preview.units.map((u) => u.serial)).toEqual(['SF2LXK1ABCD12', 'SG7QXK1ABCD99', 'SHORT1234']);
+    expect(preview).not.toHaveProperty('sPrefixed');
+  });
+
+  it('el módulo no trae una regla de prefijo de una marca', () => {
+    expect(bulk).not.toHaveProperty('appleBoxSerialFix');
   });
 });
 
@@ -222,21 +224,6 @@ describe('isReviewShortcut', () => {
     expect(isReviewShortcut(key({ ctrlKey: true, shiftKey: true }))).toBe(false);
     expect(isReviewShortcut(key({ ctrlKey: true, altKey: true }))).toBe(false);
     expect(isReviewShortcut(key({ ctrlKey: true, key: 'a' }))).toBe(false);
-  });
-});
-
-describe('appleBoxSerialFix', () => {
-  it('13 caracteres, «S» y una serie Apple de 12: propone quitar la S', () => {
-    expect(appleBoxSerialFix('SF2LXK1ABCD12')).toBe('F2LXK1ABCD12');
-    expect(appleBoxSerialFix(' sc02xg0fdjg5j ')).toBe('C02XG0FDJG5J');
-  });
-  it('en cualquier otro caso, nada', () => {
-    expect(appleBoxSerialFix('F2LXK1ABCD12')).toBeNull(); // 12, sin S
-    expect(appleBoxSerialFix('SF2LXK1ABCD1')).toBeNull(); // 12 con S
-    expect(appleBoxSerialFix('XF2LXK1ABCD12')).toBeNull(); // 13 sin S
-    expect(appleBoxSerialFix('S123456789012')).toBeNull(); // sólo números: no es una serie Apple
-    expect(appleBoxSerialFix('SF2LXK1ABCD-2')).toBeNull(); // signos
-    expect(appleBoxSerialFix('')).toBeNull();
   });
 });
 

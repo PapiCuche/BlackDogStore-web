@@ -3,7 +3,26 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-27 — R15 `af23e3b1` ensayada; espera «GO despliegue af23e3b prod-02»
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 2 · PARCIAL (rama `feat/trade-in-rules`, sin fusionar ni desplegar) · migración `0195_trade_in_rules`
+
+Reglas de valorización por empresa sobre el tarifario de la fase 1 (`docs/adr-trade-in-valuation.md` §3.2 y §6):
+grupos y preguntas de la empresa, versiones del conjunto con instantánea congelada y aprobación por otra persona, y el
+cálculo puro (reglas de estado siempre, una de importe por pregunta, sin doble penalización, topes, nunca negativo,
+NO ELEGIBLE sin valor). Sólo backend; las pantallas son la fase 6. No compra, no paga, no acredita ni recibe equipos.
+
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 1 · PARCIAL (rama `feat/trade-in-tariff-phase1`, sin fusionar ni desplegar) · migración `0194_trade_in_tariff`
+
+Tarifario de recepción de equipos usados por empresa (diseño en `docs/adr-trade-in-valuation.md`, PR propio): entradas
+con versiones de sólo añadir, cinco importes Decimal, vigencia en el calendario de la empresa, aprobación de cambios
+relevantes con capacidades de concesión explícita (`sales.tradein.tariff.*`, nadie las recibe por defecto: D7),
+aislamiento entre empresas, auditoría con empresa y Excel en los dos sentidos. Sólo backend: no hay pantalla todavía
+(fase 6). No compra, no paga, no acredita ni recibe equipos: D1–D12 siguen bloqueando la liquidación real.
+
+## 2026-11-27 (madrugada) — R15 `af23e3b1` DESPLEGADA en prod-02
+
+Con el GO exacto del propietario, entre las 02:51 y las 02:52 (Lima): sólo código, sin migraciones, imágenes ensayadas, backup previo `db-20261127-025123`. Datos y Kardex idénticos, #22/#23 siguen exigiendo IMEI, 0 errores, Caddy, CRM, SUNAT y crontab sin cambios. La verificación posterior sobre copias aisladas salió sin fallos (`R15POST_DONE fails=0`). Queda cerrado el hueco de «lleva IMEI» y disponible «Ingreso de inventario existente». Detalle en `docs/NEXT_ACTION.md`.
+
+## 2026-11-27 — (Histórico) R15 `af23e3b1` ensayada; espera «GO despliegue af23e3b prod-02»
 
 `master` `af23e3b1` reúne #443 («Ingreso de inventario existente»), #444 (protección de «lleva IMEI», que cierra el hueco que hoy existe en producción), #445 y #447. Es una release sólo de código, sin migraciones. El ensayo sobre una copia aislada y reciente de producción terminó sin fallos: los datos son idénticos con los dos códigos, 368 pruebas en la imagen, sondas de R14 y R15 OK, simulación 19/19 y vuelta atrás a R14 ensayada. Las comprobaciones previas en producción salieron OK. Producción sigue en R14, sana. Detalle en `docs/NEXT_ACTION.md`.
 
@@ -822,6 +841,7 @@ Despliegue secuencial con GO del propietario para cada SHA exacto («GO desplieg
 - **Volver a escanear un accesorio** (su código exacto) suma +1 a su línea por cantidad y lo anuncia (`role="status"`); el cursor sigue en el buscador. Elegido por nombre, o si es un equipo con serie, sigue como antes.
 - **Atajo Ctrl/⌘+Enter** en «Artículos»: hace lo mismo que «Siguiente: revisar» (mismas comprobaciones). Se anuncia en la ayuda y con `aria-keyshortcuts`.
 - **«S» de la caja de Apple (NO VERIFICADO):** una serie de 13 caracteres que empieza con «S» seguida de una serie Apple de 12 muestra «¿Quitar la S inicial?». Nunca se quita sola. En «Pegar varios» es una casilla desmarcada.
+  **Quitada el 2026-11-27** (D-SCAN-1, #453): ninguna equivalencia de serie sin fuente verificada; la serie queda como se leyó.
 - **Archivos:** `lib/receive-bulk.ts` y `components/ReceivingUnitsBulk.tsx` (nuevos); en `ReceivingLinesEditor.tsx`, tres inserciones y el +1 de `pick`; en `ReceivingWizard.tsx`, el atajo.
 - **Revisión independiente (corregida con TDD):**
   - con un lector que sólo teclea, la primera lectura llevaba el cursor a «Cantidad» o a «Contar por equipo», y las siguientes se escribían allí (la cantidad llegaba a 100000) o se perdían. Ahora una línea por cantidad abierta por su código exacto deja el cursor en el buscador. El +1 sólo suma sobre un entero de 1 a 99999; si no, avisa y no toca nada. Nunca recorta al máximo;
