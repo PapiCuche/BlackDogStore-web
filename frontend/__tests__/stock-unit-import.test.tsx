@@ -74,6 +74,9 @@ function attach() {
   return file;
 }
 
+/** The owner's approved help of «Ingreso de inventario existente», the same on every screen that offers it. */
+const EXISTING_HELP = 'Equipos que ya tenías; no es una compra. Vale en cualquier estante, también con ventas o compras; como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige «Inventario inicial».';
+
 test('the screen says one row is one device before anything is attached', () => {
   render(<StockUnitImport branches={BRANCHES} />);
 
@@ -224,7 +227,7 @@ test('INV-OPENING-01: a purchase by default, and «Inventario inicial» travels 
 test('STOCK-EXISTING-01: «Ingreso de inventario existente» travels as existing', async () => {
   render(<StockUnitImport branches={BRANCHES} />);
   const existing = screen.getByRole('radio', { name: 'Ingreso de inventario existente' });
-  expect(existing).toHaveAccessibleDescription(/^Equipos que ya tenías; no es una compra\. Vale en cualquier estante/);
+  expect(existing).toHaveAccessibleDescription(EXISTING_HELP);
   expect(existing).toHaveAccessibleDescription(/elige «Inventario inicial»/);
   attach();
   fireEvent.click(existing);

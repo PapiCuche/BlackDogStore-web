@@ -160,6 +160,9 @@ async function pickPhone() {
   await screen.findByRole('button', { name: 'Cambiar producto' });
 }
 
+/** The owner's approved help of «Ingreso de inventario existente», the same on every screen that offers it. */
+const EXISTING_HELP = 'Equipos que ya tenías; no es una compra. Vale en cualquier estante, también con ventas o compras; como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige «Inventario inicial».';
+
 const posted = () => calls.filter((c) => c.method === 'POST' && /\/admin\/inventory\/units\/$/.test(c.url));
 
 test('the form asks what the entry is, purchase by default', () => {
@@ -168,6 +171,24 @@ test('the form asks what the entry is, purchase by default', () => {
   expect(within(group).getByRole('radio', { name: /Compra/ })).toBeChecked();
   expect(within(group).getByRole('radio', { name: /^Inventario inicial/ })).not.toBeChecked();
   expect(screen.getByLabelText(/^Fecha de ingreso/)).toHaveAttribute('type', 'date');
+});
+
+test('each entry kind radio is described by its own help, whichever kind is selected', () => {
+  mountForm();
+  const group = screen.getByRole('group', { name: 'Tipo de ingreso' });
+  const purchase = within(group).getByRole('radio', { name: /Compra/ });
+  const opening = within(group).getByRole('radio', { name: /^Inventario inicial/ });
+  const existing = within(group).getByRole('radio', { name: /Ingreso de inventario existente/ });
+  const described = () => [purchase, opening, existing].map((radio) => radio.getAttribute('aria-describedby'));
+  expect(new Set(described()).size).toBe(3);
+  const before = described();
+  for (const radio of [opening, existing, purchase]) {
+    fireEvent.click(radio);
+    expect(described()).toEqual(before);
+    expect(purchase).toHaveAccessibleDescription(/^Equipos que llegan comprados/);
+    expect(opening).toHaveAccessibleDescription(/^Equipos que ya tenías\. Se pueden registrar en varias tandas/);
+    expect(existing).toHaveAccessibleDescription(EXISTING_HELP);
+  }
 });
 
 test('an opening entry with supplier and date is sent as such', async () => {
@@ -194,7 +215,7 @@ test('STOCK-EXISTING-01: «Ingreso de inventario existente» is offered with its
   const group = screen.getByRole('group', { name: 'Tipo de ingreso' });
   const existing = within(group).getByRole('radio', { name: /Ingreso de inventario existente/ });
   fireEvent.click(existing);
-  expect(existing).toHaveAccessibleDescription(/^Equipos que ya tenías; no es una compra\. Vale para cualquier producto/);
+  expect(existing).toHaveAccessibleDescription(EXISTING_HELP);
   fireEvent.change(screen.getByLabelText(/^IMEI \*/), { target: { value: IMEI_A } });
   fireEvent.change(screen.getByLabelText(/^Motivo o documento de ingreso/), { target: { value: 'Vitrina' } });
   fireEvent.click(screen.getByRole('button', { name: 'Guardar equipo' }));

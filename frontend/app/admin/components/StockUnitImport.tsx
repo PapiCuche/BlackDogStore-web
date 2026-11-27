@@ -23,6 +23,7 @@ import {
   type UnitImportPriceUpdate, type UnitImportRow, type UnitImportSimulation, type UnitImportVoidPreview,
 } from "@/app/lib/stock-units";
 
+import { EXISTING_STOCK_HELP } from "../lib/inventory-receipts";
 import { CostColumnNotice } from "./CostColumnNotice";
 import { ImportKindNotice } from "./ImportKindNotice";
 import { OutdatedPreviewNotice, outdatedPreview, type OutdatedPreview } from "./ImportWizard";
@@ -584,8 +585,7 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
                     Ingreso de inventario existente
                   </label>
                   <p id="unit-import-entry-existing-help" className="ml-6 text-xs text-muted">
-                    Equipos que ya tenías; no es una compra. Vale en cualquier estante y, como una compra, cierra su
-                    inventario inicial: si el artículo aún no tiene movimientos en esa sucursal, elige «Inventario inicial».
+                    {EXISTING_STOCK_HELP}
                   </p>
                 </div>
               </div>
