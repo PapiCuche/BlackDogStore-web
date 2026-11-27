@@ -733,5 +733,24 @@ class ExcludedCombinationTest(TestCase):
         model_palette.add_exclusions(self.model, pairs=[[self.green.pk, self.chip.pk]])
         self.assertEqual(self.statuses('verde', 'chip'), [('verde', 'variante_existente')])
 
+    def test_a_hand_edited_selection_is_validated_again_by_the_resolve_endpoint(self):
+        # SELECTOR-UX-01 (owner, 2026-11-27): a supplier line edited by hand on the selector travels as the company's
+        # labels, one row per colour; the server judges each again. The excluded one is neither saveable nor creatable.
+        from rest_framework.test import APIClient
+
+        staff, _ = _p2d_member(self.company, 'sel-excl-staff', ['products.view'])
+        client = APIClient()
+        client.force_authenticate(user=staff)
+        row = {'model_text': 'Equipo X', 'capacity_text': '64 GB', 'sim_text': 'Chip', 'region_text': ''}
+        res = client.post(f'/api/admin/catalog/resolve/?company={self.company.pk}', {'rows': [
+            {**row, 'key': f'L1-S{self.grey.pk}', 'colour_text': 'Gris'},
+            {**row, 'key': f'L1-S{self.green.pk}', 'colour_text': 'Verde'}]}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        found = {r['key']: r['configurations'] for r in res.json()['rows']}
+        [grey] = found[f'L1-S{self.grey.pk}']
+        [green] = found[f'L1-S{self.green.pk}']
+        self.assertEqual((grey['status'], grey['complete']), ('combinacion_valida_sin_variante', True))
+        self.assertEqual((green['status'], green['complete'], green['product_id']), ('combinacion_excluida', False, None))
+
     def test_the_statuses_list_and_the_summary_name_it(self):
         self.assertIn('combinacion_excluida', resolver.STATUSES)

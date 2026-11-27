@@ -34,6 +34,10 @@ let resolveGate: Promise<void> | null;
 let resolveFails: () => boolean;
 /** The server reads a selector row as ANOTHER model (a name or alias collision, review c). */
 let otherModelForSelector: boolean;
+/** The palette the server answers (a test may exclude another pair). */
+let palette: () => ReturnType<typeof selectorPalette>;
+/** What reached the official importer's dry run. */
+let drafts: { rows: { key: string; product_id: number }[] }[];
 
 const vocabulary = selectorVocabulary();
 const compact = (text: string) => phraseKey(text).replace(/ /g, '');
@@ -89,6 +93,8 @@ beforeEach(() => {
   resolveGate = null;
   resolveFails = () => false;
   otherModelForSelector = false;
+  palette = () => selectorPalette();
+  drafts = [];
   send.mockImplementation(async (url, init) => {
     const path = String(url);
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -96,7 +102,7 @@ beforeEach(() => {
     if (path.includes('/admin/suppliers/')) return reply(200, SUPPLIERS);
     if (path.includes('/admin/company-settings/')) return reply(200, COMPANY);
     if (path.includes('/admin/catalog/attributes/')) return reply(200, []);
-    if (path.includes(`/admin/catalog/models/${MODEL}/palette/`)) { paletteUrls.push(path); return reply(200, selectorPalette()); }
+    if (path.includes(`/admin/catalog/models/${MODEL}/palette/`)) { paletteUrls.push(path); return reply(200, palette()); }
     if (path.includes(`/admin/catalog/models/${MODEL}/variants/`)) {
       variantPosts.push({ url: path, body });
       const ids = [...body.option_ids].sort((a: number, b: number) => a - b).join();
@@ -111,6 +117,11 @@ beforeEach(() => {
       if (resolveFails()) return reply(500, {});
       const rows = body.rows.map(resolveRow);
       return reply(200, { rows, summary: {} });
+    }
+    if (path.includes('/text-preview/offer-draft/')) {
+      drafts.push(body);
+      return reply(200, { dry_run: true, cost_column_ignored: false, summary: {}, rows: body.rows.map((row: { key: string }, index: number) => (
+        { key: row.key, row_number: index + 2, action: 'create', errors: [], warnings: [], data: {} })) });
     }
     return reply(404, {});
   });
@@ -368,5 +379,72 @@ describe('dos ofertas en una línea', () => {
     await readList('equipo z 128gb esim j/a negro 2500 azul 2600');
     const group = screen.getByRole('group', { name: 'Varias ofertas en la línea 1' });
     expect(group).not.toHaveTextContent(/2500|2600/);
+  });
+});
+
+describe('SELECTOR-UX-01 · editar una oferta ya leída vuelve a validar antes de guardar', () => {
+  function setList() {
+    fireEvent.change(screen.getByLabelText('Proveedor de la lista'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Plazo de entrega (días)'), { target: { value: '3' } });
+    fireEvent.change(screen.getByLabelText('Fecha del mensaje del proveedor'), { target: { value: '2026-11-10' } });
+    fireEvent.change(screen.getByLabelText('Moneda de la lista'), { target: { value: 'PEN' } });
+    fireEvent.click(within(screen.getByRole('group', { name: 'Importe 1 de la línea 1' })).getByRole('radio', { name: 'Costo del proveedor' }));
+  }
+  const rehearse = () => screen.getByRole('button', { name: 'Ensayar con el importador oficial' });
+
+  it('una oferta lista para guardar que se cambia a mano a una combinación excluida deja de guardarse', async () => {
+    await open();
+    await readList('equipo z 128gb j/a negro 2500');
+    await openSelector(1);
+    fireEvent.click(chip(1, 'Tipo de SIM', /eSIM/));
+    await useSelection(1);
+    setList();
+    fireEvent.change(screen.getByLabelText('Precio comercial · línea 1, configuración 1'), { target: { value: '2999' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Incluir en el guardado · línea 1, configuración 1' }));
+    expect(rehearse()).toBeEnabled();
+
+    // The edit: another SIM and one more colour. The server reads the new selection again before anything is saved.
+    fireEvent.click(chip(1, 'Tipo de SIM', /Chip/));
+    fireEvent.click(chip(1, 'Color', /Verde/));
+    await useSelection(1);
+    expect(resolved.at(-1)?.map((row) => [row.colour_text, row.sim_text])).toEqual([['Negro', 'Chip'], ['Verde', 'Chip']]);
+    const cards = within(line(1)).getAllByRole('article');
+    expect(cards[0]).toHaveTextContent('Sin variante');
+    expect(cards[1]).toHaveTextContent('No existe en este modelo');
+    expect(within(cards[1]).queryByRole('button', { name: /Crear variante/ })).toBeNull();
+    for (const card of cards) expect(within(card).getByRole('checkbox', { name: /Incluir en el guardado/ })).not.toBeChecked();
+    expect(within(cards[1]).getByRole('checkbox', { name: /Incluir en el guardado/ })).toBeDisabled();
+    // What was typed for the old card does not follow the new ones, and nothing can be rehearsed or saved.
+    expect(screen.getByLabelText('Precio comercial · línea 1, configuración 1')).toHaveValue('');
+    expect(rehearse()).toBeDisabled();
+    await act(async () => { fireEvent.click(rehearse()); });
+    expect(drafts).toEqual([]);
+  });
+
+  it('una opción elegida a mano que choca con lo que el texto fija nunca envía otro valor: queda incompleta', async () => {
+    // This model also excludes 256 GB with Chip: choosing 256 GB cannot keep the Chip the line says.
+    palette = () => {
+      const base = selectorPalette();
+      return { ...base, excluded_pairs: [...(base.excluded_pairs ?? []), [G256, CHIP]],
+        combinations: base.combinations.filter((c) => !(c.option_ids.includes(G256) && c.option_ids.includes(CHIP))) };
+    };
+    await open();
+    await readList('equipo z chip j/a negro 2500');
+    await openSelector(1);
+    expect(chip(1, 'Tipo de SIM', /Chip/)).toBeChecked();
+    expect(chip(1, 'Tipo de SIM', /eSIM/)).toBeDisabled();
+    fireEvent.click(chip(1, 'Capacidad', /256 GB/));
+    // The SIM the text says cannot be replaced by hand: eSIM is never chosen in its place.
+    expect(chip(1, 'Tipo de SIM', /eSIM/)).not.toBeChecked();
+    expect(chip(1, 'Tipo de SIM', /eSIM/)).toBeDisabled();
+    await useSelection(1);
+    const sent = resolved.at(-1)!;
+    expect(sent).toHaveLength(1);
+    expect(sent[0].capacity_text).toBe('256 GB');
+    expect(sent[0].sim_text).toBeUndefined();
+    const card = within(line(1)).getByRole('article');
+    expect(card).toHaveTextContent('Incompleta');
+    expect(within(card).queryByRole('button', { name: /Crear variante/ })).toBeNull();
+    expect(within(card).getByRole('checkbox', { name: /Incluir en el guardado/ })).toBeDisabled();
   });
 });

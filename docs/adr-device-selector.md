@@ -94,3 +94,28 @@ registro lleva su propia `Idempotency-Key` y el servidor sigue rechazando un IME
 - «Recibir mercadería» (`ReceivingWizard`) elige un **artículo** (variante) por búsqueda; no se tocó.
 - Defectos y accesorios de un seminuevo como campos propios: no existen en el modelo de datos (hoy van en «Detalles para
   el comprador» y en la inspección de `UsedUnitsPanel`). Decisión del propietario.
+
+## 7. Decisión del propietario (2026-11-27): editar una oferta ya leída sigue validando
+
+Cuando una persona corrige a mano una oferta ya leída (capacidad, SIM, región o colores, sea lo que el texto fija o lo
+elegido a mano), la validación de la combinación vuelve a correr **antes** de guardar o de crear una variante, en el
+navegador y en el servidor. La revisión del 2026-11-27 confirmó que ya se cumple; las pruebas lo fijan.
+
+- **Editar el texto.** Cambiar el texto borra lo leído, lo elegido en el selector, los precios y lo marcado para
+  guardar. Hay que volver a leer la lista.
+- **Elegir en el selector.** «Usar esta selección» manda a `/resolve` las etiquetas de la empresa, una fila por color.
+  - El servidor juzga cada configuración otra vez (`combinacion_excluida`, `fuera_de_paleta`, `incompleta`…).
+  - Las tarjetas anteriores se sustituyen, sin precio ni selección.
+  - Sólo `variante_existente` se puede guardar.
+  - Sólo `combinacion_valida_sin_variante` ofrece «Crear variante».
+  - Prueba del navegador: `supplier-list-selector-screen.test.tsx` («editar una oferta ya leída…»). Prueba del
+    servidor: `ExcludedCombinationTest`, que llama a `/resolve` por HTTP.
+- **Lo que el texto fija** (capacidad, SIM, región) no se cambia en el selector. Si una elección a mano lo hace
+  imposible, ese paso queda sin elegir y se envía sin él. El servidor la lee como `incompleta`: nunca se pone otro valor
+  en su lugar.
+- **Crear variantes**, una o en lote, pasa por `check_variant` (paleta, exclusiones, roles completos):
+  `test_model_option_exclusions`.
+- **La lista semanal en Excel.** Una fila con un par excluido es un error sin propuesta de «Crear variante»
+  (`ExcludedCombinationRowTest`).
+- **Guardar.** El ensayo y el importador oficial reciben sólo variantes existentes, por su id. Editar una oferta en el
+  panel nunca cambia su variante (`supply_services.update_offer`).
