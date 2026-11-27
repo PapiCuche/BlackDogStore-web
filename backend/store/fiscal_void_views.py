@@ -48,6 +48,16 @@ from .throttles import FiscalIssueThrottle, FiscalReadThrottle
 logger = logging.getLogger(__name__)
 
 
+def _void_issuer(void: FiscalVoidCommunication) -> str:
+    """El RUC emisor de los documentos de la baja; vacío si no tiene (entonces, el de la empresa)."""
+    from .fiscal_void_services import _issuer_ruc
+
+    try:
+        return _issuer_ruc(void)
+    except FiscalError:
+        return ''
+
+
 def void_payload(void: FiscalVoidCommunication) -> dict:
     """Los metadatos de la comunicación. Sin el XML, sin el CDR, sin secretos."""
     # `can_submit` pregunta al MISMO sitio que el envío, no a una copia del criterio:
@@ -306,11 +316,12 @@ class AdminFiscalVoidSubmitView(APIView):
         if error:
             return error
 
-        try:
-            provider = resolve_provider(void.company)
-        except FiscalConfigError as exc:
-            return Response({'detail': str(exc)},
-                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        provider, refused = provider_or_refusal(
+            request, void.company, resolver=resolve_provider, issuer_tax_id=_void_issuer(void),
+            endpoint='fiscal_void',
+            target_type='fiscal_void_communication', target_id=void.pk)
+        if refused:
+            return refused
         try:
             void = submit_void_communication(void, provider)
         except FiscalVoidInProgress as exc:
@@ -344,11 +355,12 @@ class AdminFiscalVoidStatusView(APIView):
         if error:
             return error
 
-        try:
-            provider = resolve_provider(void.company)
-        except FiscalConfigError as exc:
-            return Response({'detail': str(exc)},
-                            status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        provider, refused = provider_or_refusal(
+            request, void.company, resolver=resolve_provider, issuer_tax_id=_void_issuer(void),
+            endpoint='fiscal_void',
+            target_type='fiscal_void_communication', target_id=void.pk)
+        if refused:
+            return refused
         try:
             result = poll_void_communication(void, provider)
         except FiscalError as exc:

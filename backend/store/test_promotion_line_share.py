@@ -32,7 +32,7 @@ from .models import (
     Product, Promotion,
 )
 from .tests import (
-    _BETA_ISSUING, _C1_POS, _C12_DISCOUNT, _c1_product, _c1_sale, _c1_stock, _c13_combo, _p2d_member,
+    _C1_POS, _C12_DISCOUNT, _beta_issuing_settings, _c1_product, _c1_sale, _c1_stock, _c13_combo, _p2d_member,
     _p3_company,
 )
 
@@ -117,7 +117,7 @@ PINNED = {
 }
 
 
-@override_settings(**_BETA_ISSUING)
+@override_settings(**_beta_issuing_settings('20100077701'))   # the company's RUC
 class PromotionLineShareCharacterizationTest(TestCase):
     def setUp(self):
         cache.clear()

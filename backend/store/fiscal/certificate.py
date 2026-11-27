@@ -113,6 +113,30 @@ def inspect_pkcs12(data: bytes, password: bytes | None) -> CertificateMetadata:
     return metadata_from_certificate(cert)
 
 
+def certificate_metadata_from_pem(cert_pem: bytes) -> CertificateMetadata:
+    """Metadatos NO secretos de un certificado PEM. Levanta si no se lee."""
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem)
+    except ValueError:
+        raise CertificateError('El certificado de firma no se puede leer.') from None
+    return metadata_from_certificate(cert)
+
+
+def subject_values(cert_pem: bytes, oid=None) -> tuple[str, ...]:
+    """
+    Los valores del sujeto del certificado; sólo los del atributo `oid` si se da.
+
+    SUNAT pide el RUC del titular en el campo OU (Manual del programador, §3.1).
+    """
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem)
+    except ValueError:
+        raise CertificateError('El certificado de firma no se puede leer.') from None
+    attributes = (cert.subject.get_attributes_for_oid(oid) if oid is not None
+                  else list(cert.subject))
+    return tuple(str(attribute.value) for attribute in attributes)
+
+
 def check_signing_pair(cert_pem: bytes, key_pem: bytes) -> None:
     """
     El par de firma se puede usar: ambos se leen y el certificado es el de la clave.

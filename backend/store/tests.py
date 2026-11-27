@@ -42042,23 +42042,26 @@ class Ip1PosBase(TestCase):
         ).quantity
 
 
-def _beta_issuing_settings():
+def _beta_issuing_settings(ruc='20100066603'):
     """
     Emisión encendida CON credenciales de prueba de SUNAT BETA y un par de firma
     válido. FISCAL-PROD-02: la caja comprueba credenciales y par antes de crear la
     venta, así que «encendida» ya no basta para vender con comprobante.
+
+    SUNAT-ISSUER-GATE: las credenciales son del RUC de la empresa que vende. Una
+    prueba cuya empresa tiene otro RUC pide las suyas con `ruc`.
     """
     from .fiscal.testing import self_signed_pem
 
-    key, cert = self_signed_pem('20100066603')
-    return dict(FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603', FISCAL_SOL_USER='MODDATOS',
+    key, cert = self_signed_pem(ruc)
+    return dict(FISCAL_ENABLED=True, FISCAL_SOL_RUC=ruc, FISCAL_SOL_USER='MODDATOS',
                 FISCAL_SOL_PASSWORD='moddatos', FISCAL_CERT_PEM=cert.decode(), FISCAL_KEY_PEM=key.decode())
 
 
 _BETA_ISSUING = _beta_issuing_settings()
 
 
-@override_settings(**_BETA_ISSUING)
+@override_settings(**_beta_issuing_settings('20900095001'))   # Ip1PosBase's company
 class Fiscal6ReceiptOptionsTest(Ip1PosBase):
     """
     ERP-FISCAL-6 §18/§29 — qué comprobantes ofrece la caja, y por qué no los demás.
@@ -51130,7 +51133,9 @@ class C22BEnvironmentGuardTest(TestCase):
         from . import fiscal_config
 
         firma = inspect.signature(fiscal_config.resolve_provider)
-        self.assertEqual(list(firma.parameters), ['company'])
+        # La empresa y, al actuar sobre un documento, su RUC emisor (SUNAT-ISSUER-GATE).
+        # Ninguno es una URL.
+        self.assertEqual(list(firma.parameters), ['company', 'issuer_tax_id'])
         fuente = inspect.getsource(fiscal_config.resolve_provider)
         self.assertIn('endpoints = {', fuente)
 
@@ -56355,8 +56360,11 @@ class FiscalCertificateLoaderTest(TestCase):
 
     def _resolve(self, **cert_settings):
         from .fiscal_config import resolve_credentials
+        # SUNAT-ISSUER-GATE: credentials are asked for a company, whose RUC is theirs.
+        company = Company.objects.get_or_create(
+            slug='emisor-cdt', defaults={'name': 'Emisor CDT', 'tax_id': '20100066603'})[0]
         with override_settings(**cert_settings):
-            return resolve_credentials(None)
+            return resolve_credentials(company, signing=True)
 
     # -- PKCS#12 happy path ---------------------------------------------------
 
