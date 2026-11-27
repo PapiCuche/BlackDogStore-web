@@ -181,7 +181,7 @@ describe('paso 1 · Procedencia', () => {
     const u = await renderWizard();
     const existing = screen.getByRole('radio', { name: 'Ingreso de inventario existente' });
     expect(existing).toHaveAccessibleDescription(/no es una compra/);
-    expect(existing).toHaveAccessibleDescription(/^Artículos que ya tenías; no es una compra/);
+    expect(existing).toHaveAccessibleDescription(/^Equipos que ya tenías; no es una compra\. Vale para cualquier artículo/);
     expect(existing).toHaveAccessibleDescription(/elige «Inventario inicial»/);
     await u.click(existing);
     await toArticles(u);

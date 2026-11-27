@@ -194,7 +194,7 @@ test('STOCK-EXISTING-01: «Ingreso de inventario existente» is offered with its
   const group = screen.getByRole('group', { name: 'Tipo de ingreso' });
   const existing = within(group).getByRole('radio', { name: /Ingreso de inventario existente/ });
   fireEvent.click(existing);
-  expect(existing).toHaveAccessibleDescription(/no es una compra/);
+  expect(existing).toHaveAccessibleDescription(/^Equipos que ya tenías; no es una compra\. Vale para cualquier producto/);
   fireEvent.change(screen.getByLabelText(/^IMEI \*/), { target: { value: IMEI_A } });
   fireEvent.change(screen.getByLabelText(/^Motivo o documento de ingreso/), { target: { value: 'Vitrina' } });
   fireEvent.click(screen.getByRole('button', { name: 'Guardar equipo' }));

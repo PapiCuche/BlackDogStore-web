@@ -224,7 +224,7 @@ test('INV-OPENING-01: a purchase by default, and «Inventario inicial» travels 
 test('STOCK-EXISTING-01: «Ingreso de inventario existente» travels as existing', async () => {
   render(<StockUnitImport branches={BRANCHES} />);
   const existing = screen.getByRole('radio', { name: 'Ingreso de inventario existente' });
-  expect(existing).toHaveAccessibleDescription(/no es una compra/);
+  expect(existing).toHaveAccessibleDescription(/^Equipos que ya tenías; no es una compra\. Vale en cualquier estante/);
   expect(existing).toHaveAccessibleDescription(/elige «Inventario inicial»/);
   attach();
   fireEvent.click(existing);

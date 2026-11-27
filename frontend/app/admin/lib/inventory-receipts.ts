@@ -147,7 +147,7 @@ export const ENTRY_KINDS: { value: EntryKind; label: string; help: string }[] = 
   },
   {
     value: "existing", label: "Ingreso de inventario existente",
-    help: "Artículos que ya tenías; no es una compra. Vale para cualquier artículo y, como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige «Inventario inicial».",
+    help: "Equipos que ya tenías; no es una compra. Vale para cualquier artículo y, como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige «Inventario inicial».",
   },
 ];
 export const entryKindLabel = (kind?: string | null): string =>
