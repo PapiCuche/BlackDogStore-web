@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 5a · PARCIAL (rama `feat/trade-in-quote`, sin fusionar ni desplegar) · migración `0198_trade_in_quote`
+
+Cotización de recepción con estados, revisiones, aprobación (también propia con motivo), emisión con vencimiento
+exacto de 96 h por omisión y cron de vencidas (`docs/adr-trade-in-valuation.md` §3.5, §5.3). Sólo backend. Ticket y
+PDF son la fase 5b, enlace público la 5c. No recibe, compra, paga ni acredita.
+
 ## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 4 · PARCIAL (rama `feat/trade-in-assessment`, sin fusionar ni desplegar) · migración `0197_trade_in_assessment`
 
 Evaluación y cálculo (`docs/adr-trade-in-valuation.md` §5–§6, §8.1): del selector al tarifario, respuestas, cálculo
