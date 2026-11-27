@@ -53,8 +53,7 @@ def _actions(user, company, version) -> dict:
     approve = has_capability(user, company, rules.CAP_APPROVE)
     draft = version.status == TradeInRuleSetVersion.STATUS_DRAFT
     pending = version.status == TradeInRuleSetVersion.STATUS_PENDING
-    own = version.proposed_by_id is not None and version.proposed_by_id == user.pk
-    author = (version.proposed_by_id or version.created_by_id) == user.pk
+    own = author = user.pk in rules.authors(version)
     return {
         'edit': manage and draft,
         'propose': manage and draft,
@@ -192,8 +191,9 @@ class AdminTradeInRuleSetListView(_Base):
             draft = rules.create_draft(actor=request.user, company=company, data=_body(request), request=request)
         except rules.TariffError as exc:
             return _error(exc)
-        return Response(version_payload(request.user, company, _version(company, draft.pk)),
-                        status=status.HTTP_201_CREATED)
+        body = version_payload(request.user, company, _version(company, draft.pk))
+        body['dropped_rules'] = getattr(draft, 'dropped_rules', [])
+        return Response(body, status=status.HTTP_201_CREATED)
 
 
 class AdminTradeInRuleSetDetailView(_Base):

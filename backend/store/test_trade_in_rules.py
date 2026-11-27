@@ -7,13 +7,15 @@ negative, NOT ELIGIBLE has no value); rules are the company's, versioned, frozen
 else and never rewritten; another company's rules do not exist for you; and nothing here buys, pays or receives.
 """
 import pathlib
+import threading
 from datetime import timedelta
 from decimal import Decimal
 from unittest import mock
 
 from django.core.exceptions import ValidationError
-from django.db import IntegrityError, transaction
-from django.test import SimpleTestCase, TestCase
+from django.db import IntegrityError, connection, transaction
+from django.test import SimpleTestCase, TestCase, TransactionTestCase
+from django.test.utils import CaptureQueriesContext
 
 from store import finance_test_support as fx
 from store import trade_in_rules as rules
@@ -55,6 +57,7 @@ FACTORS = {
                          component='camara'),
     'box': F(code='box', group='cos', label='Caja', input='choice', options=('Completa', 'Sin caja')),
     'only_x': F(code='only_x', group='cos', label='Sólo modelo X', input='check', applies_model_name='Modelo X'),
+    'back': F(code='back', group='cos', label='Tapa trasera', input='check', component='trasera'),
 }
 
 
@@ -138,6 +141,25 @@ class CalculationTest(SimpleTestCase):
         ])
         self.assertEqual(broken['totals']['deductions'], '1000.00')
         self.assertEqual(broken['totals']['computed_value'], '0.00')          # never negative
+
+    def test_a_fault_is_never_dropped_by_a_line_its_own_group_discarded(self):
+        """Review of #462 (owner's decision): combine within each group first, then one line per component."""
+        result = calc({'screen': 'not_working', 'back': 'not_working', 'screen_replaced': 'true'}, [
+            R(id=1, factor='screen', effect='fixed', when_outcome='not_working', amount=D('150')),    # cos, pantalla
+            R(id=2, factor='back', effect='fixed', when_outcome='not_working', amount=D('200')),      # cos, trasera
+            R(id=3, factor='screen_replaced', effect='fixed', when_outcome='true', amount=D('120')),  # rep, pantalla
+        ])
+        # «cos» keeps the back (200); the screen line is gone with its group, so the replaced screen (120) counts.
+        self.assertEqual(result['groups'], {'cos': '200.00', 'rep': '120.00'})
+        self.assertEqual(result['totals']['deductions'], '320.00')
+        lines = {line['factor']: line for line in result['lines']}
+        self.assertEqual(lines['screen']['suppressed_by'], 'back')
+        self.assertIsNone(lines['screen_replaced']['suppressed_by'])
+
+    def test_half_up_at_the_cent_boundary(self):
+        rule = R(id=1, factor='screen', effect='percent', when_outcome='detail', percent=D('0.5'))
+        self.assertEqual(calc({'screen': 'detail'}, [rule], base='1.00')['lines'][0]['amount'], '0.01')   # 0.005
+        self.assertEqual(calc({'screen': 'detail'}, [rule], base='0.98')['lines'][0]['amount'], '0.00')   # 0.0049
 
     def test_not_eligible_has_no_value(self):
         result = calc({'screen': 'not_working'}, [
@@ -442,3 +464,161 @@ class RulesGuardsTest(RulesBase):
             for word in ('iphone', 'apple', 'samsung', 'xiaomi', 'motorola', 'black dog', 'blackdog', 'icloud'):
                 with self.subTest(file=name, word=word):
                     self.assertNotIn(word, text)
+
+
+class RulesReviewFindingsTest(RulesBase):
+    """Review of #462: conditions re-checked, every writer is an author, bounded integers, inactive questions."""
+
+    def draft_with_rule(self, user=None, **rule):
+        _cos, _rep, screen, replaced = self.catalogue()
+        draft = self.post('versions/', {}, user=user)
+        created = self.post(f'versions/{draft["id"]}/rules/', {'factor': screen['id'], 'when_outcome': 'detail',
+                                                               'effect': 'fixed', 'amount': '30', **rule}, user=user)
+        return draft, created, screen, replaced
+
+    def test_changing_a_rules_question_rechecks_its_condition(self):
+        draft, rule, screen, replaced = self.draft_with_rule()
+        res = self.api(self.editor).patch(f'{RULES}rules/{rule["id"]}/', {'factor': replaced['id']}, format='json')
+        self.assertEqual(res.status_code, 400, res.content)
+        self.assertEqual(res.json()['field'], 'when_outcome')
+        res = self.api(self.editor).patch(f'{RULES}rules/{rule["id"]}/', {'priority': 7}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual((res.json()['priority'], res.json()['when_outcome'], res.json()['amount']),
+                         (7, 'detail', '30.00'))
+
+    def test_removing_an_option_a_draft_rule_uses_is_refused(self):
+        cos = self.post('groups/', {'kind': 'accessories', 'name': 'Caja'})
+        box = self.post('factors/', {'group': cos['id'], 'label': 'Caja', 'code': 'caja', 'input': 'choice',
+                                     'options': ['Completa', 'Sin caja']})
+        draft = self.post('versions/', {})
+        rule = self.post(f'versions/{draft["id"]}/rules/', {'factor': box['id'], 'when_outcome': 'Sin caja',
+                                                            'effect': 'fixed', 'amount': '20'})
+        res = self.api(self.editor).patch(f'{RULES}factors/{box["id"]}/', {'options': ['Completa']}, format='json')
+        self.assertEqual(res.status_code, 409, res.content)
+        self.assertEqual((res.json()['code'], res.json()['rules']), ('options_in_use', [rule['id']]))
+        # Changed behind the services' back: the proposal still refuses, naming the rule.
+        TradeInFactor.objects.filter(pk=box['id']).update(options=['Completa'])
+        res = self.post(f'versions/{draft["id"]}/propose/', {}, expect=409)
+        self.assertEqual((res['code'], res['rules']), ('rules_invalid', [rule['id']]))
+
+    def test_anyone_who_wrote_the_draft_needs_approve_own(self):
+        writer_approver = fx.member(self.company, 'tir_escribe_aprueba', [VIEW, MANAGE, APPROVE])
+        draft, _rule, screen, _ = self.draft_with_rule()                          # opened by the editor
+        self.post(f'versions/{draft["id"]}/rules/', {'factor': screen['id'], 'when_outcome': 'not_working',
+                                                     'effect': 'percent', 'percent': '25'}, user=writer_approver)
+        self.post(f'versions/{draft["id"]}/propose/', {}, expect=200)              # proposed by the editor
+        res = self.post(f'versions/{draft["id"]}/approve/', {}, user=writer_approver, expect=403)
+        self.assertEqual(res['code'], 'own_change')
+        done = self.post(f'versions/{draft["id"]}/approve/', {}, user=self.approver, expect=200)
+        self.assertEqual(done['approval_kind'], 'approver')
+
+    def test_integers_out_of_range_are_a_400(self):
+        draft, rule, screen, _ = self.draft_with_rule()
+        for path, data, field in (
+            (f'versions/{draft["id"]}/rules/', {'factor': screen['id'], 'when_outcome': 'works', 'effect': 'none',
+                                                'priority': 2 ** 31}, 'priority'),
+            ('groups/', {'kind': 'custom', 'name': 'Grande', 'sort_order': 2 ** 31}, 'sort_order'),
+            ('groups/', {'kind': 'custom', 'name': 'Negativo', 'sort_order': -1}, 'sort_order'),
+        ):
+            with self.subTest(field=field, data=data):
+                self.assertEqual(self.post(path, data, expect=400)['field'], field)
+        res = self.api(self.editor).patch(f'{RULES}rules/{rule["id"]}/', {'priority': -(2 ** 31)}, format='json')
+        self.assertEqual(res.status_code, 400)
+
+    def test_inactive_questions_block_a_proposal_and_are_not_copied(self):
+        version_id, _cos, screen, replaced = self.approved_set()
+        snapshot = TradeInRuleSetVersion.objects.get(pk=version_id).snapshot
+        self.assertEqual({k: (f['is_active'], f['sort_order']) for k, f in snapshot['factors'].items()},
+                         {'pantalla': (True, 0), 'pantalla-cambiada': (True, 0)})
+        self.assertTrue(all(g['is_active'] for g in snapshot['groups'].values()))
+        self.api(self.editor).patch(f'{RULES}factors/{replaced["id"]}/', {'is_active': False}, format='json')
+        draft = self.post('versions/', {})
+        self.assertEqual([d['factor'] for d in draft['dropped_rules']], ['pantalla-cambiada'])
+        self.assertEqual(len(draft['rules']), 1)
+        self.api(self.editor).patch(f'{RULES}groups/{_cos["id"]}/', {'is_active': False}, format='json')
+        res = self.post(f'versions/{draft["id"]}/propose/', {}, expect=409)
+        self.assertEqual((res['code'], res['rules']), ('inactive_in_rules', [draft['rules'][0]['id']]))
+
+    def test_the_model_keeps_codes_kinds_and_transitions(self):
+        _cos, _rep, screen, _ = self.catalogue()
+        factor = TradeInFactor.objects.get(pk=screen['id'])
+        factor.code = 'otra'
+        with self.assertRaises(ValidationError):
+            factor.save()
+        factor.refresh_from_db()
+        factor.input = 'boolean'
+        with self.assertRaises(ValidationError):
+            factor.save()
+        res = self.api(self.editor).patch(f'{RULES}factors/{screen["id"]}/', {'code': 'x'}, format='json')
+        self.assertEqual(res.json()['code'], 'identity_fixed')
+        draft = TradeInRuleSetVersion.objects.create(company=self.company, number=1)
+        draft.status, draft.valid_from = TradeInRuleSetVersion.STATUS_APPROVED, self.today
+        with self.assertRaises(ValidationError):
+            draft.save()
+
+    def test_preview_writes_nothing_and_names_what_is_missing(self):
+        entry = self.entry()
+        res = self.post('preview/', {'tariff_entry': entry.pk, 'answers': {}}, user=self.reader, expect=409)
+        self.assertEqual(res['code'], 'rules_missing')
+        draft, _rule, _screen, _ = self.draft_with_rule()
+        with CaptureQueriesContext(connection) as queries:
+            result = rules.preview(actor=self.reader, company=self.company,
+                                   data={'tariff_entry': entry.pk, 'answers': {'pantalla': 'detail'},
+                                         'rule_set_version': draft['id']})
+        self.assertFalse([q['sql'] for q in queries.captured_queries
+                          if q['sql'].lstrip().upper().startswith(('INSERT', 'UPDATE', 'DELETE'))])
+        self.assertEqual((result['rules']['status'], result['totals']['deductions']), ('draft', '30.00'))
+        self.post(f'versions/{draft["id"]}/propose/', {}, expect=200)
+        pending = self.post('preview/', {'tariff_entry': entry.pk, 'answers': {'pantalla': 'detail'},
+                                         'rule_set_version': draft['id']}, user=self.reader, expect=200)
+        self.assertEqual(pending['rules']['status'], 'pending')
+        self.api(self.editor).post(f'/api/admin/trade-in/tariff/{entry.pk}/deactivate/', {'reason': 'x'},
+                                   format='json')
+        res = self.post('preview/', {'tariff_entry': entry.pk, 'answers': {}, 'rule_set_version': draft['id']},
+                        user=self.reader, expect=409)
+        self.assertEqual(res['code'], 'tariff_missing')
+
+    def test_one_pending_set_at_a_time(self):
+        draft, _rule, screen, _ = self.draft_with_rule()
+        self.post(f'versions/{draft["id"]}/propose/', {}, expect=200)
+        second = self.post('versions/', {'empty': True})
+        self.post(f'versions/{second["id"]}/rules/', {'factor': screen['id'], 'when_outcome': 'works',
+                                                      'effect': 'none'})
+        self.assertEqual(self.post(f'versions/{second["id"]}/propose/', {}, expect=409)['code'], 'pending_exists')
+
+
+class TwoProposalsOfOneDraftTest(TransactionTestCase):
+    """Two people propose the same draft at the same instant: the row lock lets one through; the other is told."""
+
+    def setUp(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('Only PostgreSQL has the row locks this test is about.')
+        self.company = fx.company('tir-race', 'Carrera reglas')
+        self.one = fx.member(self.company, 'tir_race_1', [VIEW, MANAGE])
+        self.two = fx.member(self.company, 'tir_race_2', [VIEW, MANAGE])
+        group = TradeInFactorGroup.objects.create(company=self.company, kind='cosmetic', name='E')
+        factor = TradeInFactor.objects.create(company=self.company, group=group, code='p', label='P', input='check')
+        self.draft = rules.create_draft(actor=self.one, company=self.company)
+        rules.add_rule(actor=self.one, company=self.company, version=self.draft,
+                       data={'factor': factor.pk, 'when_outcome': 'detail', 'effect': 'none'})
+
+    def test_only_one_proposal_goes_through(self):
+        start = threading.Barrier(2)
+        outcomes = {}
+
+        def propose(name, user):
+            try:
+                start.wait(5)
+                outcomes[name] = rules.propose(actor=user, company=self.company, version=self.draft, data={}).status
+            except Exception as exc:  # noqa: BLE001 — the test reads it
+                outcomes[name] = getattr(exc, 'code', repr(exc))
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=propose, args=(name, user)) for name, user in (('one', self.one),
+                                                                                          ('two', self.two))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        self.assertEqual(sorted(outcomes.values()), ['not_draft', 'pending'], outcomes)

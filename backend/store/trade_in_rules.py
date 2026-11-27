@@ -99,15 +99,22 @@ def _percent(raw, key, label, *, required=False) -> Decimal | None:
     return value
 
 
-def _int(raw, key, label, *, default=0) -> int:
+INT_MAX = 2_147_483_647
+
+
+def _int(raw, key, label, *, default=0, minimum=-INT_MAX) -> int:
+    """An integer that fits the column (a database `integer`): out of range is a 400 on its field, never a 500."""
     if raw in (None, ''):
         return default
     if isinstance(raw, bool):
         raise TariffError(f'{label} no es un número entero.', field=key)
     try:
-        return int(str(raw).strip())
+        value = int(str(raw).strip())
     except ValueError:
         raise TariffError(f'{label} no es un número entero.', field=key) from None
+    if value < minimum or value > INT_MAX:
+        raise TariffError(f'{label} va de {minimum} a {INT_MAX}.', field=key)
+    return value
 
 
 def _bool(raw, *, default=False) -> bool:
@@ -134,7 +141,7 @@ def _group_fields(data, *, partial=False, instance=None) -> dict:
     if not partial or 'group_cap_percent' in data:
         out['group_cap_percent'] = _percent(data.get('group_cap_percent'), 'group_cap_percent', 'el tope del grupo')
     if not partial or 'sort_order' in data:
-        out['sort_order'] = max(0, _int(data.get('sort_order'), 'sort_order', 'El orden'))
+        out['sort_order'] = _int(data.get('sort_order'), 'sort_order', 'El orden', minimum=0)
     if partial and 'is_active' in data:
         out['is_active'] = _bool(data.get('is_active'), default=True)
     return out
@@ -223,7 +230,7 @@ def _factor_fields(company, data, *, partial=False, input_kind=None) -> dict:
     if not partial or 'requires_photo' in data:
         out['requires_photo'] = _bool(data.get('requires_photo'))
     if not partial or 'sort_order' in data:
-        out['sort_order'] = max(0, _int(data.get('sort_order'), 'sort_order', 'El orden'))
+        out['sort_order'] = _int(data.get('sort_order'), 'sort_order', 'El orden', minimum=0)
     if partial and 'is_active' in data:
         out['is_active'] = _bool(data.get('is_active'), default=True)
     return out
@@ -255,6 +262,14 @@ def update_factor(*, actor, company, factor, data, request=None) -> TradeInFacto
         raise TariffError('El código y el tipo de respuesta de una pregunta no cambian: crea otra.',
                           code='identity_fixed', extra={'fields': refused})
     fields = _factor_fields(company, data, partial=True, input_kind=factor.input)
+    if 'options' in fields:
+        # A draft rule that names an option being removed would never match again: say which, change nothing.
+        orphaned = sorted(TradeInRule.objects.filter(
+            factor=factor, version__status=TradeInRuleSetVersion.STATUS_DRAFT).exclude(
+            when_outcome__in=fields['options']).values_list('pk', flat=True))
+        if orphaned:
+            raise TariffConflict('Hay reglas del borrador que usan una opción que quitas: cámbialas antes.',
+                                 code='options_in_use', field='options', extra={'rules': orphaned})
     for key, value in fields.items():
         setattr(factor, key, value)
     factor.save()
@@ -311,19 +326,26 @@ def create_draft(*, actor, company, data=None, request=None) -> TradeInRuleSetVe
             with transaction.atomic():
                 draft = TradeInRuleSetVersion.objects.create(
                     company=company, number=number, source_version=source,
+                    contributor_ids=[actor.pk] if getattr(actor, 'pk', None) else [],
                     created_by=actor if getattr(actor, 'is_authenticated', False) else None)
         except IntegrityError:
             raise TariffConflict('Ya hay un borrador de reglas: termínalo o retíralo antes de abrir otro.',
                                  code='draft_exists') from None
+        dropped = []
         if source is not None:
-            for rule in source.rules.all():
+            for rule in source.rules.select_related('factor__group'):
+                if not (rule.factor.is_active and rule.factor.group.is_active):
+                    # A question (or its group) the company switched off is not copied: said, never silent.
+                    dropped.append({'rule': rule.pk, 'factor': rule.factor.code})
+                    continue
                 TradeInRule.objects.create(
                     company=company, version=draft, factor_id=rule.factor_id, when_outcome=rule.when_outcome,
                     when_percent_gte=rule.when_percent_gte, when_percent_lt=rule.when_percent_lt,
                     effect=rule.effect, amount=rule.amount, percent=rule.percent, priority=rule.priority,
                     owner_id=rule.owner_id, notes=rule.notes)
         _version_audit('trade_in_rule_set_draft_created', actor=actor, company=company, version=draft,
-                       request=request, source=source.number if source else None)
+                       request=request, source=source.number if source else None, dropped=dropped)
+    draft.dropped_rules = dropped
     return draft
 
 
@@ -334,6 +356,24 @@ def _draft(company, version) -> TradeInRuleSetVersion:
     if locked.status != TradeInRuleSetVersion.STATUS_DRAFT:
         raise TariffStateError('Sólo se editan las reglas de un borrador.', code='not_draft')
     return locked
+
+
+def check_condition(input_kind: str, options, outcome: str, gte, lt) -> None:
+    """Whether a rule's condition can ever match an answer to a question of this kind (and these options)."""
+    if input_kind == TradeInFactor.INPUT_PERCENT:
+        if outcome or (gte is None and lt is None):
+            raise TariffError('Una pregunta de porcentaje se condiciona con un rango (desde / hasta).',
+                              field='when_percent_gte')
+        if gte is not None and lt is not None and lt <= gte:
+            raise TariffError('El rango termina antes de empezar.', field='when_percent_lt')
+        return
+    if gte is not None or lt is not None or not outcome:
+        raise TariffError('Indica el resultado que activa la regla.', code='required', field='when_outcome')
+    allowed = {TradeInFactor.INPUT_CHECK: TradeInFactor.CHECK_OUTCOMES,
+               TradeInFactor.INPUT_BOOLEAN: ('true', 'false'),
+               TradeInFactor.INPUT_CHOICE: tuple(options or ())}[input_kind]
+    if outcome not in allowed:
+        raise TariffError('Ese resultado no existe para esta pregunta.', field='when_outcome')
 
 
 def _rule_fields(company, data, *, partial=False, rule=None) -> dict:
@@ -347,25 +387,16 @@ def _rule_fields(company, data, *, partial=False, rule=None) -> dict:
         if factor is None:
             raise TariffError('La pregunta no existe.', code='not_found', field='factor')
         out['factor'] = factor
-    if not partial or {'when_outcome', 'when_percent_gte', 'when_percent_lt'} & set(data):
+    condition_keys = {'when_outcome', 'when_percent_gte', 'when_percent_lt'}
+    if not partial or condition_keys & set(data):
         outcome = _text(data, 'when_outcome', 60, 'El resultado')
         gte = _percent(data.get('when_percent_gte'), 'when_percent_gte', 'el porcentaje mínimo')
         lt = _percent(data.get('when_percent_lt'), 'when_percent_lt', 'el porcentaje máximo')
-        if factor.input == TradeInFactor.INPUT_PERCENT:
-            if outcome or (gte is None and lt is None):
-                raise TariffError('Una pregunta de porcentaje se condiciona con un rango (desde / hasta).',
-                                  field='when_percent_gte')
-            if gte is not None and lt is not None and lt <= gte:
-                raise TariffError('El rango termina antes de empezar.', field='when_percent_lt')
-        else:
-            if gte is not None or lt is not None or not outcome:
-                raise TariffError('Indica el resultado que activa la regla.', code='required', field='when_outcome')
-            allowed = {TradeInFactor.INPUT_CHECK: TradeInFactor.CHECK_OUTCOMES,
-                       TradeInFactor.INPUT_BOOLEAN: ('true', 'false'),
-                       TradeInFactor.INPUT_CHOICE: tuple(factor.options)}[factor.input]
-            if outcome not in allowed:
-                raise TariffError('Ese resultado no existe para esta pregunta.', field='when_outcome')
+        check_condition(factor.input, factor.options, outcome, gte, lt)
         out.update(when_outcome=outcome, when_percent_gte=gte, when_percent_lt=lt)
+    elif 'factor' in out:
+        # Another question, the same condition: it must still make sense for the new question.
+        check_condition(factor.input, factor.options, rule.when_outcome, rule.when_percent_gte, rule.when_percent_lt)
     if not partial or {'effect', 'amount', 'percent'} & set(data):
         effect = _choice(data, 'effect', TradeInRule.EFFECT_CHOICES, 'Efecto') if (not partial or 'effect' in data) \
             else rule.effect
@@ -400,11 +431,25 @@ def _rule_fields(company, data, *, partial=False, rule=None) -> dict:
     return out
 
 
+def _contributed(draft, actor) -> None:
+    """Record `actor` among the draft's writers (approving it later is approving their own work)."""
+    pk = getattr(actor, 'pk', None)
+    if pk is not None and pk not in (draft.contributor_ids or []):
+        draft.contributor_ids = [*(draft.contributor_ids or []), pk]
+        draft.save(update_fields=['contributor_ids'])
+
+
+def authors(version) -> set:
+    """Who wrote this set: whoever opened, edited or proposed it."""
+    return {pk for pk in (version.created_by_id, version.proposed_by_id, *(version.contributor_ids or [])) if pk}
+
+
 def add_rule(*, actor, company, version, data, request=None) -> TradeInRule:
     _manage(actor, company)
     with transaction.atomic():
         draft = _draft(company, version)
         rule = TradeInRule.objects.create(company=company, version=draft, **_rule_fields(company, data))
+        _contributed(draft, actor)
         _version_audit('trade_in_rule_added', actor=actor, company=company, version=draft, request=request,
                        rule=rule.pk, factor=rule.factor.code, effect=rule.effect)
     return rule
@@ -417,6 +462,7 @@ def update_rule(*, actor, company, rule, data, request=None) -> TradeInRule:
         for key, value in _rule_fields(company, data, partial=True, rule=rule).items():
             setattr(rule, key, value)
         rule.save()
+        _contributed(draft, actor)
         _version_audit('trade_in_rule_updated', actor=actor, company=company, version=draft, request=request,
                        rule=rule.pk, factor=rule.factor.code, effect=rule.effect)
     return rule
@@ -428,6 +474,7 @@ def delete_rule(*, actor, company, rule, request=None) -> None:
         draft = _draft(company, rule.version)
         pk, code = rule.pk, rule.factor.code
         rule.delete()
+        _contributed(draft, actor)
         _version_audit('trade_in_rule_deleted', actor=actor, company=company, version=draft, request=request,
                        rule=pk, factor=code)
 
@@ -441,12 +488,14 @@ def snapshot_of(company, version) -> dict:
     for factor in factors:
         group = factor.group
         groups[str(group.pk)] = {'kind': group.kind, 'name': group.name, 'combine': group.combine,
-                                 'cap_percent': None if group.group_cap_percent is None else str(group.group_cap_percent)}
+                                 'cap_percent': None if group.group_cap_percent is None else str(group.group_cap_percent),
+                                 'is_active': group.is_active, 'sort_order': group.sort_order}
         out_factors[factor.code] = {
             'id': factor.pk, 'group': str(group.pk), 'label': factor.label, 'input': factor.input,
             'options': list(factor.options or []), 'component': factor.component,
             'applies_brand': factor.applies_brand, 'applies_model_name': factor.applies_model_name,
             'applies_product_model': factor.applies_product_model_id, 'requires_photo': factor.requires_photo,
+            'is_active': factor.is_active, 'sort_order': factor.sort_order,
         }
     return {'groups': groups, 'factors': out_factors}
 
@@ -473,7 +522,11 @@ def propose(*, actor, company, version, data, request=None, today: date | None =
         draft = _draft(company, version)
         if not draft.rules.exists():
             raise TariffStateError('Un conjunto de reglas sin reglas no se propone.', code='empty')
-        draft.snapshot = snapshot_of(company, draft)
+        snapshot = snapshot_of(company, draft)
+        _check_against_snapshot(draft, snapshot)
+        draft.snapshot = snapshot
+        if getattr(actor, 'pk', None) and actor.pk not in (draft.contributor_ids or []):
+            draft.contributor_ids = [*(draft.contributor_ids or []), actor.pk]
         draft.valid_from, draft.valid_until, draft.reason = valid_from, valid_until, reason
         draft.status = TradeInRuleSetVersion.STATUS_PENDING
         draft.proposed_by = actor if getattr(actor, 'is_authenticated', False) else None
@@ -487,6 +540,29 @@ def propose(*, actor, company, version, data, request=None, today: date | None =
         _version_audit('trade_in_rule_set_proposed', actor=actor, company=company, version=draft, request=request,
                        valid_from=valid_from.isoformat(), rules=draft.rules.count(), reason=reason)
     return draft
+
+
+def _check_against_snapshot(draft, snapshot) -> None:
+    """Every rule of the draft against the questions as they will be frozen: active, and a condition that can match."""
+    by_id = {f['id']: f for f in snapshot['factors'].values()}
+    inactive, invalid = [], []
+    for rule in draft.rules.all():
+        factor = by_id[rule.factor_id]
+        group = snapshot['groups'][factor['group']]
+        if not (factor['is_active'] and group['is_active']):
+            inactive.append(rule.pk)
+            continue
+        try:
+            check_condition(factor['input'], factor['options'], rule.when_outcome, rule.when_percent_gte,
+                            rule.when_percent_lt)
+        except TariffError:
+            invalid.append(rule.pk)
+    if inactive:
+        raise TariffStateError('Hay reglas sobre preguntas o grupos desactivados: quítalas o reactívalos.',
+                               code='inactive_in_rules', extra={'rules': sorted(inactive)})
+    if invalid:
+        raise TariffStateError('Hay reglas cuya condición ya no corresponde a su pregunta: corrígelas.',
+                               code='rules_invalid', extra={'rules': sorted(invalid)})
 
 
 def _locked(company, version):
@@ -505,11 +581,11 @@ def approve(*, actor, company, version, note='', request=None, today: date | Non
             raise TariffStateError('Este conjunto de reglas no está pendiente de aprobación.', code='not_pending')
         if version.valid_until is not None and version.valid_until < today:
             raise TariffStateError('Su vigencia ya terminó: recházalo y propone otro.', code='expired')
-        own = version.proposed_by_id is not None and version.proposed_by_id == getattr(actor, 'pk', None)
+        own = getattr(actor, 'pk', None) in authors(version)
         if own:
             if not has_capability(actor, company, CAP_APPROVE_OWN):
                 raise TariffPermissionError('Otra persona con permiso de aprobación tiene que aprobar estas reglas: '
-                                            'las propusiste tú.', code='own_change')
+                                            'participaste en ellas.', code='own_change')
             if not note:
                 raise TariffError('Indica el motivo para aprobar un cambio propio.', code='reason_required',
                                   field='note')
@@ -555,8 +631,7 @@ def withdraw(*, actor, company, version, note='', request=None):
         version = _locked(company, version)
         if version.status not in (TradeInRuleSetVersion.STATUS_DRAFT, TradeInRuleSetVersion.STATUS_PENDING):
             raise TariffStateError('Este conjunto de reglas ya fue decidido.', code='not_pending')
-        author = version.proposed_by_id or version.created_by_id
-        if author != getattr(actor, 'pk', None) and not has_capability(actor, company, CAP_APPROVE):
+        if getattr(actor, 'pk', None) not in authors(version) and not has_capability(actor, company, CAP_APPROVE):
             raise TariffPermissionError('Sólo quien lo escribió o propuso, o quien puede aprobarlo, lo retira.')
         fields = ['status', 'decided_by', 'decided_at', 'decision_note']
         if version.status == TradeInRuleSetVersion.STATUS_DRAFT and version.valid_from is None:

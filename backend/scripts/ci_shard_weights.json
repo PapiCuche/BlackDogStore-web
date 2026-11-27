@@ -75,6 +75,7 @@
   "store.test_supply_lock_scope.SupplyActionAgainstPaymentDeadlockTest",
   "store.test_supply_lock_scope.SupplyActionAgainstPaymentTest",
   "store.test_supply_reception.ReceiveAtTheSameInstantTest",
+  "store.test_trade_in_rules.TwoProposalsOfOneDraftTest",
   "store.test_trade_in_tariff.TwoProposalsAtOnceTest",
   "store.test_unit_import_new_price.ApplyWithPriceAgainstSaleTest",
   "store.test_used_unit_own_gate.SiblingRaceTest",

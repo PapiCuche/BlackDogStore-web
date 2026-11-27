@@ -6327,8 +6327,9 @@ class TradeInFactor(models.Model):
     #: Optional filters: the factor is asked only of these devices (folded comparison). Empty = every device.
     applies_brand = models.CharField(max_length=80, blank=True, default='')
     applies_model_name = models.CharField(max_length=160, blank=True, default='')
+    #: PROTECT: deleting the model must not silently widen the question to every device.
     applies_product_model = models.ForeignKey(
-        'ProductModel', on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+        'ProductModel', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     requires_photo = models.BooleanField(default=False)
     sort_order = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
@@ -6352,6 +6353,11 @@ class TradeInFactor(models.Model):
         if (self.applies_product_model_id and self.company_id
                 and self.applies_product_model.company_id != self.company_id):
             raise ValidationError({'applies_product_model': ['El modelo no pertenece a esta empresa.']})
+        if self.pk is not None:
+            stored = TradeInFactor.objects.filter(pk=self.pk).values_list('code', 'input').first()
+            # Rules and frozen versions refer to the code and read answers by the kind: neither ever changes.
+            if stored is not None and stored != (self.code, self.input):
+                raise ValidationError('El código y el tipo de respuesta de una pregunta no cambian: crea otra.')
         return super().save(*args, **kwargs)
 
 
@@ -6377,7 +6383,11 @@ class TradeInRuleSetVersion(models.Model):
 
     #: What a proposal freezes: once out of draft none of these change again (the decision fields do, once).
     TERMS_FIELDS = frozenset({'company', 'company_id', 'number', 'valid_from', 'valid_until', 'reason', 'snapshot',
-                              'proposed_by', 'proposed_by_id', 'proposed_at', 'source_version', 'source_version_id'})
+                              'proposed_by', 'proposed_by_id', 'proposed_at', 'source_version', 'source_version_id',
+                              'contributor_ids'})
+    #: The only moves: a draft is proposed or withdrawn; a pending set is approved, rejected or withdrawn.
+    TRANSITIONS = {STATUS_DRAFT: frozenset({STATUS_DRAFT, STATUS_PENDING, STATUS_WITHDRAWN}),
+                   STATUS_PENDING: frozenset({STATUS_PENDING, STATUS_APPROVED, STATUS_REJECTED, STATUS_WITHDRAWN})}
 
     company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='trade_in_rule_set_versions')
     number = models.PositiveIntegerField()
@@ -6389,6 +6399,9 @@ class TradeInRuleSetVersion(models.Model):
     source_version = models.ForeignKey('self', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     #: Frozen at proposal: the groups and factors the rules refer to, as they were (`trade_in_rules.snapshot_of`).
     snapshot = models.JSONField(default=dict, blank=True)
+    #: Everyone who wrote this set while it was a draft (opened it, added, edited or removed a rule, proposed it): any
+    #: of them approving it is approving their own work (`approve_own`). User ids, written only by the services.
+    contributor_ids = models.JSONField(default=list, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -6431,6 +6444,8 @@ class TradeInRuleSetVersion(models.Model):
             stored, stored_from = row if row else (None, None)
             if stored in (self.STATUS_APPROVED, self.STATUS_REJECTED, self.STATUS_WITHDRAWN):
                 raise ValidationError('Una versión decidida de las reglas no se modifica: crea un borrador nuevo.')
+            if stored is not None and self.status not in self.TRANSITIONS[stored]:
+                raise ValidationError('Un borrador de reglas se propone antes de aprobarse.')
             if stored == self.STATUS_PENDING:
                 allowed = set(kwargs.get('update_fields') or [])
                 terms = self.TERMS_FIELDS

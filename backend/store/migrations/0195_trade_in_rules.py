@@ -33,6 +33,7 @@ def refuse_reverse_with_quote_tickets(apps, schema_editor):
             f'(docs/despliegue-produccion.md §7).')
 
 
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -75,7 +76,7 @@ class Migration(migrations.Migration):
                 ('is_active', models.BooleanField(default=True)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
-                ('applies_product_model', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to='store.productmodel')),
+                ('applies_product_model', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name='+', to='store.productmodel')),
                 ('company', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='trade_in_factors', to='store.company')),
                 ('group', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, related_name='factors', to='store.tradeinfactorgroup')),
             ],
@@ -93,6 +94,7 @@ class Migration(migrations.Migration):
                 ('valid_until', models.DateField(blank=True, null=True)),
                 ('reason', models.CharField(blank=True, default='', max_length=300)),
                 ('snapshot', models.JSONField(blank=True, default=dict)),
+                ('contributor_ids', models.JSONField(blank=True, default=list)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('proposed_at', models.DateTimeField(blank=True, null=True)),
                 ('approval_kind', models.CharField(blank=True, choices=[('approver', 'Aprobación de otra persona'), ('self', 'Aprobación propia')], default='', max_length=10)),

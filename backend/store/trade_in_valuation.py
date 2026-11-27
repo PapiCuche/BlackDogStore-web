@@ -10,12 +10,19 @@ THE ORDER (§6):
        * every STATUS rule applies (requires approval, pending verification, not eligible), whatever its priority;
        * ONE money rule per factor: the highest priority (tie: the larger deduction, then the lower id);
   4. each deduction on the BASE value (never compounded), rounded to 0.01 half-up;
-  5. no double penalty, in this fixed order: (1) per component, before the groups, by line amount; (2) per group,
-     `max` keeps the largest, `sum` adds; (3) the group's cap; (4) never more than the base;
+  5. no double penalty, in this fixed order (owner's decision on the review of #462): (1) WITHIN each group, `max`
+     keeps the largest line and `sum` keeps them all; (2) ACROSS the lines that survived their group, two lines on the
+     same component keep only the larger — so a fault is never dropped to zero by a line that its own group already
+     discarded; (3) each group's total, capped by the group's cap; (4) never more than the base;
   6. computed value = base − deductions, never negative (deductions only: never above the base);
   8. eligibility from the flags; NOT ELIGIBLE has no value at all (null), never zero «on account».
 
 Blockers and identity checks are phase 3: here eligibility comes from the rules only.
+
+PHASE 4 CONTRACTS (docs/adr-trade-in-valuation.md §6): the assessment that calls this must (a) answer EVERY active
+question that applies to the device (an unanswered question is not «no deduction»: the assessment refuses to compute)
+and (b) apply the security blockers BEFORE using the eligibility or the value returned here — a blocker makes the
+device NOT ELIGIBLE whatever these rules say, and is never turned into a deduction.
 """
 from __future__ import annotations
 
@@ -213,27 +220,35 @@ def calculate(*, base: Decimal, maximum: Decimal, answers: dict, groups: dict[st
                                outcome=str(answer), rule_id=chosen.id, effect=chosen.effect,
                                amount=deduction(chosen, base)))
 
-    # 5.1 — per component, before the groups: only the largest line of a component counts.
+    positive = [line for line in lines if line.amount > 0]
+
+    # 5.1 — within each group: `max` keeps the largest line, `sum` keeps them all.
+    survivors: list[_Line] = []
+    for key in sorted({line.group for line in positive}):
+        group = groups.get(key)
+        members = sorted((line for line in positive if line.group == key), key=lambda l: (-l.amount, l.rule_id))
+        if group is not None and group.combine == 'sum':
+            survivors.extend(members)
+        else:
+            survivors.append(members[0])
+            for line in members[1:]:
+                line.suppressed_by = members[0].factor
+
+    # 5.2 — across the survivors: one line per component, the larger.
     by_component: dict[str, _Line] = {}
-    for line in sorted(lines, key=lambda l: (-l.amount, l.rule_id)):
-        if not line.component or line.amount <= 0:
+    for line in sorted(survivors, key=lambda l: (-l.amount, l.rule_id)):
+        if not line.component:
             continue
         keeper = by_component.setdefault(line.component, line)
         if keeper is not line:
             line.suppressed_by = keeper.factor
-    counted = [line for line in lines if not line.suppressed_by and line.amount > 0]
+    counted = [line for line in survivors if not line.suppressed_by]
 
-    # 5.2 / 5.3 — per group: max or sum, then the group's cap.
+    # 5.3 — each group's total, under its cap.
     group_totals: dict[str, Decimal] = {}
     for key in sorted({line.group for line in counted}):
         group = groups.get(key)
-        members = sorted((line for line in counted if line.group == key), key=lambda l: (-l.amount, l.rule_id))
-        if group is not None and group.combine == 'sum':
-            total = sum((line.amount for line in members), Decimal('0.00'))
-        else:
-            total = members[0].amount
-            for line in members[1:]:
-                line.suppressed_by = members[0].factor
+        total = sum((line.amount for line in counted if line.group == key), Decimal('0.00'))
         if group is not None and group.cap_percent is not None:
             total = min(total, _cents(base * group.cap_percent / HUNDRED))
         group_totals[key] = total
