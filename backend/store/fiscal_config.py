@@ -553,28 +553,61 @@ def fiscal_consult_enabled() -> bool:
     return bool(getattr(settings, 'FISCAL_CONSULT_ENABLED', False))
 
 
-def resolve_consult_provider(company, *, issuer_tax_id: str | None = None):
+def consult_endpoint(environment: str) -> str:
     """
-    El proveedor de CONSULTA (`getStatusCdr`). Endpoint fijo del código, jamás de
-    una petición: un inquilino que eligiera la URL tendría un SSRF servido.
+    El endpoint de `getStatusCdr` para documentos de `environment`. Lo decide el
+    servidor; nunca una petición ni la empresa.
+
+    - PRODUCCIÓN: el configurado en `FISCAL_CONSULT_ENDPOINT` o, vacío, el del
+      código (`PRODUCTION_CONSULT_ENDPOINT`). H-14: `settings.py` declara la
+      variable con '' por defecto, y antes ese vacío anulaba la constante.
+    - BETA: SUNAT no tiene servicio de consulta en BETA (Manual del programador).
+      Consultar un documento de pruebas contra el endpoint de producción sería
+      hablar con producción con un documento que allí no existe, así que vacío
+      FALLA CERRADO. Sólo un endpoint configurado explícitamente (pruebas de
+      integración controladas) se usa para BETA.
+
+    Un endpoint que no es HTTPS falla cerrado, sin repetir su valor.
+    """
+    from .fiscal.provider import PRODUCTION_CONSULT_ENDPOINT
+
+    configured = (getattr(settings, 'FISCAL_CONSULT_ENDPOINT', '') or '').strip()
+    if environment == FiscalEnvironment.PRODUCTION:
+        endpoint = configured or PRODUCTION_CONSULT_ENDPOINT
+    elif configured:
+        endpoint = configured
+    else:
+        raise FiscalConfigError(
+            'SUNAT no tiene servicio de consulta de CDR para documentos de pruebas '
+            '(BETA): no se consulta producción por un documento BETA.'
+        )
+    if not endpoint.startswith('https://'):
+        raise FiscalConfigError(
+            'El endpoint de consulta configurado no es válido: debe ser HTTPS.'
+        )
+    return endpoint
+
+
+def resolve_consult_provider(company, *, environment: str, issuer_tax_id: str | None = None):
+    """
+    El proveedor de CONSULTA (`getStatusCdr`) para documentos de `environment`.
+    Endpoint de `consult_endpoint`, jamás de una petición: un inquilino que
+    eligiera la URL tendría un SSRF servido.
 
     FALLA CERRADO si la consulta real no está habilitada (§16/§53). En
     ERP-FISCAL-3 lo está por defecto: la reconciliación se prueba con un proveedor
     inyectado, no con éste. Enciende esta capacidad una fase de producción, con su
     revisión propia — no un descuido de configuración.
     """
-    from .fiscal.provider import PRODUCTION_CONSULT_ENDPOINT, SunatConsultProvider
+    from .fiscal.provider import SunatConsultProvider
 
     if not fiscal_consult_enabled():
         raise FiscalConfigError(
             'La consulta/reconciliación en línea con SUNAT no está habilitada en '
             'esta versión. Requiere revisión de producción.'
         )
-    # El endpoint por defecto es el de producción documentado; se permite
-    # sustituirlo por configuración de servidor (nunca por petición) para pruebas
-    # de integración controladas.
-    endpoint = getattr(settings, 'FISCAL_CONSULT_ENDPOINT', PRODUCTION_CONSULT_ENDPOINT)
-    # Consultar no firma (`signing=False`).
+    endpoint = consult_endpoint(environment)
+    # Consultar no firma (`signing=False`); se compara con el RUC del documento.
     credentials = resolve_credentials(company, signing=False, issuer_tax_id=issuer_tax_id)
     return SunatConsultProvider(
         endpoint=endpoint, ruc=credentials['ruc'],

@@ -171,6 +171,18 @@ class AnotherTaxpayersCredentialsNeverIssueTest(_Base):
             response = self.client.post(f'/api/admin/fiscal-documents/{document.pk}/submit/')
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.data)
 
+    def test_a_reconciliation_with_another_rucs_credentials_is_refused_and_audited(self):
+        document = self.signed_document()
+        with override_settings(**FOREIGN, FISCAL_CONSULT_ENABLED=True,
+                               FISCAL_CONSULT_ENDPOINT='https://consulta.example.test/billConsultService'), \
+                mock.patch('store.fiscal.provider.SunatConsultProvider.get_document_cdr') as network:
+            response = self.client.post(f'/api/admin/fiscal-documents/{document.pk}/reconcile/')
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.data)
+        network.assert_not_called()
+        entry = AdminAuditLog.objects.get(company=self.company, action='fiscal_reconcile_refused',
+                                          target_id=document.pk)
+        self.assertNotIn(OTHER_RUC, str(entry.metadata))
+
     def test_no_company_means_no_credentials(self):
         with override_settings(**MATCHING):
             for signing in (True, False):

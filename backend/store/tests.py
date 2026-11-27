@@ -50155,7 +50155,31 @@ class _FakeProvider:
 
     def submit_invoice(self, *, filename, zip_bytes):
         self.calls += 1
-        return self.result
+        return _answering(self.result, filename)
+
+
+#: El CDR de relleno de las pruebas antiguas. No dice por qué comprobante responde.
+_PLACEHOLDER_CDR = b'<ApplicationResponse/>'
+
+
+def _answering(result, filename):
+    """
+    El resultado, con un CDR que responde por el comprobante ENVIADO. (H-06)
+
+    `sendBill` vincula el CDR con el documento: uno sin identificador no se aplica.
+    Las pruebas que sólo necesitan «SUNAT aceptó» usan un CDR de relleno; aquí se
+    sustituye por uno real que nombra el RUC, el tipo, la serie y el número del
+    archivo `RUC-TT-SERIE-NUMERO.ZIP` que se envió, con el mismo código y notas.
+    Un CDR propio de la prueba (cualquier otro) se entrega tal cual.
+    """
+    import dataclasses
+
+    if result.cdr_xml != _PLACEHOLDER_CDR:
+        return result
+    ruc, doc_type, serie, numero = filename.rsplit('.', 1)[0].split('-')
+    return dataclasses.replace(result, cdr_xml=_build_cdr_xml(
+        reference_id=f'{serie}-{numero}', response_code=result.response_code or '0',
+        receiver_ruc=ruc, doc_type=doc_type, notes=result.notes, sign=False))
 
 
 def _accepted():
@@ -50820,7 +50844,7 @@ class C22A1ConcurrencyTest(TransactionTestCase):
                 # accidente afortunado del planificador.
                 import time
                 time.sleep(0.4)
-                return _accepted()
+                return _answering(_accepted(), filename)
 
         rechazados = []
 
@@ -51411,7 +51435,7 @@ class C22BSubmissionClaimTest(TestCase):
             def submit_invoice(self, *, filename, zip_bytes):
                 registro['durante'] = FiscalSubmissionAttempt.objects.filter(
                     document_id=self.doc_pk, finished_at__isnull=True).count()
-                return _accepted()
+                return _answering(_accepted(), filename)
 
         proveedor = ProveedorQueMira()
         proveedor.doc_pk = self.doc.pk

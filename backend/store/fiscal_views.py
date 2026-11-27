@@ -562,6 +562,11 @@ class AdminFiscalDocumentSubmitView(APIView):
                 'response_code': document.sunat_response_code,
                 'attempts': document.attempts.count(),
                 'cdr_sha256': document.cdr_sha256,
+                # Cómo terminó ESTE envío: un CDR que no respondía por el
+                # comprobante (H-06) queda nombrado en la bitácora, no sólo como
+                # «error de envío».
+                'attempt_result': (document.attempts.order_by('-attempt_number')
+                                   .values_list('result', flat=True).first() or ''),
             },
             request=request, company=document.company,
         )
@@ -602,7 +607,8 @@ class AdminFiscalDocumentReconcileView(APIView):
             return error
 
         try:
-            provider = resolve_consult_provider(document.company, issuer_tax_id=document.issuer_tax_id)
+            provider = resolve_consult_provider(document.company, environment=document.environment,
+                                                issuer_tax_id=document.issuer_tax_id)
         except FiscalConfigError as exc:
             audit_refusal(request, document.company, action='fiscal_reconcile_refused',
                           reason='consult_unavailable', endpoint='fiscal_document_reconcile',
