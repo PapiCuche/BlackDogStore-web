@@ -104,6 +104,7 @@ _STATUS_TEXT = {
         'Aceptada por SUNAT con observaciones',
     FiscalDocumentStatus.REJECTED: _legends.FISCAL_REJECTED_STATUS,
     FiscalDocumentStatus.SUBMISSION_ERROR: 'Pendiente de confirmación de SUNAT',
+    FiscalDocumentStatus.SUBMISSION_UNKNOWN: 'Pendiente de confirmación de SUNAT',
     FiscalDocumentStatus.SIGNED: 'Emitida, pendiente de envío a SUNAT',
     FiscalDocumentStatus.GENERATED: 'Generada, pendiente de firma',
     FiscalDocumentStatus.PENDING: 'Pendiente',

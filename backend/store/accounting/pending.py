@@ -64,7 +64,7 @@ ADJUSTMENT_CODES = frozenset({'REFUND_PENDING', 'REFUND_WITHOUT_NOTE', 'NOTE_WIT
 REPAIR_FLAGS = ('SERVICE_NO_DOCUMENT',)
 
 UNSENT = frozenset({'generated_unsigned', 'signed_not_sent'})
-UNCERTAIN = frozenset({'sent_no_cdr', 'submission_error'})
+UNCERTAIN = frozenset({'sent_no_cdr', 'submission_error', 'submission_uncertain'})
 NOT_SUMMARISED = frozenset({'pending_summary', 'pending_summary_after_rejection'})
 IN_SUMMARY = frozenset({'in_summary_not_sent', 'summary_sent', 'summary_uncertain'})
 

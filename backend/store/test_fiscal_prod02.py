@@ -315,9 +315,8 @@ class SendBillTransportIsHonestAboutUncertaintyTest(SimpleTestCase):
 class UncertainSendIsNeverResentBlindTest(_Base):
     """
     H-03 and H-04 in the domain. An uncertain send leaves the document where only a CDR
-    lookup can settle it: the same invoice is not transmitted again. FP-4's own state
-    (`SUBMISSION_UNKNOWN`) needs a migration; until then the uncertainty is a fact of the
-    last attempt — its `result` — and the document stays `SUBMISSION_ERROR`.
+    lookup can settle it: the same invoice is not transmitted again. Since 0199 (G5) the
+    document says so with its own status, `SUBMISSION_UNKNOWN`.
     """
 
     def uncertain(self, result):
@@ -334,7 +333,7 @@ class UncertainSendIsNeverResentBlindTest(_Base):
         for outcome in (ProviderOutcome.TRANSPORT_UNKNOWN, ProviderOutcome.UNKNOWN_RESPONSE):
             with self.subTest(outcome=outcome):
                 document = self.uncertain(outcome)
-                self.assertEqual(document.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+                self.assertEqual(document.status, FiscalDocumentStatus.SUBMISSION_UNKNOWN)
                 again = _FakeProvider(_accepted())
                 with self.assertRaises(FiscalSubmissionUncertain):
                     submit_fiscal_document(document, again)
@@ -362,7 +361,7 @@ class UncertainSendIsNeverResentBlindTest(_Base):
                 raise RuntimeError('fallo al leer la respuesta')
 
         document = submit_fiscal_document(self.signed(self.order()), Exploding())
-        self.assertEqual(document.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertEqual(document.status, FiscalDocumentStatus.SUBMISSION_UNKNOWN)
         attempt = document.attempts.get()
         self.assertIsNotNone(attempt.finished_at, 'el intento quedó abierto')
         self.assertEqual(attempt.result, 'provider_exception')
@@ -460,7 +459,7 @@ class UncertainSendIsNeverResentBlindTest(_Base):
         self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
         self.assertTrue(response.data['submission_uncertain'])
         self.assertTrue(AdminAuditLog.objects.filter(
-            company=self.company, target_id=document.pk, action='fiscal_document_submission_error').exists())
+            company=self.company, target_id=document.pk, action='fiscal_document_submission_unknown').exists())
 
 
 # ---------------------------------------------------------------------------
@@ -1090,7 +1089,7 @@ class AnUnreadableZipIsEvidenceNotACdrTest(_Base):
         document = submit_fiscal_document(self.signed(self.order()), _FakeProvider(self.unreadable()))
         stored = FiscalDocument.objects.get(pk=document.pk)
         self.assert_only_the_zip(stored)
-        self.assertEqual(stored.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertEqual(stored.status, FiscalDocumentStatus.SUBMISSION_UNKNOWN)
         self.assertTrue(submission_uncertainty(stored), 'un CDR ilegible no zanja nada')
 
     def test_a_reconciliation_keeps_the_zip_and_invents_no_cdr(self):

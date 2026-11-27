@@ -70,9 +70,12 @@ OUTCOME_TO_STATUS = {
     ProviderOutcome.ACCEPTED_WITH_OBSERVATION:
         FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION,
     ProviderOutcome.REJECTED: FiscalDocumentStatus.REJECTED,
+    # «No informado»: no llegó a SUNAT y se reintenta el mismo documento.
     ProviderOutcome.TRANSPORT_ERROR: FiscalDocumentStatus.SUBMISSION_ERROR,
-    ProviderOutcome.TRANSPORT_UNKNOWN: FiscalDocumentStatus.SUBMISSION_ERROR,
-    ProviderOutcome.UNKNOWN_RESPONSE: FiscalDocumentStatus.SUBMISSION_ERROR,
+    # G5. Transmitido sin veredicto utilizable: SUNAT pudo registrarlo. Sólo se
+    # reconcilia por su CDR; nunca se reenvía a ciegas.
+    ProviderOutcome.TRANSPORT_UNKNOWN: FiscalDocumentStatus.SUBMISSION_UNKNOWN,
+    ProviderOutcome.UNKNOWN_RESPONSE: FiscalDocumentStatus.SUBMISSION_UNKNOWN,
 }
 
 #: El `result` del intento cuando el adaptador falla fuera del transporte (H-03).
@@ -86,12 +89,13 @@ CDR_MISMATCH_RESULT = 'cdr_mismatch'
 #: Intentos cuyo final NO dice si SUNAT recibió el comprobante (FISCAL-PROD-02,
 #: H-03/H-04). Tras uno de éstos no se transmite otra vez: se pregunta por el CDR.
 #:
-#: PROVISIONAL. FP-4 (`docs/adr-fiscal-prod.md`) da a la incertidumbre su propio
-#: estado del documento (`SUBMISSION_UNKNOWN`), que pide una migración. Mientras
-#: tanto el documento queda `SUBMISSION_ERROR` y lo incierto se lee del ÚLTIMO
-#: intento, que es donde se registró el hecho. Un `transport_error` anterior a
-#: esta fase pudo ser un timeout de lectura (antes se clasificaban juntos): se
-#: deja como estaba, sin reinterpretar el historial.
+#: G5 (0199): el documento lo dice con su propio estado, `SUBMISSION_UNKNOWN`. El
+#: último intento se sigue leyendo para las filas que la versión anterior dejó en
+#: `SUBMISSION_ERROR` y para un intento abandonado (el proceso murió sin escribir
+#: nada): en cuanto alguien pide enviar, el documento pasa a `SUBMISSION_UNKNOWN`.
+#: Un `transport_error` anterior a FISCAL-PROD-02 pudo ser un timeout de lectura
+#: (antes se clasificaban juntos): se deja como estaba, sin reinterpretar el
+#: historial.
 UNCERTAIN_ATTEMPT_RESULTS = frozenset({
     ProviderOutcome.TRANSPORT_UNKNOWN.value,
     ProviderOutcome.UNKNOWN_RESPONSE.value,
@@ -812,6 +816,11 @@ def _uncertainty(document: FiscalDocument, limite) -> str:
     return last.result if last.result in UNCERTAIN_ATTEMPT_RESULTS else ''
 
 
+#: El motivo cuando el documento ya está en `SUBMISSION_UNKNOWN` y su último intento
+#: no dice más (p. ej. una fila marcada por 0199).
+SUBMISSION_UNKNOWN_REASON = FiscalDocumentStatus.SUBMISSION_UNKNOWN.value
+
+
 def submission_uncertainty(document: FiscalDocument) -> str:
     """
     Por qué el último envío de este comprobante es INCIERTO, o `''` si no lo es.
@@ -825,7 +834,10 @@ def submission_uncertainty(document: FiscalDocument) -> str:
 
     if document.is_accepted or document.status == FiscalDocumentStatus.REJECTED:
         return ''
-    return _uncertainty(document, timezone.now() - timedelta(minutes=STALE_ATTEMPT_MINUTES))
+    reason = _uncertainty(document, timezone.now() - timedelta(minutes=STALE_ATTEMPT_MINUTES))
+    if document.status == FiscalDocumentStatus.SUBMISSION_UNKNOWN:
+        return reason or SUBMISSION_UNKNOWN_REASON
+    return reason
 
 
 def _claim_attempt(document: FiscalDocument) -> FiscalSubmissionAttempt | None:
@@ -867,23 +879,30 @@ def _claim_attempt(document: FiscalDocument) -> FiscalSubmissionAttempt | None:
         # FISCAL-PROD-02 (H-03/H-04). Bajo el mismo bloqueo: dos peticiones no
         # pueden ver a la vez «no hay duda».
         duda = _uncertainty(actual, limite)
-        if duda:
-            raise FiscalSubmissionUncertain(
-                f'El último envío de {document.document_id} pudo llegar a SUNAT '
-                f'({duda}). No se vuelve a transmitir: reconcilie el comprobante '
-                f'consultando su CDR.'
+        if actual.status == FiscalDocumentStatus.SUBMISSION_UNKNOWN:
+            duda = duda or SUBMISSION_UNKNOWN_REASON
+        if not duda:
+            siguiente = (
+                FiscalSubmissionAttempt.objects.filter(document=document)
+                .order_by('-attempt_number').values_list('attempt_number', flat=True)
+                .first() or 0
+            ) + 1
+            return FiscalSubmissionAttempt.objects.create(
+                document=document, attempt_number=siguiente,
+                environment=document.environment, started_at=timezone.now(),
+                result='in_progress',
             )
-
-        siguiente = (
-            FiscalSubmissionAttempt.objects.filter(document=document)
-            .order_by('-attempt_number').values_list('attempt_number', flat=True)
-            .first() or 0
-        ) + 1
-        return FiscalSubmissionAttempt.objects.create(
-            document=document, attempt_number=siguiente,
-            environment=document.environment, started_at=timezone.now(),
-            result='in_progress',
-        )
+        if actual.status != FiscalDocumentStatus.SUBMISSION_UNKNOWN:
+            # G5. La duda se vuelve ESTADO: un intento abandonado, o una fila que
+            # la versión anterior dejó en `SUBMISSION_ERROR`. Se escribe bajo el
+            # mismo bloqueo, y esta transacción se confirma antes de levantar.
+            FiscalDocument.objects.filter(pk=actual.pk).update(
+                status=FiscalDocumentStatus.SUBMISSION_UNKNOWN, updated_at=timezone.now())
+    raise FiscalSubmissionUncertain(
+        f'El último envío de {document.document_id} pudo llegar a SUNAT '
+        f'({duda}). No se vuelve a transmitir: reconcilie el comprobante '
+        f'consultando su CDR.'
+    )
 
 
 def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument:
@@ -976,9 +995,12 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         why = foreign_cdr_reason(document, result)
         if why:
             # Los bytes del CDR descartado no se guardan en el documento —no son su
-            # constancia— y el intento no tiene columna para ellos (pediría una
-            # migración): queda su huella, para cruzarla con la respuesta.
+            # constancia—: se guardan en el INTENTO (G5, 0199), acotados, para
+            # investigarlo, con su huella. Nunca salen por la API.
             discarded = hashlib.sha256(result.cdr_xml).hexdigest()
+            attempt.discarded_cdr_sha256 = discarded
+            if len(result.cdr_xml) <= FiscalSubmissionAttempt.MAX_DISCARDED_CDR_BYTES:
+                attempt.discarded_cdr = bytes(result.cdr_xml)
             logger.error('El CDR de sendBill no corresponde al comprobante %s: %s (sha256 %s)',
                          document.pk, why, discarded)
             result = ProviderResult(
@@ -1011,7 +1033,7 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         # aceptar: un segundo envío en ese instante lo transmitía otra vez.
         attempt.save(update_fields=[
             'finished_at', 'result', 'response_code', 'safe_message',
-            'request_sha256', 'response_sha256',
+            'request_sha256', 'response_sha256', 'discarded_cdr', 'discarded_cdr_sha256',
         ])
         if locked.is_accepted or locked.status == FiscalDocumentStatus.REJECTED:
             for campo in ('status', 'sunat_response_code', 'sunat_response_message',
@@ -1105,6 +1127,7 @@ class ReconciliationResult:
 #: quedó incierto o pendiente. Los terminales no se reconcilian: se informan.
 _RECONCILABLE_STATES = (
     FiscalDocumentStatus.SUBMISSION_ERROR,
+    FiscalDocumentStatus.SUBMISSION_UNKNOWN,
     FiscalDocumentStatus.SUBMITTED,
 )
 

@@ -692,7 +692,10 @@ def update_policy(*, actor, company, data, request=None) -> TradeInPolicy:
                   'tariff_increase_tolerance_percent': str(policy.tariff_increase_tolerance_percent),
                   'identity_check_validity_hours': policy.identity_check_validity_hours,
                   'optional_blockers': list(policy.optional_blockers or []),
-                  'extra_blockers': list(policy.extra_blockers or [])}
+                  'extra_blockers': list(policy.extra_blockers or []),
+                  'require_identified_customer': policy.require_identified_customer,
+                  'quote_validity_hours': policy.quote_validity_hours,
+                  'quote_conditions_length': len(policy.quote_conditions or '')}
         for key, value in clean_policy(data).items():
             setattr(policy, key, value)
         if 'tariff_approval_mode' in data:
@@ -711,7 +714,10 @@ def update_policy(*, actor, company, data, request=None) -> TradeInPolicy:
                  'tariff_increase_tolerance_percent': str(policy.tariff_increase_tolerance_percent),
                  'identity_check_validity_hours': policy.identity_check_validity_hours,
                  'optional_blockers': list(policy.optional_blockers or []),
-                 'extra_blockers': list(policy.extra_blockers or [])}
+                 'extra_blockers': list(policy.extra_blockers or []),
+                 'require_identified_customer': policy.require_identified_customer,
+                 'quote_validity_hours': policy.quote_validity_hours,
+                 'quote_conditions_length': len(policy.quote_conditions or '')}
         AdminAuditLog.log(
             actor=actor, action='trade_in_policy_updated', target_type='trade_in_policy', target_id=policy.pk,
             metadata={'company_id': company.pk, 'before': before, 'after': after}, request=request,

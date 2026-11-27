@@ -28,6 +28,7 @@ LABELS = {
     'signed_not_sent': 'Firmado, no enviado',
     'sent_no_cdr': 'Enviado, sin constancia (pendiente de consultar)',
     'submission_error': 'Error de envío: se reintenta el mismo documento',
+    'submission_uncertain': 'Envío incierto: se consulta la constancia, no se reenvía',
     'accepted': 'Aceptado por SUNAT (con CDR)',
     'accepted_observed': 'Aceptado con observaciones',
     'rejected': 'Rechazado por SUNAT',
@@ -57,6 +58,7 @@ DOCUMENT_STATUS = {
     DS.ACCEPTED_WITH_OBSERVATION: 'accepted_observed',
     DS.REJECTED: 'rejected',
     DS.SUBMISSION_ERROR: 'submission_error',
+    DS.SUBMISSION_UNKNOWN: 'submission_uncertain',
 }
 
 #: A live summary inclusion → the boleta's state. A REJECTED summary releases its

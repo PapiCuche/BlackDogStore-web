@@ -238,9 +238,12 @@ def document_payload(document: FiscalDocument) -> dict:
         # Pistas para la interfaz. El backend las vuelve a comprobar.
         'can_submit': puede_enviar,
         'can_retry': puede_reintentar,
-        # Reconciliar cierra un envío incierto (SUBMISSION_ERROR). El backend
-        # vuelve a comprobar estado y permiso: ocultarlo es cortesía, no seguridad.
-        'can_reconcile': document.status == FiscalDocumentStatus.SUBMISSION_ERROR or bool(duda),
+        # Reconciliar cierra un envío incierto (SUBMISSION_UNKNOWN) o con error. El
+        # backend vuelve a comprobar estado y permiso: ocultarlo es cortesía, no
+        # seguridad.
+        'can_reconcile': document.status in (
+            FiscalDocumentStatus.SUBMISSION_ERROR, FiscalDocumentStatus.SUBMISSION_UNKNOWN,
+        ) or bool(duda),
         # El último envío pudo llegar a SUNAT: se consulta el CDR, no se reenvía.
         'submission_uncertain': bool(duda),
         # Se puede imprimir desde que está firmado: antes no hay valor resumen
@@ -252,6 +255,7 @@ def document_payload(document: FiscalDocument) -> dict:
             FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION,
             FiscalDocumentStatus.REJECTED,
             FiscalDocumentStatus.SUBMISSION_ERROR,
+            FiscalDocumentStatus.SUBMISSION_UNKNOWN,
         ),
     }
 
@@ -738,6 +742,7 @@ _PRINTABLE_STATES = (
     FiscalDocumentStatus.ACCEPTED_WITH_OBSERVATION,
     FiscalDocumentStatus.REJECTED,
     FiscalDocumentStatus.SUBMISSION_ERROR,
+    FiscalDocumentStatus.SUBMISSION_UNKNOWN,
 )
 
 

@@ -42,6 +42,7 @@ const TONE: Record<string, string> = {
   accepted_observed: "text-warning",
   rejected: "text-danger",
   submission_error: "text-warning",
+  submission_unknown: "text-warning",
 };
 
 export function FiscalDocumentPanel({ orderId, isPaid, receiptType, canIssue = false }: Props) {

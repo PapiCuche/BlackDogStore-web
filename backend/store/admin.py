@@ -806,7 +806,9 @@ class FiscalSubmissionAttemptInline(admin.TabularInline):
     can_delete = False
     readonly_fields = ('attempt_number', 'environment', 'started_at', 'finished_at',
                        'result', 'response_code', 'safe_message',
-                       'request_sha256', 'response_sha256')
+                       'request_sha256', 'response_sha256', 'discarded_cdr_sha256')
+    #: Los bytes de un CDR descartado no se muestran: basta su huella.
+    exclude = ('discarded_cdr',)
 
     def has_add_permission(self, request, obj=None):
         return False

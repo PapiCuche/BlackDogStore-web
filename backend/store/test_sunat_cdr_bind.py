@@ -118,7 +118,7 @@ class ASendBillCdrIsBoundToItsDocumentTest(_Base):
     def assert_discarded(self, document, answer):
         document = submit_fiscal_document(document, _FakeProvider(answer))
         stored = FiscalDocument.objects.get(pk=document.pk)
-        self.assertEqual(stored.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertEqual(stored.status, FiscalDocumentStatus.SUBMISSION_UNKNOWN)
         self.assertFalse(stored.is_accepted)
         self.assertIsNone(stored.cdr_accepted_at)
         # Somebody else's CDR is not this document's evidence.
@@ -223,7 +223,7 @@ class ASendBillCdrIsBoundToItsDocumentTest(_Base):
         self.assertTrue(response.data['can_reconcile'])
         self.assertFalse(response.data['can_retry'])
         entry = AdminAuditLog.objects.get(
-            company=self.company, target_id=document.pk, action='fiscal_document_submission_error')
+            company=self.company, target_id=document.pk, action='fiscal_document_submission_unknown')
         self.assertEqual(entry.metadata['attempt_result'], CDR_MISMATCH_RESULT)
 
 
@@ -277,11 +277,11 @@ class TheConsultEndpointDependsOnTheDocumentsEnvironmentTest(_Base):
             response = self.reconcile(document)
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.data)
         network.assert_not_called()
-        self.assertEqual(FiscalDocument.objects.get(pk=document.pk).status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertEqual(FiscalDocument.objects.get(pk=document.pk).status, FiscalDocumentStatus.SUBMISSION_UNKNOWN)
 
     def test_the_reconcile_view_answers_503_not_500_for_a_bad_endpoint(self):
         document = self.uncertain()
         with override_settings(FISCAL_CONSULT_ENDPOINT='http://consulta.example.test/x'):
             response = self.reconcile(document)
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.data)
-        self.assertEqual(FiscalDocument.objects.get(pk=document.pk).status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        self.assertEqual(FiscalDocument.objects.get(pk=document.pk).status, FiscalDocumentStatus.SUBMISSION_UNKNOWN)
