@@ -269,6 +269,13 @@ leer**: habría que escribirlas otra vez (cómo cambiarla y qué hacer si se pie
 [integraciones-y-secretos.md](integraciones-y-secretos.md) §9). Guarda esa copia en
 un sitio distinto del de las copias de la base de datos.
 
+**Rotar `SECRET_KEY`.** Además de lo anterior (sesiones y enlaces de seguimiento), las comprobaciones de equipos
+ofrecidos en parte de pago guardan los identificadores sólo como un resumen con una clave derivada de `SECRET_KEY`
+(`trade_in_eligibility.digest`, una por empresa). Con otra clave, los resúmenes ya guardados dejan de coincidir: un IMEI
+de una comprobación abierta **antes** de la rotación no se detecta como duplicado **después**. No hay datos que
+recuperar ni que migrar (los identificadores completos nunca se guardan); conviene cerrar las comprobaciones abiertas
+antes de rotar, o revisarlas a mano.
+
 ### 4.3 Arranque
 
 Todos los comandos, desde la raíz del repositorio:

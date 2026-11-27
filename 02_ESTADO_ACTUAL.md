@@ -3,14 +3,22 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 2 · PARCIAL (rama `feat/trade-in-rules`, sin fusionar ni desplegar) · migración `0195_trade_in_rules`
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 3 · PARCIAL (rama `feat/trade-in-eligibility`, sin fusionar ni desplegar) · migración `0196_trade_in_eligibility`
+
+Elegibilidad de seguridad y verificación asistida de identidad (`docs/adr-trade-in-valuation.md` §3.3, §5.2): bloqueos
+con mínimo obligatorio, registros manuales de consulta en fuentes oficiales de la empresa (sin API ni scraping),
+identificadores sólo como resumen con clave y últimos 4, duplicados contra el stock y comprobaciones de la misma
+empresa, capacidades `sales.tradein.view` / `value` de concesión explícita. Sólo backend; sin fotos hasta D6. No recibe,
+compra, paga ni acredita equipos.
+
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 2 · en `master` (#462), sin desplegar · migración `0195_trade_in_rules`
 
 Reglas de valorización por empresa sobre el tarifario de la fase 1 (`docs/adr-trade-in-valuation.md` §3.2 y §6):
 grupos y preguntas de la empresa, versiones del conjunto con instantánea congelada y aprobación por otra persona, y el
 cálculo puro (reglas de estado siempre, una de importe por pregunta, sin doble penalización, topes, nunca negativo,
 NO ELEGIBLE sin valor). Sólo backend; las pantallas son la fase 6. No compra, no paga, no acredita ni recibe equipos.
 
-## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 1 · PARCIAL (rama `feat/trade-in-tariff-phase1`, sin fusionar ni desplegar) · migración `0194_trade_in_tariff`
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 1 · en `master` (#457), sin desplegar · migración `0194_trade_in_tariff`
 
 Tarifario de recepción de equipos usados por empresa (diseño en `docs/adr-trade-in-valuation.md`, PR propio): entradas
 con versiones de sólo añadir, cinco importes Decimal, vigencia en el calendario de la empresa, aprobación de cambios

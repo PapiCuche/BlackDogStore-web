@@ -497,7 +497,18 @@ def policy_payload(policy) -> dict:
         'tariff_increase_tolerance_percent': str(policy.tariff_increase_tolerance_percent),
         'updated_at': policy.updated_at, 'updated_by': _person(policy.updated_by),
         'modes': [{'value': value, 'label': label} for value, label in policy.APPROVAL_CHOICES],
+        'identity_check_validity_hours': policy.identity_check_validity_hours,
+        'optional_blockers': list(policy.optional_blockers or []),
+        'extra_blockers': list(policy.extra_blockers or []),
+        'blockers': _blocker_catalogue(),
     }
+
+
+def _blocker_catalogue() -> list[dict]:
+    from .trade_in_eligibility import BLOCKERS, COMPUTED, MANDATORY
+
+    return [{'code': code, 'label': label, 'mandatory': code in MANDATORY, 'computed': code in COMPUTED}
+            for code, label in BLOCKERS.items()]
 
 
 class AdminTradeInPolicyView(APIView):
