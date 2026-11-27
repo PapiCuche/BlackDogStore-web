@@ -2,6 +2,7 @@
 
 import type { PosPreview } from "../../lib/internal-api";
 import type { PickedUnit, PosLine } from "../../lib/unit-entry";
+import { fiscalBadge } from "./PosReceiptSelector";
 
 function money(value: string | number) {
   const n = typeof value === "number" ? value : Number(value);
@@ -22,7 +23,7 @@ function unitDetail(unit: PickedUnit) {
   return parts.join(" · ");
 }
 
-export type ReviewDocument = { value: string; label: string };
+export type ReviewDocument = { value: string; label: string; environment?: string };
 
 /**
  * SALES-UX-02 — the last look before «Cobrar»: what is sold (each device with its own price and a masked
@@ -112,7 +113,7 @@ export function PosReviewPanel({ lines, preview, error = null, customerName, sel
             {document ? (
               <span className={`ml-2 inline-block whitespace-nowrap rounded px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide ${
                 document.value === "sales_note" ? "bg-warning-surface text-warning" : "bg-info-surface text-info"}`}>
-                {document.value === "sales_note" ? "Interno · no fiscal" : "Comprobante electrónico · BETA"}
+                {document.value === "sales_note" ? "Interno · no fiscal" : fiscalBadge(document.environment)}
               </span>
             ) : null}
           </dd>

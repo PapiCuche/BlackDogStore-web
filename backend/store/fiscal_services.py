@@ -568,7 +568,8 @@ def _refuse_external_receipt(order: Order) -> None:
             f'Si ese registro es un error, anúlalo con su motivo antes de emitir otro.')
 
 
-def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
+def get_or_create_fiscal_document(order: Order, *, expected_environment: str | None = None
+                                  ) -> tuple[FiscalDocument, bool]:
     """
     El comprobante de esta venta, creándolo si no existe. IDEMPOTENTE.
 
@@ -622,6 +623,14 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
             f'correlativo sin resolver la causa del rechazo.'
         )
 
+    # C3: en pausa no nace ningún comprobante NUEVO. Antes de la serie y del número.
+    from .fiscal_config import FiscalConfigError as _PausedError, refuse_new_document_while_paused
+
+    try:
+        refuse_new_document_while_paused()
+    except _PausedError as exc:
+        raise FiscalError(str(exc)) from None
+
     # LA SERIE LA ELIGE UN RESOLVER, no `order_by('pk').first()`.
     #
     # Aquello convertía «el id más bajo» en política tributaria: bastaba con que
@@ -637,6 +646,13 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
         )
     except FiscalConfigError as exc:
         raise FiscalError(str(exc)) from None
+
+    # C3: el ambiente que se mostró a quien vende. Si el modo cambió entre la
+    # comprobación y la serie, no se reserva nada (revisión de #468).
+    if expected_environment is not None and series.environment != expected_environment:
+        raise FiscalError(
+            f'El ambiente de SUNAT cambió («{expected_environment}» → «{series.environment}»): no se emite. '
+            f'Vuelve a cargar la pantalla.')
 
     # Antes de reservar el número: un cobro de pruebas no es una venta (H-11).
     _refuse_rehearsal_payment(order, series.environment)
@@ -717,6 +733,23 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
     return document, True
 
 
+def refuse_signing_in_another_environment(document: FiscalDocument) -> None:
+    """
+    Sólo se firma lo que es del ambiente que opera el servidor para su empresa (C3).
+
+    `get_or_create_fiscal_document` devuelve el comprobante que ya existe aunque sea
+    del otro ambiente; firmarlo ahora con el certificado y las reglas del ambiente
+    actual mezclaría los dos. Se niega antes de tocar nada.
+    """
+    from .fiscal_config import resolve_environment
+
+    current = resolve_environment(document.company)
+    if current != document.environment:
+        raise FiscalError(
+            f'El comprobante {document.document_id} es del ambiente «{document.environment}» y el servidor '
+            f'opera «{current}»: no se firma en otro ambiente.')
+
+
 def sign_fiscal_document(document: FiscalDocument, *, key_pem: bytes,
                          cert_pem: bytes) -> FiscalDocument:
     """
@@ -727,6 +760,7 @@ def sign_fiscal_document(document: FiscalDocument, *, key_pem: bytes,
     """
     if document.signed_xml:
         return document
+    refuse_signing_in_another_environment(document)
 
     data = _order_to_invoice_data(document.order, document.series_ref,
                                   document.number)
@@ -886,6 +920,22 @@ def _claim_attempt(document: FiscalDocument) -> FiscalSubmissionAttempt | None:
         )
 
 
+def refuse_other_environment(record, provider) -> None:
+    """
+    El proveedor habla con el ambiente del documento, o no se envía nada (C3).
+
+    `fiscal_config.resolve_provider` ya se niega cuando se le pasa el ambiente del
+    documento; esto es la defensa en profundidad para quien construya un proveedor por
+    otro camino. Sólo se compara cuando el proveedor DECLARA su ambiente (los de
+    `fiscal_config` lo hacen); un proveedor de pruebas sin ambiente no se juzga aquí.
+    """
+    environment = getattr(provider, 'environment', None)
+    if isinstance(environment, str) and environment and environment != record.environment:
+        raise FiscalError(
+            f'Este documento es del ambiente «{record.environment}» y el proveedor habla con «{environment}»: '
+            f'no se envía a otro ambiente de SUNAT.')
+
+
 def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument:
     """
     Envía el documento y registra el intento. FUERA de cualquier transacción.
@@ -896,6 +946,7 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
     Un documento ya aceptado no se reenvía: SUNAT lo rechazaría por duplicado y
     el reenvío no aportaría nada.
     """
+    refuse_other_environment(document, provider)
     if not document.signed_xml:
         raise FiscalError('El documento no está firmado.')
     # REVIEW A (H1). Una BOLETA no se envía por `sendBill`: SUNAT no la acepta por

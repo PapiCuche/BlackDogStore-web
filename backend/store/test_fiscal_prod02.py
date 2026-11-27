@@ -252,8 +252,13 @@ class TestPaymentNeverGetsAProductionDocumentTest(_Base):
         self.assertEqual(document.environment, FiscalEnvironment.BETA)
 
     def test_the_issue_endpoint_answers_400_and_spends_nothing(self):
+        from store.fiscal.testing import ca_issued_pem
+
         order = self.paid_with('test')
-        with override_settings(**ON), self.production():
+        # Production signs only with a certificate issued by a CA, with the RUC (C3).
+        key, cert = ca_issued_pem(RUC)
+        with override_settings(**{**ON, 'FISCAL_CERT_PEM': cert.decode(), 'FISCAL_KEY_PEM': key.decode()}), \
+                self.production():
             response = self.client_for().post(f'/api/admin/orders/{order.pk}/fiscal-document/')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
         self.assertIn('pruebas', response.data['detail'])

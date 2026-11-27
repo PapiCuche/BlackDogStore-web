@@ -189,8 +189,10 @@ class ExplicitEnablingTest(_Base):
     def test_only_what_the_code_can_do_is_offered(self):
         provider = registry.get('sunat')
         self.assertEqual(provider.scope, registry.SCOPE_PLATFORM)
-        self.assertEqual(list(provider.supported_modes), ['test'])
-        self.assertNotIn('environment', [f.name for f in provider.fields])
+        # C3: BETA by default, production gated; an environment to choose, never an address.
+        self.assertEqual(list(provider.supported_modes), ['test', 'production'])
+        environment = provider.field('environment')
+        self.assertEqual(([c[0] for c in environment.choices], environment.default), (['beta', 'production'], 'beta'))
         self.save()
         self.assertEqual(self.detail()['draft']['mode'], 'test')
         # And the console cannot be used to point emission somewhere else.

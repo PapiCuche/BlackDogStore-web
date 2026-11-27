@@ -13,6 +13,7 @@ from .text_preview_views import (
     AdminTextPreviewOfferDraftFileView, AdminTextPreviewOfferDraftView,
 )
 from .availability_views import AdminAvailabilityView
+from .fiscal_series_views import FiscalSeriesDetailView, FiscalSeriesListView
 from .checkout_quote_views import CheckoutQuoteView
 from .staff_views import (
     AdminStaffInvitationDetailView, AdminStaffInvitationListView,
@@ -261,6 +262,9 @@ urlpatterns = [
     path('auth/session/', SessionStatusView.as_view(), name='auth-session'),
     path('auth/session/keepalive/', SessionKeepaliveView.as_view(), name='auth-session-keepalive'),
     # INTEGRATIONS-CONSOLE — platform masters only. Secrets are write-only.
+    # SUNAT-SERIES-PANEL (C3): MASTER only, like the SUNAT console.
+    path('admin/fiscal-series/', FiscalSeriesListView.as_view(), name='admin-fiscal-series'),
+    path('admin/fiscal-series/<int:pk>/', FiscalSeriesDetailView.as_view(), name='admin-fiscal-series-detail'),
     path('admin/integrations/', IntegrationListView.as_view(), name='admin-integrations'),
     path('admin/integrations/<slug:provider_id>/', IntegrationDetailView.as_view(), name='admin-integration'),
     path('admin/integrations/<slug:provider_id>/draft/', IntegrationDraftView.as_view(), name='admin-integration-draft'),

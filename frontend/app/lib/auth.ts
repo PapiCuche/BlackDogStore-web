@@ -193,6 +193,9 @@ export function withSelectedCompany(url: string): string {
   // servidor rechaza el parámetro. Añadirlo aquí dejaba al master sin poder
   // configurarlas.
   if (url.includes("/admin/integrations/")) return url;
+  // Las series fiscales (C3) también son de la plataforma: la pantalla nombra ella la
+  // empresa que lista, y la elegida en el panel no debe colarse en sus escrituras.
+  if (url.includes("/admin/fiscal-series/")) return url;
   if (/[?&]company=/.test(url)) return url;
   let id: string | null = null;
   try {

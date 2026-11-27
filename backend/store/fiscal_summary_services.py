@@ -34,7 +34,7 @@ from .fiscal.provider import ProviderOutcome, SummaryOutcome, TicketStatus
 from .fiscal.summary import (
     SummaryData, SummaryLine, build_summary_xml, validate_summary_structure,
 )
-from .fiscal_services import FiscalError, keep_unreadable_zip, record_cdr_evidence
+from .fiscal_services import FiscalError, keep_unreadable_zip, record_cdr_evidence, refuse_other_environment
 from .models import (
     FiscalDailySummary, FiscalDailySummaryDocument, FiscalDocument,
     FiscalDocumentStatus, FiscalDocumentType, FiscalSummaryStatus,
@@ -285,6 +285,7 @@ def submit_daily_summary(summary: FiscalDailySummary, provider
     simultáneos NO crean dos tickets: el segundo ve la marca y se retira. Un fallo
     de red deja el resumen reintentable, sin ticket inventado (§49).
     """
+    refuse_other_environment(summary, provider)
     if not summary.signed_xml:
         raise FiscalError('El resumen no está firmado.')
     if summary.is_accepted:
@@ -368,6 +369,7 @@ def poll_daily_summary(summary: FiscalDailySummary, provider) -> SummaryPollResu
     resumen nuevo; una aceptación no cambia el estado individual de las boletas
     (su condición de «informada en resumen aceptado» la lleva la fila de inclusión).
     """
+    refuse_other_environment(summary, provider)
     if not summary.ticket:
         raise FiscalError(
             'El resumen no tiene ticket: no se ha enviado o el envío quedó '

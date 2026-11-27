@@ -328,11 +328,18 @@ INVENTORY_AI_MONTHLY_BUDGET_USD = env('INVENTORY_AI_MONTHLY_BUDGET_USD', default
 # What one call may cost at most: reserved before calling, so the monthly budget is a real cut.
 INVENTORY_AI_MAX_COST_PER_CALL = env('INVENTORY_AI_MAX_COST_PER_CALL', default='0.05')
 
-# EL AMBIENTE LO DECIDE EL SERVIDOR, nunca una petición. `store.fiscal_config`
-# falla cerrado ante cualquier valor distinto de «beta»: producción exige un
-# certificado acreditado y credenciales por empresa, y ninguna de las dos cosas
-# existe todavía.
+# EL AMBIENTE LO DECIDE EL SERVIDOR, nunca una petición. Esta variable sólo admite
+# «beta»: `store.fiscal_config` falla cerrado ante cualquier otro valor. Producción
+# NO se elige aquí: se elige en Integraciones › SUNAT (modo producción), y sólo
+# surte efecto con el interruptor de abajo encendido y fiscal_preflight en GO.
 FISCAL_ENVIRONMENT = env('FISCAL_ENVIRONMENT', default='beta')
+
+# C3 — EMISIÓN EN PRODUCCIÓN. Interruptor de INSTALACIÓN, apagado por defecto. Lo
+# enciende el operador en deploy/.env.production con su propio GO, después del GO
+# «GO activación SUNAT producción <empresa>» (docs/sunat-estado-2026-11.md, §6).
+# Apagado: elegir producción en la consola se niega, y si ya estaba elegida la
+# emisión se detiene (nunca vuelve a BETA en silencio).
+FISCAL_PRODUCTION_ENABLED = env.bool('FISCAL_PRODUCTION_ENABLED', default=False)
 
 # Credenciales y certificado. NO viven en la base de datos: una columna existe
 # para llenarse, y un campo `sol_password` acaba en un serializer, un volcado o

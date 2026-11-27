@@ -150,10 +150,21 @@ def create_fiscal_note(original: FiscalDocument, *, note_type: str,
         tax = tax_amount
         total = taxable + tax
 
-    from .fiscal_config import resolve_note_series
+    from .fiscal_config import FiscalConfigError, refuse_new_document_while_paused, resolve_note_series
+    try:
+        # C3: en pausa no nace ninguna nota nueva. Antes de la serie y del número.
+        refuse_new_document_while_paused()
+    except FiscalConfigError as exc:
+        raise FiscalError(str(exc)) from None
     series = resolve_note_series(
         original.company, branch=original.order.fulfillment_branch,
         note_type=note_type, original_type=original.document_type)
+    if series.environment != original.environment:
+        # C3: una nota modifica un comprobante DE SU AMBIENTE. Una nota de producción
+        # sobre una factura de BETA citaría un número que SUNAT no conoce.
+        raise FiscalError(
+            f'El comprobante {original.document_id} es del ambiente «{original.environment}» y la nota '
+            f'se emitiría en «{series.environment}»: los ambientes no se mezclan.')
 
     try:
         with transaction.atomic():
@@ -312,6 +323,8 @@ def sign_fiscal_note(note: FiscalDocument, *, key_pem: bytes,
     """Construye el XML de la nota, lo firma, lo valida y lo guarda."""
     if note.signed_xml:
         return note
+    from .fiscal_services import refuse_signing_in_another_environment
+    refuse_signing_in_another_environment(note)
 
     data = _note_to_data(note)
     try:

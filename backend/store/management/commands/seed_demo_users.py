@@ -562,6 +562,8 @@ class Command(BaseCommand):
             environment = fiscal_config.resolve_environment()
         except fiscal_config.FiscalConfigError as exc:
             raise CommandError(str(exc))
+        if environment != FiscalEnvironment.BETA:
+            raise CommandError('--fiscal-beta sólo prepara BETA y el servidor opera producción. No se toca nada.')
 
         company = Company.objects.get(slug=company_slug)
         company.refresh_from_db()

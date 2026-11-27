@@ -9,6 +9,7 @@
  * la consola ni se monta, así que no se hace ninguna petición.
  */
 
+import Link from "next/link";
 import { AdminShell } from "../../components/AdminShell";
 import { InternalControlGuard, type InternalContext } from "../../components/InternalControlGuard";
 import { PageHeader } from "../../components/internal-ui";
@@ -26,7 +27,16 @@ function IntegrationsContent({ ctx }: { ctx: InternalContext }) {
           description="Correo, pasarela de pago, WhatsApp, Google y SUNAT: se configuran, se prueban y se activan aquí, sin tocar el servidor."
         />
         {isMaster ? (
-          <IntegrationsConsole />
+          <>
+            <p className="text-sm text-muted">
+              Las series con que cada empresa emite (BETA y PRODUCCIÓN) se gestionan en{" "}
+              <Link href="/admin/settings/fiscal-series" className="font-medium text-foreground underline">
+                Series fiscales
+              </Link>
+              .
+            </p>
+            <IntegrationsConsole />
+          </>
         ) : (
           <p className="text-sm text-muted">Esta sección no está disponible para tu cuenta.</p>
         )}

@@ -18,9 +18,9 @@ WHAT IT NEVER DOES
   private key. It does not print the SOL user or the credentials' RUC either. The RUC
   check says only whether they match the company.
 
-`--target production` always ends in NO-GO in this version, because the code only
-operates BETA (`fiscal_config.ONLY_SUPPORTED_ENVIRONMENT`). The other lines still say
-what would be missing once it does.
+`--target production` is NO-GO while the installation switch `FISCAL_PRODUCTION_ENABLED`
+is off. With it on, a GO for production is what the console asks before a MASTER can switch
+SUNAT to production (`fiscal_config.production_activation_problems`, C3).
 """
 from __future__ import annotations
 
@@ -33,7 +33,7 @@ from django.utils import timezone
 
 from .fiscal import rules
 from .fiscal_config import (
-    ONLY_SUPPORTED_ENVIRONMENT, FiscalConfigError, fiscal_consult_enabled, fiscal_enabled, resolve_environment,
+    FiscalConfigError, fiscal_consult_enabled, fiscal_enabled, intended_environment, production_enabled,
 )
 from .models import (
     FISCAL_NOTE_TYPES, FiscalDailySummary, FiscalDailySummaryDocument, FiscalDocument, FiscalDocumentStatus,
@@ -71,7 +71,7 @@ class Check:
     detail: str
 
 
-def _credentials_for_diagnosis() -> tuple[dict | None, str, str]:
+def _credentials_for_diagnosis(credentials: dict | None = None) -> tuple[dict | None, str, str]:
     """
     `(credentials, origin, problem)`: the configured credentials, read the way issuing
     reads them but WITHOUT the on/off switch, so a switched-off installation can still
@@ -80,6 +80,9 @@ def _credentials_for_diagnosis() -> tuple[dict | None, str, str]:
     """
     from . import fiscal_config
 
+    if credentials is not None:
+        # The draft a MASTER is about to activate: judged before it runs.
+        return credentials, 'borrador de la consola', ''
     active = fiscal_config._console_row()
     if active is not None:
         try:
@@ -100,17 +103,32 @@ def _credentials_for_diagnosis() -> tuple[dict | None, str, str]:
 
 
 def _switch(target: str) -> list[Check]:
+    """
+    The on/off switch, the installation's production switch and the mode the console asks for.
+
+    It never calls `resolve_environment`: the console asks this preflight before it lets
+    production be chosen, so the answer cannot depend on production being chosen already.
+    """
     checks = [Check(GO if fiscal_enabled() else WARN, 'interruptor',
                     'emisión encendida' if fiscal_enabled() else 'emisión apagada en este servidor')]
     try:
-        environment = resolve_environment()
-        checks.append(Check(GO, 'ambiente', f'el servidor opera «{environment}»'))
+        intended = intended_environment()
     except FiscalConfigError as exc:
-        checks.append(Check(NO_GO, 'ambiente', str(exc)))
-    if target != ONLY_SUPPORTED_ENVIRONMENT:
-        checks.append(Check(NO_GO, 'ambiente', (
-            f'esta versión sólo opera «{ONLY_SUPPORTED_ENVIRONMENT}»: producción exige su propia fase '
-            f'y el GO «GO activación SUNAT producción <empresa>»')))
+        return [*checks, Check(NO_GO, 'ambiente', str(exc))]
+    if target == FiscalEnvironment.PRODUCTION:
+        if production_enabled():
+            checks.append(Check(GO, 'ambiente', 'la instalación permite producción (FISCAL_PRODUCTION_ENABLED)'))
+        else:
+            checks.append(Check(NO_GO, 'ambiente', (
+                'FISCAL_PRODUCTION_ENABLED está apagado: producción exige el GO «GO activación SUNAT producción '
+                '<empresa>» y que el operador lo encienda')))
+        checks.append(Check(GO if intended == target else WARN, 'ambiente', (
+            'la consola opera producción' if intended == target
+            else 'la consola sigue en BETA: elegir producción en Integraciones › SUNAT es el último paso')))
+    elif intended != target:
+        checks.append(Check(NO_GO, 'ambiente', 'la consola opera producción: este servidor ya no opera BETA'))
+    else:
+        checks.append(Check(GO, 'ambiente', f'el servidor opera «{intended}»'))
     return checks
 
 
@@ -132,7 +150,7 @@ def _issuer_problem_area(problem: str) -> str:
     return 'certificado'
 
 
-def _credentials_and_certificate(company, target: str, now) -> list[Check]:
+def _credentials_and_certificate(company, target: str, now, credentials: dict | None = None) -> list[Check]:
     """
     The RUC, validity and RUC-in-subject rules are `fiscal_config.issuer_problems`, the
     same function that guards every signature (SUNAT-ISSUER-GATE): what this says NO-GO
@@ -141,10 +159,12 @@ def _credentials_and_certificate(company, target: str, now) -> list[Check]:
     """
     from cryptography import x509
 
-    from .fiscal.certificate import CertificateError, check_signing_pair, metadata_from_certificate, subject_values
+    from .fiscal.certificate import (
+        CertificateError, check_signing_pair, is_self_signed_pem, metadata_from_certificate, subject_values,
+    )
     from .fiscal_config import _RUC_IN_TEXT, issuer_problems
 
-    credentials, origin, problem = _credentials_for_diagnosis()
+    credentials, origin, problem = _credentials_for_diagnosis(credentials)
     if credentials is None:
         return [Check(NO_GO, 'credenciales', f'{problem} (origen: {origin})')]
     checks = [Check(GO, 'credenciales', f'usuario y clave SOL configurados (origen: {origin})')]
@@ -178,8 +198,9 @@ def _credentials_and_certificate(company, target: str, now) -> list[Check]:
         else:
             checks.append(Check(GO, 'certificado', f'vigente por {days_left} días más'))
 
-    if meta.subject == meta.issuer:
-        checks.append(Check(NO_GO if production else WARN, 'certificado', (
+    if not production and is_self_signed_pem(credentials['cert_pem']):
+        # In production `issuer_problems` already said NO-GO, with the same words.
+        checks.append(Check(WARN, 'certificado', (
             'es autofirmado: sirve para BETA, no para producción (SUNAT exige uno emitido a nombre del RUC '
             'y registrado en SOL)')))
 
@@ -346,6 +367,10 @@ def _consult(target: str) -> list[Check]:
             'la consulta de CDR (getStatusCdr) está apagada: es la única salida ante un envío incierto, y en '
             'producción se enciende junto con la emisión. BETA no tiene ese servicio'))]
     configured = (getattr(settings, 'FISCAL_CONSULT_ENDPOINT', '') or '').strip()
+    if production and configured:
+        return [Check(NO_GO, 'consulta', (
+            'FISCAL_CONSULT_ENDPOINT está definido: en producción la consulta sólo usa el endpoint oficial del '
+            'código; quite la variable'))]
     try:
         endpoint = consult_endpoint(target)
     except FiscalConfigError as exc:
@@ -363,13 +388,18 @@ def _sealing() -> list[Check]:
         'no hay APP_CONFIG_ENCRYPTION_KEY: la consola de integraciones no puede guardar credenciales cifradas'))]
 
 
-def run(company, *, target: str = FiscalEnvironment.BETA, now=None) -> list[Check]:
-    """Every check for `company` against `target`. Reads only."""
+def run(company, *, target: str = FiscalEnvironment.BETA, now=None, credentials: dict | None = None) -> list[Check]:
+    """
+    Every check for `company` against `target`. Reads only.
+
+    `credentials`: judge these instead of the configured ones (the console's draft, before
+    it is activated). Never printed: only yes/no answers and public certificate metadata.
+    """
     now = now or timezone.now()
     return [
         *_switch(target),
         *_issuer(company),
-        *_credentials_and_certificate(company, target, now),
+        *_credentials_and_certificate(company, target, now, credentials),
         *_series(company, target),
         *_queue(company, target, now),
         *_consult(target),

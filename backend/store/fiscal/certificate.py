@@ -137,6 +137,43 @@ def subject_values(cert_pem: bytes, oid=None) -> tuple[str, ...]:
     return tuple(str(attribute.value) for attribute in attributes)
 
 
+def is_self_signed(cert: x509.Certificate) -> bool:
+    """
+    ¿Es autofirmado? Sí si el emisor se llama como el sujeto (RFC 5280, «self-issued»)
+    O si la firma se verifica con la clave pública del propio certificado: cambiarle
+    el nombre al emisor no convierte en acreditado un certificado que se firmó a sí
+    mismo. Un algoritmo que no se sabe verificar aquí cuenta como NO autofirmado:
+    el resto de las reglas (RUC en el sujeto, vigencia) se aplican igual, y SUNAT
+    valida la cadena al recibir.
+    """
+    from cryptography.exceptions import InvalidSignature
+    from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+
+    if cert.subject == cert.issuer:
+        return True
+    public_key = cert.public_key()
+    algorithm = cert.signature_hash_algorithm
+    try:
+        if isinstance(public_key, rsa.RSAPublicKey):
+            public_key.verify(cert.signature, cert.tbs_certificate_bytes, padding.PKCS1v15(), algorithm)
+        elif isinstance(public_key, ec.EllipticCurvePublicKey):
+            public_key.verify(cert.signature, cert.tbs_certificate_bytes, ec.ECDSA(algorithm))
+        else:
+            return False
+    except (InvalidSignature, TypeError, ValueError):
+        return False
+    return True
+
+
+def is_self_signed_pem(cert_pem: bytes) -> bool:
+    """`is_self_signed` de un PEM. Levanta `CertificateError` si no se lee."""
+    try:
+        cert = x509.load_pem_x509_certificate(cert_pem)
+    except ValueError:
+        raise CertificateError('El certificado de firma no se puede leer.') from None
+    return is_self_signed(cert)
+
+
 def check_signing_pair(cert_pem: bytes, key_pem: bytes) -> None:
     """
     El par de firma se puede usar: ambos se leen y el certificado es el de la clave.

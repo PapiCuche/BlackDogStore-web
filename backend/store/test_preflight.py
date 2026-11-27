@@ -310,6 +310,23 @@ class PreflightTest(SimpleTestCase):
         self.assertIn(needle, found, result.stdout)
         return result
 
+    def test_sunat_production_is_allowed_only_with_its_switch_and_the_cdr_consult(self):
+        """C3: production asks for the consult on too, and never for the env variables of the legacy path."""
+        allowed = {**BASE, **IZIPAY, 'FISCAL_PRODUCTION_ENABLED': '1', 'FISCAL_CONSULT_ENABLED': '1'}
+        result = self.run_preflight(allowed)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('GO activación SUNAT producción', '\n'.join(self.lines(result, 'OK')))
+        self.attention({**BASE, **IZIPAY, 'FISCAL_PRODUCTION_ENABLED': '1'}, 'sin FISCAL_CONSULT_ENABLED')
+        # The console governs: FISCAL_ENABLED=1 is ATENCIÓN in every case.
+        self.attention({**BASE, **IZIPAY, 'FISCAL_ENABLED': '1'}, 'la consola manda')
+        self.attention({**allowed, 'FISCAL_ENABLED': '1'}, 'la consola manda')
+        self.attention({**allowed, 'FISCAL_CONSULT_ENDPOINT': 'https://otro.example/billConsultService'},
+                       'FISCAL_CONSULT_ENDPOINT')
+        result = self.attention({**BASE, **IZIPAY, 'FISCAL_ENVIRONMENT': 'valor-secreto-9z'},
+                                'FISCAL_ENVIRONMENT tiene un valor distinto')
+        self.assertNotIn('valor-secreto-9z', result.stdout)
+        self.assertEqual(self.run_preflight({**BASE, **IZIPAY, 'FISCAL_ENVIRONMENT': 'beta'}).returncode, 0)
+
     def test_keys_of_both_products_at_once_are_refused(self):
         both = {**BASE, **IZIPAY, **{k: v for k, v in MICUENTAWEB.items() if k != 'PAYMENT_PROVIDER'}}
         self.attention(both, 'dos productos')

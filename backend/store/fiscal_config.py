@@ -24,9 +24,16 @@ from django.conf import settings
 
 from .models import FiscalDocumentType, FiscalEnvironment, FiscalSeries
 
-#: El único ambiente que esta fase sabe operar. Producción exige un certificado
-#: acreditado, credenciales reales por empresa y una revisión que no se ha hecho.
-ONLY_SUPPORTED_ENVIRONMENT = FiscalEnvironment.BETA
+#: El ambiente por defecto, y el único que se opera sin que nadie lo decida.
+DEFAULT_ENVIRONMENT = FiscalEnvironment.BETA
+
+#: Lo que dice una instalación que no permite producción, a quien intenta elegirla.
+#: Nombra el GO y al operador: no hay nada que un MASTER pueda corregir desde la consola.
+PRODUCTION_SWITCH_OFF = (
+    'La emisión en PRODUCCIÓN no está habilitada en esta instalación. Hace falta, en este orden: '
+    'el GO de despliegue de la versión, el GO escrito «GO activación SUNAT producción <empresa>» y que '
+    'el operador encienda FISCAL_PRODUCTION_ENABLED en el servidor. Mientras tanto se opera BETA.'
+)
 
 
 class FiscalConfigError(Exception):
@@ -83,12 +90,16 @@ def _console_secrets(active) -> dict:
 
 def _console_credentials(active) -> dict:
     """Las credenciales y el material de firma de la consola, en memoria."""
+    return _credentials_from(active.public, _console_secrets(active))
+
+
+def _credentials_from(public: dict, secrets: dict) -> dict:
+    """Las credenciales de una configuración de la consola (activa o borrador), en memoria."""
     from .fiscal.certificate import CertificateError, signing_material_from_pkcs12
     from .integrations.providers import sunat
 
-    secrets = _console_secrets(active)
-    ruc = str(active.public.get('ruc') or '').strip()
-    user = str(active.public.get('sol_user') or '').strip()
+    ruc = str(public.get('ruc') or '').strip()
+    user = str(public.get('sol_user') or '').strip()
     password = secrets.get('sol_password') or ''
     if not (ruc and user and password):
         raise FiscalConfigError('Faltan credenciales SOL en la configuración del servidor.')
@@ -106,23 +117,214 @@ def _console_credentials(active) -> dict:
     }
 
 
-def resolve_environment() -> str:
-    """
-    Contra qué SUNAT se habla. LO DECIDE EL SERVIDOR, punto.
+#: Lo que se dice cuando la consola SUNAT está en pausa y alguien pide un comprobante NUEVO.
+PAUSED = (
+    'La emisión de comprobantes nuevos está en PAUSA (Integraciones › SUNAT). Lo ya emitido se sigue '
+    'enviando, consultando y conciliando, y los resúmenes y bajas siguen su curso. Reanúdala desde la consola.'
+)
 
-    FALLA CERRADO ANTE PRODUCCIÓN. No porque el código no sepa formar la URL
-    —la sabe—, sino porque habilitarla es una decisión que exige certificado
-    acreditado y credenciales por empresa, y ninguna de las dos cosas existe.
-    Que el fallo sea explícito evita que «funcione por accidente» el día que
-    alguien copie una variable de entorno de un sitio a otro.
+
+def new_documents_paused() -> bool:
     """
-    configured = getattr(settings, 'FISCAL_ENVIRONMENT', ONLY_SUPPORTED_ENVIRONMENT)
-    if configured != ONLY_SUPPORTED_ENVIRONMENT:
+    ¿Está la consola SUNAT en PAUSA? Pausada no nace ningún comprobante nuevo (factura,
+    boleta o nota), y TODO lo demás sigue: firmar lo ya creado, enviar, consultar,
+    conciliar, el Resumen Diario y las bajas. Es la forma normal de detener producción:
+    desactivar corta también los envíos pendientes, y un pendiente tiene plazo legal.
+    """
+    active = _console_row()
+    return bool(active is not None and active.enabled and active.paused)
+
+
+def refuse_new_document_while_paused() -> None:
+    """Levanta `FiscalConfigError(PAUSED)` si la consola está en pausa."""
+    if new_documents_paused():
+        raise FiscalConfigError(PAUSED)
+
+
+def production_enabled() -> bool:
+    """
+    ¿Permite ESTA INSTALACIÓN emitir en producción? `FISCAL_PRODUCTION_ENABLED`.
+
+    Apagado por defecto. Es un interruptor del operador, en `deploy/.env.production`,
+    que se enciende con su propio GO (docs/sunat-estado-2026-11.md, §6): ni la consola
+    ni una petición lo cambian. Apagado, producción no existe aunque un MASTER la
+    haya elegido: se falla cerrado, nunca se vuelve a BETA en silencio.
+    """
+    return bool(getattr(settings, 'FISCAL_PRODUCTION_ENABLED', False))
+
+
+def console_environment(public: dict | None) -> str:
+    """
+    El ambiente que elige una configuración de la consola: `production` sólo si lo
+    dice su campo `environment`. Una fila sin el campo —todas las anteriores a C3—
+    es BETA.
+    """
+    word = str((public or {}).get('environment') or '').strip().lower()
+    return FiscalEnvironment.PRODUCTION if word == FiscalEnvironment.PRODUCTION else FiscalEnvironment.BETA
+
+
+def intended_environment() -> str:
+    """
+    El ambiente que se QUIERE operar, sin comprobar si se puede.
+
+    Producción sólo se pide desde la consola (Integraciones › SUNAT, modo
+    producción). `FISCAL_ENVIRONMENT` del entorno sigue admitiendo sólo `beta`: una
+    variable copiada de otro servidor no puede abrir producción.
+    """
+    active = _console_row()
+    if active is not None and console_environment(active.public) == FiscalEnvironment.PRODUCTION:
+        return FiscalEnvironment.PRODUCTION
+    configured = getattr(settings, 'FISCAL_ENVIRONMENT', DEFAULT_ENVIRONMENT)
+    if configured != DEFAULT_ENVIRONMENT:
         raise FiscalConfigError(
-            f'El ambiente fiscal «{configured}» no está habilitado en esta '
-            f'versión. Sólo se opera «{ONLY_SUPPORTED_ENVIRONMENT}».'
+            f'El ambiente fiscal «{configured}» no se elige por variable de entorno. '
+            f'FISCAL_ENVIRONMENT sólo admite «{DEFAULT_ENVIRONMENT}»; producción se elige '
+            f'en Integraciones › SUNAT y sólo con FISCAL_PRODUCTION_ENABLED encendido.'
         )
     return configured
+
+
+def resolve_environment(company=None) -> str:
+    """
+    Contra qué SUNAT habla `company`. LO DECIDE EL SERVIDOR, punto.
+
+    BETA, salvo que se haya pedido producción. Producción se devuelve SÓLO si:
+
+    1. un MASTER activó la consola en modo producción —activarla exige el texto
+       de confirmación y `fiscal_preflight --target production` en GO
+       (`production_activation_problems`)—;
+    2. la instalación lo permite: `FISCAL_PRODUCTION_ENABLED`;
+    3. `company` es el emisor de esas credenciales: su RUC es el de la Clave SOL;
+    4. la consulta de CDR (`FISCAL_CONSULT_ENABLED`) está encendida: en producción
+       es la única salida ante un envío incierto, y se enciende JUNTO con la emisión.
+
+    FALLA CERRADO. Si se pidió producción y falta cualquiera de las tres, levanta:
+    NUNCA devuelve BETA en su lugar. Un comprobante que alguien quiso real y salió
+    de pruebas es una venta sin comprobante; uno que salió real sin quererlo gasta
+    numeración real. Ninguno de los dos se arregla después.
+
+    Lo que el preflight comprueba de la cola y de los plazos NO se vuelve a exigir
+    en cada emisión: una factura atrasada no puede impedir que se envíe a sí misma.
+    El certificado (vigente, con el RUC, no autofirmado) lo exige `issuer_problems`
+    en cada firma de producción.
+    """
+    intended = intended_environment()
+    if intended != FiscalEnvironment.PRODUCTION:
+        return intended
+    if not production_enabled():
+        raise FiscalConfigError(PRODUCTION_SWITCH_OFF)
+    if company is None:
+        raise FiscalConfigError(
+            'El servidor opera SUNAT PRODUCCIÓN y no se indicó la empresa emisora: no se emite.')
+    ruc = (getattr(company, 'tax_id', '') or '').strip()
+    console_ruc = str(_console_row().public.get('ruc') or '').strip()
+    issuer, _problem = production_issuer(console_ruc)
+    # The RUC AND the company: a second company that copied the RUC is not the issuer, and
+    # two active companies with it leave no issuer at all (review of #468).
+    if not ruc or ruc != console_ruc or issuer is None or issuer.pk != getattr(company, 'pk', None):
+        raise FiscalConfigError(
+            'SUNAT PRODUCCIÓN está activa para otro contribuyente: esta empresa no emite con esas '
+            'credenciales, ni en producción ni en BETA.'
+        )
+    if not fiscal_consult_enabled():
+        raise FiscalConfigError(
+            'SUNAT PRODUCCIÓN exige la consulta de CDR encendida (FISCAL_CONSULT_ENABLED): sin ella un envío '
+            'incierto no tiene salida. No se emite hasta que el operador la encienda.'
+        )
+    return FiscalEnvironment.PRODUCTION
+
+
+def production_issued() -> bool:
+    """Whether anything was ever issued against SUNAT PRODUCTION from this installation."""
+    from .models import FiscalDailySummary, FiscalDocument, FiscalVoidCommunication
+
+    return any(model.objects.filter(environment=FiscalEnvironment.PRODUCTION).exists()
+               for model in (FiscalDocument, FiscalDailySummary, FiscalVoidCommunication))
+
+
+def tax_id_change_problem(company, new_tax_id) -> str:
+    """
+    Why `company` (None when it is being created) may NOT take `new_tax_id` now; '' if it may.
+
+    The production issuer is the one active company with the RUC of the SOL credentials.
+    While production is chosen, or once anything was issued there, no company may take
+    that RUC or give it up: the first would make a second issuer (or none), the second
+    would leave the issued documents without the company that has to send, consult or
+    void them. Changing any other RUC is not this function's business.
+    """
+    old = (getattr(company, 'tax_id', '') or '').strip() if company is not None else ''
+    new = (new_tax_id or '').strip()
+    if old == new:
+        return ''
+    active = _console_row()
+    console_ruc = str(active.public.get('ruc') or '').strip() if active is not None else ''
+    if not console_ruc or console_ruc not in (old, new):
+        return ''
+    if console_environment(active.public) != FiscalEnvironment.PRODUCTION and not production_issued():
+        return ''
+    return ('El RUC de las credenciales SUNAT de producción no se asigna ni se quita mientras producción esté '
+            'elegida o existan comprobantes de producción: cambiaría quién emite y quién responde por lo emitido.')
+
+
+def production_issuer(ruc: str):
+    """
+    La empresa que emite con la Clave SOL de `ruc`, o `(None, motivo)`.
+
+    Las credenciales de la consola son de la instalación (SCOPE_PLATFORM) y llevan un
+    RUC: el emisor es la ÚNICA empresa activa con ese RUC. Dos con el mismo RUC no
+    se desempatan.
+    """
+    from .models import Company
+
+    ruc = (ruc or '').strip()
+    if not ruc:
+        return None, 'La configuración no tiene RUC: no hay emisor para producción.'
+    companies = list(Company.objects.filter(tax_id=ruc, is_active=True).order_by('pk')[:2])
+    if not companies:
+        return None, 'Ninguna empresa activa tiene el RUC de estas credenciales: no hay emisor para producción.'
+    if len(companies) > 1:
+        return None, ('Hay más de una empresa activa con el RUC de estas credenciales: no se decide cuál '
+                      'emite en producción.')
+    return companies[0], ''
+
+
+def production_activation_problems(public: dict, secrets: dict | None = None, *,
+                                   staying: bool = False) -> list[str]:
+    """
+    Por qué esta configuración de la consola NO puede empezar a emitir en producción;
+    `[]` si puede. Lo pregunta la consola al probar y al activar.
+
+    1. `FISCAL_PRODUCTION_ENABLED` encendido en la instalación.
+    2. Una sola empresa activa con el RUC de la Clave SOL.
+    3. `fiscal_preflight --target production` en GO para esa empresa, evaluado con
+       ESTAS credenciales y ESTE certificado (los del borrador que se va a activar;
+       sin `secrets`, los de la fila activa).
+
+    `staying`: la consola YA está en modo producción —activa, en pausa o desactivada—
+    y se cambian sus claves (renovar el certificado) o se vuelve a encender. Entonces
+    la cola y los plazos no bloquean: lo pendiente es justamente lo que necesita la
+    emisión encendida para salir, y negarlo dejaría la instalación sin salida.
+
+    Los motivos no llevan secretos ni el RUC de otra empresa: son líneas del preflight.
+    """
+    from . import fiscal_preflight
+
+    if not production_enabled():
+        return [PRODUCTION_SWITCH_OFF]
+    company, problem = production_issuer(str((public or {}).get('ruc') or ''))
+    if company is None:
+        return [problem]
+    credentials = None
+    if secrets:
+        try:
+            credentials = _credentials_from(public, secrets)
+        except FiscalConfigError as exc:
+            return [str(exc)]
+    checks = fiscal_preflight.run(company, target=FiscalEnvironment.PRODUCTION, credentials=credentials)
+    skipped = {'cola', 'plazos'} if staying else set()
+    stops = [check for check in checks if check.level == fiscal_preflight.NO_GO and check.area not in skipped]
+    return [f'fiscal_preflight --company {company.slug} --target production está en NO-GO · '
+            f'{check.area}: {check.detail}' for check in stops]
 
 
 #: Cómo se llama cada tipo de comprobante cuando hay que decírselo a una
@@ -150,7 +352,8 @@ def resolve_series(company, *, branch=None,
     Reglas, en orden:
 
     1. De la empresa de la venta. Nunca de otra.
-    2. Del ambiente que decide el servidor. Nunca de producción en esta fase.
+    2. Del ambiente que decide el servidor (`resolve_environment(company)`). Las
+       series de BETA y las de producción son filas distintas y nunca se mezclan.
     3. Activa.
     4. Si la venta tiene sucursal y existe una serie de ESA sucursal, se usa esa.
        Si no, la serie de empresa (`branch IS NULL`).
@@ -161,7 +364,7 @@ def resolve_series(company, *, branch=None,
     sin que nadie la haya decidido, y sale a la luz cuando SUNAT recibe dos
     documentos de series distintas para el mismo mostrador.
     """
-    environment = resolve_environment()
+    environment = resolve_environment(company)
     noun = _DOCUMENT_NOUN.get(document_type, 'comprobante')
 
     candidates = FiscalSeries.objects.filter(
@@ -222,7 +425,7 @@ def resolve_note_series(company, *, branch=None, note_type: str,
             f'El comprobante original tiene un tipo que no admite notas en esta '
             f'fase: {original_type!r}.'
         )
-    environment = resolve_environment()
+    environment = resolve_environment(company)
     candidates = FiscalSeries.objects.filter(
         company=company, document_type=note_type, environment=environment,
         is_active=True, series__startswith=prefix,
@@ -272,10 +475,10 @@ def resolve_credentials(company, *, signing: bool, issuer_tax_id: str | None = N
     en el almacén de secretos, nunca en una columna legible. Si no, las variables
     `FISCAL_*` del servidor, como siempre.
 
-    Hoy son las mismas para todas porque el único ambiente es el de pruebas de
-    SUNAT, que publica credenciales comunes. La firma recibe `company` de todas
-    formas: el día que cada empresa tenga las suyas, cambia esta función y no
-    cambia nadie más.
+    Son de la instalación (una Clave SOL, un RUC). Por eso `issuer_problems` exige
+    que su RUC sea el de la empresa: con dos empresas, sólo la del RUC de la Clave
+    SOL emite, en BETA y en producción. La firma recibe `company`: el día que cada
+    empresa tenga las suyas, cambia esta función y no cambia nadie más.
 
     NO HAY COLUMNA `sol_password`. Una columna existe para llenarse, y un campo
     así acaba apareciendo en un serializer, en un volcado o en una bitácora. Lo
@@ -329,7 +532,7 @@ def _checked(credentials: dict, company, *, signing: bool, issuer_tax_id: str | 
     if company is None:
         # Sin empresa no hay emisor contra el que comparar: no hay credenciales.
         raise FiscalConfigError('No hay empresa emisora: no se resuelven credenciales fiscales.')
-    problems = issuer_problems(company, credentials, environment=resolve_environment(),
+    problems = issuer_problems(company, credentials, environment=resolve_environment(company),
                                signing=signing, issuer_tax_id=issuer_tax_id)
     if problems:
         raise FiscalConfigError(problems[0])
@@ -360,6 +563,10 @@ def issuer_problems(company, credentials: dict, *, environment: str, signing: bo
        certificado (Manual del programador, §3.1, lo pide en el campo OU; se
        acepta en cualquier atributo del sujeto). En BETA no: SUNAT no exige allí
        un certificado registrado (§2.3) y se firma con uno autofirmado.
+    4. Sólo al firmar en PRODUCCIÓN: el certificado NO es autofirmado (C3). SUNAT
+       exige uno emitido por una entidad acreditada a nombre del RUC (§3.1); uno
+       autofirmado sólo sirve en BETA, y en producción se descubriría con el
+       rechazo y el correlativo gastado.
 
     `issuer_tax_id`: el RUC del documento sobre el que se actúa, si existe; si
     no, el de la empresa.
@@ -367,7 +574,9 @@ def issuer_problems(company, credentials: dict, *, environment: str, signing: bo
     Los mensajes no llevan secretos ni el RUC de las credenciales: quien opera
     una empresa no tiene por qué leer el RUC de otra.
     """
-    from .fiscal.certificate import CertificateError, certificate_metadata_from_pem, subject_values
+    from .fiscal.certificate import (
+        CertificateError, certificate_metadata_from_pem, is_self_signed_pem, subject_values,
+    )
 
     import re
 
@@ -403,6 +612,10 @@ def issuer_problems(company, credentials: dict, *, environment: str, signing: bo
             problems.append(
                 'El RUC de esta empresa no figura en el sujeto del certificado de firma '
                 '(SUNAT lo pide en el campo OU).')
+        if is_self_signed_pem(credentials['cert_pem']):
+            problems.append(
+                'El certificado de firma es autofirmado: sirve para BETA, no para producción '
+                '(SUNAT exige uno emitido a nombre del RUC y registrado en SOL).')
     return problems
 
 
@@ -507,22 +720,35 @@ def inspect_signing_certificate():
     return meta, meta.validity()
 
 
-def resolve_provider(company, *, issuer_tax_id: str | None = None):
+def resolve_provider(company, *, issuer_tax_id: str | None = None, environment: str | None = None):
     """
     El proveedor con el que hablar. El endpoint NO es configurable por nadie.
 
     Se elige de una tabla del código a partir del ambiente que decidió el
     servidor. Ni el navegador ni la empresa pueden escribir una URL: eso sería
     entregar una petición saliente arbitraria desde nuestro servidor.
-    """
-    from .fiscal.provider import BETA_ENDPOINT, SunatSoapProvider
 
-    environment = resolve_environment()
-    endpoints = {FiscalEnvironment.BETA: BETA_ENDPOINT}
-    endpoint = endpoints.get(environment)
-    if endpoint is None:
+    `environment` es el ambiente del documento que se va a enviar (o cuyo ticket se
+    consulta). Si no es el que opera el servidor, SE NIEGA: un comprobante BETA no
+    sale nunca hacia producción, ni uno de producción hacia BETA. El nombre de un
+    ambiente no es una URL: la URL sigue saliendo de la tabla.
+    """
+    from .fiscal.provider import BETA_ENDPOINT, PRODUCTION_ENDPOINT, SunatSoapProvider
+
+    current = resolve_environment(company)
+    if environment is not None and environment != current:
         raise FiscalConfigError(
-            f'No hay endpoint declarado para el ambiente «{environment}».'
+            f'Este documento es del ambiente «{environment}» y el servidor opera «{current}»: '
+            f'no se envía a otro ambiente de SUNAT.'
+        )
+    # UNA TABLA DEL CÓDIGO: ni el navegador, ni la empresa, ni una variable de
+    # entorno escriben la URL de envío. La fuente oficial de cada constante está en
+    # `fiscal/provider.py`.
+    endpoints = {FiscalEnvironment.BETA: BETA_ENDPOINT, FiscalEnvironment.PRODUCTION: PRODUCTION_ENDPOINT}
+    endpoint = endpoints.get(current)
+    if endpoint is None or not endpoint.startswith('https://'):
+        raise FiscalConfigError(
+            f'No hay endpoint declarado para el ambiente «{current}».'
         )
 
     # Enviar no firma: lo que se envía ya está firmado (`signing=False`).
@@ -531,6 +757,7 @@ def resolve_provider(company, *, issuer_tax_id: str | None = None):
         endpoint=endpoint, ruc=credentials['ruc'],
         sol_user=credentials['sol_user'],
         sol_password=credentials['sol_password'],
+        environment=current,
     )
 
 
@@ -546,9 +773,11 @@ def fiscal_consult_enabled() -> bool:
     pero NO sale a la red.
 
     Encenderla NO habilita `sendBill` producción: son banderas y resolutores
-    distintos. `resolve_environment()`/`resolve_provider()` siguen fijados en BETA
-    pase lo que pase con ésta. Emitir en producción y consultar en producción son
-    capacidades separadas, y ninguna se enciende de rebote por la otra.
+    distintos. `resolve_environment()`/`resolve_provider()` sólo operan producción
+    con `FISCAL_PRODUCTION_ENABLED` y la consola activada en ese modo, pase lo que
+    pase con ésta. Emitir en producción y consultar en producción son capacidades
+    separadas, y ninguna se enciende de rebote por la otra (el preflight de
+    producción, eso sí, exige las dos).
     """
     return bool(getattr(settings, 'FISCAL_CONSULT_ENABLED', False))
 
@@ -558,9 +787,10 @@ def consult_endpoint(environment: str) -> str:
     El endpoint de `getStatusCdr` para documentos de `environment`. Lo decide el
     servidor; nunca una petición ni la empresa.
 
-    - PRODUCCIÓN: el configurado en `FISCAL_CONSULT_ENDPOINT` o, vacío, el del
-      código (`PRODUCTION_CONSULT_ENDPOINT`). H-14: `settings.py` declara la
-      variable con '' por defecto, y antes ese vacío anulaba la constante.
+    - PRODUCCIÓN: SÓLO el del código (`PRODUCTION_CONSULT_ENDPOINT`). Un
+      `FISCAL_CONSULT_ENDPOINT` configurado se NIEGA para producción (C3, revisión
+      de #468): la consulta de documentos reales no puede apuntar a otra parte por
+      una variable copiada. Vacío (H-14) es la constante.
     - BETA: SUNAT no tiene servicio de consulta en BETA (Manual del programador).
       Consultar un documento de pruebas contra el endpoint de producción sería
       hablar con producción con un documento que allí no existe, así que vacío
@@ -573,7 +803,12 @@ def consult_endpoint(environment: str) -> str:
 
     configured = (getattr(settings, 'FISCAL_CONSULT_ENDPOINT', '') or '').strip()
     if environment == FiscalEnvironment.PRODUCTION:
-        endpoint = configured or PRODUCTION_CONSULT_ENDPOINT
+        if configured:
+            raise FiscalConfigError(
+                'FISCAL_CONSULT_ENDPOINT está definido: la consulta de comprobantes de producción sólo usa el '
+                'endpoint oficial del código. Quite la variable.'
+            )
+        endpoint = PRODUCTION_CONSULT_ENDPOINT
     elif configured:
         endpoint = configured
     else:
@@ -605,6 +840,12 @@ def resolve_consult_provider(company, *, environment: str, issuer_tax_id: str | 
         raise FiscalConfigError(
             'La consulta/reconciliación en línea con SUNAT no está habilitada en '
             'esta versión. Requiere revisión de producción.'
+        )
+    if environment != FiscalEnvironment.PRODUCTION and intended_environment() == FiscalEnvironment.PRODUCTION:
+        # C3: con producción elegida, nada sale hacia un servicio de pruebas por un
+        # documento BETA: la cola BETA quedó congelada al cambiar de modo.
+        raise FiscalConfigError(
+            'El servidor opera SUNAT PRODUCCIÓN: no se consultan documentos de pruebas (BETA).'
         )
     endpoint = consult_endpoint(environment)
     # Consultar no firma (`signing=False`); se compara con el RUC del documento.

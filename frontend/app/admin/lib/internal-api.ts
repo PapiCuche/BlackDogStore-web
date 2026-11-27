@@ -820,6 +820,8 @@ export type PosReceiptOption = {
   /** `FISCAL_DISABLED` · `FISCAL_NOT_CONFIGURED` · `NO_SERIES_FOR_BRANCH` · `AMBIGUOUS_SERIES` · `UNSUPPORTED_ENVIRONMENT` · `NO_BRANCH`, o vacío. */
   disabled_code: string;
   disabled_reason: string;
+  /** C3 — en una opción fiscal, el ambiente SUNAT en que se emitiría («beta» · «production»), o vacío. */
+  environment?: string;
 };
 
 export type PosContext = {
@@ -1377,6 +1379,8 @@ export type PosPreview = {
 export type PosSaleInput = {
   /** INV-COM-01C: el total que el cajero leyó; si el servidor calcula otro, responde 409 `price_changed`. */
   expected_total?: string;
+  /** C3: el ambiente SUNAT que la caja mostró; si el servidor emitiría en otro, responde 409 `environment_changed`. */
+  expected_environment?: string;
   receipt_type?: string;
   branch: number;
   items: PosSaleLine[];

@@ -53,3 +53,16 @@ test('every other panel call still carries the company chosen in the panel', asy
 
   expect(urls()).toEqual([`${API_BASE}/admin/products/?company=1`]);
 });
+
+test('the fiscal series panel names its company itself; the one chosen in the panel never slips in (C3)', async () => {
+  const { fetchFiscalSeries, updateFiscalSeries } = await import('@/app/lib/fiscal-series');
+  mockFetch.mockResolvedValue(ok({ companies: [], series: [] }));
+  await fetchFiscalSeries(null);
+  await fetchFiscalSeries(7);
+  await updateFiscalSeries(3, { is_active: false });
+  expect(urls()).toEqual([
+    `${API_BASE}/admin/fiscal-series/`,
+    `${API_BASE}/admin/fiscal-series/?company=7`,
+    `${API_BASE}/admin/fiscal-series/3/`,
+  ]);
+});

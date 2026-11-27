@@ -46,6 +46,8 @@ SOL_PASSWORD = 'clave-sol-sembrada-9f3'
 def _certificate(*, ou=None, cn='PRUEBA', days_before=1, days_after=365, issuer_cn=None):
     """(key PEM, certificate PEM), with the subject and validity asked for."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    # A named issuer is a CA: it signs with its own key, or the certificate is still self-signed.
+    signer = rsa.generate_private_key(public_exponent=65537, key_size=2048) if issuer_cn else key
     attributes = [x509.NameAttribute(NameOID.COUNTRY_NAME, 'PE')]
     if ou is not None:
         attributes.append(x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, ou))
@@ -57,7 +59,7 @@ def _certificate(*, ou=None, cn='PRUEBA', days_before=1, days_after=365, issuer_
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - dt.timedelta(days=days_before))
             .not_valid_after(now + dt.timedelta(days=days_after))
-            .sign(key, hashes.SHA256()))
+            .sign(signer, hashes.SHA256()))
     return (key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                               serialization.NoEncryption()),
             cert.public_bytes(serialization.Encoding.PEM))
@@ -140,8 +142,8 @@ class EachNoGoCauseTest(_Base):
         self.assertEqual(fiscal_preflight.verdict(checks), fiscal_preflight.NO_GO)
 
     @override_settings(**BETA_READY)
-    def test_production_is_not_operated_by_this_version(self):
-        self.assert_no_go(self.run_checks(FiscalEnvironment.PRODUCTION), 'ambiente', 'sólo opera')
+    def test_production_is_no_go_while_the_installation_switch_is_off(self):
+        self.assert_no_go(self.run_checks(FiscalEnvironment.PRODUCTION), 'ambiente', 'FISCAL_PRODUCTION_ENABLED')
 
     @override_settings(**_settings(ruc=OTHER_RUC))
     def test_credentials_of_another_ruc(self):
@@ -306,6 +308,11 @@ class EachNoGoCauseTest(_Base):
         beta = [c for c in self.run_checks() if c.area == 'consulta']
         self.assertEqual([c.level for c in beta], ['AVISO'])
         self.assertIn('BETA', beta[0].detail)
+
+    @override_settings(**BETA_READY, FISCAL_CONSULT_ENABLED=True,
+                       FISCAL_CONSULT_ENDPOINT='https://consulta.example.test/billConsultService')
+    def test_an_override_of_the_consult_endpoint_is_no_go_for_production(self):
+        self.assert_no_go(self.run_checks(FiscalEnvironment.PRODUCTION), 'consulta', 'FISCAL_CONSULT_ENDPOINT')
 
     @override_settings(**BETA_READY, FISCAL_CONSULT_ENABLED=True, FISCAL_CONSULT_ENDPOINT='http://consulta.test/x')
     def test_a_non_https_consult_endpoint_is_no_go(self):

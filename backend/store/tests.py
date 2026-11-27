@@ -42225,10 +42225,11 @@ class Fiscal6ReceiptOptionsTest(Ip1PosBase):
         self.assertEqual(response.status_code, 200, response.content)
         options = {o['value']: o for o in response.json()['receipt_options']}
         self.assertEqual(set(options), {'sales_note', 'factura', 'boleta'})
-        for option in options.values():
-            self.assertEqual(
-                set(option),
-                {'value', 'label', 'branches', 'enabled', 'disabled_code', 'disabled_reason'})
+        base = {'value', 'label', 'branches', 'enabled', 'disabled_code', 'disabled_reason'}
+        for value, option in options.items():
+            # C3: a fiscal option also says which SUNAT environment it would be issued in.
+            self.assertEqual(set(option), base if value == 'sales_note' else base | {'environment'})
+        self.assertEqual(options['boleta']['environment'], 'beta')
         self.assertTrue(options['boleta']['enabled'])
         self.assertFalse(options['factura']['enabled'])
         # Lo que NO va en una venta nueva: notas y comunicaciones son flujos posteriores.
@@ -51133,9 +51134,9 @@ class C22BEnvironmentGuardTest(TestCase):
         from . import fiscal_config
 
         firma = inspect.signature(fiscal_config.resolve_provider)
-        # La empresa y, al actuar sobre un documento, su RUC emisor (SUNAT-ISSUER-GATE).
-        # Ninguno es una URL.
-        self.assertEqual(list(firma.parameters), ['company', 'issuer_tax_id'])
+        # La empresa y, al actuar sobre un documento, su RUC emisor (SUNAT-ISSUER-GATE) y
+        # su ambiente (C3), que sólo se compara con el del servidor. Ninguno es una URL.
+        self.assertEqual(list(firma.parameters), ['company', 'issuer_tax_id', 'environment'])
         fuente = inspect.getsource(fiscal_config.resolve_provider)
         self.assertIn('endpoints = {', fuente)
 

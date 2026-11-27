@@ -246,13 +246,16 @@ class TheConsultEndpointDependsOnTheDocumentsEnvironmentTest(_Base):
                 with self.assertRaises(FiscalConfigError):
                     resolve_consult_provider(self.company, environment=FiscalEnvironment.BETA)
 
-    def test_an_explicit_https_endpoint_is_honoured_for_both(self):
+    def test_an_explicit_https_endpoint_is_honoured_for_beta_and_refused_for_production(self):
+        """C3 (review of #468): production documents are consulted only at the code's endpoint."""
         url = 'https://consulta.example.test/billConsultService'
         with override_settings(FISCAL_CONSULT_ENDPOINT=url):
-            for environment in (FiscalEnvironment.BETA, FiscalEnvironment.PRODUCTION):
-                with self.subTest(environment=environment):
-                    provider = resolve_consult_provider(self.company, environment=environment)
-                    self.assertEqual(provider._endpoint, url)
+            provider = resolve_consult_provider(self.company, environment=FiscalEnvironment.BETA)
+            self.assertEqual(provider._endpoint, url)
+            with self.assertRaises(FiscalConfigError) as refused:
+                resolve_consult_provider(self.company, environment=FiscalEnvironment.PRODUCTION)
+            self.assertIn('FISCAL_CONSULT_ENDPOINT', str(refused.exception))
+            self.assertNotIn('consulta.example.test', str(refused.exception))
 
     def test_a_plain_http_endpoint_fails_closed_without_repeating_it(self):
         with override_settings(FISCAL_CONSULT_ENDPOINT='http://consulta.example.test/x'):

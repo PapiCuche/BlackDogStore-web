@@ -186,6 +186,8 @@ class Provider:
     pausable = False
     #: Modes this provider can run in, for the console to show ('test', 'production'…).
     supported_modes: tuple = ()
+    #: Whether a refused activation (or switching back on) leaves its own audit line.
+    audit_refusals = False
     #: What a test may be given besides the configuration (a `Field` each). The
     #: console draws them and the API accepts these names and no others.
     test_fields: tuple = ()

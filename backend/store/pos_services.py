@@ -98,6 +98,22 @@ class PosPriceChanged(PosError):
         self.expected, self.current, self.priced = expected, current, priced
 
 
+class PosEnvironmentChanged(PosError):
+    """
+    C3 — the SUNAT environment the cashier saw is not the one the server would issue in now
+    (production was switched on or off since the screen loaded). Nothing was written: a
+    receipt is never issued in an environment the customer was not shown.
+    """
+
+    code = 'environment_changed'
+
+    def __init__(self, expected: str, current: str):
+        super().__init__(
+            f'El ambiente de SUNAT cambió desde que se cargó la caja (se mostró «{expected}» y ahora es '
+            f'«{current}»). Vuelve a cargar la caja y cobra de nuevo.')
+        self.expected, self.current = expected, current
+
+
 class PosPermissionError(PosError):
     """
     The request is well-formed; this caller is not allowed to make it.
@@ -198,7 +214,7 @@ def _series_diagnosis(company, branch, document_type, noun):
     from . import fiscal_config
 
     try:
-        environment = fiscal_config.resolve_environment()
+        environment = fiscal_config.resolve_environment(company)
     except fiscal_config.FiscalConfigError:
         return ('UNSUPPORTED_ENVIRONMENT',
                 'El ambiente fiscal configurado en este servidor no está '
@@ -264,19 +280,43 @@ def receipt_options(company, branches, actor):
     # ellos sólo llevaba a un 400. Se mira UNA vez, sin propagar nada: el motivo es
     # un texto fijo, nunca el del error, y no nombra ningún secreto.
     ready = fiscal_on and _issuing_ready(company)
+    # C3: el ambiente real, para que la pantalla no diga «BETA» de un comprobante
+    # real ni al revés. Si no se puede decidir, '' y la opción ya sale explicada.
+    try:
+        environment = fiscal_config.resolve_environment(company)
+    except fiscal_config.FiscalConfigError:
+        environment = ''
+        try:
+            if fiscal_config.intended_environment() == fiscal_config.FiscalEnvironment.PRODUCTION:
+                # Chosen, and not usable for this company now: never shown as BETA.
+                environment = 'production_unavailable'
+        except fiscal_config.FiscalConfigError:
+            pass
+    production = environment == fiscal_config.FiscalEnvironment.PRODUCTION
     for value, noun in Order.ReceiptType.choices:
-        label = f'{noun} electrónica · BETA'
+        if environment == 'production_unavailable':
+            label = f'{noun} electrónica · Producción elegida, no disponible'
+        else:
+            label = f'{noun} electrónica' if production else f'{noun} electrónica · BETA'
         if not fiscal_on:
             options.append({
-                'value': value, 'label': label, 'branches': [],
+                'value': value, 'label': label, 'branches': [], 'environment': environment,
                 'enabled': False, 'disabled_code': 'FISCAL_DISABLED',
                 'disabled_reason': ('La emisión electrónica no está habilitada '
                                     'en este servidor.'),
             })
             continue
+        if ready and fiscal_config.new_documents_paused():
+            options.append({
+                'value': value, 'label': label, 'branches': [], 'environment': environment,
+                'enabled': False, 'disabled_code': 'FISCAL_PAUSED',
+                'disabled_reason': ('La emisión de comprobantes nuevos está en pausa '
+                                    '(Integraciones › SUNAT).'),
+            })
+            continue
         if not ready:
             options.append({
-                'value': value, 'label': label, 'branches': [],
+                'value': value, 'label': label, 'branches': [], 'environment': environment,
                 'enabled': False, 'disabled_code': 'FISCAL_NOT_CONFIGURED',
                 'disabled_reason': ('La emisión electrónica está encendida pero su '
                                     'configuración de firma no está completa o no es '
@@ -298,7 +338,7 @@ def receipt_options(company, branches, actor):
             allowed.append(branch.pk)
 
         options.append({
-            'value': value, 'label': label, 'branches': allowed,
+            'value': value, 'label': label, 'branches': allowed, 'environment': environment,
             'enabled': bool(allowed),
             'disabled_code': '' if allowed else (code or 'NO_SERIES_FOR_BRANCH'),
             'disabled_reason': '' if allowed else (
@@ -1343,6 +1383,8 @@ def create_pos_sale(
     may_apply_manual_discount: bool = False,
     may_order_over_stock: bool = False,
     expected_total=None,
+    expected_environment=None,
+    environment_required: bool = False,
     request=None,
 ):
     """
@@ -1469,6 +1511,10 @@ def create_pos_sale(
             from .fiscal_config import FiscalConfigError, fiscal_enabled, resolve_credentials
             if not fiscal_enabled():
                 raise PosValidationError('La emisión fiscal no está habilitada.')
+            from .fiscal_config import new_documents_paused, PAUSED
+            if new_documents_paused():
+                # C3: antes de crear la venta, como el interruptor.
+                raise PosValidationError(PAUSED)
             # FISCAL-PROD-02 (revisión de #176): también las credenciales y el par
             # de firma, ANTES de crear la venta y su correlativo. Con la emisión
             # encendida pero sin poder firmar, la caja gastaba un número que nadie
@@ -1477,6 +1523,17 @@ def create_pos_sale(
                 resolve_credentials(company, signing=True)
             except FiscalConfigError as exc:
                 raise PosValidationError(str(exc)) from None
+            # C3: the environment the cashier was shown. A difference is a 409 before
+            # anything is written, like a price that changed.
+            from . import fiscal_config
+            current = fiscal_config.resolve_environment(company)
+            if expected_environment not in (None, ''):
+                if expected_environment != current:
+                    raise PosEnvironmentChanged(str(expected_environment)[:16], current)
+            elif environment_required and current == fiscal_config.FiscalEnvironment.PRODUCTION:
+                # A till that does not say which environment it showed (an old tab, the
+                # mobile POS) never issues a REAL receipt by default (review of #468).
+                raise PosEnvironmentChanged('', current)
 
     now = timezone.now()
     seller = priced['seller']
@@ -1600,7 +1657,8 @@ def create_pos_sale(
     elif receipt_type is not None:
         from .fiscal_services import get_or_create_fiscal_document, FiscalError
         try:
-            document, _ = get_or_create_fiscal_document(order)
+            document, _ = get_or_create_fiscal_document(
+                order, expected_environment=expected_environment or None)
         except FiscalError as exc:
             raise PosValidationError(str(exc)) from exc
 

@@ -150,7 +150,7 @@ class AdminFiscalSummaryListView(APIView):
         if refused:
             return refused
         try:
-            environment = resolve_environment()
+            environment = resolve_environment(company)
             # Generar y firmar es UN acto: si la firma falla, no queda ningún RC y
             # las boletas vuelven a estar disponibles (revisión de #176).
             signed = generate_and_sign_daily_summaries(
@@ -163,10 +163,12 @@ class AdminFiscalSummaryListView(APIView):
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001 — la firma deshizo todo; se dice, sin el texto
             logger.error('La firma del resumen falló (%s); no se creó ningún RC.', type(exc).__name__)
+            # 503, not 500: nothing was created, the boletas are free again and the same
+            # request can be repeated once the signing material is fixed (review of #468).
             return Response(
                 {'detail': 'No se pudo firmar el resumen. No se creó ningún resumen y las '
                            'boletas siguen disponibles.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         for s in signed:
             AdminAuditLog.log(
@@ -204,7 +206,7 @@ class AdminFiscalSummarySubmitView(APIView):
             return error
         provider, refused = provider_or_refusal(
             request, company, resolver=resolve_provider, issuer_tax_id=_summary_issuer(summary),
-            endpoint='fiscal_summary',
+            environment=summary.environment, endpoint='fiscal_summary',
             target_type='fiscal_daily_summary', target_id=summary.pk)
         if refused:
             return refused
@@ -243,7 +245,7 @@ class AdminFiscalSummaryStatusView(APIView):
             return error
         provider, refused = provider_or_refusal(
             request, company, resolver=resolve_provider, issuer_tax_id=_summary_issuer(summary),
-            endpoint='fiscal_summary',
+            environment=summary.environment, endpoint='fiscal_summary',
             target_type='fiscal_daily_summary', target_id=summary.pk)
         if refused:
             return refused

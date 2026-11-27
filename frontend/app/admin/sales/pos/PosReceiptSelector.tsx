@@ -15,7 +15,16 @@ export type ReceiptOption = {
   enabled?: boolean;
   disabled_code?: string;
   disabled_reason?: string;
+  /** C3 — el ambiente SUNAT que el servidor operaría («beta» o «production»). Sin él, BETA. */
+  environment?: string;
 };
+
+/** SUNAT-PROD-C3 — the badge of an electronic receipt, by the environment the server operates. */
+export function fiscalBadge(environment?: string): string {
+  if (environment === 'production') return 'Comprobante electrónico · SUNAT';
+  if (environment === 'production_unavailable') return 'Producción elegida, no disponible';
+  return 'Comprobante electrónico · BETA';
+}
 
 /**
  * ¿Se puede elegir ESTA opción para ESTA sucursal?
@@ -37,11 +46,14 @@ function unavailabilityReason(option: ReceiptOption, branch: number | null): str
 
 /**
  * SALES-UX-02 — what KIND of document the operator is about to hand over, said out loud. An internal note must
- * never read as a tax receipt, and a tax receipt must say it is still BETA while SUNAT production is off.
+ * never read as a tax receipt, and a tax receipt must say it is still BETA while SUNAT production is off — and
+ * must not say BETA once the server operates production (C3).
  */
 function DocumentNature({ value, options }: { value: string; options: ReceiptOption[] }) {
   const fiscal = options.filter((option) => option.value !== 'sales_note');
   const fiscalOff = fiscal.length > 0 && fiscal.every((option) => option.disabled_code === 'FISCAL_DISABLED');
+  const production = fiscal.some((option) => option.environment === 'production');
+  const productionUnavailable = fiscal.some((option) => option.environment === 'production_unavailable');
   if (value === 'sales_note') {
     return (
       <div role="note" data-document-kind="internal" className="mt-3 rounded-lg border border-bd-border bg-background p-3 text-xs text-muted">
@@ -62,11 +74,13 @@ function DocumentNature({ value, options }: { value: string; options: ReceiptOpt
     return (
       <div role="note" data-document-kind="fiscal" className="mt-3 rounded-lg border border-bd-border bg-background p-3 text-xs text-muted">
         <span className="mb-1 inline-block rounded bg-info-surface px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-info">
-          Comprobante electrónico · BETA
+          {fiscalBadge(production ? 'production' : 'beta')}
         </span>
         <p>
-          Solo BETA: se prepara y firma el documento; enviar y consultar la aceptación son pasos posteriores. Factura requiere un
-          cliente con RUC. Un descuento se declara en el comprobante.
+          {production
+            ? 'Comprobante real ante SUNAT: se firma con validez tributaria y su número no se recupera. '
+            : 'Solo BETA: se prepara y firma el documento; enviar y consultar la aceptación son pasos posteriores. '}
+          Factura requiere un cliente con RUC. Un descuento se declara en el comprobante.
         </p>
       </div>
     );
@@ -78,7 +92,9 @@ function DocumentNature({ value, options }: { value: string; options: ReceiptOpt
         <li>
           <span className="font-medium text-foreground">Boleta y factura electrónicas{fiscalOff ? ': no operativas' : fiscal.length === 0 ? ': no disponibles' : ''}:</span>{' '}
           {fiscalOff ? 'la emisión electrónica está apagada en este servidor.'
-            : fiscal.length === 0 ? 'no disponibles para tu cuenta.' : 'comprobantes fiscales (hoy en BETA).'}
+            : fiscal.length === 0 ? 'no disponibles para tu cuenta.'
+              : production ? 'comprobantes fiscales con validez ante SUNAT.'
+                : productionUnavailable ? 'producción elegida, no disponible ahora.' : 'comprobantes fiscales (hoy en BETA).'}
         </li>
       </ul>
     </div>

@@ -47,7 +47,7 @@ from lxml import etree
 from .fiscal import packaging, schema, signing
 from .fiscal.provider import ProviderOutcome, SummaryOutcome, TicketStatus
 from .fiscal.void import VoidData, VoidLine, VoidStructureError, build_void_xml
-from .fiscal_services import FiscalError, keep_unreadable_zip, record_cdr_evidence
+from .fiscal_services import FiscalError, keep_unreadable_zip, record_cdr_evidence, refuse_other_environment
 from .fiscal_summary_services import STALE_SUBMISSION_MINUTES
 from .models import (
     FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalGrantMethod,
@@ -362,7 +362,7 @@ def create_void_communication(company, *, targets, environment=None,
     if not targets:
         raise FiscalError('Una comunicación de baja sin comprobantes no baja nada.')
 
-    environment = environment or resolve_environment()
+    environment = environment or resolve_environment(company)
 
     esperados = [document.pk for document, _motivo in targets]
     if request_key:
@@ -376,6 +376,12 @@ def create_void_communication(company, *, targets, environment=None,
             raise FiscalError(
                 'Una comunicación de baja no mezcla comprobantes de empresas '
                 'distintas.')
+        if document.environment != environment:
+            # C3: BETA y producción no se mezclan. Una RA de producción que diera de
+            # baja un número de BETA (o al revés) informaría algo que SUNAT no tiene.
+            raise FiscalError(
+                f'El comprobante {document.document_id} es del ambiente «{document.environment}» y la '
+                f'comunicación de baja sería de «{environment}»: los ambientes no se mezclan.')
         check_void_eligible(document)
 
     # Un solo día para toda la comunicación (artículo 14.1.b). Se toma la fecha
@@ -510,6 +516,7 @@ def submit_void_communication(void: FiscalVoidCommunication, provider
     crean dos tickets. Un envío TRANSMITIDO SIN TICKET queda INCIERTO y no se
     reenvía por el flujo normal: podría duplicar la baja en SUNAT.
     """
+    refuse_other_environment(void, provider)
     if not void.signed_xml:
         raise FiscalError('La comunicación de baja no está firmada.')
     if void.is_accepted:
@@ -584,6 +591,7 @@ def poll_void_communication(void: FiscalVoidCommunication, provider
     `98` (en proceso) la deja enviada: hay que volver a consultar. Un fallo de red
     NO pierde el ticket.
     """
+    refuse_other_environment(void, provider)
     if not void.ticket:
         raise FiscalError(
             'La comunicación de baja no tiene ticket: no se ha enviado o el envío '
