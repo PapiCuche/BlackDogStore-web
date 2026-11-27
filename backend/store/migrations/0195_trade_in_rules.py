@@ -33,7 +33,6 @@ def refuse_reverse_with_quote_tickets(apps, schema_editor):
             f'(docs/despliegue-produccion.md §7).')
 
 
-
 class Migration(migrations.Migration):
 
     dependencies = [

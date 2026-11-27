@@ -156,6 +156,30 @@ class CalculationTest(SimpleTestCase):
         self.assertEqual(lines['screen']['suppressed_by'], 'back')
         self.assertIsNone(lines['screen_replaced']['suppressed_by'])
 
+    def test_the_greedy_selection_counts_a_replaced_part_and_another_fault(self):
+        """Re-review of #462: 150 + 100 in a `max` group and a replaced part of 200 on the 150's component → 300."""
+        result = calc({'screen': 'not_working', 'frame': 'not_working', 'screen_replaced': 'true'}, [
+            R(id=1, factor='screen', effect='fixed', when_outcome='not_working', amount=D('150')),    # cos, pantalla
+            R(id=2, factor='frame', effect='fixed', when_outcome='not_working', amount=D('100')),     # cos, marco
+            R(id=3, factor='screen_replaced', effect='fixed', when_outcome='true', amount=D('200')),  # rep, pantalla
+        ])
+        self.assertEqual(result['totals']['deductions'], '300.00')
+        self.assertEqual(result['groups'], {'cos': '100.00', 'rep': '200.00'})
+        lines = {line['factor']: line for line in result['lines']}
+        self.assertEqual(lines['screen']['suppressed_by'], 'screen_replaced')     # its component was taken
+
+    def test_ties_go_to_the_higher_priority_then_the_lower_rule_id(self):
+        def winner(*candidates):
+            result = calc({'screen': 'detail', 'frame': 'detail'}, list(candidates))
+            return [line['factor'] for line in result['lines'] if not line['suppressed_by']]
+
+        self.assertEqual(winner(R(id=1, factor='screen', effect='fixed', when_outcome='detail', amount=D('50')),
+                                R(id=2, factor='frame', effect='fixed', when_outcome='detail', amount=D('50'),
+                                  priority=3)), ['frame'])
+        self.assertEqual(winner(R(id=9, factor='screen', effect='fixed', when_outcome='detail', amount=D('50')),
+                                R(id=4, factor='frame', effect='fixed', when_outcome='detail', amount=D('50'))),
+                         ['frame'])
+
     def test_half_up_at_the_cent_boundary(self):
         rule = R(id=1, factor='screen', effect='percent', when_outcome='detail', percent=D('0.5'))
         self.assertEqual(calc({'screen': 'detail'}, [rule], base='1.00')['lines'][0]['amount'], '0.01')   # 0.005
@@ -511,6 +535,37 @@ class RulesReviewFindingsTest(RulesBase):
         self.assertEqual(res['code'], 'own_change')
         done = self.post(f'versions/{draft["id"]}/approve/', {}, user=self.approver, expect=200)
         self.assertEqual(done['approval_kind'], 'approver')
+
+    def test_editing_groups_or_questions_during_a_draft_makes_you_an_author(self):
+        """Re-review of #462: an approver who changes a cap or a component while a draft is open wrote that draft."""
+        editor_approver = fx.member(self.company, 'tir_cambia_tope', [VIEW, MANAGE, APPROVE])
+        draft, _rule, screen, _ = self.draft_with_rule()
+        group_id = TradeInFactor.objects.get(pk=screen['id']).group_id
+        res = self.api(editor_approver).patch(f'{RULES}groups/{group_id}/', {'group_cap_percent': '5'}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.post(f'versions/{draft["id"]}/propose/', {}, expect=200)                      # proposed by the editor
+        res = self.post(f'versions/{draft["id"]}/approve/', {}, user=editor_approver, expect=403)
+        self.assertEqual(res['code'], 'own_change')
+        # The same for a question's component, and the frozen pending set is not touched by later edits.
+        other = fx.member(self.company, 'tir_cambia_componente', [VIEW, MANAGE, APPROVE])
+        self.api(other).patch(f'{RULES}factors/{screen["id"]}/', {'component': 'vidrio'}, format='json')
+        pending = TradeInRuleSetVersion.objects.get(pk=draft['id'])
+        self.assertNotIn(other.pk, pending.contributor_ids)
+        self.assertEqual(self.post(f'versions/{draft["id"]}/approve/', {}, user=other, expect=200)['status'],
+                         'approved')
+
+    def test_a_partial_range_edit_keeps_the_other_bound(self):
+        battery_group = self.post('groups/', {'kind': 'battery', 'name': 'Batería'})
+        battery = self.post('factors/', {'group': battery_group['id'], 'label': 'Salud', 'code': 'salud',
+                                         'input': 'percent'})
+        draft = self.post('versions/', {})
+        rule = self.post(f'versions/{draft["id"]}/rules/', {'factor': battery['id'], 'when_percent_gte': '70',
+                                                            'when_percent_lt': '80', 'effect': 'none'})
+        res = self.api(self.editor).patch(f'{RULES}rules/{rule["id"]}/', {'when_percent_lt': '90'}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        self.assertEqual((res.json()['when_percent_gte'], res.json()['when_percent_lt']), ('70.00', '90.00'))
+        res = self.api(self.editor).patch(f'{RULES}rules/{rule["id"]}/', {'when_percent_lt': '60'}, format='json')
+        self.assertEqual((res.status_code, res.json()['field']), (400, 'when_percent_lt'))
 
     def test_integers_out_of_range_are_a_400(self):
         draft, rule, screen, _ = self.draft_with_rule()

@@ -147,12 +147,28 @@ def _group_fields(data, *, partial=False, instance=None) -> dict:
     return out
 
 
+def _touch_open_draft(company, actor) -> None:
+    """
+    Editing a group or a question changes what the company's OPEN draft computes (its snapshot is taken only when it
+    is proposed): whoever does it becomes one of the draft's authors. A pending set is frozen and is not touched.
+    """
+    pk = getattr(actor, 'pk', None)
+    if pk is None:
+        return
+    draft = (TradeInRuleSetVersion.objects.select_for_update()
+             .filter(company=company, status=TradeInRuleSetVersion.STATUS_DRAFT).first())
+    if draft is not None and pk not in (draft.contributor_ids or []):
+        draft.contributor_ids = [*(draft.contributor_ids or []), pk]
+        draft.save(update_fields=['contributor_ids'])
+
+
 def create_group(*, actor, company, data, request=None) -> TradeInFactorGroup:
     _manage(actor, company)
     fields = _group_fields(data)
     try:
         with transaction.atomic():
             group = TradeInFactorGroup.objects.create(company=company, **fields)
+            _touch_open_draft(company, actor)
     except IntegrityError:
         raise TariffConflict('Ya existe un grupo con ese nombre.', code='duplicate', field='name') from None
     _audit(actor=actor, company=company, action='trade_in_factor_group_created', target_type='trade_in_factor_group',
@@ -169,6 +185,7 @@ def update_group(*, actor, company, group, data, request=None) -> TradeInFactorG
     try:
         with transaction.atomic():
             group.save()
+            _touch_open_draft(company, actor)
     except IntegrityError:
         raise TariffConflict('Ya existe un grupo con ese nombre.', code='duplicate', field='name') from None
     _audit(actor=actor, company=company, action='trade_in_factor_group_updated', target_type='trade_in_factor_group',
@@ -247,6 +264,7 @@ def create_factor(*, actor, company, data, request=None) -> TradeInFactor:
     try:
         with transaction.atomic():
             factor = TradeInFactor.objects.create(company=company, code=code, **fields)
+            _touch_open_draft(company, actor)
     except IntegrityError:
         raise TariffConflict('Ya existe una pregunta con ese código.', code='duplicate', field='code') from None
     _audit(actor=actor, company=company, action='trade_in_factor_created', target_type='trade_in_factor',
@@ -272,7 +290,9 @@ def update_factor(*, actor, company, factor, data, request=None) -> TradeInFacto
                                  code='options_in_use', field='options', extra={'rules': orphaned})
     for key, value in fields.items():
         setattr(factor, key, value)
-    factor.save()
+    with transaction.atomic():
+        factor.save()
+        _touch_open_draft(company, actor)
     _audit(actor=actor, company=company, action='trade_in_factor_updated', target_type='trade_in_factor',
            target_id=factor.pk, request=request, code=factor.code, fields=sorted(fields))
     return factor
@@ -389,9 +409,13 @@ def _rule_fields(company, data, *, partial=False, rule=None) -> dict:
         out['factor'] = factor
     condition_keys = {'when_outcome', 'when_percent_gte', 'when_percent_lt'}
     if not partial or condition_keys & set(data):
-        outcome = _text(data, 'when_outcome', 60, 'El resultado')
-        gte = _percent(data.get('when_percent_gte'), 'when_percent_gte', 'el porcentaje mínimo')
-        lt = _percent(data.get('when_percent_lt'), 'when_percent_lt', 'el porcentaje máximo')
+        # A partial edit names only what changes: the other parts of the condition stay as stored.
+        outcome = (_text(data, 'when_outcome', 60, 'El resultado') if not partial or 'when_outcome' in data
+                   else rule.when_outcome)
+        gte = (_percent(data.get('when_percent_gte'), 'when_percent_gte', 'el porcentaje mínimo')
+               if not partial or 'when_percent_gte' in data else rule.when_percent_gte)
+        lt = (_percent(data.get('when_percent_lt'), 'when_percent_lt', 'el porcentaje máximo')
+              if not partial or 'when_percent_lt' in data else rule.when_percent_lt)
         check_condition(factor.input, factor.options, outcome, gte, lt)
         out.update(when_outcome=outcome, when_percent_gte=gte, when_percent_lt=lt)
     elif 'factor' in out:

@@ -10,10 +10,9 @@ THE ORDER (§6):
        * every STATUS rule applies (requires approval, pending verification, not eligible), whatever its priority;
        * ONE money rule per factor: the highest priority (tie: the larger deduction, then the lower id);
   4. each deduction on the BASE value (never compounded), rounded to 0.01 half-up;
-  5. no double penalty, in this fixed order (owner's decision on the review of #462): (1) WITHIN each group, `max`
-     keeps the largest line and `sum` keeps them all; (2) ACROSS the lines that survived their group, two lines on the
-     same component keep only the larger — so a fault is never dropped to zero by a line that its own group already
-     discarded; (3) each group's total, capped by the group's cap; (4) never more than the base;
+  5. no double penalty, by ONE greedy selection (owner's decision, re-review of #462): candidate lines from the
+     largest deduction down (ties: rule priority, then rule id); a line counts if its component is not taken yet and
+     its group sums or its `max` group has not counted a line yet; then each group's cap; then the base;
   6. computed value = base − deductions, never negative (deductions only: never above the base);
   8. eligibility from the flags; NOT ELIGIBLE has no value at all (null), never zero «on account».
 
@@ -110,6 +109,7 @@ class _Line:
     rule_id: int
     effect: str
     amount: Decimal
+    priority: int = 0
     suppressed_by: str = ''
     notes: list = field(default_factory=list)
 
@@ -218,33 +218,32 @@ def calculate(*, base: Decimal, maximum: Decimal, answers: dict, groups: dict[st
         if chosen is not None:
             lines.append(_Line(factor=code, group=factor.group, component=fold(factor.component),
                                outcome=str(answer), rule_id=chosen.id, effect=chosen.effect,
-                               amount=deduction(chosen, base)))
+                               amount=deduction(chosen, base), priority=chosen.priority))
 
-    positive = [line for line in lines if line.amount > 0]
-
-    # 5.1 — within each group: `max` keeps the largest line, `sum` keeps them all.
-    survivors: list[_Line] = []
-    for key in sorted({line.group for line in positive}):
-        group = groups.get(key)
-        members = sorted((line for line in positive if line.group == key), key=lambda l: (-l.amount, l.rule_id))
-        if group is not None and group.combine == 'sum':
-            survivors.extend(members)
-        else:
-            survivors.append(members[0])
-            for line in members[1:]:
-                line.suppressed_by = members[0].factor
-
-    # 5.2 — across the survivors: one line per component, the larger.
-    by_component: dict[str, _Line] = {}
-    for line in sorted(survivors, key=lambda l: (-l.amount, l.rule_id)):
-        if not line.component:
+    # 5 — one deterministic greedy selection (owner's decision on the re-review of #462): the candidate lines from the
+    # largest deduction down (ties: the rule's priority, then its id); a line is TAKEN when its component is not taken
+    # yet AND its group sums, or its `max` group has not taken a line yet. Otherwise it is suppressed by the line that
+    # took the component or the group. Simple and stable; it does not claim to be the best choice in every case.
+    taken_components: dict[str, _Line] = {}
+    taken_max_groups: dict[str, _Line] = {}
+    counted: list[_Line] = []
+    for line in sorted((line for line in lines if line.amount > 0),
+                       key=lambda l: (-l.amount, -l.priority, l.rule_id)):
+        group = groups.get(line.group)
+        sums = group is not None and group.combine == 'sum'
+        if line.component and line.component in taken_components:
+            line.suppressed_by = taken_components[line.component].factor
             continue
-        keeper = by_component.setdefault(line.component, line)
-        if keeper is not line:
-            line.suppressed_by = keeper.factor
-    counted = [line for line in survivors if not line.suppressed_by]
+        if not sums and line.group in taken_max_groups:
+            line.suppressed_by = taken_max_groups[line.group].factor
+            continue
+        counted.append(line)
+        if line.component:
+            taken_components[line.component] = line
+        if not sums:
+            taken_max_groups[line.group] = line
 
-    # 5.3 — each group's total, under its cap.
+    # Each group's total, under its cap.
     group_totals: dict[str, Decimal] = {}
     for key in sorted({line.group for line in counted}):
         group = groups.get(key)
