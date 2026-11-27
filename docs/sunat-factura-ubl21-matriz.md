@@ -21,7 +21,7 @@ abajo («Descuentos declarados»); el caso mínimo sigue sin ellos a propósito.
 |---|---|
 | XSD | `UBL-Invoice-2.1.xsd`, versionado en `backend/store/fiscal/schemas/` |
 | A1 | Anexo N.º 1 — Factura electrónica (R.S. 123-2022) |
-| A6 | Anexo N.º 6 — Aspectos técnicos SEE (R.S. 000048-2026, vigente 1.8.2026) |
+| A6 | Anexo N.º 6 — Aspectos técnicos SEE (R.S. 000048-2026; la R.S. 000143-2026 aplazó su vigencia al 1.1.2027) |
 | A8 | Anexo N.º 8 — Catálogo de códigos |
 | RV | Reglas de validación, actualizado al 26.08.2026 (hoja `Factura2_0`) |
 | RV-2025 | «Reglas de validación de CPE», archivo oficial `AjustesValidacionesCPEv20250421.xlsx` (cpe.sunat.gob.pe), hojas `Factura2_0`, `Boleta2_0` y `Catálogos` — fuente de la sección de descuentos |

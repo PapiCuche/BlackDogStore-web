@@ -53,8 +53,9 @@ este ejemplo literal:
 De donde: **`Username` = RUC (11 dígitos) + usuario SOL secundario, concatenados
 sin separador**; `Password` = la Clave SOL de ese usuario.
 
-Confirmado además por el **Anexo N.º 6 vigente desde el 1.8.2026** (R.S.
-000048-2026, `https://www.sunat.gob.pe/legislacion/superin/2026/anexo-000048-2026.pdf`),
+Confirmado además por el **Anexo N.º 6 de la R.S. 000048-2026** (vigente desde el
+1.1.2027 según la R.S. 000143-2026; antes se citaba el 1.8.2026;
+`https://www.sunat.gob.pe/legislacion/superin/2026/anexo-000048-2026.pdf`),
 numerales 6.1.2 y 6.1.3: «el emisor electrónico debe usar el protocolo de
 seguridad WS-Security, el modelo UsernameToken, y usar como credenciales su
 código de usuario y la Clave SOL».
@@ -309,7 +310,9 @@ No se implementará nada sobre estos puntos hasta confirmarlos en fuente oficial
    Resumen y que no hay separador final, pero la lista ordenada de los 10 campos
    debe releerse del anexo antes de generar un QR.
 3. **Plazo del resumen diario de boletas.** Confirmado el de la factura (3 días);
-   el del resumen debe verificarse por separado.
+   el del resumen debe verificarse por separado. *Respondido el 2026-11-27*
+   (`sunat-estado-2026-11.md`, F4): a más tardar el 7.º día calendario siguiente a
+   la emisión (RS 097-2012, art. 21.1, en el texto de la RS 114-2019).
 4. **Algoritmo de hash exigible hoy.** Los ejemplos usan SHA-1; el anexo no lo
    fija. Hay que decidir qué emitir y poder cambiarlo.
 
