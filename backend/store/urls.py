@@ -83,6 +83,7 @@ from .pos_device_views import (
 from . import sales_quote_views as sq
 from . import trade_in_tariff_views as tit
 from . import trade_in_rules_views as tir
+from . import trade_in_eligibility_views as tie
 from .pos_views import (
     AdminPosSaleByKeyView,
     AdminPosSaleNotChargedView,
@@ -743,6 +744,19 @@ urlpatterns = [
          name='admin-trade-in-rule'),
     path('admin/trade-in/rules/preview/', tir.AdminTradeInRulesPreviewView.as_view(),
          name='admin-trade-in-rules-preview'),
+    # TRADE-IN VALUATION PRO · Phase 3 — eligibility and the assisted identity check (adr §7, phase 3).
+    path('admin/trade-in/verification-sources/', tie.AdminTradeInSourceListView.as_view(),
+         name='admin-trade-in-sources'),
+    path('admin/trade-in/verification-sources/<int:pk>/', tie.AdminTradeInSourceDetailView.as_view(),
+         name='admin-trade-in-source'),
+    path('admin/trade-in/checks/', tie.AdminTradeInCheckListView.as_view(), name='admin-trade-in-checks'),
+    path('admin/trade-in/checks/<int:pk>/', tie.AdminTradeInCheckDetailView.as_view(), name='admin-trade-in-check'),
+    path('admin/trade-in/checks/<int:pk>/blockers/', tie.AdminTradeInCheckBlockerView.as_view(),
+         name='admin-trade-in-check-blocker'),
+    path('admin/trade-in/checks/<int:pk>/identity-records/', tie.AdminTradeInCheckRecordView.as_view(),
+         name='admin-trade-in-check-record'),
+    path('admin/trade-in/checks/<int:pk>/close/', tie.AdminTradeInCheckCloseView.as_view(),
+         name='admin-trade-in-check-close'),
 
     # --- C1.4: bulk imports ------------------------------------------------
     path('admin/imports/inspect/', AdminImportInspectView.as_view(), name='admin-import-inspect'),

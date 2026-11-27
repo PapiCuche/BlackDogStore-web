@@ -686,8 +686,15 @@ def update_policy(*, actor, company, data, request=None) -> TradeInPolicy:
     _require(actor, company, CAP_APPROVE, 'No tienes permiso para cambiar la política del tarifario.')
     with transaction.atomic():
         policy, _ = TradeInPolicy.objects.select_for_update().get_or_create(company=company)
+        from .trade_in_eligibility import clean_policy
+
         before = {'tariff_approval_mode': policy.tariff_approval_mode,
-                  'tariff_increase_tolerance_percent': str(policy.tariff_increase_tolerance_percent)}
+                  'tariff_increase_tolerance_percent': str(policy.tariff_increase_tolerance_percent),
+                  'identity_check_validity_hours': policy.identity_check_validity_hours,
+                  'optional_blockers': list(policy.optional_blockers or []),
+                  'extra_blockers': list(policy.extra_blockers or [])}
+        for key, value in clean_policy(data).items():
+            setattr(policy, key, value)
         if 'tariff_approval_mode' in data:
             mode = str(data.get('tariff_approval_mode') or '').strip()
             if mode not in dict(TradeInPolicy.APPROVAL_CHOICES):
@@ -701,7 +708,10 @@ def update_policy(*, actor, company, data, request=None) -> TradeInPolicy:
         policy.updated_by = actor
         policy.save()
         after = {'tariff_approval_mode': policy.tariff_approval_mode,
-                 'tariff_increase_tolerance_percent': str(policy.tariff_increase_tolerance_percent)}
+                 'tariff_increase_tolerance_percent': str(policy.tariff_increase_tolerance_percent),
+                 'identity_check_validity_hours': policy.identity_check_validity_hours,
+                 'optional_blockers': list(policy.optional_blockers or []),
+                 'extra_blockers': list(policy.extra_blockers or [])}
         AdminAuditLog.log(
             actor=actor, action='trade_in_policy_updated', target_type='trade_in_policy', target_id=policy.pk,
             metadata={'company_id': company.pk, 'before': before, 'after': after}, request=request,

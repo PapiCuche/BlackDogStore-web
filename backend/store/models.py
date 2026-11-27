@@ -6014,6 +6014,13 @@ class TradeInPolicy(models.Model):
     #: A rise of the base or maximum reception value up to this percentage is NOT relevant. 0 = any rise is.
     tariff_increase_tolerance_percent = models.DecimalField(
         max_digits=5, decimal_places=2, default=Decimal('0.00'))
+    #: Phase 3 (0196). How long an identity record stays valid (V2: 24 h proposed). `db_default`: the previous release
+    #: keeps inserting policies while this migrates.
+    identity_check_validity_hours = models.PositiveIntegerField(default=24, db_default=24)
+    #: Blockers this company does not verify (never one of the mandatory set: `trade_in_eligibility.MANDATORY`).
+    optional_blockers = models.JSONField(default=list, blank=True, db_default=[])
+    #: The company's own blockers: [{"code": "...", "label": "..."}]. `blocked` = NOT ELIGIBLE, like the platform's.
+    extra_blockers = models.JSONField(default=list, blank=True, db_default=[])
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     updated_at = models.DateTimeField(auto_now=True)
@@ -6024,6 +6031,10 @@ class TradeInPolicy(models.Model):
                 condition=models.Q(tariff_increase_tolerance_percent__gte=Decimal('0.00'))
                 & models.Q(tariff_increase_tolerance_percent__lte=Decimal('100.00')),
                 name='trade_in_policy_tolerance_percent'),
+            models.CheckConstraint(
+                condition=models.Q(identity_check_validity_hours__gte=1)
+                & models.Q(identity_check_validity_hours__lte=720),
+                name='trade_in_policy_identity_validity_hours'),
         ]
 
     def __str__(self):
@@ -6540,6 +6551,215 @@ class TradeInRule(models.Model):
         if self._version_status() not in (None, TradeInRuleSetVersion.STATUS_DRAFT):
             raise ValidationError('Las reglas de una versión que salió de borrador no se borran.')
         return super().delete(*args, **kwargs)
+
+
+# =============================================================================
+# TRADE-IN VALUATION PRO · Phase 3 — eligibility and the assisted identity check (adr-trade-in-valuation.md §3.3)
+# =============================================================================
+#
+# A DEVICE CHECK is the security half of an assessment: the device's identifiers (kept only as a keyed digest and the
+# last four characters, never in full: D6/D10), the answers to the blockers, and the identity records a person wrote
+# after consulting an OFFICIAL source by hand (no invented API, no scraping). Phase 4's assessment points at one.
+# Nothing here receives, buys, pays or credits a device.
+
+
+class TradeInVerificationSource(models.Model):
+    """Where the company's staff check a device by hand (e.g. its regulator's public IMEI lookup): the company's data."""
+
+    IDENTIFIER_IMEI = 'imei'
+    IDENTIFIER_SERIAL = 'serial'
+    IDENTIFIER_CHOICES = [(IDENTIFIER_IMEI, 'IMEI'), (IDENTIFIER_SERIAL, 'Número de serie')]
+    #: What a source can say (closed).
+    CHECK_CHOICES = ('theft_report', 'activation_lock', 'previous_account', 'mdm')
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='trade_in_verification_sources')
+    name = models.CharField(max_length=120)
+    url = models.URLField(max_length=300)
+    identifier = models.CharField(max_length=8, choices=IDENTIFIER_CHOICES, default=IDENTIFIER_IMEI)
+    checks = models.JSONField(default=list, blank=True)
+    instructions = models.TextField(max_length=1000, blank=True, default='')
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'name'], name='trade_in_verification_source_name_unique'),
+            models.CheckConstraint(condition=models.Q(url__startswith='https://'),
+                                   name='trade_in_verification_source_https'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class TradeInDeviceCheck(models.Model):
+    """
+    The identity and security check of ONE device offered at one branch. Identifiers are kept only as a keyed digest
+    (`trade_in_eligibility.digest`, never in a response or the audit) and their last four characters.
+    """
+
+    STATUS_OPEN = 'open'
+    STATUS_CLOSED = 'closed'
+    STATUS_CHOICES = [(STATUS_OPEN, 'Abierta'), (STATUS_CLOSED, 'Cerrada')]
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='trade_in_device_checks')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='trade_in_device_checks')
+    status = models.CharField(max_length=8, choices=STATUS_CHOICES, default=STATUS_OPEN)
+    #: As the customer and the counter describe it; free text, never an identifier.
+    description = models.CharField(max_length=200, blank=True, default='')
+    has_imei = models.BooleanField(default=True)
+    imei_last4 = models.CharField(max_length=4, blank=True, default='')
+    imei_digest = models.CharField(max_length=64, blank=True, default='')
+    #: The IMEI as typed did not pass its check digit: the device is NOT ELIGIBLE (`imei_invalid`).
+    imei_valid = models.BooleanField(default=True)
+    imei2_last4 = models.CharField(max_length=4, blank=True, default='')
+    imei2_digest = models.CharField(max_length=64, blank=True, default='')
+    imei2_valid = models.BooleanField(default=True)
+    serial_last4 = models.CharField(max_length=4, blank=True, default='')
+    serial_digest = models.CharField(max_length=64, blank=True, default='')
+    #: Server findings at creation: the IMEI is a live unit of this company's stock, or an open check's.
+    duplicate_of = models.CharField(max_length=20, blank=True, default='')
+    #: Informative (D9 pending): this company sold or wrote off a unit with this IMEI.
+    known_to_company = models.BooleanField(default=False)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    closed_at = models.DateTimeField(null=True, blank=True)
+    closed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    close_reason = models.CharField(max_length=300, blank=True, default='')
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        constraints = [
+            models.CheckConstraint(
+                condition=(models.Q(has_imei=True) & ~models.Q(imei_digest=''))
+                | (models.Q(has_imei=False) & models.Q(imei_digest='') & models.Q(imei2_digest='')
+                   & ~models.Q(serial_digest='')),
+                name='trade_in_device_check_identified'),
+            models.CheckConstraint(
+                condition=(models.Q(imei_last4='') | models.Q(imei_last4__regex=r'^[0-9]{4}$'))
+                & (models.Q(imei2_last4='') | models.Q(imei2_last4__regex=r'^[0-9]{4}$')),
+                name='trade_in_device_check_imei_last4_only'),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'status']),
+            models.Index(fields=['company', 'imei_digest']),
+        ]
+
+    def __str__(self):
+        return f'Comprobación {self.pk}'
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.branch_id and self.company_id and self.branch.company_id != self.company_id:
+            raise ValidationError({'branch': ['La sucursal no pertenece a esta empresa.']})
+        return super().save(*args, **kwargs)
+
+
+class TradeInBlockerAnswer(models.Model):
+    """The answer to one blocker of one check. Written only while the check is open; every change is audited."""
+
+    ANSWER_CLEAR = 'clear'
+    ANSWER_BLOCKED = 'blocked'
+    ANSWER_NOT_VERIFIED = 'not_verified'
+    ANSWER_CHOICES = [(ANSWER_CLEAR, 'Sin problema'), (ANSWER_BLOCKED, 'Bloqueado'),
+                      (ANSWER_NOT_VERIFIED, 'Sin verificar')]
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    device_check = models.ForeignKey(TradeInDeviceCheck, on_delete=models.PROTECT, related_name='blocker_answers')
+    code = models.CharField(max_length=60)
+    answer = models.CharField(max_length=14, choices=ANSWER_CHOICES)
+    note = models.CharField(max_length=300, blank=True, default='')
+    answered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    answered_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        ordering = ['code']
+        constraints = [
+            models.UniqueConstraint(fields=['device_check', 'code'], name='trade_in_blocker_answer_unique'),
+        ]
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.device_check.company_id != self.company_id:
+            raise ValidationError('La respuesta y su comprobación tienen que ser de la misma empresa.')
+        if self.device_check.status != TradeInDeviceCheck.STATUS_OPEN:
+            raise ValidationError('Una comprobación cerrada no se modifica.')
+        return super().save(*args, **kwargs)
+
+
+class TradeInIdentityRecord(models.Model):
+    """
+    What a person saw when they consulted an official source about one identifier of the device (or what they
+    declared after checking the device itself). Append-only: a newer record supersedes, never rewrites. No evidence
+    file is stored until D6 is decided.
+    """
+
+    RESULT_NO_REPORT = 'no_report'
+    RESULT_REPORTED = 'reported'
+    RESULT_INVALID = 'invalid'
+    RESULT_NOT_FOUND = 'not_found'
+    RESULT_UNAVAILABLE = 'unavailable'
+    RESULT_DECLARED_CLEAR = 'declared_clear'
+    RESULT_CHOICES = [
+        (RESULT_NO_REPORT, 'Sin reporte'), (RESULT_REPORTED, 'Reportado (robo o pérdida)'),
+        (RESULT_INVALID, 'Identificador inválido'), (RESULT_NOT_FOUND, 'No encontrado'),
+        (RESULT_UNAVAILABLE, 'Fuente no disponible'), (RESULT_DECLARED_CLEAR, 'Declarado sin bloqueos'),
+    ]
+    SLOT_IMEI = 'imei'
+    SLOT_IMEI2 = 'imei2'
+    SLOT_SERIAL = 'serial'
+    SLOT_CHOICES = [(SLOT_IMEI, 'IMEI 1'), (SLOT_IMEI2, 'IMEI 2'), (SLOT_SERIAL, 'Número de serie')]
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    device_check = models.ForeignKey(TradeInDeviceCheck, on_delete=models.PROTECT,
+                                     related_name='identity_records')
+    slot = models.CharField(max_length=8, choices=SLOT_CHOICES)
+    #: The official source consulted; empty only for a declaration about the device itself (`declared_clear`).
+    source = models.ForeignKey(TradeInVerificationSource, on_delete=models.PROTECT, null=True, blank=True,
+                               related_name='records')
+    result = models.CharField(max_length=16, choices=RESULT_CHOICES)
+    #: When the person consulted the source (declared by them, never in the future).
+    checked_at = models.DateTimeField()
+    valid_until = models.DateTimeField()
+    note = models.CharField(max_length=300, blank=True, default='')
+    recorded_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    recorded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-checked_at', '-pk']
+        constraints = [
+            models.CheckConstraint(condition=models.Q(valid_until__gt=models.F('checked_at')),
+                                   name='trade_in_identity_record_validity'),
+            models.CheckConstraint(
+                condition=models.Q(source__isnull=False) | models.Q(result='declared_clear'),
+                name='trade_in_identity_record_source_or_declaration'),
+        ]
+        indexes = [models.Index(fields=['device_check', 'slot'])]
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.pk is not None:
+            raise ValidationError('Un registro de verificación no se modifica: registra otro.')
+        if self.device_check.company_id != self.company_id or (self.source_id and self.source.company_id != self.company_id):
+            raise ValidationError('El registro, su comprobación y su fuente tienen que ser de la misma empresa.')
+        if self.device_check.status != TradeInDeviceCheck.STATUS_OPEN:
+            raise ValidationError('Una comprobación cerrada no se modifica.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError('Un registro de verificación no se borra.')
 
 
 # =============================================================================

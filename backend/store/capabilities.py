@@ -275,6 +275,15 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('sales.tradein.tariff.approve_own', 'sales', 'Aprobar cambios propios del tarifario',
          'Aprobar, indicando un motivo, un cambio del tarifario que propusiste tú. Para equipos pequeños: queda '
          'marcado en la auditoría.', STATUS_ACTIVE),
+    # TRADE-IN VALUATION PRO · Phase 3 (docs/adr-trade-in-valuation.md §4). Looking at the checks of devices offered
+    # is not checking one: `value` registers a device, answers its blockers and records what an official source said.
+    # Explicit grants as well (D7).
+    _cap('sales.tradein.view', 'sales', 'Ver comprobaciones de parte de pago',
+         'Consultar las comprobaciones de identidad y seguridad de los equipos ofrecidos, con los identificadores '
+         'enmascarados.', STATUS_ACTIVE),
+    _cap('sales.tradein.value', 'sales', 'Comprobar y valorizar equipos usados',
+         'Registrar un equipo ofrecido, responder sus bloqueos y registrar la consulta manual de su IMEI o serie '
+         'en una fuente oficial.', STATUS_ACTIVE),
 
     # --- accounting (ACCOUNTING-02, `docs/adr-accounting.md` §6) ---
     # Read-only. `view` opens the three views with the buyer's document masked;
@@ -489,6 +498,9 @@ TRADE_IN_TARIFF_CODES: frozenset[str] = frozenset({
     'sales.tradein.tariff.approve_own',
 })
 
+#: TRADE-IN VALUATION PRO · Phase 3: checking and valuing devices, explicit grants too.
+TRADE_IN_ASSESSMENT_CODES: frozenset[str] = frozenset({'sales.tradein.view', 'sales.tradein.value'})
+
 #: Assignable, but never handed out by a preset: somebody grants them on purpose
 #: from Roles (FINANCE-OBLIGATIONS-01, owner's P3, provisional). Neither the
 #: `Administrador` preset nor the pre-RBAC legacy admin/superadmin matrix
@@ -503,6 +515,7 @@ EXPLICIT_GRANT_CODES: frozenset[str] = frozenset({
     'inventory.counts.approve_own',
     # TRADE-IN VALUATION PRO (docs/adr-trade-in-valuation.md §4): D7 — nobody gains trade-in authority by default.
     *TRADE_IN_TARIFF_CODES,
+    *TRADE_IN_ASSESSMENT_CODES,
 })
 #: What the `Administrador` preset of a new company holds.
 DEFAULT_ADMIN_CAPABILITY_CODES: frozenset[str] = ASSIGNABLE_CAPABILITY_CODES - EXPLICIT_GRANT_CODES
