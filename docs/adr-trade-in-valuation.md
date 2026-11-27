@@ -380,18 +380,23 @@ Entrada: evaluación, instante `t` (ahora), empresa. Salida: instantánea §6.5.
    `base × percent / 100`; `repair_cost` = `amount`. Cada línea se redondea a 0,01 (`ROUND_HALF_UP`).
 5. **Sin doble penalización: una selección voraz y determinista** (decisión del propietario en la segunda revisión de
    #462, 2026-11-27):
-   1. Se ordenan las líneas candidatas de mayor a menor deducción; los empates, por prioridad de la regla (mayor
-      primero) y después por id de la regla (menor primero).
-   2. Se recorren en ese orden. Una línea **cuenta** si su `component` todavía no fue tomado **y** su grupo es
-      `combine=sum`, o es `combine=max` y ese grupo todavía no contó ninguna línea. Si no, queda `suppressed_by` la línea
-      que tomó el componente o el grupo.
+   1. Una línea **puede contar** si su `component` todavía no fue tomado **y** su grupo es `combine=sum`, o es
+      `combine=max` y ese grupo todavía no contó ninguna línea. Si no, queda `suppressed_by` la línea que tomó el
+      componente o el grupo.
+   2. En cada paso se toma, entre las que pueden contar, la de mayor deducción **después del tope que le queda a su
+      grupo** (`min(línea, tope restante del grupo)`; la decisión de la tercera revisión de #462); los empates, por
+      prioridad de la regla (mayor primero) y después por id de la regla (menor primero). Una línea cuyo grupo ya agotó
+      su tope no suma nada.
    3. **Tope de grupo**: lo que cuenta en un grupo, como mucho `group_cap_percent` × base.
    4. **Tope total**: la suma nunca supera el valor base.
 
    Ejemplos (con pruebas): estética (`max`) con «pantalla rota» S/ 150 y «tapa trasera» S/ 200, y reparaciones con
    «pantalla reemplazada» S/ 120 → cuentan 200 y 120 = **320**. Estética (`max`) con «pantalla rota» S/ 150 y «marco»
-   S/ 100, y reparaciones con «pantalla reemplazada» S/ 200 → cuentan 200 y 100 = **300**. Es una regla simple y
-   estable; no pretende ser la elección óptima en todos los casos.
+   S/ 100, y reparaciones con «pantalla reemplazada» S/ 200 → cuentan 200 y 100 = **300**. Reparaciones con tope de
+   S/ 50 y «pantalla reemplazada» S/ 120, y estética con «pantalla rota» S/ 100 → cuenta la pantalla rota (100 > 50):
+   **100**. Es una regla simple y estable, aceptada así por el propietario: **no es la elección óptima en todos los
+   casos y, cuando se equivoca, favorece al cliente** (una deducción mayor que aparece después nunca reemplaza a una ya
+   tomada).
 6. **Valor calculado** = `max(0, base − deducciones)` (**nunca negativo**). Como sólo se resta, nunca pasa del base.
 7. **Valor ofrecido.** Por omisión = calculado (redondeado hacia abajo a `value_rounding_step`, si existe, V5). Ajuste
    manual: hacia abajo, con motivo, `sales.tradein.value`; hacia arriba, con motivo, **sólo hasta
