@@ -415,6 +415,18 @@ class TariffValidityTest(TariffBase):
         # v2 has no end; v1 ended on day 9: still v2 after it.
         self.assertEqual(tariff.effective_version(entry, on=self.today + timedelta(days=20)).number, 2)
 
+    def test_an_ended_newer_price_never_hands_the_day_back_to_an_older_one(self):
+        """Owner's decision 2026-11-27: a newer version replaces the older for good; when it ends, no price."""
+        entry = self.approved_entry()                                     # v1: from today, no end
+        end = self.today + timedelta(days=3)
+        version = self.propose(entry.pk, base_reception_value='1100.00', max_reception_value='1300.00',
+                               valid_until=end.isoformat())['version']    # lower, shorter: approved by policy
+        self.assertEqual(version['status'], 'approved')
+        self.assertEqual(tariff.effective_version(entry, on=end).number, 2)
+        self.assertIsNone(tariff.effective_version(entry, on=end + timedelta(days=1)))
+        res = self.api(self.reader).get(f'{URL}{entry.pk}/')
+        self.assertEqual(res.json()['current']['number'], 2)
+
     def test_without_a_newer_price_the_entry_has_none_after_its_end(self):
         entry = self.approved_entry(valid_until=(self.today + timedelta(days=2)).isoformat())
         self.assertIsNone(tariff.effective_version(entry, on=self.today + timedelta(days=3)))

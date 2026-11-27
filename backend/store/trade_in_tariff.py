@@ -1,5 +1,5 @@
 """
-TRADE-IN VALUATION PRO · Phase 1 — the per-company reception tariff (docs/adr-trade-in-valuation.md §3–§6).
+TRADE-IN VALUATION PRO · Phase 1 — the per-company reception tariff (docs/adr-trade-in-valuation.md §3.1, §4, §7).
 
 WHAT IT IS
 ----------
@@ -22,8 +22,11 @@ maximum reception value above the company's tolerance, or extends the validity; 
 is. One change waits per device at a time (database constraint). Approving a change one proposed needs
 `approve_own` and a reason, flagged in the audit (the DEC-INV-06 pattern).
 
-IN FORCE ON A DAY: the approved version with the highest number whose window [valid_from, valid_until] contains
-that day in the COMPANY'S time zone, of an ACTIVE entry (`effective_version`). Later phases freeze the version a
+IN FORCE ON A DAY (owner's decision, 2026-11-27): the approved version with the highest number that has STARTED by
+that day (`valid_from <= day`, the COMPANY'S calendar), of an ACTIVE entry, and only if its window still contains the
+day. A newer version replaces the older ones for good: when a newer version with an end date expires, an older one
+does NOT come back — the device has no price until a new version is approved (`effective_version`). A version
+approved for a later start leaves the current one in force until its day. Later phases freeze the version a
 valuation used (id and values), so a new price never rewrites an issued quote.
 
 WHAT IT NEVER DOES
@@ -327,15 +330,18 @@ def pending_version(entry):
 
 
 def effective_version(entry, *, on: date | None = None):
-    """The version in force on `on` (company's local date; today by default), or None."""
+    """
+    The version in force on `on` (company's local date; today by default), or None: the newest approved version that
+    has started by that day, if it has not ended. An ended newer version never hands the day back to an older one.
+    """
     if not entry.is_active:
         return None
     day = on or company_today(entry.company)
-    from django.db.models import Q
-
-    return (entry.versions.filter(status=TradeInTariffVersion.STATUS_APPROVED, valid_from__lte=day)
-            .filter(Q(valid_until__isnull=True) | Q(valid_until__gte=day))
-            .order_by('-number').first())
+    latest_started = (entry.versions.filter(status=TradeInTariffVersion.STATUS_APPROVED, valid_from__lte=day)
+                      .order_by('-number').first())
+    if latest_started is None or (latest_started.valid_until is not None and latest_started.valid_until < day):
+        return None
+    return latest_started
 
 
 def find_entry(company, *, brand, model_name, capacity='', sim='', region=''):

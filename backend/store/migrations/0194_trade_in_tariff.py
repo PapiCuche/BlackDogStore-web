@@ -1,5 +1,5 @@
 """
-TRADE-IN VALUATION PRO · Phase 1 — the per-company reception tariff (docs/adr-trade-in-valuation.md §3, §9).
+TRADE-IN VALUATION PRO · Phase 1 — the per-company reception tariff (docs/adr-trade-in-valuation.md §3.1, §10).
 
 Schema, all additive: four NEW tables (`TradeInPolicy`, `TradeInTariffImport`, `TradeInTariffEntry`,
 `TradeInTariffVersion`) with their checks (amounts >= 0, base <= maximum, window ordered, one pending change per
@@ -156,7 +156,7 @@ class Migration(migrations.Migration):
                 ('tariff_approval_mode', models.CharField(choices=[('relevant', 'Sólo los cambios relevantes'), ('all', 'Todos los cambios')], default='relevant', max_length=10)),
                 ('tariff_increase_tolerance_percent', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=5)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
-                ('company', models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name='trade_in_policy', to='store.company')),
+                ('company', models.OneToOneField(on_delete=django.db.models.deletion.PROTECT, related_name='trade_in_policy', to='store.company')),
                 ('updated_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL)),
             ],
             options={

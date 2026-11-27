@@ -1,5 +1,5 @@
 """
-TRADE-IN VALUATION PRO · Phase 1 — the reception tariff to and from Excel (docs/adr-trade-in-valuation.md §6).
+TRADE-IN VALUATION PRO · Phase 1 — the reception tariff to and from Excel (docs/adr-trade-in-valuation.md §3.1, §7).
 
 ONE LAYOUT, BOTH WAYS. The export is the template: the columns an import reads come first, in this order, and the
 informative ones after them (the import ignores those). Re-uploading an unchanged export changes nothing.

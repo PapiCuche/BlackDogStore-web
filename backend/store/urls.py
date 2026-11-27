@@ -692,7 +692,7 @@ urlpatterns = [
          name='admin-sales-quote-convert'),
     path('admin/sales/quotes/<int:pk>/pdf/', sq.AdminSalesQuotePdfView.as_view(), name='admin-sales-quote-pdf'),
     path('admin/sales/quotes/<int:pk>/print/', sq.AdminSalesQuotePrintView.as_view(), name='admin-sales-quote-print'),
-    # TRADE-IN VALUATION PRO · Phase 1 — the per-company reception tariff (docs/adr-trade-in-valuation.md §7).
+    # TRADE-IN VALUATION PRO · Phase 1 — the per-company reception tariff (docs/adr-trade-in-valuation.md §7, phase 1).
     path('admin/trade-in/tariff/', tit.AdminTradeInTariffListView.as_view(), name='admin-trade-in-tariff'),
     path('admin/trade-in/tariff/export/', tit.AdminTradeInTariffExportView.as_view(),
          name='admin-trade-in-tariff-export'),

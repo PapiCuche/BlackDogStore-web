@@ -6007,7 +6007,7 @@ class TradeInPolicy(models.Model):
         (APPROVAL_ALL, 'Todos los cambios'),
     ]
 
-    company = models.OneToOneField(Company, on_delete=models.CASCADE, related_name='trade_in_policy')
+    company = models.OneToOneField(Company, on_delete=models.PROTECT, related_name='trade_in_policy')
     #: `relevant`: a new entry, a rise of what the shop pays above the tolerance, or a longer validity waits for an
     #: approver; anything else is approved by the policy itself. `all`: every change waits.
     tariff_approval_mode = models.CharField(max_length=10, choices=APPROVAL_CHOICES, default=APPROVAL_RELEVANT)
@@ -6116,8 +6116,9 @@ class TradeInTariffEntry(models.Model):
 class TradeInTariffVersion(models.Model):
     """
     The money of one tariff entry from a date on. Append-only: once decided (approved, rejected, withdrawn) its terms
-    never change; a new price is a new version. In force on a day: the APPROVED version with the highest number whose
-    window contains that day (company's local date), of an ACTIVE entry (`trade_in_tariff.effective_version`).
+    never change; a new price is a new version. In force on a day: the APPROVED version with the highest number that
+    has started by that day (company's local date), of an ACTIVE entry, if it has not ended; an ended newer version
+    never hands the day back to an older one (`trade_in_tariff.effective_version`).
     """
 
     STATUS_PENDING = 'pending'
