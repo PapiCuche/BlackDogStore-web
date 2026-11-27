@@ -530,6 +530,26 @@ def record_identity(*, actor, company, check, data, request=None, now=None) -> T
     return record
 
 
+def _cancel_live_assessments(*, actor, company, check, request=None) -> None:
+    """A device check that closes takes its live assessment with it (audited): nothing is valued on a device whose
+    check is over."""
+    from .models import TradeInAssessment
+
+    live = TradeInAssessment.objects.select_for_update(of=('self',)).filter(
+        device_check=check, status__in=(*TradeInAssessment.EDITABLE, TradeInAssessment.STATUS_APPROVED))
+    for assessment in live:
+        assessment.status = TradeInAssessment.STATUS_CANCELLED
+        assessment.cancelled_at, assessment.cancel_reason = timezone.now(), 'Comprobación del equipo cerrada.'
+        assessment.save(update_fields=['status', 'cancelled_at', 'cancel_reason', 'updated_at'])
+        AdminAuditLog.log(actor=actor if getattr(actor, 'is_authenticated', False) else None,
+                          action='trade_in_assessment_cancelled', target_type='trade_in_assessment',
+                          target_id=assessment.pk,
+                          metadata={'company_id': company.pk, 'assessment_id': assessment.pk,
+                                    'number': assessment.label, 'status': assessment.status,
+                                    'because': 'device_check_closed', 'check_id': check.pk},
+                          request=request, company=company)
+
+
 def close_check(*, actor, company, check, reason, request=None):
     _require(actor, company, CAP_VALUE, 'No tienes permiso para comprobar equipos usados.')
     reason = _free_text({'reason': reason}, 'reason', 'reason', check=check)
@@ -540,6 +560,7 @@ def close_check(*, actor, company, check, reason, request=None):
         check.status = TradeInDeviceCheck.STATUS_CLOSED
         check.closed_at, check.closed_by, check.close_reason = timezone.now(), actor, reason
         check.save(update_fields=['status', 'closed_at', 'closed_by', 'close_reason', 'updated_at'])
+        _cancel_live_assessments(actor=actor, company=company, check=check, request=request)
         # Never the reason itself: a free text is not for the audit.
         _audit(actor=actor, company=company, action='trade_in_device_check_closed', check=check, request=request,
                has_reason=True, reason_length=len(reason))

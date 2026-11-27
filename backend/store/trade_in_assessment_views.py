@@ -45,9 +45,12 @@ def assessment_payload(user, company, a, *, full=True) -> dict:
         return body
     can_value = has_capability(user, company, assessments.CAP_VALUE)
     calculated = a.status == TradeInAssessment.STATUS_CALCULATED
+    # A sales quote's total is that quote's business: only whoever may compose quotes reads it here.
+    shows_price = not a.target_sales_quote_id or has_capability(user, company, assessments.CAP_QUOTES_MANAGE)
     body.update({
         'target_product': a.target_product_id, 'target_sales_quote': a.target_sales_quote_id,
-        'target_price': _money(a.target_price), 'difference': _money(a.difference),
+        'target_price': _money(a.target_price) if shows_price else None,
+        'difference': _money(a.difference) if shows_price else None,
         'adjustment_reason': a.adjustment_reason,
         'answers': {ans.factor.code: ans.value for ans in a.answers.select_related('factor')},
         'calculation': a.calculation or None,
@@ -57,8 +60,9 @@ def assessment_payload(user, company, a, *, full=True) -> dict:
         'actions': {
             'edit': can_value and a.status in TradeInAssessment.EDITABLE,
             'calculate': can_value and a.status in TradeInAssessment.EDITABLE,
-            'approve': (calculated and a.needs_approval and has_capability(user, company, assessments.CAP_APPROVE)
-                        and user.pk not in (a.calculated_by_id, a.created_by_id)),
+            'approve': (calculated and a.eligibility == assessments.REQUIRES_APPROVAL
+                        and has_capability(user, company, assessments.CAP_APPROVE)
+                        and user.pk not in assessments._authors(a)),
             'cancel': can_value and a.status in (*TradeInAssessment.EDITABLE, TradeInAssessment.STATUS_APPROVED),
         },
     })

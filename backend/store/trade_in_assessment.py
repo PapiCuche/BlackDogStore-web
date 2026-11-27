@@ -150,7 +150,41 @@ def _next_number(company) -> int:
     return (last or 0) + 1
 
 
-def _targets(actor, company, data, purpose) -> dict:
+def _contributed(assessment, actor) -> None:
+    pk = getattr(actor, 'pk', None)
+    if pk is not None and pk not in (assessment.contributor_ids or []):
+        assessment.contributor_ids = [*(assessment.contributor_ids or []), pk]
+
+
+def _authors(assessment) -> set:
+    """Everyone who shaped this valuation: none of them approves it."""
+    answered = set(assessment.answers.exclude(answered_by=None).values_list('answered_by_id', flat=True))
+    return {pk for pk in (assessment.created_by_id, assessment.calculated_by_id, *(assessment.contributor_ids or []),
+                          *answered) if pk}
+
+
+def _check_target_product(product) -> None:
+    from . import pos_services
+
+    if not product.is_active:
+        raise TariffStateError(f'«{product.name}» está desactivado en el catálogo.', code='product_inactive',
+                               field='target_product')
+    if pos_services.priced_by_unit(product):
+        # A used device is priced unit by unit at the till: naming the unit is a later step (`target_unit`).
+        raise TariffError('Un seminuevo se cotiza por equipo: elige un producto con precio propio o enlaza su '
+                          'cotización de venta.', code='target_unit_unsupported', field='target_product')
+
+
+def _check_target_quote(quote, branch) -> None:
+    if quote.branch_id != branch.pk:
+        raise TariffError('La cotización de venta es de otra sucursal.', code='sales_quote_other_branch',
+                          field='target_sales_quote')
+    if quote.status not in SalesQuote.LIVE_STATUSES or quote.is_expired:
+        raise TariffStateError('La cotización de venta ya no está vigente: elige otra o el producto.',
+                               code='sales_quote_not_live', field='target_sales_quote')
+
+
+def _targets(actor, company, data, purpose, branch) -> dict:
     product_id = _id(data.get('target_product'), 'target_product', 'Producto')
     quote_id = _id(data.get('target_sales_quote'), 'target_sales_quote', 'Cotización')
     if purpose != TradeInAssessment.PURPOSE_TRADE_TOWARDS:
@@ -164,12 +198,14 @@ def _targets(actor, company, data, purpose) -> dict:
         product = Product.objects.filter(company=company, pk=product_id).first()
         if product is None:
             raise TariffError('No encontrado.', code='not_found', field='target_product')
+        _check_target_product(product)
         return {'target_product': product, 'target_sales_quote': None}
     _require(actor, company, CAP_QUOTES_MANAGE, 'Enlazar una cotización de venta pide elaborar cotizaciones.')
     quote = SalesQuote.objects.filter(company=company, pk=quote_id,
                                       branch__in=visible_branches(actor, company)).first()
     if quote is None:
         raise TariffError('No encontrado.', code='not_found', field='target_sales_quote')
+    _check_target_quote(quote, branch)
     return {'target_product': None, 'target_sales_quote': quote}
 
 
@@ -208,7 +244,7 @@ def create_assessment(*, actor, company, data, request=None) -> TradeInAssessmen
     purpose = str(data.get('purpose') or TradeInAssessment.PURPOSE_VALUATION)
     if purpose not in dict(TradeInAssessment.PURPOSE_CHOICES):
         raise TariffError('Propósito no válido.', field='purpose')
-    targets = _targets(actor, company, data, purpose)
+    targets = _targets(actor, company, data, purpose, check.branch)
     customer = _customer(company, data.get('customer'))
     with transaction.atomic():
         try:
@@ -217,6 +253,7 @@ def create_assessment(*, actor, company, data, request=None) -> TradeInAssessmen
                     company=company, branch=check.branch, number=_next_number(company), purpose=purpose,
                     device_check=check, customer=customer, tariff_entry=entry, brand=entry.brand,
                     model_name=entry.model_name, capacity=entry.capacity, sim=entry.sim, region=entry.region,
+                    contributor_ids=[actor.pk] if getattr(actor, 'pk', None) else [],
                     created_by=actor if getattr(actor, 'is_authenticated', False) else None, **targets)
         except IntegrityError:
             raise TariffConflict('Esa comprobación ya tiene una evaluación en curso.', code='check_in_use') from None
@@ -265,22 +302,24 @@ def update_details(*, actor, company, assessment, data, request=None) -> TradeIn
             purpose = str(data.get('purpose') or assessment.purpose)
             if purpose not in dict(TradeInAssessment.PURPOSE_CHOICES):
                 raise TariffError('Propósito no válido.', field='purpose')
-            for key, value in _targets(actor, company, data, purpose).items():
+            for key, value in _targets(actor, company, data, purpose, assessment.branch).items():
                 setattr(assessment, key, value)
             assessment.purpose = purpose
             fields += ['purpose', 'target_product', 'target_sales_quote']
         if not fields:
             raise TariffError('Nada que cambiar.')
-        fields += _back_to_draft(assessment)
+        _contributed(assessment, actor)
+        fields += ['contributor_ids', *_back_to_draft(assessment)]
         assessment.save(update_fields=[*fields, 'updated_at'])
         _audit(actor=actor, company=company, action='trade_in_assessment_updated', assessment=assessment,
                request=request, fields=sorted(set(fields) - set(_CALCULATION_FIELDS) - {'status'}))
     return assessment
 
 
-def questions(company, assessment) -> list[dict]:
-    """The questions this device must answer: the active ones of the rule set in force that apply to it."""
-    version = rules.effective_rule_set(company)
+def questions(company, assessment, version=None) -> list[dict]:
+    """The questions this device must answer: the active ones of `version` (the rule set in force by default) that
+    apply to it."""
+    version = version or rules.effective_rule_set(company)
     if version is None:
         raise TariffStateError('No hay reglas de valorización en vigor hoy.', code='rules_missing')
     _groups, factors, _rules = rules.inputs_of(company, version)
@@ -333,7 +372,8 @@ def set_answers(*, actor, company, assessment, data, request=None) -> TradeInAss
             row = existing or TradeInAssessmentAnswer(company=company, assessment=assessment, factor=factor)
             row.value, row.answered_by = str(value), actor
             row.save()
-        fields = _back_to_draft(assessment)
+        _contributed(assessment, actor)
+        fields = ['contributor_ids', *_back_to_draft(assessment)]
         assessment.save(update_fields=[*fields, 'updated_at'])
         _audit(actor=actor, company=company, action='trade_in_assessment_answered', assessment=assessment,
                request=request, questions=sorted(answers))
@@ -346,15 +386,26 @@ def _security(check) -> dict:
             'unverified': verdict['unverified'], 'unchecked_identifiers': verdict['unchecked_identifiers']}
 
 
-def _target_price(assessment) -> Decimal | None:
+def _target_price(actor, company, assessment) -> Decimal | None:
+    """What the customer would pay for the device bought, NOW: the till's own pricing for this branch (promotions
+    included), or the total of a live sales quote of this branch."""
     if assessment.purpose != TradeInAssessment.PURPOSE_TRADE_TOWARDS:
         return None
     if assessment.target_product_id:
-        return Decimal(assessment.target_product.price).quantize(Decimal('0.01'))
+        from . import sales_quote_services
+
+        product = Product.objects.get(pk=assessment.target_product_id)
+        _check_target_product(product)
+        try:
+            priced = sales_quote_services.price_lines(
+                actor=actor, company=company, branch=assessment.branch,
+                lines=[{'product': product.pk, 'quantity': 1, 'on_order': False, 'supply_reason': '', 'unit': None}],
+                may_order_over_stock=True)
+        except sales_quote_services.QuoteError as exc:
+            raise TariffStateError(str(exc), code=exc.code or 'target_price', field='target_product') from None
+        return Decimal(priced['total']).quantize(Decimal('0.01'))
     quote = assessment.target_sales_quote
-    if quote.status not in SalesQuote.LIVE_STATUSES or quote.is_expired:
-        raise TariffStateError('La cotización de venta ya no está vigente: elige otra o el producto.',
-                               code='sales_quote_not_live')
+    _check_target_quote(quote, assessment.branch)
     return quote.total
 
 
@@ -365,7 +416,7 @@ def calculate(*, actor, company, assessment, data=None, request=None) -> TradeIn
     today = tariff.company_today(company)
     with transaction.atomic():
         assessment = _editable(company, assessment)
-        check = assessment.device_check
+        check = TradeInDeviceCheck.objects.select_for_update(of=('self',)).get(pk=assessment.device_check_id)
         if check.status != TradeInDeviceCheck.STATUS_OPEN:
             raise TariffStateError('La comprobación del equipo está cerrada.', code='check_closed')
         if tariff.policy_of(company).require_identified_customer and not assessment.customer_id:
@@ -379,7 +430,7 @@ def calculate(*, actor, company, assessment, data=None, request=None) -> TradeIn
         if rules_version is None:
             raise TariffStateError('No hay reglas de valorización en vigor hoy.', code='rules_missing')
         groups, factors, rule_list = rules.inputs_of(company, rules_version)
-        asked = {q['code'] for q in questions(company, assessment)}
+        asked = {q['code'] for q in questions(company, assessment, rules_version)}
         given = {a.factor.code: a.value for a in assessment.answers.select_related('factor')}
         missing = sorted(asked - set(given))
         if missing:
@@ -402,17 +453,25 @@ def calculate(*, actor, company, assessment, data=None, request=None) -> TradeIn
             overall = PENDING_VERIFICATION
         else:
             overall = result['eligibility']
-        offered, reason, raised = _offer(data, overall, computed, tariff_version.max_reception_value)
+        offered, reason, raised = _offer(data, overall, computed, tariff_version.max_reception_value, check)
         needs_approval = overall != NOT_ELIGIBLE and (result['needs_approval'] or raised)
         if needs_approval and overall not in (NOT_ELIGIBLE, PENDING_VERIFICATION):
             overall = REQUIRES_APPROVAL
         if overall == NOT_ELIGIBLE:
             computed = offered = None
-        price = _target_price(assessment)
+        price = _target_price(actor, company, assessment)
         difference = None if price is None or offered is None else max(Decimal('0.00'), price - offered)
         assessment.tariff_version, assessment.rule_set_version = tariff_version, rules_version
+        # The snapshot says the FINAL word: the values and the verdict after security and the person's adjustment.
+        totals = {**result['totals'], 'computed_value': None if computed is None else str(computed),
+                  'offered_value': None if offered is None else str(offered)}
         assessment.calculation = {
             **result,
+            'totals': totals,
+            'rules_eligibility': result['eligibility'],
+            'eligibility': overall,
+            'eligibility_label': LABELS[overall],
+            'needs_approval': needs_approval,
             'security': security,
             'tariff': {'version': tariff_version.pk, 'number': tariff_version.number,
                        'base': str(tariff_version.base_reception_value),
@@ -428,7 +487,9 @@ def calculate(*, actor, company, assessment, data=None, request=None) -> TradeIn
         assessment.calculated_by, assessment.calculated_at = actor, timezone.now()
         assessment.status = TradeInAssessment.STATUS_CALCULATED
         assessment.approved_by = assessment.approved_at = None
-        assessment.save(update_fields=['status', *_CALCULATION_FIELDS, 'approved_by', 'approved_at', 'updated_at'])
+        _contributed(assessment, actor)
+        assessment.save(update_fields=['status', *_CALCULATION_FIELDS, 'approved_by', 'approved_at',
+                                       'contributor_ids', 'updated_at'])
         _audit(actor=actor, company=company, action='trade_in_assessment_calculated', assessment=assessment,
                request=request, eligibility=overall, tariff_version=tariff_version.pk,
                rule_set_version=rules_version.pk, computed=None if computed is None else str(computed),
@@ -436,13 +497,19 @@ def calculate(*, actor, company, assessment, data=None, request=None) -> TradeIn
     return assessment
 
 
-def _offer(data, overall, computed, maximum) -> tuple[Decimal | None, str, bool]:
+def _refuse_identifiers(text, field, check) -> None:
+    eligibility.refuse_identifiers(text, field, company_id=check.company_id,
+                                   digests=(check.imei_digest, check.imei2_digest, check.serial_digest),
+                                   last4s=(check.imei_last4, check.imei2_last4))
+
+
+def _offer(data, overall, computed, maximum, check) -> tuple[Decimal | None, str, bool]:
     """(offered, reason, raised): the computed value unless a person adjusts it, with a reason."""
     raw = data.get('offered_value')
     reason = ' '.join(str(data.get('adjustment_reason') or '').split())
     if len(reason) > 300:
         raise TariffError('El motivo admite hasta 300 caracteres.', field='adjustment_reason')
-    eligibility.refuse_identifiers(reason, 'adjustment_reason')
+    _refuse_identifiers(reason, 'adjustment_reason', check)
     if raw in (None, ''):
         return computed, '', False
     if overall == NOT_ELIGIBLE or computed is None:
@@ -470,26 +537,36 @@ def approve(*, actor, company, assessment, note='', request=None) -> TradeInAsse
     note = ' '.join(str(note or '').split())
     if len(note) > 300:
         raise TariffError('La nota admite hasta 300 caracteres.', field='note')
-    eligibility.refuse_identifiers(note, 'note')
+    _refuse_identifiers(note, 'note', assessment.device_check)
     with transaction.atomic():
         if assessment.company_id != company.pk:
             raise TariffError('No encontrado.', code='not_found')
         assessment = TradeInAssessment.objects.select_for_update(of=('self',)).get(pk=assessment.pk)
+        check = TradeInDeviceCheck.objects.select_for_update(of=('self',)).get(pk=assessment.device_check_id)
         if assessment.status != TradeInAssessment.STATUS_CALCULATED:
             raise TariffStateError('Sólo se aprueba una evaluación calculada.', code='not_calculated')
-        if not assessment.needs_approval:
-            raise TariffStateError('Esta valorización no necesita aprobación.', code='not_needed')
-        if getattr(actor, 'pk', None) in (assessment.calculated_by_id, assessment.created_by_id):
+        if check.status != TradeInDeviceCheck.STATUS_OPEN:
+            raise TariffStateError('La comprobación del equipo está cerrada.', code='check_closed')
+        if getattr(actor, 'pk', None) in _authors(assessment):
             raise TariffPermissionError('Otra persona con permiso de aprobación tiene que aprobar esta valorización.',
                                         code='own_change')
+        security = _security(check)
+        frozen_security = (assessment.calculation or {}).get('security', {}).get('eligibility')
+        if security['eligibility'] != eligibility.ELIGIBLE:
+            raise TariffStateError('La comprobación del equipo no está limpia: revísala y vuelve a calcular.',
+                                   code=security['eligibility'], extra={'blocked': security['blocked']})
+        if frozen_security != eligibility.ELIGIBLE:
+            raise TariffConflict('Se calculó cuando la comprobación no estaba limpia: vuelve a calcular.',
+                                 code='calculation_stale', extra={'reasons': ['security']})
+        if assessment.eligibility == PENDING_VERIFICATION:
+            raise TariffStateError('Hay una verificación pendiente: complétala y vuelve a calcular.',
+                                   code='pending_verification')
+        if assessment.eligibility != REQUIRES_APPROVAL:
+            raise TariffStateError('Esta valorización no necesita aprobación.', code='not_needed')
         stale = _stale(company, assessment)
         if stale:
             raise TariffConflict('La tarifa o las reglas con que se calculó ya no son las vigentes: vuelve a '
                                  'calcular.', code='calculation_stale', extra={'reasons': stale})
-        security = _security(assessment.device_check)
-        if security['eligibility'] != eligibility.ELIGIBLE:
-            raise TariffStateError('La comprobación del equipo ya no está limpia: revísala y vuelve a calcular.',
-                                   code=security['eligibility'], extra={'blocked': security['blocked']})
         assessment.status = TradeInAssessment.STATUS_APPROVED
         assessment.approved_by, assessment.approved_at, assessment.approval_note = actor, timezone.now(), note
         assessment.save(update_fields=['status', 'approved_by', 'approved_at', 'approval_note', 'updated_at'])

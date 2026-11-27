@@ -6834,6 +6834,9 @@ class TradeInAssessment(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     approved_at = models.DateTimeField(null=True, blank=True)
     approval_note = models.CharField(max_length=300, blank=True, default='')
+    #: Everyone who shaped this valuation (opened it, changed its details, answered, calculated): none of them
+    #: approves it. User ids, written only by the services.
+    contributor_ids = models.JSONField(default=list, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     created_at = models.DateTimeField(auto_now_add=True)
@@ -6886,6 +6889,11 @@ class TradeInAssessment(models.Model):
             if stored == self.STATUS_APPROVED and self.status not in (self.STATUS_QUOTED, self.STATUS_CANCELLED):
                 raise ValidationError('Una evaluación aprobada no se modifica: anúlala y abre otra.')
         return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError('Una evaluación no se borra: se anula y queda como historial (y su número no se reusa).')
 
 
 class TradeInAssessmentAnswer(models.Model):

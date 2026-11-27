@@ -95,6 +95,7 @@ class Migration(migrations.Migration):
                 ('calculated_at', models.DateTimeField(blank=True, null=True)),
                 ('approved_at', models.DateTimeField(blank=True, null=True)),
                 ('approval_note', models.CharField(blank=True, default='', max_length=300)),
+                ('contributor_ids', models.JSONField(blank=True, default=list)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
                 ('cancelled_at', models.DateTimeField(blank=True, null=True)),
