@@ -138,6 +138,15 @@ describe('SALES-UX-02 · the kind of document is said out loud', () => {
     expect(fiscalBadge(undefined)).toBe('Comprobante electrónico · BETA');
   });
 
+  it('says production was chosen and is not available, never BETA (C3)', () => {
+    const chosen = { ...BOLETA, label: 'Boleta electrónica · Producción elegida, no disponible', enabled: false,
+      environment: 'production_unavailable', disabled_code: 'FISCAL_NOT_CONFIGURED', disabled_reason: 'x' };
+    render(<PosReceiptSelector branch={1} value="" onChange={jest.fn()} options={[NOTE, chosen]} />);
+    expect(screen.getByRole('note')).toHaveTextContent('producción elegida, no disponible');
+    expect(screen.getByRole('note')).not.toHaveTextContent('hoy en BETA');
+    expect(fiscalBadge('production_unavailable')).toBe('Producción elegida, no disponible');
+  });
+
   it('before choosing, tells the three documents apart', () => {
     render(<PosReceiptSelector branch={1} value="" onChange={jest.fn()} options={[NOTE, BOLETA]} />);
     const note = screen.getByRole('note');

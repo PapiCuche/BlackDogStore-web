@@ -367,6 +367,10 @@ def _consult(target: str) -> list[Check]:
             'la consulta de CDR (getStatusCdr) está apagada: es la única salida ante un envío incierto, y en '
             'producción se enciende junto con la emisión. BETA no tiene ese servicio'))]
     configured = (getattr(settings, 'FISCAL_CONSULT_ENDPOINT', '') or '').strip()
+    if production and configured:
+        return [Check(NO_GO, 'consulta', (
+            'FISCAL_CONSULT_ENDPOINT está definido: en producción la consulta sólo usa el endpoint oficial del '
+            'código; quite la variable'))]
     try:
         endpoint = consult_endpoint(target)
     except FiscalConfigError as exc:

@@ -622,6 +622,14 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
             f'correlativo sin resolver la causa del rechazo.'
         )
 
+    # C3: en pausa no nace ningún comprobante NUEVO. Antes de la serie y del número.
+    from .fiscal_config import FiscalConfigError as _PausedError, refuse_new_document_while_paused
+
+    try:
+        refuse_new_document_while_paused()
+    except _PausedError as exc:
+        raise FiscalError(str(exc)) from None
+
     # LA SERIE LA ELIGE UN RESOLVER, no `order_by('pk').first()`.
     #
     # Aquello convertía «el id más bajo» en política tributaria: bastaba con que
@@ -717,6 +725,23 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
     return document, True
 
 
+def refuse_signing_in_another_environment(document: FiscalDocument) -> None:
+    """
+    Sólo se firma lo que es del ambiente que opera el servidor para su empresa (C3).
+
+    `get_or_create_fiscal_document` devuelve el comprobante que ya existe aunque sea
+    del otro ambiente; firmarlo ahora con el certificado y las reglas del ambiente
+    actual mezclaría los dos. Se niega antes de tocar nada.
+    """
+    from .fiscal_config import resolve_environment
+
+    current = resolve_environment(document.company)
+    if current != document.environment:
+        raise FiscalError(
+            f'El comprobante {document.document_id} es del ambiente «{document.environment}» y el servidor '
+            f'opera «{current}»: no se firma en otro ambiente.')
+
+
 def sign_fiscal_document(document: FiscalDocument, *, key_pem: bytes,
                          cert_pem: bytes) -> FiscalDocument:
     """
@@ -727,6 +752,7 @@ def sign_fiscal_document(document: FiscalDocument, *, key_pem: bytes,
     """
     if document.signed_xml:
         return document
+    refuse_signing_in_another_environment(document)
 
     data = _order_to_invoice_data(document.order, document.series_ref,
                                   document.number)

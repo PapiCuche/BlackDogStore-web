@@ -80,7 +80,7 @@ export async function createFiscalSeries(body: NewFiscalSeries): Promise<FiscalS
 }
 
 export async function updateFiscalSeries(
-  id: number, body: { is_active?: boolean; next_number?: number },
+  id: number, body: { is_active?: boolean; next_number?: number; confirm?: string },
 ): Promise<FiscalSeriesRow> {
   return read(
     await fetchWithAuth(`${BASE}${id}/`, { method: "PATCH", body: JSON.stringify(body) }),
@@ -88,6 +88,10 @@ export async function updateFiscalSeries(
   );
 }
 
-export async function deleteFiscalSeries(id: number): Promise<void> {
-  return read(await fetchWithAuth(`${BASE}${id}/`, { method: "DELETE" }), "No se pudo borrar la serie.");
+/** `confirm` is the series name typed back: the server refuses the delete without it. */
+export async function deleteFiscalSeries(id: number, confirm: string): Promise<void> {
+  return read(
+    await fetchWithAuth(`${BASE}${id}/`, { method: "DELETE", body: JSON.stringify({ confirm }) }),
+    "No se pudo borrar la serie.",
+  );
 }

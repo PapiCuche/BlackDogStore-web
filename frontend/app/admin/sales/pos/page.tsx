@@ -591,6 +591,11 @@ function PosContent({ ctx, deviceRequest, deviceWanted, onDeviceHandled }: {
         // INV-COM-01C: the total the cashier read, only while it is the one of THIS basket.
         ...(preview && previewFor === currentInputs ? { expected_total: preview.total } : {}),
         receipt_type: receiptType,
+        // C3: the SUNAT environment this screen showed; if the server would issue in another, it answers 409.
+        ...((() => {
+          const shown = (context?.receipt_options ?? []).find((o) => o.value === receiptType)?.environment;
+          return receiptType !== "sales_note" && shown ? { expected_environment: shown } : {};
+        })()),
         terms_confirmed: terms,
         coupon_code: couponCode.trim(),
         manual_discount_type: manualType,

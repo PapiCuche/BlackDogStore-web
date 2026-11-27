@@ -98,6 +98,22 @@ class PosPriceChanged(PosError):
         self.expected, self.current, self.priced = expected, current, priced
 
 
+class PosEnvironmentChanged(PosError):
+    """
+    C3 — the SUNAT environment the cashier saw is not the one the server would issue in now
+    (production was switched on or off since the screen loaded). Nothing was written: a
+    receipt is never issued in an environment the customer was not shown.
+    """
+
+    code = 'environment_changed'
+
+    def __init__(self, expected: str, current: str):
+        super().__init__(
+            f'El ambiente de SUNAT cambió desde que se cargó la caja (se mostró «{expected}» y ahora es '
+            f'«{current}»). Vuelve a cargar la caja y cobra de nuevo.')
+        self.expected, self.current = expected, current
+
+
 class PosPermissionError(PosError):
     """
     The request is well-formed; this caller is not allowed to make it.
@@ -270,15 +286,32 @@ def receipt_options(company, branches, actor):
         environment = fiscal_config.resolve_environment(company)
     except fiscal_config.FiscalConfigError:
         environment = ''
+        try:
+            if fiscal_config.intended_environment() == fiscal_config.FiscalEnvironment.PRODUCTION:
+                # Chosen, and not usable for this company now: never shown as BETA.
+                environment = 'production_unavailable'
+        except fiscal_config.FiscalConfigError:
+            pass
     production = environment == fiscal_config.FiscalEnvironment.PRODUCTION
     for value, noun in Order.ReceiptType.choices:
-        label = f'{noun} electrónica' if production else f'{noun} electrónica · BETA'
+        if environment == 'production_unavailable':
+            label = f'{noun} electrónica · Producción elegida, no disponible'
+        else:
+            label = f'{noun} electrónica' if production else f'{noun} electrónica · BETA'
         if not fiscal_on:
             options.append({
                 'value': value, 'label': label, 'branches': [], 'environment': environment,
                 'enabled': False, 'disabled_code': 'FISCAL_DISABLED',
                 'disabled_reason': ('La emisión electrónica no está habilitada '
                                     'en este servidor.'),
+            })
+            continue
+        if ready and fiscal_config.new_documents_paused():
+            options.append({
+                'value': value, 'label': label, 'branches': [], 'environment': environment,
+                'enabled': False, 'disabled_code': 'FISCAL_PAUSED',
+                'disabled_reason': ('La emisión de comprobantes nuevos está en pausa '
+                                    '(Integraciones › SUNAT).'),
             })
             continue
         if not ready:
@@ -1350,6 +1383,7 @@ def create_pos_sale(
     may_apply_manual_discount: bool = False,
     may_order_over_stock: bool = False,
     expected_total=None,
+    expected_environment=None,
     request=None,
 ):
     """
@@ -1476,6 +1510,10 @@ def create_pos_sale(
             from .fiscal_config import FiscalConfigError, fiscal_enabled, resolve_credentials
             if not fiscal_enabled():
                 raise PosValidationError('La emisión fiscal no está habilitada.')
+            from .fiscal_config import new_documents_paused, PAUSED
+            if new_documents_paused():
+                # C3: antes de crear la venta, como el interruptor.
+                raise PosValidationError(PAUSED)
             # FISCAL-PROD-02 (revisión de #176): también las credenciales y el par
             # de firma, ANTES de crear la venta y su correlativo. Con la emisión
             # encendida pero sin poder firmar, la caja gastaba un número que nadie
@@ -1484,6 +1522,13 @@ def create_pos_sale(
                 resolve_credentials(company, signing=True)
             except FiscalConfigError as exc:
                 raise PosValidationError(str(exc)) from None
+            # C3: the environment the cashier was shown. A difference is a 409 before
+            # anything is written, like a price that changed.
+            if expected_environment not in (None, ''):
+                from .fiscal_config import resolve_environment
+                current = resolve_environment(company)
+                if expected_environment != current:
+                    raise PosEnvironmentChanged(str(expected_environment)[:16], current)
 
     now = timezone.now()
     seller = priced['seller']

@@ -107,6 +107,12 @@ function NewSeriesForm({ listing, onCreated }: { listing: FiscalSeriesListing; o
   );
 }
 
+/** The series name typed back, or null if the master cancelled. Asked by the server too. */
+function typedName(row: FiscalSeriesRow, question: string): string | null {
+  const typed = window.prompt(`${question} Escribe ${row.series} para confirmarlo.`);
+  return typed === null ? null : typed.trim().toUpperCase();
+}
+
 function SeriesRow({ row, onChanged }: { row: FiscalSeriesRow; onChanged: () => void }) {
   const [number, setNumber] = useState(String(row.next_number));
   const [error, setError] = useState<string | null>(null);
@@ -146,12 +152,23 @@ function SeriesRow({ row, onChanged }: { row: FiscalSeriesRow; onChanged: () => 
         <span className="flex flex-wrap gap-2">
           <button
             type="button" className={internalButtonClass}
-            onClick={() => void run(() => updateFiscalSeries(row.id, { is_active: !row.is_active }))}
+            onClick={() => {
+              if (row.is_active && row.environment === "production") {
+                const confirm = typedName(row, "Desactivar una serie de PRODUCCIÓN detiene la emisión con ella.");
+                if (confirm === null) return;
+                void run(() => updateFiscalSeries(row.id, { is_active: false, confirm }));
+                return;
+              }
+              void run(() => updateFiscalSeries(row.id, { is_active: !row.is_active }));
+            }}
           >{row.is_active ? "Desactivar" : "Activar"}</button>
           {row.deletable ? (
             <button
               type="button" className={internalButtonClass}
-              onClick={() => void run(() => deleteFiscalSeries(row.id))}
+              onClick={() => {
+                const confirm = typedName(row, "La serie se borrará.");
+                if (confirm !== null) void run(() => deleteFiscalSeries(row.id, confirm));
+              }}
             >Borrar</button>
           ) : null}
         </span>

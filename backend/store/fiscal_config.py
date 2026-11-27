@@ -117,6 +117,30 @@ def _credentials_from(public: dict, secrets: dict) -> dict:
     }
 
 
+#: Lo que se dice cuando la consola SUNAT está en pausa y alguien pide un comprobante NUEVO.
+PAUSED = (
+    'La emisión de comprobantes nuevos está en PAUSA (Integraciones › SUNAT). Lo ya emitido se sigue '
+    'enviando, consultando y conciliando, y los resúmenes y bajas siguen su curso. Reanúdala desde la consola.'
+)
+
+
+def new_documents_paused() -> bool:
+    """
+    ¿Está la consola SUNAT en PAUSA? Pausada no nace ningún comprobante nuevo (factura,
+    boleta o nota), y TODO lo demás sigue: firmar lo ya creado, enviar, consultar,
+    conciliar, el Resumen Diario y las bajas. Es la forma normal de detener producción:
+    desactivar corta también los envíos pendientes, y un pendiente tiene plazo legal.
+    """
+    active = _console_row()
+    return bool(active is not None and active.enabled and active.paused)
+
+
+def refuse_new_document_while_paused() -> None:
+    """Levanta `FiscalConfigError(PAUSED)` si la consola está en pausa."""
+    if new_documents_paused():
+        raise FiscalConfigError(PAUSED)
+
+
 def production_enabled() -> bool:
     """
     ¿Permite ESTA INSTALACIÓN emitir en producción? `FISCAL_PRODUCTION_ENABLED`.
@@ -241,9 +265,10 @@ def production_activation_problems(public: dict, secrets: dict | None = None, *,
        ESTAS credenciales y ESTE certificado (los del borrador que se va a activar;
        sin `secrets`, los de la fila activa).
 
-    `staying`: la consola YA opera producción y sólo cambia sus claves (renovar el
-    certificado). Entonces la cola y los plazos no bloquean: impedir el certificado
-    nuevo por una factura pendiente dejaría sin firma también a la siguiente.
+    `staying`: la consola YA está en modo producción —activa, en pausa o desactivada—
+    y se cambian sus claves (renovar el certificado) o se vuelve a encender. Entonces
+    la cola y los plazos no bloquean: lo pendiente es justamente lo que necesita la
+    emisión encendida para salir, y negarlo dejaría la instalación sin salida.
 
     Los motivos no llevan secretos ni el RUC de otra empresa: son líneas del preflight.
     """
@@ -727,9 +752,10 @@ def consult_endpoint(environment: str) -> str:
     El endpoint de `getStatusCdr` para documentos de `environment`. Lo decide el
     servidor; nunca una petición ni la empresa.
 
-    - PRODUCCIÓN: el configurado en `FISCAL_CONSULT_ENDPOINT` o, vacío, el del
-      código (`PRODUCTION_CONSULT_ENDPOINT`). H-14: `settings.py` declara la
-      variable con '' por defecto, y antes ese vacío anulaba la constante.
+    - PRODUCCIÓN: SÓLO el del código (`PRODUCTION_CONSULT_ENDPOINT`). Un
+      `FISCAL_CONSULT_ENDPOINT` configurado se NIEGA para producción (C3, revisión
+      de #468): la consulta de documentos reales no puede apuntar a otra parte por
+      una variable copiada. Vacío (H-14) es la constante.
     - BETA: SUNAT no tiene servicio de consulta en BETA (Manual del programador).
       Consultar un documento de pruebas contra el endpoint de producción sería
       hablar con producción con un documento que allí no existe, así que vacío
@@ -742,7 +768,12 @@ def consult_endpoint(environment: str) -> str:
 
     configured = (getattr(settings, 'FISCAL_CONSULT_ENDPOINT', '') or '').strip()
     if environment == FiscalEnvironment.PRODUCTION:
-        endpoint = configured or PRODUCTION_CONSULT_ENDPOINT
+        if configured:
+            raise FiscalConfigError(
+                'FISCAL_CONSULT_ENDPOINT está definido: la consulta de comprobantes de producción sólo usa el '
+                'endpoint oficial del código. Quite la variable.'
+            )
+        endpoint = PRODUCTION_CONSULT_ENDPOINT
     elif configured:
         endpoint = configured
     else:
@@ -774,6 +805,12 @@ def resolve_consult_provider(company, *, environment: str, issuer_tax_id: str | 
         raise FiscalConfigError(
             'La consulta/reconciliación en línea con SUNAT no está habilitada en '
             'esta versión. Requiere revisión de producción.'
+        )
+    if environment != FiscalEnvironment.PRODUCTION and intended_environment() == FiscalEnvironment.PRODUCTION:
+        # C3: con producción elegida, nada sale hacia un servicio de pruebas por un
+        # documento BETA: la cola BETA quedó congelada al cambiar de modo.
+        raise FiscalConfigError(
+            'El servidor opera SUNAT PRODUCCIÓN: no se consultan documentos de pruebas (BETA).'
         )
     endpoint = consult_endpoint(environment)
     # Consultar no firma (`signing=False`); se compara con el RUC del documento.

@@ -109,6 +109,15 @@ class CreatingASeriesTest(_Base):
                 self.assertEqual(self.create(document_type=kind, series=name).status_code, 201)
         self.assertTrue(FiscalSeries.objects.filter(series='FC01').exists())
 
+    def test_ids_are_strict(self):
+        for company in (True, '7.0', '-1', ' ', [self.company.pk]):
+            with self.subTest(company=company):
+                response = self.create(company=company)
+                self.assertEqual(response.status_code, 400)
+                self.assertIn('company', response.data['errors'])
+        self.assertEqual(self.create(company=str(self.company.pk)).status_code, 201)
+        self.assertEqual(self.client.get(URL, {'company': '1e3'}).status_code, 404)
+
     def test_bad_numbers_environments_and_foreign_branches(self):
         foreign = self.other.default_inventory_branch
         for body, field in (({'next_number': 0}, 'next_number'), ({'next_number': 100_000_000}, 'next_number'),
@@ -156,13 +165,22 @@ class ChangingASeriesTest(_Base):
         self.series.refresh_from_db()
         self.assertEqual(self.series.next_number, 41)
 
+    def test_a_beta_series_is_switched_off_without_a_word(self):
+        beta = FiscalSeries.objects.get(pk=self.create(environment=FiscalEnvironment.BETA).data['id'])
+        response = self.client.patch(f'{URL}{beta.pk}/', {'is_active': False}, format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+
     def test_nothing_else_is_changed_here(self):
         response = self.patch(series='F999', environment=FiscalEnvironment.BETA, company=self.other.pk)
         self.assertEqual(response.status_code, 400)
         self.assertEqual(set(response.data['errors']), {'series', 'environment', 'company'})
 
     def test_deactivating_and_reactivating_respects_the_slot(self):
-        self.assertEqual(self.patch(is_active=False).status_code, 200)
+        # An active PRODUCTION series is switched off only with its name typed back.
+        refused = self.patch(is_active=False)
+        self.assertEqual(refused.status_code, 400)
+        self.assertIn('F001', refused.data['errors']['confirm'])
+        self.assertEqual(self.patch(is_active=False, confirm='f001').status_code, 200)
         self.assertEqual(self.create(series='F002').status_code, 201)
         response = self.patch(is_active=True)
         self.assertEqual(response.status_code, 400)
@@ -174,7 +192,9 @@ class ChangingASeriesTest(_Base):
         self.assertEqual(response.status_code, 409)
         self.assertTrue(FiscalSeries.objects.filter(pk=self.series.pk).exists())
         spare = FiscalSeries.objects.get(pk=self.create(series='F009', is_active=False).data['id'])
-        self.assertEqual(self.client.delete(f'{URL}{spare.pk}/').status_code, 204)
+        self.assertEqual(self.client.delete(f'{URL}{spare.pk}/').status_code, 400)
+        self.assertEqual(self.client.delete(f'{URL}{spare.pk}/', {'confirm': 'F001'}, format='json').status_code, 400)
+        self.assertEqual(self.client.delete(f'{URL}{spare.pk}/', {'confirm': 'F009'}, format='json').status_code, 204)
         self.assertTrue(AdminAuditLog.objects.filter(action='fiscal_series_deleted', target_id=str(spare.pk))
                         .exists())
 

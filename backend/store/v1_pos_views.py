@@ -377,6 +377,8 @@ class V1PosSaleView(V1PosSurfaceMixin, APIView):
                 may_order_over_stock=has_capability(request.user, company, CAP_ORDERS_MANAGE),
                 # INV-COM-01C: the total the cashier read; a price changed since is a 409, never charged silently.
                 expected_total=data.get('expected_total'),
+                # C3: the SUNAT environment the screen showed; another one now is a 409.
+                expected_environment=data.get('expected_environment'),
                 request=request,
             )
         except pos_services.PosKeyReserved as exc:
@@ -402,6 +404,9 @@ class V1PosSaleView(V1PosSurfaceMixin, APIView):
                 },
                 status=status.HTTP_409_CONFLICT,
             )
+        except pos_services.PosEnvironmentChanged as exc:
+            return Response({'detail': str(exc), 'code': exc.code, 'environment': exc.current},
+                            status=status.HTTP_409_CONFLICT)
         except pos_services.PosPermissionError as exc:
             # 403, not 400: the request is fine, the caller is not allowed to
             # make it. A 400 would send an operator hunting for a typo.

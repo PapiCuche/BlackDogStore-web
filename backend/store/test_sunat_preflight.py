@@ -309,6 +309,11 @@ class EachNoGoCauseTest(_Base):
         self.assertEqual([c.level for c in beta], ['AVISO'])
         self.assertIn('BETA', beta[0].detail)
 
+    @override_settings(**BETA_READY, FISCAL_CONSULT_ENABLED=True,
+                       FISCAL_CONSULT_ENDPOINT='https://consulta.example.test/billConsultService')
+    def test_an_override_of_the_consult_endpoint_is_no_go_for_production(self):
+        self.assert_no_go(self.run_checks(FiscalEnvironment.PRODUCTION), 'consulta', 'FISCAL_CONSULT_ENDPOINT')
+
     @override_settings(**BETA_READY, FISCAL_CONSULT_ENABLED=True, FISCAL_CONSULT_ENDPOINT='http://consulta.test/x')
     def test_a_non_https_consult_endpoint_is_no_go(self):
         self.assert_no_go(self.run_checks(), 'consulta', 'HTTPS')

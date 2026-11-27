@@ -21,7 +21,9 @@ export type ReceiptOption = {
 
 /** SUNAT-PROD-C3 — the badge of an electronic receipt, by the environment the server operates. */
 export function fiscalBadge(environment?: string): string {
-  return environment === 'production' ? 'Comprobante electrónico · SUNAT' : 'Comprobante electrónico · BETA';
+  if (environment === 'production') return 'Comprobante electrónico · SUNAT';
+  if (environment === 'production_unavailable') return 'Producción elegida, no disponible';
+  return 'Comprobante electrónico · BETA';
 }
 
 /**
@@ -51,6 +53,7 @@ function DocumentNature({ value, options }: { value: string; options: ReceiptOpt
   const fiscal = options.filter((option) => option.value !== 'sales_note');
   const fiscalOff = fiscal.length > 0 && fiscal.every((option) => option.disabled_code === 'FISCAL_DISABLED');
   const production = fiscal.some((option) => option.environment === 'production');
+  const productionUnavailable = fiscal.some((option) => option.environment === 'production_unavailable');
   if (value === 'sales_note') {
     return (
       <div role="note" data-document-kind="internal" className="mt-3 rounded-lg border border-bd-border bg-background p-3 text-xs text-muted">
@@ -90,7 +93,8 @@ function DocumentNature({ value, options }: { value: string; options: ReceiptOpt
           <span className="font-medium text-foreground">Boleta y factura electrónicas{fiscalOff ? ': no operativas' : fiscal.length === 0 ? ': no disponibles' : ''}:</span>{' '}
           {fiscalOff ? 'la emisión electrónica está apagada en este servidor.'
             : fiscal.length === 0 ? 'no disponibles para tu cuenta.'
-              : production ? 'comprobantes fiscales con validez ante SUNAT.' : 'comprobantes fiscales (hoy en BETA).'}
+              : production ? 'comprobantes fiscales con validez ante SUNAT.'
+                : productionUnavailable ? 'producción elegida, no disponible ahora.' : 'comprobantes fiscales (hoy en BETA).'}
         </li>
       </ul>
     </div>

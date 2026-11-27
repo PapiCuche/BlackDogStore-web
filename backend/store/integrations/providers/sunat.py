@@ -34,7 +34,7 @@ from django.conf import settings
 
 from ...fiscal.certificate import CertificateError, inspect_pkcs12
 from .. import registry
-from ..registry import ConfigError, Field, Provider, TestOutcome
+from ..registry import ChangeBlocked, ConfigError, Field, Provider, TestOutcome
 
 ID = 'sunat'
 ENABLE_WORD = 'EMITIR'
@@ -64,6 +64,10 @@ class SunatProvider(Provider):
     category = 'fiscal'
     scope = registry.SCOPE_PLATFORM
     supported_modes = ('test', 'production')
+    #: PAUSE stops only NEW documents (`fiscal_config.new_documents_paused`): what was
+    #: issued keeps being sent, consulted and reconciled, and RC/RA go on. It is the
+    #: normal way to stop production; switching off is the emergency one.
+    pausable = True
     #: A refused activation is written to the audit trail too (C3): «somebody tried to
     #: switch SUNAT to production and could not» is something the owner has to see.
     audit_refusals = True
@@ -129,10 +133,21 @@ class SunatProvider(Provider):
         allow it or the preflight is not GO. Then the typed text.
         """
         from ... import fiscal_config
+        from .. import service
 
-        running, staying = _production_running()
+        running = _production_chosen()
+        active = service.row(ID)
+        if (active is not None and str(public.get('ruc') or '').strip() != str(active.public.get('ruc') or '').strip()
+                and _issued_in_production()):
+            # The RUC is who issued them: another one could not send, consult or void them.
+            raise ConfigError({'ruc': (
+                'Ya hay comprobantes de PRODUCCIÓN emitidos con este RUC: no se cambia por otro, o quedarían '
+                'sin quien los envíe, consulte o dé de baja.')})
         if self.mode(public, secrets) == 'production':
-            problems = fiscal_config.production_activation_problems(public, secrets, staying=staying)
+            # Already in production (running, paused or switched off): changing keys or
+            # switching back on does not wait on the queue or the deadlines, which are
+            # exactly what may need it running again (review of #468).
+            problems = fiscal_config.production_activation_problems(public, secrets, staying=running)
             if problems:
                 more = f' (y {len(problems) - 1} más)' if len(problems) > 1 else ''
                 raise ConfigError({'environment': problems[0] + more})
@@ -141,6 +156,18 @@ class SunatProvider(Provider):
                 'Ya hay comprobantes de PRODUCCIÓN: no se vuelve a BETA, porque sus envíos, notas y bajas '
                 'pendientes quedarían sin ambiente. Para dejar de emitir, desactiva la integración.')})
         super().activation_guard(public, secrets, payload)
+
+    def guard_change(self, company, *, change, public=None, prepared=None, acknowledged=False):
+        """
+        Revoking deletes the credentials and the certificate: with production documents
+        they would be left with nothing to send, consult or reconcile them. Refused, not
+        asked for a word. Pause (normal) or switch off (emergency) instead.
+        """
+        if change == 'revoke' and _issued_in_production():
+            raise ChangeBlocked(
+                'Hay comprobantes de PRODUCCIÓN: revocar borraría las credenciales con que se envían, consultan y '
+                'concilian. Para detener la emisión, ponla en pausa (o desactívala en una emergencia).')
+        return NotImplemented
 
     def test(self, config, **_options) -> TestOutcome:
         """
@@ -164,7 +191,7 @@ class SunatProvider(Provider):
                                f'El certificado todavía no es válido: empieza el {metadata.not_before.strftime("%d/%m/%Y")}.')
         if self.mode(config.public, config.secrets) == 'production':
             problems = fiscal_config.production_activation_problems(
-                config.public, config.secrets, staying=_production_running()[1])
+                config.public, config.secrets, staying=_production_chosen())
             if problems:
                 return TestOutcome(False, 'unavailable', problems[0])
             return TestOutcome(True, 'ok', (
@@ -201,17 +228,13 @@ class SunatProvider(Provider):
         return {'ruc': ruc, 'sol_user': user}, secrets
 
 
-def _production_running() -> tuple[bool, bool]:
-    """
-    `(chosen, running)`: whether the active configuration is in production mode, and
-    whether it is also switched on — then a new draft only replaces its keys.
-    """
+def _production_chosen() -> bool:
+    """Whether the active configuration (on, paused or off) is in production mode."""
     from ... import fiscal_config
     from .. import service
 
     active = service.row(ID)
-    chosen = active is not None and fiscal_config.console_environment(active.public) == PRODUCTION
-    return chosen, chosen and active.enabled
+    return active is not None and fiscal_config.console_environment(active.public) == PRODUCTION
 
 
 def _issued_in_production() -> bool:

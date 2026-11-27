@@ -108,7 +108,7 @@ Estados: **IMPLEMENTADO** · **PARCIAL** · **PENDIENTE** · **BLOCKED** (necesi
 | 12 | Reimpresión y descarga | **IMPLEMENTADO** | Rutas `xml/`, `cdr/` y `pdf/` (A4 y ticket de 80 mm): `fiscal_views.py:637-775`.<br>El PDF sale del XML firmado y el QR lleva el `DigestValue` (`fiscal/qr.py:50`).<br>Marca de pruebas fuera de producción (`fiscal_pdf_services.py:112`).<br>Panel web: `frontend/app/admin/components/FiscalDocumentPanel.tsx` | `tests.py::C22BFiscalPdfTest`, `C22BQrTest`; `test_fiscal_print.py`, `test_fiscal_design.py` | • Las descargas no se auditan.<br>• No hay portal del cliente (punto 11). |
 | 13 | Consultas de estado (`getStatus`/`getStatusCdr`) | **PARCIAL** | `getStatus` por ticket (RC/RA): `fiscal/provider.py:597`.<br>`getStatusCdr`: `fiscal/provider.py:737` y `fiscal_services.py:1061`.<br>Vista de reconciliación: `fiscal_views.py:552` | `tests.py::FiscalConsultProviderTest`, `FiscalTicketStatusTest`, `C22CReconcileServiceTest`, `C22CReconcileApiTest` | • **H-14**: con la consulta encendida, `FISCAL_CONSULT_ENDPOINT=''` (valor por defecto, `backend/settings.py:362`) llega como URL vacía a `SunatConsultProvider`, que levanta `ValueError` sin capturar (`fiscal_config.py:487`).<br>• No existe consulta en BETA (F1), así que sólo se prueba con mocks: **BLOCKED** para la prueba real.<br>• No hay tarea periódica de reconciliación ni botón en la web. |
 | 14 | Numeración independiente de las notas internas (NV-) | **IMPLEMENTADO** | `FiscalSeries` (`models.py:9669`) es una autoridad de numeración aparte de `InternalSequence`.<br>`Order.ReceiptType` sólo tiene boleta y factura (`models.py:558`).<br>Un tipo que no esté en el mapa falla cerrado (`fiscal_services.py:176-179, 584-589`).<br>La nota de venta no cuenta como comprobante (`receipt_coverage.py`) | `test_sales_note_control.py::VoidTouchesNothingElseTest`; `test_note_not_substitute.py:522-540` | — |
-| 15 | Configuración fiscal por empresa | **PARCIAL** | Series, documentos, notas y bajas van por `company`, y la serie se resuelve sin ambigüedad (`fiscal_config.py:145`).<br>**Las credenciales y el certificado son de la instalación**: `SCOPE_PLATFORM` (`integrations/providers/sunat.py:49`), y `resolve_credentials(company)` ignora `company` (`fiscal_config.py:257`) | `tests.py::C22A1TenantIsolationTest`, `C22BFiscalTenantIsolationTest`, `C22BSeriesResolverTest` | • **No se comprueba que el RUC de la SOL sea el RUC del emisor**: dos empresas firmarían con la misma credencial.<br>• Series de producción: **CERRADO por C3**, panel MASTER Configuración › Integraciones › Series fiscales (`fiscal_series_views.py`), sin migración.<br>• No hay código de anexo por serie (`AddressTypeCode` fijo en `0000`; necesita migración, fuera de C3). |
+| 15 | Configuración fiscal por empresa | **PARCIAL** | Series, documentos, notas y bajas van por `company`, y la serie se resuelve sin ambigüedad y por ambiente (`fiscal_config.py::resolve_series`).<br>Las credenciales y el certificado son de la instalación (`SCOPE_PLATFORM`), pero desde #461 `resolve_credentials(company)` exige que el RUC de la Clave SOL sea el de la empresa (`issuer_problems`), y desde C3 `resolve_environment(company)` sólo da producción a esa empresa | `tests.py::C22A1TenantIsolationTest`, `C22BFiscalTenantIsolationTest`, `C22BSeriesResolverTest`; `test_sunat_issuer_gate.py`; `test_sunat_production.py::AnotherCompanyIsNeverTheProductionIssuerTest` | • **CERRADO por #461:** el RUC de la SOL es el del emisor; otra empresa no firma ni envía con esas credenciales.<br>• **CERRADO por C3:** series de producción desde el panel MASTER Configuración › Integraciones › Series fiscales (`fiscal_series_views.py`), sin migración.<br>• Sigue abierto (G6): una sola Clave SOL por instalación, así que sólo emite la empresa de su RUC.<br>• No hay código de anexo por serie (`AddressTypeCode` fijo en `0000`; necesita migración, fuera de C3). |
 | 16 | Panel de diagnóstico | **PARCIAL** | Botón «Probar» de la consola SUNAT, sin red: vigencia del certificado y ambiente (`integrations/providers/sunat.py:83-104`) | `test_integrations_sunat.py` | • No hay `fiscal_preflight` (FP-1).<br>• No hay sección fiscal en el estado operativo: plazos de 3 y 7 días, inciertos, intentos abiertos, certificado por vencer. |
 | 17 | Registro de auditoría | **PARCIAL** | Cada acción exitosa deja `AdminAuditLog` con la empresa: `fiscal_views.py:290,327,537,598` y las vistas de RC y RA. Las negativas 503/409 también (`fiscal_views.py:59-89`) | `test_fiscal_prod02.py::RefusalsAreAuditedTest` | • No se auditan las negativas 400 ni las descargas de XML, CDR y PDF.<br>• El humo BETA no audita. |
 
@@ -241,60 +241,107 @@ su release, como cualquier otro; la activación es la secuencia de la sección 6
 
 ### 6.1 Runbook de activación (C3)
 
-Cada paso tiene su GO, y ninguno implica el siguiente. Un PR fusionado no es un GO.
+Cada paso tiene su GO, y ninguno implica el siguiente. Un PR fusionado no es un GO. Todo lo que toca el servidor
+de producción va bajo `sh backups/ops/prod_lock.sh "<quién> · <qué> · <sha>" …`, con un solo ejecutor y
+fuera de la ventana del cron (no mientras corra una tarea programada).
+
+Marcador de sólo lectura que se puede consultar en cualquier momento y que lee el kit de release:
+`python manage.py fiscal_production_state --json`. Devuelve sólo booleanos y conteos: modo de la consola,
+interruptores, comprobantes/RC/RA de producción por estado y el primer plazo legal. No escribe nada.
 
 **Paso 0 — release (operador, con GO de despliegue).** Desplegar el SHA que contiene C3 con el GO de despliegue
-de esa release, por el procedimiento habitual (`prod_lock.sh`, un solo ejecutor). Con él desplegado no cambia
-nada: `FISCAL_PRODUCTION_ENABLED` no existe en `deploy/.env.production` y vale `False`.
+de esa release, por el procedimiento habitual. Con él desplegado no cambia nada: `FISCAL_PRODUCTION_ENABLED` no
+está en `deploy/.env.production` y vale `False`.
 
-**Paso 1 — datos del propietario fuera del sistema** (filas 1–6, 10, 12): alta como emisor electrónico en SOL,
-usuario SOL secundario con perfil de envío, certificado registrado en SOL, decisión de modalidad (SEE-Del
-contribuyente), acta del contador y procedimiento de contingencia. **Nada de esto lo comprueba el sistema**:
-lo atestigua el propietario.
+**Paso 1 — datos del propietario fuera del sistema** (filas 1–6, 10 y 12):
+- alta como emisor electrónico en SOL;
+- usuario SOL secundario con perfil de envío;
+- certificado registrado en SOL;
+- modalidad SEE-Del contribuyente;
+- acta del contador;
+- procedimiento de contingencia.
 
-**Paso 2 — series de producción (propietario, MASTER).** Configuración › Integraciones › **Series fiscales**:
-elegir la empresa y crear, con ambiente **PRODUCCIÓN**, al menos la serie de factura (`F…`), y las de boleta
-(`B…`) y notas que se vayan a usar; `Primer número` = 1. Son filas nuevas: las de BETA no se tocan ni se
-reetiquetan. Hoy (2026-11-27) `black-dog-store` no tiene ninguna serie, ni BETA ni de producción.
+**Nada de esto lo comprueba el sistema**: lo atestigua el propietario.
+
+**Paso 2 — series de producción (propietario, MASTER).**
+- Ir a Configuración › Integraciones › **Series fiscales**.
+- Elegir la empresa.
+- Crear, con ambiente **PRODUCCIÓN**, la serie de factura (`F…`) y las de boleta (`B…`) y notas que se vayan a
+  usar, con `Primer número` = 1.
+- Son filas nuevas: las de BETA no se tocan ni se reetiquetan.
+- Hoy (2026-11-27) `black-dog-store` no tiene ninguna serie, ni BETA ni de producción.
 
 **Paso 3 — evidencia BETA** (fila 9) sobre el SHA desplegado, con el GO del propietario para tocar BETA.
 
 **Paso 4 — GO escrito del propietario:** **«GO activación SUNAT producción black-dog-store»**.
 
-**Paso 5 — interruptor de instalación (operador, bajo su propio GO, posterior al del paso 4).** En
-`deploy/.env.production`:
+**Paso 5 — interruptor de instalación (operador, bajo su propio GO posterior al del paso 4).**
+1. `backup_verified`: un backup de la base recién hecho y comprobado, como antes de cualquier operación.
+2. Listar la cola BETA pendiente (`fiscal_preflight --company black-dog-store`, líneas «cola» y «plazos»).
+   **Queda congelada al cambiar el modo**: un comprobante BETA no se envía nunca hacia producción, así que lo
+   pendiente de BETA se cierra antes del paso 6 o se da por perdido, con decisión escrita.
+3. Bajo `prod_lock.sh` y fuera de la ventana del cron, añadir a `deploy/.env.production`:
+   ```
+   FISCAL_PRODUCTION_ENABLED=1
+   FISCAL_CONSULT_ENABLED=1
+   ```
+   No debe quedar `FISCAL_CONSULT_ENDPOINT`, ni un `FISCAL_ENVIRONMENT` distinto de `beta`:
+   `python3 deploy/preflight.py` marca ATENCIÓN en ambos casos, y también ante `FISCAL_ENABLED=1`.
+4. Recrear **sólo** el backend con la misma imagen: `$C up -d --no-deps --no-build backend`. **Nunca `restart`**,
+   porque no relee el `.env`.
+5. Comprobar que el id de imagen no cambió.
+6. Comprobar los dos valores leyendo **sólo los dos booleanos**, nunca el resto del entorno:
+   `fiscal_production_state --json` → `fiscal_production_enabled: true`, `fiscal_consult_enabled: true`.
+7. Ejecutar `python manage.py fiscal_preflight --company black-dog-store --target production`. Debe salir
+   **Veredicto: GO**. La línea «la consola sigue en BETA» es un AVISO esperado: el modo es el paso 6.
 
-```
-FISCAL_PRODUCTION_ENABLED=1
-FISCAL_CONSULT_ENABLED=1
-```
+**Paso 6 — modo producción en la consola (propietario, MASTER), con `backup_verified` previo.**
+1. Ir a Configuración › Integraciones › SUNAT.
+2. Editar, elegir **Entorno de SUNAT = PRODUCCIÓN** y guardar.
+3. Pulsar **Probar**: debe decir «Entorno PRODUCCIÓN… en GO».
+4. **Activar**, escribiendo exactamente `PRODUCCION <RUC de la empresa>`. El servidor vuelve a pasar el preflight
+   con las credenciales que se activan, y se niega, con el motivo, si algo no está en GO.
 
-Reiniciar el backend por el procedimiento habitual. `python3 deploy/preflight.py` lo reporta (y marca
-ATENCIÓN si falta la consulta). Comprobar después, en el servidor:
+Después, comprobar:
+- `fiscal_preflight --target production` vuelve a dar GO;
+- la bitácora tiene `integration_mode_changed` (de `test` a `production`) e `integration_activated`
+  con `mode=production`;
+- en la caja, la etiqueta dice «Comprobante electrónico · SUNAT», sin «BETA».
 
-```
-python manage.py fiscal_preflight --company black-dog-store --target production
-```
+Desde aquí `fiscal_preflight` con el objetivo por defecto (`--target beta`) da **NO-GO** («la consola opera
+producción»): es lo esperado. Se usa siempre `--target production`.
 
-Debe salir **Veredicto: GO**. La línea «la consola sigue en BETA» es un AVISO esperado: el modo es el paso 6.
+**Paso 7 — primera emisión real controlada** (fila 14):
+- La primera factura vuelve con CDR de código 0.
+- El propietario la verifica en la «consulta de validez» de SUNAT.
+- El PDF sale sin la marca de pruebas.
+- Hasta C3b, una persona con nombre y una hora fija generan y envían a mano el Resumen Diario cada día
+  (boletas: plazo de 7 días).
 
-**Paso 6 — modo producción en la consola (propietario, MASTER).** Configuración › Integraciones › SUNAT:
-editar, elegir **Entorno de SUNAT = PRODUCCIÓN**, guardar, **Probar** (debe decir «Entorno PRODUCCIÓN… en GO») y
-**Activar** escribiendo exactamente `PRODUCCION <RUC de la empresa>`. El servidor vuelve a pasar el preflight
-con las credenciales que se activan y se niega, con el motivo, si algo no está en GO. Queda en la bitácora
-como `integration_mode_changed` (de `test` a `production`) e `integration_activated`.
+**Vigilancia hasta C3b.**
+- Un cron horario con `fiscal_preflight --company black-dog-store --target production` que avise al responsable
+  cuando salga con código 1.
+- Una revisión diaria de la lista de pendientes: facturas sin enviar, inciertos y boletas sin RC.
 
-**Paso 7 — primera emisión real controlada** (fila 14) y seguimiento de 7 días.
+**Detener.**
+- **Normal: Pausa** en la consola. No nace ningún comprobante nuevo, y lo ya emitido se sigue enviando,
+  consultando y conciliando; los RC y las RA siguen. Se reanuda con `PRODUCCION <RUC>`.
+- **Emergencia: Desactivar.** Corta también los envíos.
+- `FISCAL_PRODUCTION_ENABLED=0` hace fallar todo cerrado, sin volver a BETA.
+- **Nunca Revocar**: con comprobantes de producción, el servidor lo bloquea.
+- Volver la consola a BETA también se niega con comprobantes de producción.
+- Reencender, reanudar o cambiar el certificado de una consola que ya está en producción no espera a la cola
+  ni a los plazos, porque lo pendiente necesita la emisión encendida para salir. El resto del preflight sí
+  se exige.
 
-**Volver atrás.** Desactivar la integración SUNAT en la consola detiene la emisión al momento (también
-`FISCAL_PRODUCTION_ENABLED=0`: producción falla cerrada, nunca vuelve a BETA en silencio). Volver la consola a
-BETA se **niega** si ya existe algún comprobante de producción: sus envíos, notas y bajas pendientes quedarían
-sin ambiente.
+**Vuelta atrás de código (R15/R16).** Antes de desplegar un SHA anterior a C3, el kit lee
+`fiscal_production_state`. Con comprobantes de producción o con la consola en producción, un código sin C3 no
+sabe enviarlos, consultarlos ni conciliarlos: no se vuelve atrás sin decisión expresa.
 
-**Lo que C3 no cubre (C3b y otros PR):** envío programado de facturas pendientes y del Resumen Diario con sus
-alertas (fila 15); credenciales por empresa (G6: hoy la Clave SOL es de la instalación y sólo emite la empresa
-de su RUC); código de anexo por serie (`AddressTypeCode` fijo en `0000`, `fiscal/builder.py`), que necesita
-migración.
+**Lo que C3 no cubre (C3b y otros PR):**
+- envío programado de las facturas pendientes y del Resumen Diario, con sus alertas (fila 15);
+- credenciales por empresa (G6): hoy la Clave SOL es de la instalación y sólo emite la empresa de su RUC;
+- código de anexo por serie: `AddressTypeCode` está fijo en `0000` en `fiscal/builder.py` y necesita migración.
 
 ---
 

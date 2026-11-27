@@ -108,6 +108,22 @@ def _conflict_message(other: FiscalSeries) -> str:
             f'«{other.environment}» ({other.series}). Desactívala primero: con dos activas no se emite.')
 
 
+def _id(raw):
+    """A primary key as the client sent it: an integer (never a bool) or a string of digits; else None."""
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return raw if raw > 0 else None
+    if isinstance(raw, str) and re.fullmatch(r'\d+', raw.strip()):
+        return int(raw.strip())
+    return None
+
+
+def _confirmation_missing(data: dict, series: FiscalSeries) -> bool:
+    """Deleting a series, or switching off an active PRODUCTION one, takes its name typed back."""
+    return str(data.get('confirm') or '').strip().upper() != series.series
+
+
 def _audit(request, action, series: FiscalSeries, **metadata):
     AdminAuditLog.log(
         actor=request.user, action=action, target_type='fiscal_series', target_id=series.pk,
@@ -147,7 +163,8 @@ class FiscalSeriesListView(_SeriesView):
         }
         raw = request.query_params.get('company')
         if raw:
-            company = Company.objects.filter(pk=int(raw) if str(raw).isdigit() else 0).first()
+            pk = _id(raw)
+            company = Company.objects.filter(pk=pk).first() if pk else None
             if company is None:
                 return Response({'detail': 'No encontrado.'}, status=status.HTTP_404_NOT_FOUND)
             used_ids = set(FiscalDocument.objects.filter(company=company).values_list('series_ref_id', flat=True)
@@ -165,15 +182,15 @@ class FiscalSeriesListView(_SeriesView):
     def post(self, request):
         data = self.body(request)
         errors = {}
-        company = Company.objects.filter(pk=data.get('company') if isinstance(data.get('company'), int) else 0,
-                                         is_active=True).first()
+        company_pk = _id(data.get('company'))
+        company = Company.objects.filter(pk=company_pk, is_active=True).first() if company_pk else None
         if company is None:
             errors['company'] = 'Elige una empresa activa.'
         branch = None
         if data.get('branch') not in (None, ''):
-            branch = Branch.objects.filter(
-                pk=data.get('branch') if isinstance(data.get('branch'), int) else 0,
-                company=company, is_active=True).first() if company else None
+            branch_pk = _id(data.get('branch'))
+            branch = Branch.objects.filter(pk=branch_pk, company=company, is_active=True).first() \
+                if (company and branch_pk) else None
             if branch is None:
                 errors['branch'] = 'La sucursal no es de esta empresa o no está activa.'
         document_type = data.get('document_type')
@@ -223,10 +240,16 @@ class FiscalSeriesDetailView(_SeriesView):
 
     def patch(self, request, pk):
         data = self.body(request)
-        unknown = sorted(set(data) - {'is_active', 'next_number'})
+        unknown = sorted(set(data) - {'is_active', 'next_number', 'confirm'})
         if unknown:
             raise _Invalid({name: 'Este campo no se cambia aquí: crea otra serie.' for name in unknown})
+        company_id = FiscalSeries.objects.filter(pk=pk).values_list('company_id', flat=True).first()
+        if company_id is None:
+            return Response({'detail': 'No encontrado.'}, status=status.HTTP_404_NOT_FOUND)
         with transaction.atomic():
+            # The company first, then the series: the order POST takes, so two activations of the
+            # same slot (or an activation and a creation) cannot both find it free.
+            Company.objects.select_for_update().get(pk=company_id)
             series = (FiscalSeries.objects.select_for_update(of=('self',)).select_related('branch', 'company')
                       .filter(pk=pk).first())
             if series is None:
@@ -244,6 +267,10 @@ class FiscalSeriesDetailView(_SeriesView):
                 if not isinstance(data['is_active'], bool):
                     errors['is_active'] = 'Tiene que ser sí o no.'
                 elif data['is_active'] != series.is_active:
+                    if (not data['is_active'] and series.environment == FiscalEnvironment.PRODUCTION
+                            and _confirmation_missing(data, series)):
+                        errors['confirm'] = (f'Desactivar una serie de PRODUCCIÓN detiene la emisión con ella: '
+                                             f'escribe {series.series} para confirmarlo.')
                     if data['is_active']:
                         other = _conflict(series.company_id, series.branch_id, series.document_type,
                                           series.environment, series.series, exclude=series.pk)
@@ -261,6 +288,7 @@ class FiscalSeriesDetailView(_SeriesView):
         return Response(_describe(series, used))
 
     def delete(self, request, pk):
+        data = request.data if isinstance(request.data, dict) else {}
         with transaction.atomic():
             series = FiscalSeries.objects.select_for_update(of=('self',)).select_related('company').filter(pk=pk).first()
             if series is None:
@@ -268,6 +296,8 @@ class FiscalSeriesDetailView(_SeriesView):
             if _used(series):
                 return Response({'detail': 'Ya se emitió con esta serie: no se borra. Desactívala.'},
                                 status=status.HTTP_409_CONFLICT)
+            if _confirmation_missing(data, series):
+                raise _Invalid({'confirm': f'Para borrar la serie escribe {series.series}.'})
             _audit(request, 'fiscal_series_deleted', series, next_number=series.next_number)
             series.delete()
         return Response(status=status.HTTP_204_NO_CONTENT)

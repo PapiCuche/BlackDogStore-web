@@ -1379,6 +1379,8 @@ export type PosPreview = {
 export type PosSaleInput = {
   /** INV-COM-01C: el total que el cajero leyó; si el servidor calcula otro, responde 409 `price_changed`. */
   expected_total?: string;
+  /** C3: el ambiente SUNAT que la caja mostró; si el servidor emitiría en otro, responde 409 `environment_changed`. */
+  expected_environment?: string;
   receipt_type?: string;
   branch: number;
   items: PosSaleLine[];

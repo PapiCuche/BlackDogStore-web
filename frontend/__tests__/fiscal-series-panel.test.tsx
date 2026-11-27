@@ -73,3 +73,20 @@ it('shows the reason the server gives', async () => {
   await userEvent.click(screen.getByRole('button', { name: 'Crear serie' }));
   expect(await screen.findByRole('alert')).toHaveTextContent('Desactívala primero');
 });
+
+it('switching off an active PRODUCTION series asks for its name typed back', async () => {
+  const production = { ...USED, id: 9, series: 'F100', environment: 'production' as const, used: false,
+    next_number_editable: true, deletable: true };
+  mocked.fetchFiscalSeries.mockResolvedValue({ ...LISTING, series: [production] });
+  mocked.updateFiscalSeries.mockResolvedValue({ ...production, is_active: false });
+  const prompt = jest.spyOn(window, 'prompt').mockReturnValue('f100');
+  render(<FiscalSeriesPanel />);
+  await screen.findByText('F100');
+  await userEvent.click(screen.getByRole('button', { name: 'Desactivar' }));
+  expect(prompt).toHaveBeenCalled();
+  await waitFor(() => expect(mocked.updateFiscalSeries).toHaveBeenCalledWith(9, { is_active: false, confirm: 'F100' }));
+  prompt.mockReturnValue(null);
+  await userEvent.click(screen.getByRole('button', { name: 'Borrar' }));
+  expect(mocked.deleteFiscalSeries).not.toHaveBeenCalled();
+  prompt.mockRestore();
+});

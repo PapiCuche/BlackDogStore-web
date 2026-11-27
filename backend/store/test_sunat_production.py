@@ -485,3 +485,168 @@ class AnotherCompanyIsNeverTheProductionIssuerTest(_Base):
         checks = fiscal_preflight.run(self.other, target=FiscalEnvironment.PRODUCTION)
         self.assertEqual(fiscal_preflight.verdict(checks), fiscal_preflight.NO_GO)
         self.assertTrue(any(c.area == 'credenciales' and c.level == fiscal_preflight.NO_GO for c in checks))
+
+
+@override_settings(**READY)
+class PausingAndSwitchingBackOnNeverDeadlockTest(_Base):
+    """
+    Review of #468 (ops 🔴1). Pause stops only NEW documents; switching back on a row that
+    is already in production does not wait on the queue or the deadlines, which are what
+    needs it running.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.series = self.production_series()
+        self.go_live('production')
+        response = self.cashier.post(f'/api/admin/orders/{self.order().pk}/fiscal-document/')
+        self.pending = FiscalDocument.objects.get(pk=response.data['id'])
+        # Left unsent past its legal three days: the full preflight says NO-GO for it.
+        FiscalDocument.objects.filter(pk=self.pending.pk).update(
+            issued_at=timezone.now() - datetime.timedelta(days=5))
+
+    def numbers(self):
+        self.series.refresh_from_db()
+        return self.series.next_number
+
+    def test_paused_no_new_document_is_born_and_what_was_issued_is_still_sent(self):
+        self.assertEqual(self.console.post(URL + 'pause/', {}, format='json').status_code, 200)
+        before = self.numbers()
+        response = self.cashier.post(f'/api/admin/orders/{self.order().pk}/fiscal-document/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
+        self.assertIn('PAUSA', response.data['detail'])
+        self.assertEqual(self.numbers(), before, 'se gastó un número en pausa')
+
+        from store.pos_services import receipt_options
+
+        options = {o['value']: o for o in receipt_options(self.company, [self.branch], self.issuer)}
+        self.assertEqual(options['factura']['disabled_code'], 'FISCAL_PAUSED')
+
+        with mock.patch('requests.post', return_value=_Http(_send_bill_answer('F001-1'))) as post:
+            response = self.cashier.post(f'/api/admin/fiscal-documents/{self.pending.pk}/submit/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(post.call_args.args[0], PRODUCTION_ENDPOINT)
+        self.pending.refresh_from_db()
+        self.assertEqual(self.pending.status, FiscalDocumentStatus.ACCEPTED)
+
+    def test_resuming_with_a_late_document_pending_is_not_refused(self):
+        self.console.post(URL + 'pause/', {}, format='json')
+        refused = self.console.post(URL + 'resume/', {'confirm': 'EMITIR'}, format='json')
+        self.assertEqual(refused.status_code, 400)
+        response = self.console.post(URL + 'resume/', {'confirm': WORD}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertFalse(fiscal_config.new_documents_paused())
+
+    def test_switching_back_on_with_a_late_document_pending_is_not_refused(self):
+        self.assertEqual(self.console.post(URL + 'disable/', {}, format='json').status_code, 200)
+        response = self.console.post(URL + 'enable/', {'confirm': WORD}, format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(fiscal_config.resolve_environment(self.company), FiscalEnvironment.PRODUCTION)
+
+    def test_the_rest_of_the_gate_still_holds_when_switching_back_on(self):
+        self.console.post(URL + 'disable/', {}, format='json')
+        with override_settings(FISCAL_CONSULT_ENABLED=False):
+            response = self.console.post(URL + 'enable/', {'confirm': WORD}, format='json')
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('consulta', response.json()['errors']['environment'])
+
+    def test_revoking_is_blocked_while_production_documents_exist(self):
+        response = self.console.post(URL + 'revoke/', {'confirm': 'REVOCAR'}, format='json')
+        self.assertEqual(response.status_code, 409, response.content)
+        self.assertIn('pausa', response.json()['detail'])
+        self.assertTrue(IntegrationConfig.objects.filter(provider='sunat').exists())
+
+
+class TheProductionStateMarkerTest(_Base):
+    """`fiscal_production_state`: booleans and counts for the release kit. Reads only, says no secret."""
+
+    def state(self):
+        out = io.StringIO()
+        from django.core.management import call_command
+
+        call_command('fiscal_production_state', '--json', stdout=out)
+        return out.getvalue()
+
+    def test_a_fresh_installation(self):
+        import json
+
+        state = json.loads(self.state())
+        self.assertEqual((state['console_configured'], state['fiscal_production_enabled'],
+                          state['production_documents'], state['earliest_deadline']), (False, False, {}, None))
+
+    @override_settings(**READY)
+    def test_production_in_use_with_a_document_owed(self):
+        import json
+
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        self.production_series()
+        self.go_live('production')
+        self.cashier.post(f'/api/admin/orders/{self.order().pk}/fiscal-document/')
+        with CaptureQueriesContext(connection) as queries:
+            text = self.state()
+        writes = [q['sql'] for q in queries.captured_queries
+                  if not q['sql'].lstrip().upper().startswith(('SELECT', 'SAVEPOINT', 'RELEASE SAVEPOINT'))]
+        self.assertEqual(writes, [])
+        state = json.loads(text)
+        self.assertEqual((state['console_environment'], state['console_enabled'], state['fiscal_production_enabled'],
+                          state['fiscal_consult_enabled'], state['production_documents_owed']),
+                         ('production', True, True, True, 1))
+        self.assertEqual(state['earliest_deadline_kind'], 'factura_o_nota')
+        for secret in (RUC, SOL_PASSWORD, 'FACTURADOR', 'F001-1'):
+            self.assertNotIn(secret, text)
+
+
+@override_settings(**READY)
+class FiscalSecurityReviewTest(_Base):
+    """Review of #468 (fiscal security): nothing crosses environments, and production consults only SUNAT."""
+
+    def setUp(self):
+        super().setUp()
+        self.series = self.production_series()
+
+    def test_an_unsigned_beta_document_is_never_signed_once_production_runs(self):
+        order = self.order()
+        beta = FiscalDocument.objects.create(
+            order=order, company=self.company, series_ref=self.beta_series,
+            document_type=FiscalDocumentType.INVOICE, series='F001', number=500, issued_at=timezone.now(),
+            environment=FiscalEnvironment.BETA, issuer_tax_id=RUC, issuer_legal_name='EMPRESA PROD SAC',
+            customer_doc_type='6', customer_doc_number='20000000001', customer_legal_name='CLIENTE SAC',
+            currency='PEN', taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'),
+            total=Decimal('118.00'), tax_rate=Decimal('0.18'), status=FiscalDocumentStatus.GENERATED)
+        self.go_live('production')
+        # «Emitir» finds the BETA document of this sale: it is not signed in production.
+        response = self.cashier.post(f'/api/admin/orders/{order.pk}/fiscal-document/')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST, response.data)
+        self.assertIn('no se firma en otro ambiente', response.data['detail'])
+        beta.refresh_from_db()
+        self.assertEqual((beta.signed_xml, beta.status), ('', FiscalDocumentStatus.GENERATED))
+
+    @override_settings(FISCAL_CONSULT_ENDPOINT='https://consulta.example.test/billConsultService')
+    def test_production_consults_only_sunat_and_no_beta_consult_while_it_runs(self):
+        from store import fiscal_preflight
+
+        stops = [c for c in fiscal_preflight.run(self.company, target=FiscalEnvironment.PRODUCTION)
+                 if c.area == 'consulta']
+        self.assertEqual([c.level for c in stops], [fiscal_preflight.NO_GO])
+        self.assertIn('FISCAL_CONSULT_ENDPOINT', stops[0].detail)
+        with override_settings(FISCAL_CONSULT_ENDPOINT=''):
+            self.go_live('production')
+        with self.assertRaises(fiscal_config.FiscalConfigError) as refused:
+            fiscal_config.resolve_consult_provider(self.company, environment=FiscalEnvironment.PRODUCTION)
+        self.assertIn('FISCAL_CONSULT_ENDPOINT', str(refused.exception))
+        with self.assertRaises(fiscal_config.FiscalConfigError) as refused:
+            fiscal_config.resolve_consult_provider(self.company, environment=FiscalEnvironment.BETA)
+        self.assertIn('no se consultan documentos de pruebas', str(refused.exception))
+
+    def test_the_ruc_is_not_changed_once_production_issued(self):
+        self.go_live('production')
+        self.cashier.post(f'/api/admin/orders/{self.order().pk}/fiscal-document/')
+        self.save('production', ruc=OTHER_RUC)
+        self.force_validated()
+        response = self.activate(f'PRODUCCION {OTHER_RUC}')
+        self.assertEqual(response.status_code, 400, response.content)
+        self.assertIn('ruc', response.json()['errors'])
+        self.assertEqual(IntegrationConfig.objects.get(provider='sunat', slot=IntegrationConfig.SLOT_ACTIVE)
+                         .public['ruc'], RUC)
