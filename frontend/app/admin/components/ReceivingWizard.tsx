@@ -825,19 +825,20 @@ export function ReceivingWizard({
             {/* INV-OPENING-01 — what this entry IS in the Kardex. */}
             <legend className="block text-xs font-semibold text-foreground">Tipo de ingreso</legend>
             <div className="mt-1.5 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {/* The help sits OUTSIDE the <label> and is linked by aria-describedby, so the radio's name stays short. */}
               {ENTRY_KINDS.map((kind) => (
-                <label key={kind.value} className="flex min-h-11 items-start gap-2 rounded-lg border border-bd-border p-3 text-sm">
-                  <input
-                    type="radio" name="receive-entry-kind" value={kind.value} className="mt-1"
-                    checked={(origin.entry_kind ?? "purchase") === kind.value}
-                    onChange={() => setOrigin({ ...origin, entry_kind: kind.value })}
-                    aria-describedby={`receive-entry-${kind.value}-help`}
-                  />
-                  <span>
+                <div key={kind.value} className="rounded-lg border border-bd-border p-3 text-sm">
+                  <label className="flex min-h-11 items-start gap-2">
+                    <input
+                      type="radio" name="receive-entry-kind" value={kind.value} className="mt-1"
+                      checked={(origin.entry_kind ?? "purchase") === kind.value}
+                      onChange={() => setOrigin({ ...origin, entry_kind: kind.value })}
+                      aria-describedby={`receive-entry-${kind.value}-help`}
+                    />
                     <span className="font-semibold text-foreground">{kind.label}</span>
-                    <span id={`receive-entry-${kind.value}-help`} className="block text-xs text-muted">{kind.help}</span>
-                  </span>
-                </label>
+                  </label>
+                  <p id={`receive-entry-${kind.value}-help`} className="ml-6 text-xs text-muted">{kind.help}</p>
+                </div>
               ))}
             </div>
           </fieldset>
