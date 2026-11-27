@@ -140,7 +140,7 @@ Si el propietario y el contador aceptan las recomendaciones de arriba, el día a
 
 ## Qué implementa TRADE-IN-QUOTE-00 (y qué no)
 
-TRADE-IN-QUOTE-00 (rama `feat/trade-in-quote-00`, migración `0191_trade_in_quote`; **PARCIAL** hasta fusionar) es
+TRADE-IN-QUOTE-00 (#414, migración `0191_trade_in_quote`; **IMPLEMENTADO**, en producción desde R13) es
 lo único permitido mientras D1–D12 sigan pendientes (plan maestro comercial §H): una **valoración referencial y no
 vinculante dentro de una cotización comercial**. No decide ninguna de las doce preguntas de arriba.
 
@@ -154,7 +154,8 @@ vinculante dentro de una cotización comercial**. No decide ninguna de las doce 
   mientras **D4** no se decida; no la decide.
 - Fija el bloque quien elabora cotizaciones (`sales.quotes.manage`) y lo aprueba, con el resto de la cotización,
   quien aprueba cotizaciones (`sales.quotes.approve`). **No** crea `sales.tradein.value` ni `sales.tradein.approve`:
-  eso sigue siendo **D7**.
+  eso sigue siendo **D7**. (TRADE-IN VALUATION PRO sí los crea, como concesiones explícitas; ver V1/D7 en
+  `docs/adr-trade-in-valuation.md` §13.)
 - Las revisiones y las copias llevan el bloque; cambiarlo en una cotización ya ofrecida crea una revisión.
 - A4, 80 mm y ESC/POS imprimen «Equipo ofrecido en parte de pago (referencial)», «Valorización estimada», «Saldo
   estimado a pagar» y «Valorización referencial sujeta a inspección; no es crédito, pago ni compra. No es comprobante
@@ -170,10 +171,20 @@ vinculante dentro de una cotización comercial**. No decide ninguna de las doce 
   ocho o más dígitos se rechaza, aunque vayan separados (espacios, puntos, comas, barras, guiones); las fechas y los
   importes (con moneda o con decimales) se permiten; «DNI 12,345,678» se sigue rechazando.
 
+## Valorización profesional (TRADE-IN VALUATION PRO)
+
+**Mandato del propietario (2026-11-27):** autoriza la valorización profesional de equipos usados **fuera** de
+TRADE-IN-01B: tarifario de recepción por empresa, reglas de valorización, elegibilidad, verificación asistida de IMEI o
+serie y cotización de recepción con vigencia, ticket y QR, diseñados en
+[adr-trade-in-valuation.md](adr-trade-in-valuation.md) (fase 1, el tarifario, en #457). **Valorizar no es comprar**: el
+mandato no decide D1–D12 ni permite recibir, pagar o acreditar un equipo. Sus decisiones propias están en ese ADR §13:
+**V1 va con D7** (si el Administrador recibe por defecto las capacidades del tarifario; hoy son de concesión
+explícita, como recomienda D7-b), y V2–V7.
+
 ## Estado
 
 **TRADE-IN-01 sigue en PROPUESTA y BLOQUEADO POR DECISIÓN.** (TRADE-IN-QUOTE-00, arriba, es sólo la valoración
-referencial en la cotización y no cambia esta lista.) TRADE-IN-01B (recepción y valorización) no se construye mientras no estén aprobadas D2, D3, D6, D7, D9 y D10; TRADE-IN-01C (crédito en caja, documentos y reversión) tampoco mientras no lo estén D1, D4, D5, D8 y D11. La caja anuncia «Equipo como parte de pago» **deshabilitado** (SALES-UX-02): no registra ningún crédito, ningún stock ni ningún pago.
+referencial en la cotización y no cambia esta lista.) TRADE-IN-01B (recepción y aplicación de la valoración) no se construye mientras no estén aprobadas D2, D3, D6, D7, D9 y D10; TRADE-IN-01C (crédito en caja, documentos y reversión) tampoco mientras no lo estén D1, D4, D5, D8 y D11. La caja anuncia «Equipo como parte de pago» **deshabilitado** (SALES-UX-02): no registra ningún crédito, ningún stock ni ningún pago.
 
 ## Orden en que conviene decidir
 
@@ -183,5 +194,6 @@ referencial en la cotización y no cambia esta lista.) TRADE-IN-01B (recepción 
 4. **D4, D5, D8, D11, D12** — condicionan la caja, el crédito y las devoluciones (TRADE-IN-01C).
 
 TRADE-IN-01B no se construye sin D2, D3, D6, D7, D9 y D10. TRADE-IN-01C no, sin D1, D4, D5, D8 y D11. Hasta entonces
-no hay migración ni cambio de caja por este tema (la de TRADE-IN-QUOTE-00 sólo guarda la valoración referencial de la
-cotización).
+no hay migración de recepción, crédito ni cambio de caja por este tema. Las migraciones que sí existen o se proponen sólo
+valorizan: `0191` (TRADE-IN-QUOTE-00, valoración referencial de la cotización) y, por el mandato del 2026-11-27,
+`0194_trade_in_tariff` (#457, tarifario) y las de las fases siguientes de `adr-trade-in-valuation.md` §10.
