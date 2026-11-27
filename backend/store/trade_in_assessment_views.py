@@ -62,7 +62,8 @@ def assessment_payload(user, company, a, *, full=True) -> dict:
             'calculate': can_value and a.status in TradeInAssessment.EDITABLE,
             'approve': (calculated and a.eligibility == assessments.REQUIRES_APPROVAL
                         and has_capability(user, company, assessments.CAP_APPROVE)
-                        and user.pk not in assessments._authors(a)),
+                        and (user.pk not in assessments._authors(a)
+                             or has_capability(user, company, assessments.CAP_APPROVE_OWN))),
             'cancel': can_value and a.status in (*TradeInAssessment.EDITABLE, TradeInAssessment.STATUS_APPROVED),
         },
     })
