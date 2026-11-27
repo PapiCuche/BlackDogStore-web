@@ -10,12 +10,12 @@ protección.
 | Paso | Hora (Lima) | Resultado |
 |---|---|---|
 | Verificación previa | 02:40 | Producción en R14, imágenes, kit (MANIFEST), SHA y backup = ensayo; candado libre; sin procesos concurrentes. Preflight `PREFLIGHT OK` (plan de migraciones vacío) |
-| Despliegue | 02:51:05–02:52:35 | Backup previo `db-20261127-025123` (+ evidencias). Plan vacío; `compose up rc=0`; sanos en ~9 s; `VERDICT running R15 images`; esquema sin cambios; huella de datos y Kardex idénticos (50 líneas, 13 cadenas, 0 rupturas); notas `c2be046bf7bce2d8`; #22/#23 siguen con «lleva IMEI»; 0 líneas existentes antes; rutas, healthcheck y reimpresión OK; 0 errores; Caddy, CRM, crontab y enrutamiento sin cambios. Log `backups/d-r15-go.log` |
-| R15POST | 02:52:57–02:55:46 | `R15POST_DONE fails=0` sobre copias aisladas del backup del momento: sondas R14 75 OK y R15 73 OK (0 fallos), simulación 19/19, humo 32/32; en la copia desechable el escaneo (27 OK), la lista de proveedores (13 OK) y el ingreso existente escriben sin romper Kardex ni identificadores; R14 lee lo que escribe R15. Log `backups/release-r15/r15post-run.log` |
+| Despliegue | lanzado 02:51:05; guardas 02:51:16; cambio 02:51:33; fin 02:52:35 | Backup previo `db-20261127-025123` (+ evidencias). Plan vacío; `compose up rc=0`; sanos en ~9 s; `VERDICT running R15 images`; esquema sin cambios; huella de datos y Kardex idénticos (50 líneas, 13 cadenas, 0 rupturas); notas `c2be046bf7bce2d8`; #22/#23 siguen con «lleva IMEI»; 0 líneas existentes antes; rutas, healthcheck y reimpresión OK; 0 errores; Caddy, CRM, crontab y enrutamiento sin cambios. Log `backups/d-r15-go.log` |
+| R15POST | 02:52:57–02:55:46 | `R15POST_DONE fails=0` sobre copias aisladas del backup del momento: sondas R14 75 OK y R15 73 OK (0 fallos), simulación 19/19, humo 32/32; en la copia desechable el escaneo (27 OK), la lista de proveedores (13 OK) y el ingreso existente escriben sin romper Kardex ni identificadores (la lectura de R14 sobre datos de R15 se ensayó antes del despliegue, `r15-rehearsal.log`). Log `backups/release-r15/r15post-run.log` |
 
 Comprobado en R15: «lleva IMEI» sólo cambia con `products.manage` (403 al apagar o al quitar la serialización sin
 permiso; 409 al encenderlo con equipos sin IMEI); el ingreso existente se acepta en estantes con historial, se marca
-`existing_stock` y el Kardex lo separa; no crea compras, deudas ni filas de finanzas; la caja vende lo escaneado y
+`existing_stock` y el Kardex lo separa; escribe una línea de Kardex `purchase_entry` marcada, sin documento de compra, deuda ni fila de finanzas; la caja vende lo escaneado y
 rechaza el seminuevo pendiente de inspección; permisos y aislamiento entre empresas OK; ningún identificador compartido
 entre equipos vivos.
 
