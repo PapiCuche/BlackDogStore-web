@@ -3,6 +3,18 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 2: reglas de valorización (rama `feat/trade-in-rules`, sin fusionar ni desplegar)
+
+**Added**
+- Grupos y preguntas de valorización de cada empresa (batería, estética, funcionamiento, reparaciones, accesorios u
+  otro; combinar por la mayor o por suma; tope por grupo; componente; filtros por marca o modelo).
+- Reglas por versión del conjunto completo: borrador, propuesta con instantánea congelada de grupos y preguntas,
+  aprobación por otra persona (o propia con `approve_own` y motivo), rechazo, retiro; en vigor la más nueva que ya
+  empezó, si no terminó.
+- Cálculo puro (`trade_in_valuation.calculate`) según el ADR §6 y «Probar un caso» (`/api/admin/trade-in/rules/preview/`).
+- Migración `0195_trade_in_rules` (cuatro tablas nuevas, aditiva, guarda de vuelta atrás al final). Sin capacidades
+  nuevas: usa las del tarifario.
+
 ## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 1: tarifario de recepción por empresa (rama `feat/trade-in-tariff-phase1`, sin fusionar ni desplegar)
 
 **Added**
