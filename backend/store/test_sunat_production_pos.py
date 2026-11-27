@@ -5,9 +5,12 @@ The screen sends `expected_environment` with a fiscal sale. If the server would 
 another one (production switched on or off since the till loaded), the sale is a 409 and
 nothing is written: no order, no number, no stock moved.
 """
+from django.contrib.auth import get_user_model
 from django.test import override_settings
+from rest_framework.test import APIClient
 
-from store.models import FiscalDocument, FiscalSeries, Order
+from store.models import FiscalDocument, FiscalEnvironment, FiscalSeries, Order
+from store.test_sunat_production import NO_ENV, READY, RUC, URL as CONSOLE, _secrets
 from store.tests import _BETA_ISSUING, Ip1PosBase
 
 URL = '/api/v1/internal/ip1-tienda/sales/pos/sales/'
@@ -46,3 +49,43 @@ class TheTillSellsInTheEnvironmentItShowedTest(Ip1PosBase):
         context = self.client.get('/api/v1/internal/ip1-tienda/sales/pos/context/').json()
         boleta = next(o for o in context['receipt_options'] if o['value'] == 'boleta')
         self.assertEqual(boleta['environment'], 'beta')
+
+
+@override_settings(**NO_ENV, **READY)
+class InProductionTheTillMustSayWhatItShowedTest(Ip1PosBase):
+    """A till that does not send `expected_environment` (old tab, mobile POS) never issues a real receipt."""
+
+    def setUp(self):
+        super().setUp()
+        self.client = self.only_caps('sales.pos.use', 'sales.fiscal.issue', 'sales.notes.manage')
+        self.company.tax_id = RUC
+        self.company.legal_name = 'EMPRESA PRUEBA SAC'
+        self.company.save()
+        for kind, series in [('01', 'F001'), ('03', 'B001')]:
+            FiscalSeries.objects.create(company=self.company, document_type=kind, series=series,
+                                        environment=FiscalEnvironment.PRODUCTION)
+        master = get_user_model().objects.create_superuser('master-pos', 'm@example.com', 'x')
+        console = APIClient()
+        console.force_authenticate(master)
+        body = {'public': {'environment': 'production', 'ruc': RUC, 'sol_user': 'FACTURADOR'}, 'secrets': _secrets()}
+        self.assertEqual(console.put(CONSOLE + 'draft/', body, format='json').status_code, 200)
+        self.assertEqual(console.post(CONSOLE + 'test/', {}, format='json').json()['status'], 'ok')
+        version = console.get(CONSOLE).json()['draft']['version']
+        response = console.post(CONSOLE + 'activate/', {'version': version, 'confirm': f'PRODUCCION {RUC}'},
+                                format='json')
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def sell(self, **over):
+        return self.client.post(URL, self.sale_body(receipt_type='boleta', **over), format='json')
+
+    def test_without_the_environment_it_is_a_409_and_nothing_is_written(self):
+        response = self.sell()
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data['code'], 'environment_changed')
+        self.assertFalse(Order.objects.filter(company=self.company).exists())
+
+    def test_saying_production_sells_a_production_receipt(self):
+        response = self.sell(expected_environment='production')
+        self.assertEqual(response.status_code, 201, response.data)
+        document = FiscalDocument.objects.get(order_id=response.data['order_id'])
+        self.assertEqual(document.environment, FiscalEnvironment.PRODUCTION)

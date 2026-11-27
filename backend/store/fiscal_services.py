@@ -568,7 +568,8 @@ def _refuse_external_receipt(order: Order) -> None:
             f'Si ese registro es un error, anúlalo con su motivo antes de emitir otro.')
 
 
-def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
+def get_or_create_fiscal_document(order: Order, *, expected_environment: str | None = None
+                                  ) -> tuple[FiscalDocument, bool]:
     """
     El comprobante de esta venta, creándolo si no existe. IDEMPOTENTE.
 
@@ -645,6 +646,13 @@ def get_or_create_fiscal_document(order: Order) -> tuple[FiscalDocument, bool]:
         )
     except FiscalConfigError as exc:
         raise FiscalError(str(exc)) from None
+
+    # C3: el ambiente que se mostró a quien vende. Si el modo cambió entre la
+    # comprobación y la serie, no se reserva nada (revisión de #468).
+    if expected_environment is not None and series.environment != expected_environment:
+        raise FiscalError(
+            f'El ambiente de SUNAT cambió («{expected_environment}» → «{series.environment}»): no se emite. '
+            f'Vuelve a cargar la pantalla.')
 
     # Antes de reservar el número: un cobro de pruebas no es una venta (H-11).
     _refuse_rehearsal_payment(order, series.environment)

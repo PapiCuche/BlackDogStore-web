@@ -650,3 +650,66 @@ class FiscalSecurityReviewTest(_Base):
         self.assertIn('ruc', response.json()['errors'])
         self.assertEqual(IntegrationConfig.objects.get(provider='sunat', slot=IntegrationConfig.SLOT_ACTIVE)
                          .public['ruc'], RUC)
+
+
+@override_settings(**READY)
+class TheIssuerIsOneCompanyNotJustARucTest(_Base):
+    """Fiscal re-review of #468: the runtime gate checks the company, and the RUC cannot move under it."""
+
+    def setUp(self):
+        super().setUp()
+        self.production_series()
+        self.go_live('production')
+
+    def test_a_second_company_that_copies_the_ruc_issues_nothing_and_nobody_is_chosen(self):
+        twin = _p3_company('gemela-prod', 'Empresa Gemela', tax_id='20999999991', legal_name='GEMELA SAC')
+        FiscalSeries.objects.create(company=twin, document_type=FiscalDocumentType.INVOICE, series='F001',
+                                    environment=FiscalEnvironment.PRODUCTION)
+        type(twin).objects.filter(pk=twin.pk).update(tax_id=RUC)      # behind every screen's back
+        twin.refresh_from_db()
+        for company in (twin, self.company):
+            with self.subTest(company=company.slug), self.assertRaises(fiscal_config.FiscalConfigError):
+                fiscal_config.resolve_environment(company)
+
+    def test_the_issuer_cannot_change_its_own_ruc_while_production_is_chosen(self):
+        owner, _ = _p2d_member(self.company, 'prod_dueno', ['company.view', 'company.manage'])
+        client = APIClient()
+        client.force_authenticate(owner)
+        response = client.patch(f'/api/admin/company-settings/?company={self.company.pk}',
+                                {'tax_id': OTHER_RUC}, format='json')
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertEqual(response.data['code'], 'fiscal_issuer_locked')
+        self.company.refresh_from_db()
+        self.assertEqual(self.company.tax_id, RUC)
+        # Not even a master, through the platform's company screen.
+        response = self.console.patch(f'/api/admin/companies/{self.company.pk}/', {'tax_id': OTHER_RUC},
+                                      format='json')
+        self.assertEqual(response.status_code, 409, response.data)
+
+    def test_no_company_takes_the_ruc_while_production_is_chosen(self):
+        other = _p3_company('otra-ruc', 'Otra', tax_id=OTHER_RUC)
+        response = self.console.patch(f'/api/admin/companies/{other.pk}/', {'tax_id': RUC}, format='json')
+        self.assertEqual(response.status_code, 409, response.data)
+        response = self.console.post('/api/admin/companies/', {'name': 'Nueva', 'slug': 'nueva-ruc', 'tax_id': RUC},
+                                     format='json')
+        self.assertEqual(response.status_code, 409, response.data)
+        self.assertFalse(type(other).objects.filter(slug='nueva-ruc').exists())
+        # Any other RUC change is not this guard's business.
+        response = self.console.patch(f'/api/admin/companies/{other.pk}/', {'tax_id': '20999999992'},
+                                      format='json')
+        self.assertEqual(response.status_code, 200, response.data)
+
+    def test_a_refused_resume_is_audited(self):
+        self.console.post(URL + 'pause/', {}, format='json')
+        self.assertEqual(self.console.post(URL + 'resume/', {'confirm': 'EMITIR'}, format='json').status_code, 400)
+        refusal = AdminAuditLog.objects.filter(action='integration_activation_refused').latest('pk')
+        self.assertEqual((refusal.metadata['change'], refusal.metadata['mode']), ('resume', 'production'))
+
+    def test_issuing_refuses_a_series_of_another_environment_than_the_one_shown(self):
+        from store.fiscal_services import get_or_create_fiscal_document
+
+        series = FiscalSeries.objects.get(company=self.company, environment=FiscalEnvironment.PRODUCTION)
+        with self.assertRaisesMessage(FiscalError, 'cambió'):
+            get_or_create_fiscal_document(self.order(), expected_environment=FiscalEnvironment.BETA)
+        series.refresh_from_db()
+        self.assertEqual(series.next_number, 1)

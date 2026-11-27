@@ -371,6 +371,14 @@ class AdminCompanySettingsView(APIView):
             partial=True, context={'company': company},
         )
         identity_ser.is_valid(raise_exception=True)
+        if 'tax_id' in identity_ser.validated_data:
+            from .fiscal_config import tax_id_change_problem
+
+            problem = tax_id_change_problem(company, identity_ser.validated_data['tax_id'])
+            if problem:
+                # C3: before anything is written, like every other refusal of this form.
+                return Response({'detail': problem, 'code': 'fiscal_issuer_locked'},
+                                status=status.HTTP_409_CONFLICT)
 
         settings_ser = CompanySettingsSerializer(
             settings_row, data=payload, partial=True,

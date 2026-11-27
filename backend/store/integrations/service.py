@@ -525,8 +525,18 @@ def _set_enabled(provider, company, *, actor, enabled: bool, request, payload, p
     return active
 
 
-@transaction.atomic
 def set_paused(provider, company, *, actor, paused: bool, request=None, payload=None):
+    try:
+        return _set_paused(provider, company, actor=actor, paused=paused, request=request, payload=payload)
+    except ConfigError as exc:
+        active = row(provider.id, company, ACTIVE)
+        _audit_refusal(provider, company, actor, request, exc, change='resume',
+                       mode=provider.mode(dict(active.public), {}) if active is not None else '')
+        raise
+
+
+@transaction.atomic
+def _set_paused(provider, company, *, actor, paused: bool, request=None, payload=None):
     """
     Stop taking anything NEW, at once — or take it again.
 

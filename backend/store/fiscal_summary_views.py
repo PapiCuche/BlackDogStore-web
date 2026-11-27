@@ -163,10 +163,12 @@ class AdminFiscalSummaryListView(APIView):
             return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as exc:  # noqa: BLE001 — la firma deshizo todo; se dice, sin el texto
             logger.error('La firma del resumen falló (%s); no se creó ningún RC.', type(exc).__name__)
+            # 503, not 500: nothing was created, the boletas are free again and the same
+            # request can be repeated once the signing material is fixed (review of #468).
             return Response(
                 {'detail': 'No se pudo firmar el resumen. No se creó ningún resumen y las '
                            'boletas siguen disponibles.'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+                status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
         for s in signed:
             AdminAuditLog.log(

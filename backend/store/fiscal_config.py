@@ -218,7 +218,10 @@ def resolve_environment(company=None) -> str:
             'El servidor opera SUNAT PRODUCCIÓN y no se indicó la empresa emisora: no se emite.')
     ruc = (getattr(company, 'tax_id', '') or '').strip()
     console_ruc = str(_console_row().public.get('ruc') or '').strip()
-    if not ruc or ruc != console_ruc:
+    issuer, _problem = production_issuer(console_ruc)
+    # The RUC AND the company: a second company that copied the RUC is not the issuer, and
+    # two active companies with it leave no issuer at all (review of #468).
+    if not ruc or ruc != console_ruc or issuer is None or issuer.pk != getattr(company, 'pk', None):
         raise FiscalConfigError(
             'SUNAT PRODUCCIÓN está activa para otro contribuyente: esta empresa no emite con esas '
             'credenciales, ni en producción ni en BETA.'
@@ -229,6 +232,38 @@ def resolve_environment(company=None) -> str:
             'incierto no tiene salida. No se emite hasta que el operador la encienda.'
         )
     return FiscalEnvironment.PRODUCTION
+
+
+def production_issued() -> bool:
+    """Whether anything was ever issued against SUNAT PRODUCTION from this installation."""
+    from .models import FiscalDailySummary, FiscalDocument, FiscalVoidCommunication
+
+    return any(model.objects.filter(environment=FiscalEnvironment.PRODUCTION).exists()
+               for model in (FiscalDocument, FiscalDailySummary, FiscalVoidCommunication))
+
+
+def tax_id_change_problem(company, new_tax_id) -> str:
+    """
+    Why `company` (None when it is being created) may NOT take `new_tax_id` now; '' if it may.
+
+    The production issuer is the one active company with the RUC of the SOL credentials.
+    While production is chosen, or once anything was issued there, no company may take
+    that RUC or give it up: the first would make a second issuer (or none), the second
+    would leave the issued documents without the company that has to send, consult or
+    void them. Changing any other RUC is not this function's business.
+    """
+    old = (getattr(company, 'tax_id', '') or '').strip() if company is not None else ''
+    new = (new_tax_id or '').strip()
+    if old == new:
+        return ''
+    active = _console_row()
+    console_ruc = str(active.public.get('ruc') or '').strip() if active is not None else ''
+    if not console_ruc or console_ruc not in (old, new):
+        return ''
+    if console_environment(active.public) != FiscalEnvironment.PRODUCTION and not production_issued():
+        return ''
+    return ('El RUC de las credenciales SUNAT de producción no se asigna ni se quita mientras producción esté '
+            'elegida o existan comprobantes de producción: cambiaría quién emite y quién responde por lo emitido.')
 
 
 def production_issuer(ruc: str):

@@ -213,6 +213,9 @@ class AdminCompanyListView(APIView):
     def post(self, request):
         ser = CompanySerializer(data=request.data)
         ser.is_valid(raise_exception=True)
+        problem = _fiscal_issuer_problem(None, ser.validated_data)
+        if problem:
+            return Response({'detail': problem, 'code': 'fiscal_issuer_locked'}, status=status.HTTP_409_CONFLICT)
 
         # Creation and provisioning share one transaction: if the defaults cannot
         # be created, the company is rolled back too. A tenant that exists but has
@@ -245,6 +248,17 @@ class AdminCompanyListView(APIView):
             company=company,
         )
         return Response(CompanySerializer(company).data, status=status.HTTP_201_CREATED)
+
+
+def _fiscal_issuer_problem(company, validated: dict) -> str:
+    """C3: the production issuer's RUC is neither taken nor given up while production is chosen or used."""
+    from .fiscal_config import tax_id_change_problem
+
+    if 'tax_id' not in validated:
+        return ''
+    # A second active company with the RUC (created or reactivated) is not refused here: it
+    # leaves no single issuer, and `resolve_environment` then fails closed for both.
+    return tax_id_change_problem(company, validated.get('tax_id'))
 
 
 class AdminCompanyDetailView(APIView):
@@ -286,6 +300,9 @@ class AdminCompanyDetailView(APIView):
         # an invalid choice, not silently stored.
         ser = CompanySerializer(company, data=request.data, partial=True)
         ser.is_valid(raise_exception=True)
+        problem = _fiscal_issuer_problem(company, ser.validated_data)
+        if problem:
+            return Response({'detail': problem, 'code': 'fiscal_issuer_locked'}, status=status.HTTP_409_CONFLICT)
         updated = ser.save()
 
         AdminAuditLog.log(

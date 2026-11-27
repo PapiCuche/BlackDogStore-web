@@ -337,6 +337,7 @@ class AdminPosSaleView(APIView):
                 expected_total=data.get('expected_total'),
                 # C3: the SUNAT environment the screen showed; another one now is a 409.
                 expected_environment=data.get('expected_environment'),
+                environment_required=True,
                 request=request,
             )
         except pos_services.PosKeyReserved as exc:

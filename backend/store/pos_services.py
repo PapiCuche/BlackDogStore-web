@@ -1384,6 +1384,7 @@ def create_pos_sale(
     may_order_over_stock: bool = False,
     expected_total=None,
     expected_environment=None,
+    environment_required: bool = False,
     request=None,
 ):
     """
@@ -1524,11 +1525,15 @@ def create_pos_sale(
                 raise PosValidationError(str(exc)) from None
             # C3: the environment the cashier was shown. A difference is a 409 before
             # anything is written, like a price that changed.
+            from . import fiscal_config
+            current = fiscal_config.resolve_environment(company)
             if expected_environment not in (None, ''):
-                from .fiscal_config import resolve_environment
-                current = resolve_environment(company)
                 if expected_environment != current:
                     raise PosEnvironmentChanged(str(expected_environment)[:16], current)
+            elif environment_required and current == fiscal_config.FiscalEnvironment.PRODUCTION:
+                # A till that does not say which environment it showed (an old tab, the
+                # mobile POS) never issues a REAL receipt by default (review of #468).
+                raise PosEnvironmentChanged('', current)
 
     now = timezone.now()
     seller = priced['seller']
@@ -1652,7 +1657,8 @@ def create_pos_sale(
     elif receipt_type is not None:
         from .fiscal_services import get_or_create_fiscal_document, FiscalError
         try:
-            document, _ = get_or_create_fiscal_document(order)
+            document, _ = get_or_create_fiscal_document(
+                order, expected_environment=expected_environment or None)
         except FiscalError as exc:
             raise PosValidationError(str(exc)) from exc
 

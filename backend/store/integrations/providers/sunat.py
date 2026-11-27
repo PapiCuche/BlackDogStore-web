@@ -240,10 +240,9 @@ def _production_chosen() -> bool:
 
 def _issued_in_production() -> bool:
     """Whether anything was ever issued against SUNAT PRODUCTION from this installation."""
-    from ...models import FiscalDailySummary, FiscalDocument, FiscalEnvironment, FiscalVoidCommunication
+    from ... import fiscal_config
 
-    return any(model.objects.filter(environment=FiscalEnvironment.PRODUCTION).exists()
-               for model in (FiscalDocument, FiscalDailySummary, FiscalVoidCommunication))
+    return fiscal_config.production_issued()
 
 
 registry.register(SunatProvider())
