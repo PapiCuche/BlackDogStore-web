@@ -311,7 +311,7 @@ def _issuing_ready(company) -> bool:
     from . import fiscal_config
 
     try:
-        fiscal_config.resolve_credentials(company)
+        fiscal_config.resolve_credentials(company, signing=True)
     except fiscal_config.FiscalConfigError:
         return False
     return True
@@ -1474,7 +1474,7 @@ def create_pos_sale(
             # encendida pero sin poder firmar, la caja gastaba un número que nadie
             # podría firmar después.
             try:
-                resolve_credentials(company)
+                resolve_credentials(company, signing=True)
             except FiscalConfigError as exc:
                 raise PosValidationError(str(exc)) from None
 

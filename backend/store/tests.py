@@ -42042,23 +42042,26 @@ class Ip1PosBase(TestCase):
         ).quantity
 
 
-def _beta_issuing_settings():
+def _beta_issuing_settings(ruc='20100066603'):
     """
     Emisión encendida CON credenciales de prueba de SUNAT BETA y un par de firma
     válido. FISCAL-PROD-02: la caja comprueba credenciales y par antes de crear la
     venta, así que «encendida» ya no basta para vender con comprobante.
+
+    SUNAT-ISSUER-GATE: las credenciales son del RUC de la empresa que vende. Una
+    prueba cuya empresa tiene otro RUC pide las suyas con `ruc`.
     """
     from .fiscal.testing import self_signed_pem
 
-    key, cert = self_signed_pem('20100066603')
-    return dict(FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603', FISCAL_SOL_USER='MODDATOS',
+    key, cert = self_signed_pem(ruc)
+    return dict(FISCAL_ENABLED=True, FISCAL_SOL_RUC=ruc, FISCAL_SOL_USER='MODDATOS',
                 FISCAL_SOL_PASSWORD='moddatos', FISCAL_CERT_PEM=cert.decode(), FISCAL_KEY_PEM=key.decode())
 
 
 _BETA_ISSUING = _beta_issuing_settings()
 
 
-@override_settings(**_BETA_ISSUING)
+@override_settings(**_beta_issuing_settings('20900095001'))   # Ip1PosBase's company
 class Fiscal6ReceiptOptionsTest(Ip1PosBase):
     """
     ERP-FISCAL-6 §18/§29 — qué comprobantes ofrece la caja, y por qué no los demás.
@@ -50152,7 +50155,31 @@ class _FakeProvider:
 
     def submit_invoice(self, *, filename, zip_bytes):
         self.calls += 1
-        return self.result
+        return _answering(self.result, filename)
+
+
+#: El CDR de relleno de las pruebas antiguas. No dice por qué comprobante responde.
+_PLACEHOLDER_CDR = b'<ApplicationResponse/>'
+
+
+def _answering(result, filename):
+    """
+    El resultado, con un CDR que responde por el comprobante ENVIADO. (H-06)
+
+    `sendBill` vincula el CDR con el documento: uno sin identificador no se aplica.
+    Las pruebas que sólo necesitan «SUNAT aceptó» usan un CDR de relleno; aquí se
+    sustituye por uno real que nombra el RUC, el tipo, la serie y el número del
+    archivo `RUC-TT-SERIE-NUMERO.ZIP` que se envió, con el mismo código y notas.
+    Un CDR propio de la prueba (cualquier otro) se entrega tal cual.
+    """
+    import dataclasses
+
+    if result.cdr_xml != _PLACEHOLDER_CDR:
+        return result
+    ruc, doc_type, serie, numero = filename.rsplit('.', 1)[0].split('-')
+    return dataclasses.replace(result, cdr_xml=_build_cdr_xml(
+        reference_id=f'{serie}-{numero}', response_code=result.response_code or '0',
+        receiver_ruc=ruc, doc_type=doc_type, notes=result.notes, sign=False))
 
 
 def _accepted():
@@ -50817,7 +50844,7 @@ class C22A1ConcurrencyTest(TransactionTestCase):
                 # accidente afortunado del planificador.
                 import time
                 time.sleep(0.4)
-                return _accepted()
+                return _answering(_accepted(), filename)
 
         rechazados = []
 
@@ -51106,7 +51133,9 @@ class C22BEnvironmentGuardTest(TestCase):
         from . import fiscal_config
 
         firma = inspect.signature(fiscal_config.resolve_provider)
-        self.assertEqual(list(firma.parameters), ['company'])
+        # La empresa y, al actuar sobre un documento, su RUC emisor (SUNAT-ISSUER-GATE).
+        # Ninguno es una URL.
+        self.assertEqual(list(firma.parameters), ['company', 'issuer_tax_id'])
         fuente = inspect.getsource(fiscal_config.resolve_provider)
         self.assertIn('endpoints = {', fuente)
 
@@ -51406,7 +51435,7 @@ class C22BSubmissionClaimTest(TestCase):
             def submit_invoice(self, *, filename, zip_bytes):
                 registro['durante'] = FiscalSubmissionAttempt.objects.filter(
                     document_id=self.doc_pk, finished_at__isnull=True).count()
-                return _accepted()
+                return _answering(_accepted(), filename)
 
         proveedor = ProveedorQueMira()
         proveedor.doc_pk = self.doc.pk
@@ -56331,8 +56360,11 @@ class FiscalCertificateLoaderTest(TestCase):
 
     def _resolve(self, **cert_settings):
         from .fiscal_config import resolve_credentials
+        # SUNAT-ISSUER-GATE: credentials are asked for a company, whose RUC is theirs.
+        company = Company.objects.get_or_create(
+            slug='emisor-cdt', defaults={'name': 'Emisor CDT', 'tax_id': '20100066603'})[0]
         with override_settings(**cert_settings):
-            return resolve_credentials(None)
+            return resolve_credentials(company, signing=True)
 
     # -- PKCS#12 happy path ---------------------------------------------------
 

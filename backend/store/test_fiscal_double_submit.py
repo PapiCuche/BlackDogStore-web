@@ -20,7 +20,7 @@ from store.fiscal_services import (
     FiscalSubmissionInProgress, get_or_create_fiscal_document, sign_fiscal_document, submit_fiscal_document,
 )
 from store.models import FiscalDocument, FiscalDocumentType, FiscalSeries, FiscalSubmissionAttempt, Order, OrderItem
-from store.tests import _accepted, _c1_product, _c1_stock, _p3_company
+from store.tests import _accepted, _answering, _c1_product, _c1_stock, _p3_company
 
 
 class SecondSubmitAfterTheAnswerTest(TransactionTestCase):
@@ -52,7 +52,7 @@ class SecondSubmitAfterTheAnswerTest(TransactionTestCase):
         class Counting:
             def submit_invoice(self, *, filename, zip_bytes):
                 calls.append(filename)
-                return _accepted()
+                return _answering(_accepted(), filename)
 
         def send_again():
             try:
