@@ -25,6 +25,9 @@ SERIAL_REQUIRED_TYPES = frozenset({'phone', 'tablet', 'laptop', 'desktop', 'cons
 IMEI_REQUIRED_TYPES = frozenset({'phone'})
 
 SERIAL_MIN, SERIAL_MAX = 4, 40
+#: D-SCAN-3 (owner, 2026-11-27): the EID of an eSIM (GSMA) is 32 digits. It names the eSIM chip, never the device:
+#: it is no IMEI and no serial, and nothing stores it.
+EID_DIGITS = 32
 PENDING_REASON_MAX = 200
 
 #: Lo que la gente escribe cuando un campo es obligatorio y no tiene el dato.
@@ -101,11 +104,22 @@ def clean_imei(value, *, label: str = 'El IMEI') -> str:
     return digits
 
 
+def looks_like_eid(text: str) -> bool:
+    """Treinta y dos dígitos, con los espacios, puntos, guiones o barras con que se agrupan: la forma de un EID."""
+    digits = re.sub(r'[\s.\-/]', '', str(text or ''))
+    return len(digits) == EID_DIGITS and digits.isdigit()
+
+
 def clean_serial(value) -> str:
-    """Mayúsculas y sin espacios. Vacío si no se dio; un marcador es un error."""
+    """Mayúsculas y sin espacios. Vacío si no se dio; un marcador o un EID es un error."""
     text = str(value or '').strip()
     if not text:
         return ''
+    if looks_like_eid(text):
+        raise DeviceIdentityError(
+            'Eso es el EID de la eSIM (32 dígitos), no el número de serie: el EID no se registra en el equipo. '
+            'Lee la serie del equipo.'
+        )
     if _is_placeholder(text):
         raise DeviceIdentityError(
             'Eso no es un número de serie. Si el equipo no tiene o no se puede leer, '
