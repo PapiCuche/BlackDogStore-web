@@ -172,10 +172,13 @@ vinculante dentro de una cotización comercial**. No decide ninguna de las doce 
 
 ## Valorización profesional (TRADE-IN VALUATION PRO)
 
-El tarifario de recepción por empresa, las reglas de valorización, la elegibilidad, la verificación asistida de IMEI y
-la cotización de recepción con vigencia, ticket y QR están diseñados en
-[adr-trade-in-valuation.md](adr-trade-in-valuation.md) (fase 1, el tarifario, en #457). **Valorizar no es comprar**:
-nada de eso decide D1–D12 ni recibe, paga o acredita un equipo. Sus decisiones propias (V1–V7) están en ese ADR §13.
+**Mandato del propietario (2026-11-27):** autoriza la valorización profesional de equipos usados **fuera** de
+TRADE-IN-01B: tarifario de recepción por empresa, reglas de valorización, elegibilidad, verificación asistida de IMEI o
+serie y cotización de recepción con vigencia, ticket y QR, diseñados en
+[adr-trade-in-valuation.md](adr-trade-in-valuation.md) (fase 1, el tarifario, en #457). **Valorizar no es comprar**: el
+mandato no decide D1–D12 ni permite recibir, pagar o acreditar un equipo. Sus decisiones propias están en ese ADR §13:
+**V1 va con D7** (si el Administrador recibe por defecto las capacidades del tarifario; hoy son de concesión
+explícita, como recomienda D7-b), y V2–V7.
 
 ## Estado
 
@@ -190,5 +193,6 @@ referencial en la cotización y no cambia esta lista.) TRADE-IN-01B (recepción 
 4. **D4, D5, D8, D11, D12** — condicionan la caja, el crédito y las devoluciones (TRADE-IN-01C).
 
 TRADE-IN-01B no se construye sin D2, D3, D6, D7, D9 y D10. TRADE-IN-01C no, sin D1, D4, D5, D8 y D11. Hasta entonces
-no hay migración ni cambio de caja por este tema (la de TRADE-IN-QUOTE-00 sólo guarda la valoración referencial de la
-cotización).
+no hay migración de recepción, crédito ni cambio de caja por este tema. Las migraciones que sí existen o se proponen sólo
+valorizan: `0191` (TRADE-IN-QUOTE-00, valoración referencial de la cotización) y, por el mandato del 2026-11-27,
+`0194_trade_in_tariff` (#457, tarifario) y las de las fases siguientes de `adr-trade-in-valuation.md` §10.
