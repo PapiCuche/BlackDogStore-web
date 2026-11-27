@@ -841,6 +841,7 @@ Despliegue secuencial con GO del propietario para cada SHA exacto («GO desplieg
 - **Volver a escanear un accesorio** (su código exacto) suma +1 a su línea por cantidad y lo anuncia (`role="status"`); el cursor sigue en el buscador. Elegido por nombre, o si es un equipo con serie, sigue como antes.
 - **Atajo Ctrl/⌘+Enter** en «Artículos»: hace lo mismo que «Siguiente: revisar» (mismas comprobaciones). Se anuncia en la ayuda y con `aria-keyshortcuts`.
 - **«S» de la caja de Apple (NO VERIFICADO):** una serie de 13 caracteres que empieza con «S» seguida de una serie Apple de 12 muestra «¿Quitar la S inicial?». Nunca se quita sola. En «Pegar varios» es una casilla desmarcada.
+  **Quitada el 2026-11-27** (D-SCAN-1, #453): ninguna equivalencia de serie sin fuente verificada; la serie queda como se leyó.
 - **Archivos:** `lib/receive-bulk.ts` y `components/ReceivingUnitsBulk.tsx` (nuevos); en `ReceivingLinesEditor.tsx`, tres inserciones y el +1 de `pick`; en `ReceivingWizard.tsx`, el atajo.
 - **Revisión independiente (corregida con TDD):**
   - con un lector que sólo teclea, la primera lectura llevaba el cursor a «Cantidad» o a «Contar por equipo», y las siguientes se escribían allí (la cantidad llegaba a 100000) o se perdían. Ahora una línea por cantidad abierta por su código exacto deja el cursor en el buscador. El +1 sólo suma sobre un entero de 1 a 99999; si no, avisa y no toca nada. Nunca recorta al máximo;

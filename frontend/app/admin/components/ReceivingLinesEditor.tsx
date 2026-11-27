@@ -24,7 +24,7 @@ import {
 import type { CosmeticGradeRow } from "../lib/internal-api";
 import { internalButtonClass, internalInputClass } from "./internal-ui";
 import { ProductPicker, type PickerProduct } from "./ProductPicker";
-import { SerialPrefixHint, UnitsBulkTools } from "./ReceivingUnitsBulk";
+import { UnitsBulkTools } from "./ReceivingUnitsBulk";
 import { addOneMore, rescanRefused } from "../lib/receive-bulk";
 
 export const toReceiptProduct = (p: PickerProduct): ReceiptProduct => ({
@@ -250,7 +250,6 @@ function UnitsEditor({
                   onChange={(serial_number) => setUnit(unit.key, { serial_number })} error={p.serial_number}
                   onEnter={() => (line.product.requires_imei ? focusField(unit.key, "imei") : addAfter(unit.key))}
                 />
-                <SerialPrefixHint serial={unit.serial_number} onAccept={(serial_number) => setUnit(unit.key, { serial_number })} />
                 <Field
                   label={imeiLabel} mono inputMode="numeric" placeholder="15 dígitos" value={unit.imei} unit={unit.key} field="imei"
                   onChange={(imei) => setUnit(unit.key, { imei })} error={p.imei} onEnter={() => addAfter(unit.key)}
