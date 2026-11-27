@@ -239,7 +239,9 @@ class AdminTradeInQuotePdfView(APIView):
         if kind not in ('a4', 'ticket80'):
             return Response({'detail': 'Formato no reconocido: a4 o ticket80.'}, status=status.HTTP_400_BAD_REQUEST)
         try:
-            pdf = documents.render_a4_pdf(found) if kind == 'a4' else documents.render_ticket_pdf(found)
+            show_price = documents.shows_price(found, request.user)
+            pdf = (documents.render_a4_pdf(found, show_price=show_price) if kind == 'a4'
+                   else documents.render_ticket_pdf(found, show_price=show_price))
         except documents.DocumentError as exc:
             return Response({'detail': str(exc), 'code': 'not_issued'}, status=status.HTTP_409_CONFLICT)
         AdminAuditLog.log(actor=request.user, action='trade_in_quote_pdf_downloaded', target_type='trade_in_quote',

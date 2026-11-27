@@ -366,15 +366,17 @@ def enqueue_trade_in_quote_ticket(*, quote, printer, key: str, actor):
     key = (key or '').strip()
     if not key:
         raise PrintError('Falta la clave de idempotencia.')
-    stored = f'tradein:{key}'[:120]
-    earlier = PrintJob.objects.filter(company=quote.company, idempotency_key=stored).first()
-    if earlier is not None and (earlier.trade_in_quote_id != quote.pk or earlier.printer_id != printer.pk):
-        raise PrintConflict('Esa clave ya se usó para otra impresión.')
-    return _get_or_create(
-        key=stored, company=quote.company, branch=printer.branch, printer=printer,
+    job = _get_or_create(
+        key=f'tradein:{key}'[:120], company=quote.company, branch=printer.branch, printer=printer,
         kind=PrintJob.Kind.TRADE_IN_QUOTE_TICKET, reason=PrintJob.Reason.MANUAL, trade_in_quote=quote,
         requested_by=actor if getattr(actor, 'is_authenticated', False) else None,
     )
+    # Checked on what came back, not before: a concurrent request with the same key may have won the insert
+    # (`_get_or_create`'s IntegrityError fallback) for another quote or printer.
+    if (job.kind != PrintJob.Kind.TRADE_IN_QUOTE_TICKET or job.trade_in_quote_id != quote.pk
+            or job.printer_id != printer.pk):
+        raise PrintConflict('Esa clave ya se usó para otra impresión.')
+    return job
 
 
 # -- etiquetas (LABEL-04) ----------------------------------------------------------
@@ -646,9 +648,11 @@ def render(job) -> bytes:
 
         return escpos_ticket(job.sales_quote, **options)
     if job.kind == PrintJob.Kind.TRADE_IN_QUOTE_TICKET:
-        from ..trade_in_quote_documents import escpos_ticket as trade_in_ticket
+        from ..trade_in_quote_documents import escpos_ticket as trade_in_ticket, shows_price
 
-        return trade_in_ticket(job.trade_in_quote, **options)
+        # The price of the device bought only if the person who asked may read it (5a rule of the API).
+        return trade_in_ticket(job.trade_in_quote, show_price=shows_price(job.trade_in_quote, job.requested_by),
+                               **options)
     return escpos.sales_note_ticket(job.sales_note, **options)
 
 

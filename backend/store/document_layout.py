@@ -615,6 +615,8 @@ def render_a4(document: dict, *, watermark=None) -> bytes:
         buffer, pagesize=A4, leftMargin=side, rightMargin=side,
         topMargin=margin, bottomMargin=_bottom_margin(document, usable),
         title=document.get('pdf_title') or document['number'], author=document.get('author') or '',
+        # Optional: a document that must reprint byte for byte (no creation date, no random id). Absent = as before.
+        invariant=1 if document.get('invariant') else None,
     )
 
     if document.get('composition') == 'premium':

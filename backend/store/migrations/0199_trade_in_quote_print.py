@@ -23,13 +23,13 @@ from django.db import migrations, models
 
 
 def refuse_reverse_with_trade_in_tickets(apps, schema_editor):
-    """Reverse guard: `_v2` refuses any `trade_in_quote_ticket` row. Every node from 0200 to the leaf carries this
+    """Reverse guard: `_v2` refuses any `trade_in_quote_ticket` row. Every node from 0199 to the leaf carries this
     second to last (before the quote-ticket guard), so a reverse refuses before anything is undone."""
     PrintJob = apps.get_model('store', 'PrintJob')
     tickets = PrintJob.objects.filter(kind='trade_in_quote_ticket').count()
     if tickets:
         raise RuntimeError(
-            f'0200: hay {tickets} trabajo(s) de impresión de cotizaciones de recepción (incluidos los cancelados). '
+            f'0199: hay {tickets} trabajo(s) de impresión de cotizaciones de recepción (incluidos los cancelados). '
             f"Antes de volver atrás: DELETE FROM store_printjob WHERE kind='trade_in_quote_ticket'; "
             f'(docs/despliegue-produccion.md §7).')
 
@@ -37,12 +37,12 @@ def refuse_reverse_with_trade_in_tickets(apps, schema_editor):
 def refuse_reverse_with_quote_tickets(apps, schema_editor):
     """Reverse guard: the pre-0189 print-job check refuses any `sales_quote_ticket` row, so going back with one
     would stop halfway (rehearsal R13). Every node from 0189 to the leaf carries it LAST, so a reverse from ANY
-    of them refuses before anything is undone. A future node after 0200 must carry it too."""
+    of them refuses before anything is undone. A future node after 0199 must carry it too."""
     PrintJob = apps.get_model('store', 'PrintJob')
     tickets = PrintJob.objects.filter(kind='sales_quote_ticket').count()
     if tickets:
         raise RuntimeError(
-            f'0200: hay {tickets} trabajo(s) de impresión de cotizaciones (incluidos los cancelados). '
+            f'0199: hay {tickets} trabajo(s) de impresión de cotizaciones (incluidos los cancelados). '
             f"Antes de volver atrás: DELETE FROM store_printjob WHERE kind='sales_quote_ticket'; "
             f'(docs/despliegue-produccion.md §7).')
 

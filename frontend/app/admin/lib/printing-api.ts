@@ -100,6 +100,11 @@ export type PrintJob = {
   /** LABEL-04: un lote de etiquetas no tiene pedido; tiene su lote y su tamaño de rollo. */
   label_batch?: number | null;
   label_size?: string;
+  /** SALES-QUOTE-01 / TRADE-IN 5b: el ticket de una cotización no tiene pedido; tiene su cotización. */
+  sales_quote?: number | null;
+  trade_in_quote?: number | null;
+  /** Lo que se ve: COT-… o CRE-…(-R2). Vacío si no es una cotización. */
+  quote_label?: string;
 };
 
 /**

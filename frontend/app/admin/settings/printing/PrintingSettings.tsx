@@ -36,6 +36,20 @@ const KIND: Record<string, string> = {
   fiscal_ticket: "Comprobante electrónico", sales_note_ticket: "Nota de venta",
 };
 
+/** What a queued job is about: a sale's order, a label batch or a quote (which has no order). */
+function jobTitle(job: PrintJob): string {
+  if (job.label_batch) {
+    return `Lote de etiquetas #${job.label_batch}${job.label_size ? ` (${job.label_size} mm)` : ""}`;
+  }
+  if (job.kind === "trade_in_quote_ticket" || job.trade_in_quote) {
+    return `Cotización de recepción ${job.quote_label || `#${job.trade_in_quote ?? ""}`}`.trim();
+  }
+  if (job.kind === "sales_quote_ticket" || job.sales_quote) {
+    return `Cotización ${job.quote_label || `#${job.sales_quote ?? ""}`}`.trim();
+  }
+  return `Pedido #${job.order} · ${KIND[job.kind] ?? job.kind}`;
+}
+
 export function PrintingSettings({
   companyId, branches, canManage,
 }: {
@@ -438,9 +452,7 @@ export function PrintingSettings({
               <li key={job.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
                 <div className="min-w-0">
                   <p className="font-medium text-foreground">
-                    {job.label_batch
-                      ? `Lote de etiquetas #${job.label_batch}${job.label_size ? ` (${job.label_size} mm)` : ""}`
-                      : `Pedido #${job.order} · ${KIND[job.kind] ?? job.kind}`}
+                    {jobTitle(job)}
                   </p>
                   <p className="text-xs text-muted">
                     {job.printer_name} ·{" "}

@@ -137,9 +137,17 @@ TRADE_IN_QUOTE_LEGEND = ('Valorización referencial sujeta a inspección; no es 
 #: TRADE-IN VALUATION PRO · 5b — the trade-in quote's papers: what the shop OFFERS for a used device. Not a purchase,
 #: not a receipt, not a credit (D1-D12); the value holds subject to checking the device when it is received.
 TRADE_IN_RECEPTION_TITLE = 'COTIZACIÓN DE RECEPCIÓN DE EQUIPO USADO'
-TRADE_IN_RECEPTION_LEGEND = 'No es comprobante de pago ni constancia de compra.'
-TRADE_IN_RECEPTION_LEGEND_DETAIL = ('Valor sujeto a la verificación final del equipo al recibirlo. Vigente hasta la '
-                                    'fecha y hora indicadas.')
+#: The owner's sentence, word for word, for the default validity (96 h = four days).
+TRADE_IN_RECEPTION_LEGEND = ('Cotización referencial válida durante cuatro días desde su emisión, sujeta a la '
+                             'verificación final del estado, identidad y procedencia del equipo. No constituye '
+                             'aceptación definitiva ni comprobante de pago.')
+#: The validity the owner's sentence names, in hours, and the line that says it on the paper.
+TRADE_IN_RECEPTION_LEGEND_HOURS = 96
+TRADE_IN_RECEPTION_VALIDITY_LINE = 'Válido por 4 días'
+#: A company whose policy gives another validity: the same sentence, naming the exact end instead of «cuatro días».
+TRADE_IN_RECEPTION_LEGEND_UNTIL = ('Cotización referencial válida hasta el {valid_until}, sujeta a la verificación '
+                                   'final del estado, identidad y procedencia del equipo. No constituye aceptación '
+                                   'definitiva ni comprobante de pago.')
 TRADE_IN_DIFFERENCE_NOTE = 'La diferencia es referencial: no es un descuento ni un crédito.'
 
 

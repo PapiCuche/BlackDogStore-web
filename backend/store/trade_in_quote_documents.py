@@ -5,15 +5,19 @@ TRADE-IN VALUATION PRO · Phase 5b — the papers of a trade-in quote: A4, 80 mm
     «COTIZACIÓN DE RECEPCIÓN DE EQUIPO USADO», its number and revision, the exact validity (shown in the company's
     time zone), the device (IMEI or serial MASKED), its verdict as printed (APTO / APTO CON DESCUENTOS — never
     «requiere aprobación»: only an issued quote prints), the value offered, the difference when it is a part-exchange,
-    the company's conditions — and «No es comprobante de pago ni constancia de compra».
+    the company's conditions — and the owner's legend: a referential quote, subject to the final check of the
+    device, «No constituye aceptación definitiva ni comprobante de pago». With the default 96 h it reads «válida
+    durante cuatro días» word for word and the paper adds «Válido por 4 días»; another validity names its exact end.
 
 FROM THE FROZEN SNAPSHOT, ALWAYS. `build_context` reads the REVISION's own columns (the values, the printable verdict,
 the conditions copied when it was written) and the company's identity; it never recalculates. A reprint is the same
 revision's paper. Only the stamp follows the revision's state (VENCIDA, REEMPLAZADA…).
 
 NEVER ON THE PAPER: the refurbishment cost, the resale estimate, the margin, the tariff's base or maximum, the
-deductions, any note or reason, a full IMEI or serial, the customer's document. No fiscal series and no QR (the public
-link is phase 5c).
+deductions, any note or reason, a full IMEI or serial — and THE CUSTOMER AT ALL: their name is a live look-up that
+falls back to their DNI/RUC, so it would leak a document number and change a reprint. The price of the device bought
+and the difference only for whom the API shows them (`shows_price`). No fiscal series and no QR (the public link is
+phase 5c).
 
 Drawn by the shared renderers (`document_layout.render_a4`, `ticket_services._Cursor`, `printing.escpos.Receipt`);
 identity, logo and design are the company's: nothing here names a shop. `quote_document`, `ticket_pdf_from_ctx` and
@@ -22,6 +26,7 @@ identity, logo and design are the company's: nothing here names a shop. `quote_d
 from __future__ import annotations
 
 import io
+from datetime import timedelta
 from decimal import Decimal
 
 from django.utils import timezone
@@ -30,8 +35,10 @@ from . import document_style as style
 from .document_legends import (
     TRADE_IN_DIFFERENCE_NOTE,
     TRADE_IN_RECEPTION_LEGEND,
-    TRADE_IN_RECEPTION_LEGEND_DETAIL,
+    TRADE_IN_RECEPTION_LEGEND_HOURS,
+    TRADE_IN_RECEPTION_LEGEND_UNTIL,
     TRADE_IN_RECEPTION_TITLE,
+    TRADE_IN_RECEPTION_VALIDITY_LINE,
 )
 
 CONDITIONS_HEADING = 'CONDICIONES'
@@ -67,8 +74,21 @@ def _local(company, value) -> str:
     return timezone.localtime(value, company_timezone(company)).strftime('%d/%m/%Y %H:%M')
 
 
-def build_context(quote) -> dict:
-    """Everything the papers say, from the revision's frozen columns and the company's identity."""
+def shows_price(quote, user) -> bool:
+    """The 5a rule of the API, for the papers too: a linked sales quote's price (and so the difference) is read only
+    with `sales.quotes.manage`. `user` None (nobody asked) sees nothing."""
+    from .tenancy import has_capability
+    from .trade_in_assessment import CAP_QUOTES_MANAGE
+
+    if not quote.assessment.target_sales_quote_id:
+        return True
+    return bool(user is not None and getattr(user, 'is_authenticated', False)
+                and has_capability(user, quote.company, CAP_QUOTES_MANAGE))
+
+
+def build_context(quote, *, show_price: bool = False) -> dict:
+    """Everything the papers say, from the revision's frozen columns and the company's identity. `show_price`
+    comes from `shows_price` for the person who asked; without it the paper carries no price of the device bought."""
     from . import fiscal_logo
     from .company_settings import company_identity
     from .document_design import design_for
@@ -81,7 +101,6 @@ def build_context(quote) -> dict:
     branch = quote.branch
     assessment = quote.assessment
     check = assessment.device_check
-    customer = assessment.customer
     device = ' '.join(part for part in (assessment.brand, assessment.model_name, assessment.capacity,
                                          assessment.sim, assessment.region) if part)
     identifiers = [label for label in (
@@ -90,7 +109,10 @@ def build_context(quote) -> dict:
         f'Serie {_masked(check.serial_last4)}' if check.serial_last4 and not check.imei_last4 else '',
     ) if label]
     symbol = 'S/' if quote.currency == 'PEN' else quote.currency
-    trading = quote.target_price is not None
+    trading = show_price and quote.target_price is not None
+    valid_until = _local(company, quote.valid_until)
+    owner_validity = (quote.valid_until - quote.issued_at
+                      == timedelta(hours=TRADE_IN_RECEPTION_LEGEND_HOURS))
     return {
         'logo_png': fiscal_logo.current_png(company),
         'design': design_for(company),
@@ -102,8 +124,10 @@ def build_context(quote) -> dict:
         'branch_name': getattr(branch, 'name', '') or '', 'branch_address': getattr(branch, 'address', '') or '',
         'number': quote.label, 'revision': quote.revision,
         'issued_at': _local(company, quote.issued_at),
-        'valid_until': _local(company, quote.valid_until),
-        'customer_name': customer.display_name if customer is not None else '',
+        'valid_until': valid_until,
+        'validity_line': TRADE_IN_RECEPTION_VALIDITY_LINE if owner_validity else '',
+        'legend': (TRADE_IN_RECEPTION_LEGEND if owner_validity
+                   else TRADE_IN_RECEPTION_LEGEND_UNTIL.format(valid_until=valid_until)),
         'device': device, 'identifiers': identifiers,
         'verdict': VERDICTS.get(quote.printable_eligibility, ''),
         'symbol': symbol, 'currency': quote.currency,
@@ -142,11 +166,11 @@ def quote_document(ctx: dict) -> dict:
         'identity': document_design.a4_identity(ctx, design),
         **document_design.a4_slots(design),
         'parties': [
-            ('Cliente', [('Nombre', ctx['customer_name'])]),
             ('Datos de la cotización', [
                 ('Número', ctx['number']),
                 ('Emitida', ctx['issued_at']),
                 ('Válida hasta', ctx['valid_until']),
+                *([('Vigencia', ctx['validity_line'])] if ctx['validity_line'] else []),
                 ('Sucursal', ctx['branch_name']),
             ]),
         ],
@@ -161,21 +185,22 @@ def quote_document(ctx: dict) -> dict:
         'totals': _figures(ctx)[1:],
         'total': style.money(ctx['symbol'], ctx['offered']),
         'total_label': OFFER_LABEL,
-        'legal': TRADE_IN_RECEPTION_LEGEND,
+        'legal': ctx['legend'],
         'notes': ctx['conditions'],
         'notes_heading': CONDITIONS_HEADING,
-        'footnotes': [TRADE_IN_RECEPTION_LEGEND_DETAIL]
-        + ([TRADE_IN_DIFFERENCE_NOTE] if ctx.get('target_price') is not None else []),
+        'footnotes': [TRADE_IN_DIFFERENCE_NOTE] if ctx.get('target_price') is not None else [],
+        # A reprint is the same file: no creation date, no random document id.
+        'invariant': True,
         'footer': '  ·  '.join(part for part in (
             ctx['store_name'], f"RUC {ctx['store_ruc']}" if ctx['store_ruc'] else '', ctx['number'],
         ) if part),
     }
 
 
-def render_a4_pdf(quote) -> bytes:
+def render_a4_pdf(quote, *, show_price: bool = False) -> bytes:
     from . import document_layout
 
-    return document_layout.render_a4(quote_document(build_context(quote)))
+    return document_layout.render_a4(quote_document(build_context(quote, show_price=show_price)))
 
 
 def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) -> float:
@@ -199,10 +224,9 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) 
     cur.gap(2)
     cur.row('Emitida:', ctx['issued_at'], size=7)
     cur.row('Válida hasta:', ctx['valid_until'], size=7, bold=True)
+    if ctx['validity_line']:
+        cur.line(ctx['validity_line'], size=7)
     cur.rule()
-    if ctx['customer_name']:
-        cur.line(f"Cliente: {ctx['customer_name']}", size=7)
-        cur.rule()
     cur.line(ctx['device'], size=7.5, bold=True)
     for identifier in ctx['identifiers']:
         cur.line(identifier, size=6.5)
@@ -220,8 +244,7 @@ def _lay_out(pdf, ctx: dict, content: float, margin: float, page_height: float) 
             if text.strip():
                 cur.line(text, size=6.5)
     cur.rule()
-    cur.line(TRADE_IN_RECEPTION_LEGEND, size=8, bold=True, align='center')
-    cur.line(TRADE_IN_RECEPTION_LEGEND_DETAIL, size=6.5, align='center')
+    cur.line(ctx['legend'], size=7, bold=True, align='center')
     if design.footer_text:
         cur.line(design.footer_text, size=6.5, align='center')
     cur.gap(margin)
@@ -249,8 +272,8 @@ def ticket_pdf_from_ctx(ctx: dict) -> bytes:
     return buffer.getvalue()
 
 
-def render_ticket_pdf(quote) -> bytes:
-    return ticket_pdf_from_ctx(build_context(quote))
+def render_ticket_pdf(quote, *, show_price: bool = False) -> bytes:
+    return ticket_pdf_from_ctx(build_context(quote, show_price=show_price))
 
 
 def escpos_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str = 'cp858', dots: int | None = None) -> bytes:
@@ -280,16 +303,15 @@ def escpos_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str = 'cp8
         r.line(ctx['stamp'], align='center', bold=True, large=True)
     r.line(ctx['number'], align='center', bold=True, large=True)
     r.row('Emitida:', ctx['issued_at'])
-    r.row('Valida hasta:', ctx['valid_until'], bold=True)
+    r.row('Válida hasta:', ctx['valid_until'], bold=True)
+    if ctx['validity_line']:
+        r.line(ctx['validity_line'])
     r.rule()
-    if ctx['customer_name']:
-        r.line(f"Cliente: {ctx['customer_name']}")
-        r.rule()
     r.line(ctx['device'], bold=True)
     for identifier in ctx['identifiers']:
         r.line(identifier)
     if ctx['verdict']:
-        r.line(f"Evaluacion: {ctx['verdict']}")
+        r.line(f"Evaluación: {ctx['verdict']}")
     r.rule()
     for label, value in _figures(ctx):
         r.row(label, value, bold=label.startswith('Valor'))
@@ -302,12 +324,11 @@ def escpos_from_ctx(ctx: dict, *, paper_width_mm: int = 80, encoding: str = 'cp8
             if text.strip():
                 r.line(text)
     r.rule()
-    r.line(TRADE_IN_RECEPTION_LEGEND, align='center', bold=True)
-    r.line(TRADE_IN_RECEPTION_LEGEND_DETAIL, align='center')
+    r.line(ctx['legend'], align='center', bold=True)
     if design.footer_text:
         r.line(design.footer_text, align='center')
     return r.cut().to_bytes()
 
 
-def escpos_ticket(quote, **options) -> bytes:
-    return escpos_from_ctx(build_context(quote), **options)
+def escpos_ticket(quote, *, show_price: bool = False, **options) -> bytes:
+    return escpos_from_ctx(build_context(quote, show_price=show_price), **options)
