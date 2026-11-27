@@ -378,14 +378,25 @@ Entrada: evaluación, instante `t` (ahora), empresa. Salida: instantánea §6.5.
      (empate: la de mayor deducción, luego el id menor).
 4. **Importe de cada deducción** sobre el **valor base** (no compuesto): `fixed` = `amount`; `percent` =
    `base × percent / 100`; `repair_cost` = `amount`. Cada línea se redondea a 0,01 (`ROUND_HALF_UP`).
-5. **Sin doble penalización**, en este orden fijo:
-   1. **Por componente**, antes de agrupar y con los importes de línea: entre líneas con el mismo `component` (de
-      cualquier grupo), sólo cuenta la mayor; las demás quedan `suppressed_by` esa línea. Ej.: «pantalla rota»
-      (cosmético, 15 %) y «pantalla reemplazada» (reparaciones, S/ 120): cuenta la mayor. La comparación es por importe
-      de línea, **antes** de los topes de grupo (a propósito: el tope de un grupo no decide qué falla del equipo pesa más).
-   2. **Por grupo.** `combine=max`: sólo la mayor del grupo; `combine=sum`: suma.
-   3. **Tope de grupo.** `group_cap_percent` × base.
-   4. **Tope total.** La suma nunca supera el valor base.
+5. **Sin doble penalización: una selección voraz y determinista** (decisión del propietario en la segunda revisión de
+   #462, 2026-11-27):
+   1. Una línea **puede contar** si su `component` todavía no fue tomado **y** su grupo es `combine=sum`, o es
+      `combine=max` y ese grupo todavía no contó ninguna línea. Si no, queda `suppressed_by` la línea que tomó el
+      componente o el grupo.
+   2. En cada paso se toma, entre las que pueden contar, la de mayor deducción **después del tope que le queda a su
+      grupo** (`min(línea, tope restante del grupo)`; la decisión de la tercera revisión de #462); los empates, por
+      prioridad de la regla (mayor primero) y después por id de la regla (menor primero). Una línea cuyo grupo ya agotó
+      su tope no suma nada y queda marcada `suppressed_by: @cap` (no es un código de pregunta posible).
+   3. **Tope de grupo**: lo que cuenta en un grupo, como mucho `group_cap_percent` × base.
+   4. **Tope total**: la suma nunca supera el valor base.
+
+   Ejemplos (con pruebas): estética (`max`) con «pantalla rota» S/ 150 y «tapa trasera» S/ 200, y reparaciones con
+   «pantalla reemplazada» S/ 120 → cuentan 200 y 120 = **320**. Estética (`max`) con «pantalla rota» S/ 150 y «marco»
+   S/ 100, y reparaciones con «pantalla reemplazada» S/ 200 → cuentan 200 y 100 = **300**. Reparaciones con tope de
+   S/ 50 y «pantalla reemplazada» S/ 120, y estética con «pantalla rota» S/ 100 → cuenta la pantalla rota (100 > 50):
+   **100**. Es una regla simple y estable, aceptada así por el propietario: **no es la elección óptima en todos los
+   casos y, cuando se equivoca, favorece al cliente** (una deducción mayor que aparece después nunca reemplaza a una ya
+   tomada).
 6. **Valor calculado** = `max(0, base − deducciones)` (**nunca negativo**). Como sólo se resta, nunca pasa del base.
 7. **Valor ofrecido.** Por omisión = calculado (redondeado hacia abajo a `value_rounding_step`, si existe, V5). Ajuste
    manual: hacia abajo, con motivo, `sales.tradein.value`; hacia arriba, con motivo, **sólo hasta
@@ -393,6 +404,13 @@ Entrada: evaluación, instante `t` (ahora), empresa. Salida: instantánea §6.5.
 8. **Elegibilidad final** con §5.2. Si es **NO ELEGIBLE**: `computed_value = null` y `offered_value = null` (las líneas
    se guardan para explicar, pero no hay valor); PENDIENTE DE VERIFICACIÓN conserva el valor como **provisional** y no se
    emite.
+
+### 6.4 Contratos de la fase 4
+
+La evaluación que llama al cálculo (fase 4) debe: (a) responder **todas** las preguntas activas que aplican al equipo
+—una pregunta sin responder no es «sin deducción»: la evaluación se niega a calcular—; y (b) aplicar los **bloqueos de
+seguridad antes** de usar la elegibilidad o el valor que devuelve el cálculo: un bloqueo deja el equipo NO ELEGIBLE
+diga lo que digan las reglas, y nunca se convierte en deducción.
 
 ### 6.5 Instantánea
 
@@ -567,8 +585,8 @@ Cada PR: rama propia, código separado de docs (commits distintos), entradas en 
   aprobación; aprobar una pendiente con inicio pasado la mueve a hoy; vista previa con entrada desactivada después →
   `preview_stale`.
 - **Cálculo, tabla de casos:** sin deducciones = base; `percent` sobre base no compuesto; todas las reglas de estado
-  aplican aunque una regla de importe de mayor prioridad gane; mismo componente en dos grupos cuenta una vez (antes de
-  los topes); `combine=max` vs `sum`; tope de grupo; suma > base → 0, nunca negativo; NO ELEGIBLE → valores nulos;
+  aplican aunque una regla de importe de mayor prioridad gane; selección voraz (mayor deducción primero; un componente y,
+  en `max`, un grupo una sola vez) con los dos ejemplos de §6 y los empates; `combine=max` vs `sum`; tope de grupo; suma > base → 0, nunca negativo; NO ELEGIBLE → valores nulos;
   ajuste hacia arriba ≤ máximo y con aprobación; prioridad y empate deterministas; tarifa o reglas faltantes.
 - **Correspondencia del selector (§8.1):** exacta, comodín, sin enlace, ambigua → `tariff_ambiguous`.
 - **Verificación:** IMEI 2 obligatorio si existe; equipo sin IMEI por serie o declaración; registro vencido impide

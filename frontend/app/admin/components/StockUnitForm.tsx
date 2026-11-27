@@ -27,7 +27,7 @@ import {
 } from "@/app/lib/stock-units";
 
 import { fetchSuppliers, type SupplierRow } from "../lib/internal-api";
-import { excludedCondition, lineCondition } from "../lib/inventory-receipts";
+import { EXISTING_STOCK_HELP, excludedCondition, lineCondition } from "../lib/inventory-receipts";
 import { preferredBranch, rememberBranch } from "../lib/last-branch";
 import { ErrorBox } from "./InventoryUi";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
@@ -52,10 +52,13 @@ const plural = (n: number) => (n === 1 ? "1 equipo" : `${n} equipos`);
  * INV-LOAD-01 — the entry types this form offers: the stock the shop already had, or a purchase (the default).
  * STOCK-EXISTING-01 — and the devices the shop already had, on any shelf (like a purchase, it closes the opening).
  */
-const ENTRY_TYPES: { value: UnitEntryKind; label: string }[] = [
-  { value: "opening", label: "Inventario inicial" },
-  { value: "purchase", label: "Compra" },
-  { value: "existing", label: "Ingreso de inventario existente" },
+const ENTRY_TYPES: { value: UnitEntryKind; label: string; help: string }[] = [
+  {
+    value: "opening", label: "Inventario inicial",
+    help: "Equipos que ya tenías. Se pueden registrar en varias tandas mientras el producto no tenga otros movimientos (ventas, compras, traslados) en esta sucursal.",
+  },
+  { value: "purchase", label: "Compra", help: "Equipos que llegan comprados. Quedan como compra en el Kardex." },
+  { value: "existing", label: "Ingreso de inventario existente", help: EXISTING_STOCK_HELP },
 ];
 
 /** The supplier pages read for the picker (25 each): past it the form says the list is partial. */
@@ -417,26 +420,23 @@ export function StockUnitForm({
       <div className="grid gap-4 md:grid-cols-3">
         <fieldset className="md:col-span-3">
           <legend className="block text-xs font-semibold text-foreground">Tipo de ingreso</legend>
+          {/* Each radio is described by its OWN help, always shown: a description never changes with the selection. */}
           <div className="mt-1.5 flex flex-wrap gap-4 text-sm text-foreground">
             {ENTRY_TYPES.map((kind) => (
-              <label key={kind.value} className="flex items-center gap-2">
-                <input
-                  type="radio" name="unit-entry-kind" value={kind.value} disabled={working}
-                  checked={entryKind === kind.value} onChange={() => setEntryKind(kind.value)}
-                  aria-describedby="unit-entry-kind-help"
-                  className="h-4 w-4 accent-[var(--primary)]"
-                />
-                {kind.label}
-              </label>
+              <div key={kind.value} className="max-w-xs">
+                <label className="flex min-h-11 items-center gap-2">
+                  <input
+                    type="radio" name="unit-entry-kind" value={kind.value} disabled={working}
+                    checked={entryKind === kind.value} onChange={() => setEntryKind(kind.value)}
+                    aria-describedby={`unit-entry-kind-help-${kind.value}`}
+                    className="h-4 w-4 accent-[var(--primary)]"
+                  />
+                  {kind.label}
+                </label>
+                <p id={`unit-entry-kind-help-${kind.value}`} className="ml-6 text-xs text-muted">{kind.help}</p>
+              </div>
             ))}
           </div>
-          <p id="unit-entry-kind-help" className="mt-1 text-xs text-muted">
-            {entryKind === "opening"
-              ? "Equipos que ya tenías. Se pueden registrar en varias tandas mientras el producto no tenga otros movimientos (ventas, compras, traslados) en esta sucursal."
-              : entryKind === "existing"
-                ? "Equipos que ya tenías; no es una compra. Vale para cualquier producto y, como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige «Inventario inicial»."
-                : "Equipos que llegan comprados. Quedan como compra en el Kardex."}
-          </p>
           {errorFor("entry_kind") ? <p role="alert" className="mt-1 text-xs text-danger">{errorFor("entry_kind")}</p> : null}
         </fieldset>
         {canSeeSuppliers ? (
