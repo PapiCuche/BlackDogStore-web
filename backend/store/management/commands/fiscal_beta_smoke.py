@@ -109,7 +109,7 @@ class Command(BaseCommand):
         #    modo (FISCAL-PROD-02, revisión de #176): sin ellas no hay qué firmar, y
         #    un correlativo reservado igual quedaría gastado.
         try:
-            self.creds = resolve_credentials(self.company)
+            self.creds = resolve_credentials(self.company, signing=True)
         except FiscalConfigError as exc:
             raise CommandError(str(exc)) from None
 

@@ -72,12 +72,28 @@ def issuing_credentials(request, company, *, endpoint, target_type='', target_id
     `(credenciales, None)` o `(None, respuesta)`.
     """
     try:
-        return resolve_credentials(company), None
+        return resolve_credentials(company, signing=True), None
     except FiscalConfigError as exc:
         audit_refusal(request, company, action='fiscal_issue_refused', reason='issuing_unavailable',
                       endpoint=endpoint, detail=str(exc), target_type=target_type, target_id=target_id)
         return None, Response(
             {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+def provider_or_refusal(request, company, *, resolver, issuer_tax_id, endpoint, target_type, target_id):
+    """
+    El proveedor de envío para un documento YA firmado (RC, RA), o la respuesta 503
+    que lo niega, auditada con la empresa. Compara las credenciales con el RUC del
+    documento (`issuer_tax_id`) y no exige certificado vigente: no se firma nada.
+    `resolver` es el `resolve_provider` del módulo que llama, para que una prueba
+    pueda sustituirlo donde se usa. Devuelve `(proveedor, None)` o `(None, respuesta)`.
+    """
+    try:
+        return resolver(company, issuer_tax_id=issuer_tax_id or None), None
+    except FiscalConfigError as exc:
+        audit_refusal(request, company, action='fiscal_submit_refused', reason='issuing_unavailable',
+                      endpoint=endpoint, detail=str(exc), target_type=target_type, target_id=target_id)
+        return None, Response({'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
 def audit_refusal(request, company, *, action, reason, endpoint, detail='', target_type='', target_id=''):
@@ -514,8 +530,11 @@ class AdminFiscalDocumentSubmitView(APIView):
             return Response(document_payload(document))
 
         try:
-            provider = resolve_provider(document.company)
+            provider = resolve_provider(document.company, issuer_tax_id=document.issuer_tax_id)
         except FiscalConfigError as exc:
+            audit_refusal(request, document.company, action='fiscal_submit_refused',
+                          reason='issuing_unavailable', endpoint='fiscal_document_submit',
+                          detail=str(exc), target_type='fiscal_document', target_id=document.pk)
             return Response(
                 {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
@@ -583,8 +602,11 @@ class AdminFiscalDocumentReconcileView(APIView):
             return error
 
         try:
-            provider = resolve_consult_provider(document.company)
+            provider = resolve_consult_provider(document.company, issuer_tax_id=document.issuer_tax_id)
         except FiscalConfigError as exc:
+            audit_refusal(request, document.company, action='fiscal_reconcile_refused',
+                          reason='consult_unavailable', endpoint='fiscal_document_reconcile',
+                          detail=str(exc), target_type='fiscal_document', target_id=document.pk)
             return Response(
                 {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )

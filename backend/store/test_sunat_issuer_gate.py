@@ -19,6 +19,7 @@ No test here talks to SUNAT. Certificates are self-signed and generated at test 
 """
 import datetime as dt
 from decimal import Decimal
+from unittest import mock
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -30,6 +31,7 @@ from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
+from store.fiscal.provider import ProviderOutcome, ProviderResult, SunatSoapProvider
 from store.fiscal_config import FiscalConfigError, issuer_problems, resolve_credentials
 from store.models import (
     AdminAuditLog, FiscalDocument, FiscalDocumentType, FiscalEnvironment, FiscalSeries, FiscalSubmissionAttempt,
@@ -133,19 +135,47 @@ class AnotherTaxpayersCredentialsNeverIssueTest(_Base):
     def test_two_companies_one_installation_only_the_owner_of_the_ruc_issues(self):
         other = _p3_company('gate-b', 'Empresa B', tax_id=OTHER_RUC, legal_name='EMPRESA B SAC')
         with override_settings(**MATCHING):
-            resolve_credentials(self.company)
+            resolve_credentials(self.company, signing=True)
             with self.assertRaises(FiscalConfigError):
-                resolve_credentials(other)
+                resolve_credentials(other, signing=True)
 
-    def test_a_document_is_not_sent_once_the_credentials_change_hands(self):
+    def signed_document(self):
         with override_settings(**MATCHING):
             response = self.issue(self.order())
         self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
-        document = FiscalDocument.objects.get(pk=response.data['id'])
+        return FiscalDocument.objects.get(pk=response.data['id'])
+
+    def test_a_document_is_not_sent_once_the_credentials_change_hands(self):
+        document = self.signed_document()
         with override_settings(**FOREIGN):
             response = self.client.post(f'/api/admin/fiscal-documents/{document.pk}/submit/')
         self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.data)
         self.assertFalse(FiscalSubmissionAttempt.objects.filter(document=document).exists())
+        # The refusal of the provider is audited too, without the other RUC.
+        entry = AdminAuditLog.objects.get(company=self.company, action='fiscal_submit_refused',
+                                          target_id=document.pk)
+        self.assertNotIn(OTHER_RUC, str(entry.metadata))
+
+    def test_an_existing_document_is_compared_with_its_own_issuer_ruc(self):
+        document = self.signed_document()
+        # The company's RUC changes afterwards; the document keeps the one it was issued with,
+        # and the credentials of that RUC may still send it. Others may not.
+        type(self.company).objects.filter(pk=self.company.pk).update(tax_id=OTHER_RUC)
+        with override_settings(**MATCHING), mock.patch.object(
+                SunatSoapProvider, 'submit_invoice', return_value=ProviderResult(
+                    outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='x')) as sent:
+            response = self.client.post(f'/api/admin/fiscal-documents/{document.pk}/submit/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        sent.assert_called_once()
+        with override_settings(**FOREIGN):
+            response = self.client.post(f'/api/admin/fiscal-documents/{document.pk}/submit/')
+        self.assertEqual(response.status_code, status.HTTP_503_SERVICE_UNAVAILABLE, response.data)
+
+    def test_no_company_means_no_credentials(self):
+        with override_settings(**MATCHING):
+            for signing in (True, False):
+                with self.subTest(signing=signing), self.assertRaises(FiscalConfigError):
+                    resolve_credentials(None, signing=signing)
 
     def test_the_cash_desk_is_not_ready_with_another_rucs_credentials(self):
         from store.pos_services import _issuing_ready
@@ -156,7 +186,7 @@ class AnotherTaxpayersCredentialsNeverIssueTest(_Base):
             self.assertFalse(_issuing_ready(self.company))
 
 
-class ACertificateOutOfForceNeverIssuesTest(_Base):
+class ACertificateOutOfForceNeverSignsTest(_Base):
     def test_an_expired_certificate_reserves_nothing(self):
         with override_settings(**EXPIRED):
             response = self.issue(self.order())
@@ -166,6 +196,37 @@ class ACertificateOutOfForceNeverIssuesTest(_Base):
         with override_settings(**NOT_YET):
             response = self.issue(self.order())
         self.assert_refused(response, 'todavía no es válido')
+
+    def test_the_expiry_date_is_the_servers_date(self):
+        from django.utils import timezone as dj_timezone
+
+        from store.fiscal.certificate import certificate_metadata_from_pem
+
+        meta = certificate_metadata_from_pem(EXPIRED['FISCAL_CERT_PEM'].encode())
+        with override_settings(**EXPIRED):
+            response = self.issue(self.order())
+        self.assertIn(f'{dj_timezone.localtime(meta.not_after):%d/%m/%Y}', response.data['detail'])
+
+    def test_what_was_signed_in_force_can_still_be_sent_after_expiry(self):
+        with override_settings(**MATCHING):
+            response = self.issue(self.order())
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        document = FiscalDocument.objects.get(pk=response.data['id'])
+        with override_settings(**EXPIRED), mock.patch.object(
+                SunatSoapProvider, 'submit_invoice', return_value=ProviderResult(
+                    outcome=ProviderOutcome.TRANSPORT_ERROR, safe_message='x')) as sent:
+            response = self.client.post(f'/api/admin/fiscal-documents/{document.pk}/submit/')
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        sent.assert_called_once()
+
+    def test_sending_polling_and_consulting_do_not_ask_for_a_certificate_in_force(self):
+        from store.fiscal_config import resolve_provider
+
+        with override_settings(**EXPIRED):
+            self.assertEqual(resolve_credentials(self.company, signing=False)['ruc'], RUC)
+            resolve_provider(self.company)              # RC/RA submit and poll, invoice submit
+            with self.assertRaises(FiscalConfigError):
+                resolve_credentials(self.company, signing=True)
 
 
 class TheProductionCertificateNamesTheIssuerTest(SimpleTestCase):
@@ -181,7 +242,7 @@ class TheProductionCertificateNamesTheIssuerTest(SimpleTestCase):
     def test_production_needs_the_ruc_in_the_subject(self):
         problems = self.problems(_certificate(cn='PRUEBA SIN RUC'))
         self.assertEqual(len(problems), 1)
-        self.assertIn('campo OU', problems[0])
+        self.assertIn('sujeto del certificado', problems[0])
 
     def test_the_ruc_in_ou_satisfies_production(self):
         self.assertEqual(self.problems(_certificate(ou=RUC, cn='EMPRESA GATE SAC')), [])
@@ -192,6 +253,17 @@ class TheProductionCertificateNamesTheIssuerTest(SimpleTestCase):
     def test_another_companys_certificate_does_not_satisfy_production(self):
         problems = self.problems(_certificate(ou=OTHER_RUC, cn='EMPRESA B SAC'))
         self.assertTrue(any('campo OU' in p for p in problems))
+
+    def test_a_ruc_inside_a_longer_number_does_not_count(self):
+        for ou in (f'1{RUC}', f'{RUC}9'):
+            with self.subTest(ou=ou):
+                problems = self.problems(_certificate(ou=ou, cn='EMPRESA GATE SAC'))
+                self.assertTrue(any('sujeto del certificado' in p for p in problems))
+
+    def test_sending_in_production_does_not_reread_the_certificate(self):
+        _key, cert = _certificate(cn='SIN RUC', days_before=400, days_after=-1)
+        self.assertEqual(issuer_problems(self.Company(), {'ruc': RUC, 'cert_pem': cert},
+                                         environment=FiscalEnvironment.PRODUCTION, signing=False), [])
 
     def test_beta_does_not_ask_for_the_ruc_in_the_subject(self):
         self.assertEqual(self.problems(_certificate(cn='PRUEBA SIN RUC'), FiscalEnvironment.BETA), [])

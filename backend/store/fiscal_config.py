@@ -254,9 +254,19 @@ def resolve_note_series(company, *, branch=None, note_type: str,
     )
 
 
-def resolve_credentials(company) -> dict:
+def resolve_credentials(company, *, signing: bool, issuer_tax_id: str | None = None) -> dict:
     """
     Las credenciales de esta empresa: las de la consola, o las del entorno.
+
+    `signing` dice si quien llama va a FIRMAR (emitir un comprobante, una nota, un
+    resumen o una baja; la caja antes de vender). Sólo entonces se exige que el
+    certificado esté vigente: enviar, consultar o reconciliar un documento YA
+    firmado no usa el certificado, y un certificado que venció después no puede
+    dejar sin salida a lo que se firmó mientras estaba vigente.
+
+    `issuer_tax_id` es el RUC contra el que se comparan las credenciales cuando se
+    actúa sobre un documento existente (su `issuer_tax_id`); por defecto, el RUC
+    de la empresa.
 
     Si un MASTER activó SUNAT en Configuración › Integraciones, son ésas: cifradas
     en el almacén de secretos, nunca en una columna legible. Si no, las variables
@@ -282,7 +292,7 @@ def resolve_credentials(company) -> dict:
             'La emisión electrónica no está habilitada en este servidor.'
         )
     if active is not None:
-        return _checked(_console_credentials(active), company)
+        return _checked(_console_credentials(active), company, signing=signing, issuer_tax_id=issuer_tax_id)
 
     ruc = (getattr(settings, 'FISCAL_SOL_RUC', '') or '').strip()
     user = (getattr(settings, 'FISCAL_SOL_USER', '') or '').strip()
@@ -298,10 +308,10 @@ def resolve_credentials(company) -> dict:
         'ruc': ruc, 'sol_user': user, 'sol_password': password,
         'cert_pem': cert_pem,
         'key_pem': key_pem,
-    }, company)
+    }, company, signing=signing, issuer_tax_id=issuer_tax_id)
 
 
-def _checked(credentials: dict, company=None) -> dict:
+def _checked(credentials: dict, company, *, signing: bool, issuer_tax_id: str | None = None) -> dict:
     """
     El par de firma se lee y casa, y es de ESTA empresa, o no hay emisión.
 
@@ -316,14 +326,22 @@ def _checked(credentials: dict, company=None) -> dict:
         check_signing_pair(credentials['cert_pem'], credentials['key_pem'])
     except CertificateError as exc:
         raise FiscalConfigError(str(exc)) from None
-    if company is not None:
-        problems = issuer_problems(company, credentials, environment=resolve_environment())
-        if problems:
-            raise FiscalConfigError(problems[0])
+    if company is None:
+        # Sin empresa no hay emisor contra el que comparar: no hay credenciales.
+        raise FiscalConfigError('No hay empresa emisora: no se resuelven credenciales fiscales.')
+    problems = issuer_problems(company, credentials, environment=resolve_environment(),
+                               signing=signing, issuer_tax_id=issuer_tax_id)
+    if problems:
+        raise FiscalConfigError(problems[0])
     return credentials
 
 
-def issuer_problems(company, credentials: dict, *, environment: str, now=None) -> list[str]:
+#: Un RUC dentro de un valor del sujeto: once dígitos que no son parte de un número más largo.
+_RUC_IN_TEXT = r'(?<!\d)\d{11}(?!\d)'
+
+
+def issuer_problems(company, credentials: dict, *, environment: str, signing: bool = True,
+                    issuer_tax_id: str | None = None, now=None) -> list[str]:
     """
     Por qué estas credenciales NO pueden emitir por `company`; `[]` si pueden.
 
@@ -335,19 +353,27 @@ def issuer_problems(company, credentials: dict, *, environment: str, now=None) -
     1. La empresa tiene RUC, y es el RUC de la Clave SOL. El usuario SOAP es
        `RUC + usuario` (Anexo 6, 6.1.2) y el archivo lleva el RUC del emisor: los
        dos tienen que ser el mismo contribuyente, también en BETA (`RUCMODDATOS`).
-    2. El certificado está vigente. Uno vencido o aún no válido se descubría al
-       final, con el correlativo gastado y el rechazo de SUNAT.
-    3. En PRODUCCIÓN, además, el RUC del emisor figura en el sujeto del
-       certificado (Manual del programador, §3.1: «en el campo OU»). En BETA no:
-       SUNAT no exige allí un certificado registrado (§2.3) y se firma con uno
-       autofirmado.
+    2. Sólo al FIRMAR (`signing`): el certificado está vigente. Uno vencido o aún
+       no válido se descubría al final, con el correlativo gastado y el rechazo
+       de SUNAT. Enviar o consultar lo ya firmado no lo exige.
+    3. Sólo al firmar en PRODUCCIÓN: el RUC del emisor figura en el sujeto del
+       certificado (Manual del programador, §3.1, lo pide en el campo OU; se
+       acepta en cualquier atributo del sujeto). En BETA no: SUNAT no exige allí
+       un certificado registrado (§2.3) y se firma con uno autofirmado.
+
+    `issuer_tax_id`: el RUC del documento sobre el que se actúa, si existe; si
+    no, el de la empresa.
 
     Los mensajes no llevan secretos ni el RUC de las credenciales: quien opera
     una empresa no tiene por qué leer el RUC de otra.
     """
     from .fiscal.certificate import CertificateError, certificate_metadata_from_pem, subject_values
 
-    ruc = (getattr(company, 'tax_id', '') or '').strip()
+    import re
+
+    from django.utils import timezone as dj_timezone
+
+    ruc = (issuer_tax_id or getattr(company, 'tax_id', '') or '').strip()
     if not ruc:
         return ['La empresa no tiene RUC registrado: no se puede emitir a su nombre.']
     problems = []
@@ -355,25 +381,28 @@ def issuer_problems(company, credentials: dict, *, environment: str, now=None) -
         problems.append(
             'Las credenciales SOL configuradas no son del RUC de esta empresa. Una '
             'empresa no emite con las credenciales de otro contribuyente.')
+    if not signing:
+        return problems
     try:
         meta = certificate_metadata_from_pem(credentials['cert_pem'])
     except CertificateError as exc:
         return [*problems, str(exc)]
     validity = meta.validity(now=now)
+    # Las fechas, en la hora del servidor (Lima), que es la que lee quien opera.
     if validity == 'expired':
-        problems.append(f'El certificado de firma venció el {meta.not_after:%d/%m/%Y}.')
+        problems.append(
+            f'El certificado de firma venció el {dj_timezone.localtime(meta.not_after):%d/%m/%Y}.')
     elif validity == 'not_yet_valid':
         problems.append(
-            f'El certificado de firma todavía no es válido: empieza el {meta.not_before:%d/%m/%Y}.')
+            f'El certificado de firma todavía no es válido: empieza el '
+            f'{dj_timezone.localtime(meta.not_before):%d/%m/%Y}.')
     if environment == FiscalEnvironment.PRODUCTION:
-        import re
-
         tokens = {token for value in subject_values(credentials['cert_pem'])
-                  for token in re.findall(r'\d{11}', value)}
+                  for token in re.findall(_RUC_IN_TEXT, value)}
         if ruc not in tokens:
             problems.append(
-                'El certificado de firma no lleva el RUC de esta empresa en su sujeto '
-                '(SUNAT lo exige en el campo OU).')
+                'El RUC de esta empresa no figura en el sujeto del certificado de firma '
+                '(SUNAT lo pide en el campo OU).')
     return problems
 
 
@@ -478,7 +507,7 @@ def inspect_signing_certificate():
     return meta, meta.validity()
 
 
-def resolve_provider(company):
+def resolve_provider(company, *, issuer_tax_id: str | None = None):
     """
     El proveedor con el que hablar. El endpoint NO es configurable por nadie.
 
@@ -496,7 +525,8 @@ def resolve_provider(company):
             f'No hay endpoint declarado para el ambiente «{environment}».'
         )
 
-    credentials = resolve_credentials(company)
+    # Enviar no firma: lo que se envía ya está firmado (`signing=False`).
+    credentials = resolve_credentials(company, signing=False, issuer_tax_id=issuer_tax_id)
     return SunatSoapProvider(
         endpoint=endpoint, ruc=credentials['ruc'],
         sol_user=credentials['sol_user'],
@@ -523,7 +553,7 @@ def fiscal_consult_enabled() -> bool:
     return bool(getattr(settings, 'FISCAL_CONSULT_ENABLED', False))
 
 
-def resolve_consult_provider(company):
+def resolve_consult_provider(company, *, issuer_tax_id: str | None = None):
     """
     El proveedor de CONSULTA (`getStatusCdr`). Endpoint fijo del código, jamás de
     una petición: un inquilino que eligiera la URL tendría un SSRF servido.
@@ -544,7 +574,8 @@ def resolve_consult_provider(company):
     # sustituirlo por configuración de servidor (nunca por petición) para pruebas
     # de integración controladas.
     endpoint = getattr(settings, 'FISCAL_CONSULT_ENDPOINT', PRODUCTION_CONSULT_ENDPOINT)
-    credentials = resolve_credentials(company)
+    # Consultar no firma (`signing=False`).
+    credentials = resolve_credentials(company, signing=False, issuer_tax_id=issuer_tax_id)
     return SunatConsultProvider(
         endpoint=endpoint, ruc=credentials['ruc'],
         sol_user=credentials['sol_user'],

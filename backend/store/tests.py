@@ -51109,7 +51109,9 @@ class C22BEnvironmentGuardTest(TestCase):
         from . import fiscal_config
 
         firma = inspect.signature(fiscal_config.resolve_provider)
-        self.assertEqual(list(firma.parameters), ['company'])
+        # La empresa y, al actuar sobre un documento, su RUC emisor (SUNAT-ISSUER-GATE).
+        # Ninguno es una URL.
+        self.assertEqual(list(firma.parameters), ['company', 'issuer_tax_id'])
         fuente = inspect.getsource(fiscal_config.resolve_provider)
         self.assertIn('endpoints = {', fuente)
 
@@ -56334,8 +56336,11 @@ class FiscalCertificateLoaderTest(TestCase):
 
     def _resolve(self, **cert_settings):
         from .fiscal_config import resolve_credentials
+        # SUNAT-ISSUER-GATE: credentials are asked for a company, whose RUC is theirs.
+        company = Company.objects.get_or_create(
+            slug='emisor-cdt', defaults={'name': 'Emisor CDT', 'tax_id': '20100066603'})[0]
         with override_settings(**cert_settings):
-            return resolve_credentials(None)
+            return resolve_credentials(company, signing=True)
 
     # -- PKCS#12 happy path ---------------------------------------------------
 
