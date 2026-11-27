@@ -560,14 +560,26 @@ Implementado en la fase 5b:
   pendiente, aprobada sin emitir, rechazada y anulada responden 409 `not_issued`, en PDF y en la cola.
 - Sellos sobre el papel: **VENCIDA** (también cuando el cron aún no la estampó), **REEMPLAZADA** y **NO ACEPTADA**.
 - Veredicto impreso desde `printable_eligibility`: APTO o APTO CON DESCUENTOS; nunca «requiere aprobación».
-- El papel lleva el valor ofrecido; la base, el máximo, las deducciones, el ajuste y su motivo, las notas, el IMEI o la
-  serie completos y el documento del cliente no salen. El IMEI o la serie van como `****1234`.
+- El papel lleva el valor ofrecido; la base, el máximo, las deducciones, el ajuste y su motivo, las notas y el IMEI o la
+  serie completos no salen. El IMEI o la serie van como `****1234`.
+- **El cliente no sale en el papel.** Su nombre es una lectura viva que, sin nombre, cae en su DNI o RUC: filtraría un
+  documento y cambiaría una reimpresión. Renombrar al cliente deja A4, 80 mm y ESC/POS idénticos byte a byte (el A4
+  se genera con `invariant`, sin fecha de creación ni identificador aleatorio).
+- **Precio del equipo que compra y diferencia**: con la regla de la API de la 5a. Si la evaluación está enlazada a una
+  cotización de venta, sólo salen para quien tiene `sales.quotes.manage`. En el PDF cuenta quien descarga; en la cola,
+  quien pidió la impresión (`requested_by`).
+- **Leyenda del propietario**, literal: «Cotización referencial válida durante cuatro días desde su emisión, sujeta a la
+  verificación final del estado, identidad y procedencia del equipo. No constituye aceptación definitiva ni comprobante
+  de pago.», con la línea «Válido por 4 días». Si la política de la empresa da otra vigencia, la frase nombra el final
+  exacto («válida hasta el <fecha hora>») y no hay línea de días. El ESC/POS conserva las tildes (cp858).
 - **Sin QR todavía**: el enlace público es de la 5c; cuando llegue, el QR se añade al mismo contexto.
 - API: `GET quotes/<id>/pdf/?format=a4|ticket80` y `POST quotes/<id>/print/` con `Idempotency-Key`, ambos con
   `sales.tradein.view`; cada descarga y cada petición de impresión se auditan sin identificadores.
 - Cola: `enqueue_trade_in_quote_ticket` rechaza otra empresa, otra sede, impresora inactiva o de etiquetas; la misma
-  clave devuelve el mismo trabajo. La base rechaza un trabajo con el destino equivocado (`print_job_target_matches_kind_v3`).
-- Antes de volver a una imagen sin 0200: `cancel_trade_in_quote_print_jobs --apply` (runbook §6.1.3g).
+  clave devuelve el mismo trabajo, y una clave ya usada para otra cotización o impresora da conflicto (409), también si
+  la otra petición ganó la inserción a la vez. La cola de Impresión muestra «Cotización de recepción CRE-…» en vez de
+  «Pedido #null». La base rechaza un trabajo con el destino equivocado (`print_job_target_matches_kind_v3`).
+- Antes de volver a una imagen sin 0199: `cancel_trade_in_quote_print_jobs --apply` (runbook §6.1.3g).
 
 ---
 
@@ -588,7 +600,7 @@ códigos nuevos; sin la reparación fallan `M121PresetParityTest` y `M12CFreshIn
 | 3 | `019x_trade_in_eligibility` | fuentes, registros de verificación; columnas de política con `db_default`; capacidades `sales.tradein.view/value` (+ reparación) | Segura. |
 | 4 | `019x_trade_in_assessment` | evaluación, respuestas, bloqueos, fotos; kind de `InternalSequence` (sólo choices); `sales.tradein.approve` (+ reparación) | Segura. |
 | 5a | `019x_trade_in_quote` | cotización y revisiones; kind de `InternalSequence`; `sales.tradein.approve_own` (+ reparación); `SalesQuoteTradeIn.trade_in_quote` (nulo) | Segura. |
-| 5b | `0200_trade_in_quote_print` | `PrintJob.trade_in_quote` (nulo, `db_default` NULL), kind `trade_in_quote_ticket`, restricción de destino `_v3` | **Un paso previo**, como 0189: `cancel_trade_in_quote_print_jobs --apply` antes de volver a la imagen anterior. Desde este nodo, cada migración lleva **dos** guardas al final: `refuse_reverse_with_trade_in_tickets` (penúltima; filtra `kind='trade_in_quote_ticket'`) y `refuse_reverse_with_quote_tickets` (última, intacta: `test_migration_reverse_guards` comprueba exactamente `filter(kind='sales_quote_ticket')`). La prueba gana una lista de nodos para la guarda nueva. |
+| 5b | `0199_trade_in_quote_print` | `PrintJob.trade_in_quote` (nulo, `db_default` NULL), kind `trade_in_quote_ticket`, restricción de destino `_v3` | **Un paso previo**, como 0189: `cancel_trade_in_quote_print_jobs --apply` antes de volver a la imagen anterior. Desde este nodo, cada migración lleva **dos** guardas al final: `refuse_reverse_with_trade_in_tickets` (penúltima; filtra `kind='trade_in_quote_ticket'`) y `refuse_reverse_with_quote_tickets` (última, intacta: `test_migration_reverse_guards` comprueba exactamente `filter(kind='sales_quote_ticket')`). La prueba gana una lista de nodos para la guarda nueva. |
 | 5c | (sin esquema: `public_uid` se crea en 5a con la tabla de la cotización) | enlace público | Segura. |
 
 Ninguna migración concede capacidades. Si el propietario decide V1 a favor, se añade un nodo de concesión con la regla
@@ -637,8 +649,8 @@ Cada PR: rama propia, código separado de docs (commits distintos), entradas en 
   vencida antes del cron → 409, el cron la estampa una vez (concurrencia con `TransactionTestCase`), `calculation_stale`
   cuando la versión usada dejó de estar en vigor, revisión recalcula y la anterior conserva su instantánea, revisar una
   aceptada exige motivo, autoaprobación con `approve_own` y motivo.
-- **Documentos (5b):** reimpresión idéntica byte a byte (goldens del ticket y ESC/POS); ticket y PDF sin costos,
-  márgenes, IMEI completo ni «REQUIERE APROBACIÓN»; leyenda «no es comprobante».
+- **Documentos (5b):** reimpresión idéntica byte a byte en A4, 80 mm y ESC/POS; ticket y PDF sin costos, márgenes,
+  IMEI completo, cliente ni «requiere aprobación» (en cualquier mayúscula); leyenda del propietario.
 - **Página pública (5c):** QR → página; token manipulado = 404; revisión reemplazada dice «reemplazada»; sin datos
   internos; `noindex`; límite por IP.
 - **Frontend (6–7):** Jest por componente, `tsc`, lint, build. **E2E (8):** flujo completo en escritorio y 390 px.
