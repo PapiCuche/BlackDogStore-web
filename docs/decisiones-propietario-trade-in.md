@@ -140,7 +140,7 @@ Si el propietario y el contador aceptan las recomendaciones de arriba, el día a
 
 ## Qué implementa TRADE-IN-QUOTE-00 (y qué no)
 
-TRADE-IN-QUOTE-00 (rama `feat/trade-in-quote-00`, migración `0191_trade_in_quote`; **PARCIAL** hasta fusionar) es
+TRADE-IN-QUOTE-00 (#414, migración `0191_trade_in_quote`; **IMPLEMENTADO**, en producción desde R13) es
 lo único permitido mientras D1–D12 sigan pendientes (plan maestro comercial §H): una **valoración referencial y no
 vinculante dentro de una cotización comercial**. No decide ninguna de las doce preguntas de arriba.
 
@@ -169,6 +169,13 @@ vinculante dentro de una cotización comercial**. No decide ninguna de las doce 
 - Ningún dato de identidad: ni DNI, ni IMEI completo, ni fotos, ni consulta de IMEI (**D6**, **D10**). Un texto con
   ocho o más dígitos se rechaza, aunque vayan separados (espacios, puntos, comas, barras, guiones); las fechas y los
   importes (con moneda o con decimales) se permiten; «DNI 12,345,678» se sigue rechazando.
+
+## Valorización profesional (TRADE-IN VALUATION PRO)
+
+El tarifario de recepción por empresa, las reglas de valorización, la elegibilidad, la verificación asistida de IMEI y
+la cotización de recepción con vigencia, ticket y QR están diseñados en
+[adr-trade-in-valuation.md](adr-trade-in-valuation.md) (fase 1, el tarifario, en #457). **Valorizar no es comprar**:
+nada de eso decide D1–D12 ni recibe, paga o acredita un equipo. Sus decisiones propias (V1–V7) están en ese ADR §13.
 
 ## Estado
 
