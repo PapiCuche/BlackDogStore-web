@@ -515,9 +515,10 @@ def calculate(*, actor, company, assessment, data=None, request=None) -> TradeIn
         assessment.calculated_by, assessment.calculated_at = actor, timezone.now()
         assessment.status = TradeInAssessment.STATUS_CALCULATED
         assessment.approved_by = assessment.approved_at = None
+        assessment.approval_kind = ''
         _contributed(assessment, actor)
         assessment.save(update_fields=['status', *_CALCULATION_FIELDS, 'approved_by', 'approved_at',
-                                       'contributor_ids', 'updated_at'])
+                                       'approval_kind', 'contributor_ids', 'updated_at'])
         _audit(actor=actor, company=company, action='trade_in_assessment_calculated', assessment=assessment,
                request=request, eligibility=overall, tariff_version=tariff_version.pk,
                rule_set_version=rules_version.pk, computed=None if computed is None else str(computed),
@@ -608,7 +609,9 @@ def approve(*, actor, company, assessment, note='', request=None) -> TradeInAsse
                                  'vuelve a calcular.', code='calculation_stale', extra={'reasons': stale})
         assessment.status = TradeInAssessment.STATUS_APPROVED
         assessment.approved_by, assessment.approved_at, assessment.approval_note = actor, timezone.now(), note
-        assessment.save(update_fields=['status', 'approved_by', 'approved_at', 'approval_note', 'updated_at'])
+        assessment.approval_kind = 'self' if own else 'approver'
+        assessment.save(update_fields=['status', 'approved_by', 'approved_at', 'approval_note', 'approval_kind',
+                                       'updated_at'])
         _audit(actor=actor, company=company, action='trade_in_assessment_approved', assessment=assessment,
                request=request, offered=str(assessment.offered_value), has_note=bool(note), self_approval=own)
     return assessment

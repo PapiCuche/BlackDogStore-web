@@ -8,6 +8,7 @@ what is in force and never rewrites the previous one; internal estimates stay in
 does not exist for you; nothing is bought, received, paid or credited.
 """
 import json
+import threading
 from datetime import timedelta
 from decimal import Decimal
 from io import StringIO
@@ -15,7 +16,8 @@ from unittest import mock
 
 from django.core.exceptions import ValidationError
 from django.core.management import call_command
-from django.test import TestCase
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from store import finance_test_support as fx
@@ -276,3 +278,179 @@ class GuardsTest(QuoteBase):
             for word in ('iphone', 'apple', 'samsung', 'black dog', 'blackdog', 'icloud'):
                 with self.subTest(file=name, word=word):
                     self.assertNotIn(word, text)
+
+
+class ReviewFindingsTest(QuoteBase):
+    """Review of #465: audit of revisions, policy, cancel without dead end, frozen print columns, filters, stale paths."""
+
+    def test_a_revision_audits_the_status_it_had(self):
+        created = self.quote()
+        self.act(created['id'], 'issue')
+        self.act(created['id'], 'revise')
+        audit = AdminAuditLog.objects.get(action='trade_in_quote_revised')
+        self.assertEqual(audit.metadata['previous_status'], 'issued')
+
+    def test_the_policy_shows_and_audits_the_quote_and_customer_settings(self):
+        res = self.api(self.boss).put(f'{URL}policy/', {'quote_validity_hours': 48, 'quote_conditions': 'Equipo con '
+                                                        'cargador.', 'require_identified_customer': False},
+                                      format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        body = res.json()
+        self.assertEqual((body['quote_validity_hours'], body['quote_conditions'], body['require_identified_customer']),
+                         (48, 'Equipo con cargador.', False))
+        audit = AdminAuditLog.objects.filter(action='trade_in_policy_updated').latest('pk')
+        self.assertEqual((audit.metadata['before']['quote_validity_hours'], audit.metadata['after']['quote_validity_hours']),
+                         (96, 48))
+        self.assertNotIn('quote_conditions', audit.metadata['after'])
+        for hours in (0, 721, 'mucho'):
+            with self.subTest(hours=hours):
+                res = self.api(self.boss).put(f'{URL}policy/', {'quote_validity_hours': hours}, format='json')
+                self.assertEqual((res.status_code, res.json()['field']), (400, 'quote_validity_hours'))
+
+    def test_cancelling_a_quote_frees_the_device_check(self):
+        check = self.clear_check()
+        created = self.quote(check=check)
+        self.act(created['id'], 'cancel', reason='El cliente se arrepintió')
+        assessment = TradeInAssessment.objects.get(pk=created['assessment'])
+        self.assertEqual((assessment.status, assessment.cancel_reason), ('cancelled', 'El cliente se arrepintió'))
+        self.assertTrue(AdminAuditLog.objects.filter(action='trade_in_assessment_cancelled',
+                                                     metadata__because='quote_cancelled').exists())
+        self.opened(check=check)                                   # a new assessment on the same device check
+
+    def test_documents_have_a_frozen_verdict_that_never_asks_for_approval(self):
+        done = self.calculated({'pantalla': 'not_working', 'bateria': '90'})
+        self.post(f'assessments/{done["id"]}/approve/', {}, user=self.approver, expect=200)
+        created = self.post('quotes/', {'assessment': done['id']})
+        row = TradeInQuote.objects.get(pk=created['id'])
+        self.assertEqual((row.eligibility, row.printable_eligibility, row.needs_approval),
+                         ('requires_approval', 'eligible', True))
+        plain = TradeInQuote.objects.get(pk=self.quote()['id'])
+        self.assertEqual((plain.printable_eligibility, plain.needs_approval), ('eligible_with_deductions', False))
+
+    def test_a_self_approved_assessment_stays_a_self_approval_on_its_quote(self):
+        own = fx.member(self.company, 'tiq_propio3', [VIEW, VALUE, APPROVE, APPROVE_OWN])
+        created = self.post('assessments/', {'device_check': self.clear_check().pk, 'tariff_entry': self.entry.pk,
+                                             'customer': self.customer.pk}, user=own)
+        self.post(f'assessments/{created["id"]}/answers/', {'answers': {'pantalla': 'not_working', 'bateria': '90'}},
+                  method='put', user=own, expect=200)
+        self.post(f'assessments/{created["id"]}/calculate/', {}, user=own, expect=200)
+        self.post(f'assessments/{created["id"]}/approve/', {'note': 'Solo yo'}, user=own, expect=200)
+        quote = self.post('quotes/', {'assessment': created['id']}, user=own)
+        self.assertEqual(quote['approval_kind'], 'self')
+
+    def test_the_status_filter_derives_issued_and_expired(self):
+        created = self.quote()
+        self.act(created['id'], 'issue')
+        later = timezone.now() + timedelta(hours=97)
+
+        def listed(status):
+            return [q['id'] for q in self.api(self.reader).get(f'{URL}quotes/', {'status': status}).json()['results']]
+
+        self.assertEqual(listed('issued'), [created['id']])
+        with mock.patch('django.utils.timezone.now', return_value=later):
+            self.assertEqual(listed('issued'), [])
+            self.assertEqual(listed('expired'), [created['id']])
+
+    def test_stale_at_approval_and_security_or_price_at_issue(self):
+        from store import trade_in_eligibility as eligibility
+        from store.models import Product
+
+        pending = self.quote({'pantalla': 'not_working', 'bateria': '90'})
+        tariff.propose_version(actor=self.admin, company=self.company, entry=self.entry,
+                               data={'base_reception_value': '900.00', 'max_reception_value': '1100.00'})
+        res = self.act(pending['id'], 'approve', user=self.approver, expect=409)
+        self.assertEqual((res['code'], res['reasons']), ('calculation_stale', ['tariff']))
+
+    def test_security_and_target_price_make_an_issue_stale(self):
+        from store import trade_in_eligibility as eligibility
+        from store.models import Product
+
+        check = self.clear_check()
+        created = self.quote(check=check)
+        eligibility.record_identity(actor=self.valuer, company=self.company, check=check,
+                                    data={'slot': 'imei', 'result': 'reported', 'source': self.source.pk})
+        self.assertEqual(self.act(created['id'], 'issue', expect=409)['reasons'], ['security'])
+        product = Product.objects.create(company=self.company, name='Nuevo', slug='nuevo-q', price='4500.00',
+                                         inventory=0)
+        trading = self.quote(purpose='trade_towards', target_product=product.pk)
+        Product.objects.filter(pk=product.pk).update(price=D('4000.00'))
+        self.assertEqual(self.act(trading['id'], 'issue', expect=409)['reasons'], ['target_price'])
+
+    def test_free_texts_refuse_the_devices_identifiers_and_never_reach_the_audit(self):
+        from store.device_identity import luhn_check_digit
+
+        check = self.clear_check()
+        full = f'{35693803564300 + self.counter}'
+        full += luhn_check_digit(full)
+        created = self.quote({'pantalla': 'not_working', 'bateria': '90'}, check=check)
+        self.assertEqual(self.act(created['id'], 'reject', user=self.approver, note=f'IMEI {full}',
+                                  expect=400)['code'], 'identifier_in_text')
+        self.assertEqual(self.act(created['id'], 'cancel', reason=full[:11], expect=400)['code'],
+                         'identifier_in_text')
+        self.act(created['id'], 'approve', user=self.approver, note='Revisado en mostrador')
+        self.act(created['id'], 'issue')
+        self.act(created['id'], 'accept', note='Trae caja y cargador')
+        self.assertEqual(self.act(created['id'], 'revise', revision_reason=f'serie {full}', expect=400)['code'],
+                         'identifier_in_text')
+        texts = json.dumps(list(AdminAuditLog.objects.filter(company=self.company).values_list('metadata',
+                                                                                         flat=True)))
+        for secret in (full, check.imei_digest, 'Revisado en mostrador', 'Trae caja y cargador'):
+            self.assertNotIn(secret, texts)
+
+    def test_the_cron_can_be_limited_to_a_company(self):
+        created = self.quote()
+        self.act(created['id'], 'issue')
+        later = timezone.now() + timedelta(hours=97)
+        with mock.patch('django.utils.timezone.now', return_value=later):
+            out = StringIO()
+            call_command('expire_trade_in_quotes', '--company', self.other.slug, stdout=out)
+            self.assertIn('vencidas: 0', out.getvalue())
+            out = StringIO()
+            call_command('expire_trade_in_quotes', '--company', self.company.slug, stdout=out)
+            self.assertIn('vencidas: 1', out.getvalue())
+
+    def test_approval_and_issue_are_written_once(self):
+        created = self.quote()
+        self.act(created['id'], 'issue')
+        row = TradeInQuote.objects.get(pk=created['id'])
+        row.valid_until = row.valid_until + timedelta(days=30)
+        with self.assertRaises(ValidationError):
+            row.save(update_fields=['valid_until'])
+        row.refresh_from_db()
+        row.approved_at = timezone.now()
+        with self.assertRaises(ValidationError):
+            row.save(update_fields=['approved_at'])
+
+
+class TwoExpiryPassesAtOnceTest(TransactionTestCase):
+    """Two cron passes at the same instant stamp each quote once (row locks), with one audit entry."""
+
+    def setUp(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('Only PostgreSQL has the row locks this test is about.')
+        base = QuoteBase('setUp')
+        base.setUp()
+        self.base = base
+
+    def test_stamped_once(self):
+        base = self.base
+        created = base.quote()
+        quotes.issue(actor=base.valuer, company=base.company, quote=TradeInQuote.objects.get(pk=created['id']))
+        later = timezone.now() + timedelta(hours=97)
+        start = threading.Barrier(2)
+        counts = []
+
+        def run():
+            try:
+                start.wait(5)
+                counts.append(quotes.expire_due(now=later))
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=run) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        self.assertEqual(sorted(counts), [0, 1])
+        self.assertEqual(AdminAuditLog.objects.filter(action='trade_in_quote_expired').count(), 1)

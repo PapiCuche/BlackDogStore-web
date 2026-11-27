@@ -5,7 +5,8 @@ TRADE-IN VALUATION PRO · Phase 5a — the trade-in quote, its states and its ex
 Schema, all additive: ONE new table (`TradeInQuote`) with its checks (one live revision per number, revisions >= 1,
 offer within the frozen maximum, an issued quote has an issue instant and a later expiry instant) and two columns on
 `TradeInPolicy` (`quote_validity_hours` 96, `quote_conditions` ''), both with `db_default` so the previous release keeps
-inserting policies. No `PrintJob` change (that is 5b) and no column on any existing sales table.
+inserting policies, and one on `TradeInAssessment` (`approval_kind`, `db_default` '': how it was approved, carried by
+its quote). No `PrintJob` change (that is 5b) and no column on any existing sales table.
 
 FRESH-INSTALL REPAIR (data), as 0157/0163/0194/0196/0197: the new explicit grant `sales.tradein.approve_own` is taken
 off a fresh install's seeded `Administrador` (0061 reads the live catalogue), only without any `Membership`.
@@ -78,6 +79,8 @@ class Migration(migrations.Migration):
                 ('status', models.CharField(choices=[('pending_approval', 'Pendiente de aprobación'), ('approved', 'Aprobada'), ('issued', 'Emitida'), ('accepted', 'Aceptada'), ('declined', 'Rechazada por el cliente'), ('expired', 'Vencida'), ('rejected', 'No aprobada'), ('cancelled', 'Anulada'), ('superseded', 'Reemplazada')], max_length=18)),
                 ('calculation', models.JSONField(blank=True, default=dict)),
                 ('eligibility', models.CharField(max_length=24)),
+                ('printable_eligibility', models.CharField(max_length=24)),
+                ('needs_approval', models.BooleanField(default=False)),
                 ('computed_value', models.DecimalField(decimal_places=2, max_digits=12)),
                 ('offered_value', models.DecimalField(decimal_places=2, max_digits=12)),
                 ('adjustment_reason', models.CharField(blank=True, default='', max_length=300)),
@@ -105,6 +108,11 @@ class Migration(migrations.Migration):
             options={
                 'ordering': ['-created_at', '-pk'],
             },
+        ),
+        migrations.AddField(
+            model_name='tradeinassessment',
+            name='approval_kind',
+            field=models.CharField(blank=True, db_default='', default='', max_length=10),
         ),
         migrations.AddField(
             model_name='tradeinpolicy',

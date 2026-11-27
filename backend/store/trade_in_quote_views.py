@@ -40,6 +40,7 @@ def quote_payload(user, company, q, *, full=True) -> dict:
         'device': ' '.join(p for p in (q.assessment.brand, q.assessment.model_name, q.assessment.capacity) if p),
         'imei': eligibility.masked(check.imei_last4), 'serial': eligibility.masked(check.serial_last4),
         'eligibility': q.eligibility, 'eligibility_label': assessments.LABELS.get(q.eligibility, ''),
+        'printable_eligibility': q.printable_eligibility, 'needs_approval': q.needs_approval,
         'offered_value': _money(q.offered_value), 'currency': q.currency,
         'issued_at': q.issued_at, 'valid_until': q.valid_until,
         'valid_until_display': quotes.display_valid_until(company, q),
@@ -103,8 +104,18 @@ class AdminTradeInQuoteListView(_Base):
             return error
         rows = _quotes(request.user, company)
         wanted = (request.query_params.get('status') or 'current').strip()
+        from django.db.models import Q
+        from django.utils import timezone
+
+        now = timezone.now()
         if wanted == 'current':
             rows = rows.exclude(status=TradeInQuote.STATUS_SUPERSEDED)
+        elif wanted == TradeInQuote.STATUS_ISSUED:
+            # Derived, like every read: an issued quote past its instant is «Vencida», not «Emitida».
+            rows = rows.filter(status=TradeInQuote.STATUS_ISSUED, valid_until__gt=now)
+        elif wanted == TradeInQuote.STATUS_EXPIRED:
+            rows = rows.filter(Q(status=TradeInQuote.STATUS_EXPIRED)
+                               | Q(status=TradeInQuote.STATUS_ISSUED, valid_until__lte=now))
         elif wanted in dict(TradeInQuote.STATUS_CHOICES):
             rows = rows.filter(status=wanted)
         elif wanted != 'all':

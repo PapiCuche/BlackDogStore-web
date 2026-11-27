@@ -78,6 +78,7 @@
   "store.test_trade_in_assessment.CloseAgainstApproveTest",
   "store.test_trade_in_assessment.ConcurrentNumberingTest",
   "store.test_trade_in_eligibility.TwoChecksOfOneImeiAtOnceTest",
+  "store.test_trade_in_quote.TwoExpiryPassesAtOnceTest",
   "store.test_trade_in_rules.TwoProposalsOfOneDraftTest",
   "store.test_trade_in_tariff.TwoProposalsAtOnceTest",
   "store.test_unit_import_new_price.ApplyWithPriceAgainstSaleTest",

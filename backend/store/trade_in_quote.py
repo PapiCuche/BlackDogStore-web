@@ -119,12 +119,22 @@ def _refuse_stale(actor, company, quote, check) -> None:
                              'cotización: revísala.', code='calculation_stale', extra={'reasons': stale})
 
 
+def printable(eligibility_value, calculation) -> str:
+    """What a document says: the verdict WITHOUT the approval flag (a quote is printed only once approved)."""
+    if eligibility_value != assessments.REQUIRES_APPROVAL:
+        return eligibility_value
+    deductions = Decimal(str((calculation.get('totals') or {}).get('deductions') or '0'))
+    return 'eligible_with_deductions' if deductions > 0 else 'eligible'
+
+
 def _snapshot_fields(company, *, assessment, tariff_version, rules_version, calculation, eligibility_value, computed,
                      offered, reason, price, difference) -> dict:
     policy = tariff.policy_of(company)
     return {
         'tariff_version': tariff_version, 'rule_set_version': rules_version, 'calculation': calculation,
-        'eligibility': eligibility_value, 'computed_value': computed, 'offered_value': offered,
+        'eligibility': eligibility_value, 'printable_eligibility': printable(eligibility_value, calculation),
+        'needs_approval': eligibility_value == assessments.REQUIRES_APPROVAL,
+        'computed_value': computed, 'offered_value': offered,
         'adjustment_reason': reason, 'max_reception_value': tariff_version.max_reception_value,
         'currency': tariff_version.currency, 'target_price': price, 'difference': difference,
         'refurbishment_cost': tariff_version.refurbishment_cost, 'resale_value': tariff_version.resale_value,
@@ -161,7 +171,10 @@ def generate(*, actor, company, assessment, request=None) -> TradeInQuote:
                                  extra={'reasons': stale})
         approved = assessment.status == TradeInAssessment.STATUS_APPROVED
         if approved:
-            status, kind = TradeInQuote.STATUS_APPROVED, TradeInQuote.APPROVAL_ASSESSMENT
+            # A self-approved assessment stays a self-approval on its quote (the flag is carried, never lost).
+            kind = (TradeInQuote.APPROVAL_SELF if assessment.approval_kind == 'self'
+                    else TradeInQuote.APPROVAL_ASSESSMENT)
+            status = TradeInQuote.STATUS_APPROVED
         elif assessment.eligibility == assessments.REQUIRES_APPROVAL:
             status, kind = TradeInQuote.STATUS_PENDING_APPROVAL, ''
         else:
@@ -291,6 +304,13 @@ def cancel(*, actor, company, quote, reason, request=None) -> TradeInQuote:
         quote.save(update_fields=['status', 'decided_by', 'decided_at', 'decision_note', 'updated_at'])
         _audit(actor=actor, company=company, action='trade_in_quote_cancelled', quote=quote, request=request,
                has_reason=True)
+        # No dead end: the assessment goes with its quote (same reason), so the device check may take a new one.
+        _assessment.status = TradeInAssessment.STATUS_CANCELLED
+        _assessment.cancelled_at, _assessment.cancel_reason = timezone.now(), reason
+        _assessment.save(update_fields=['status', 'cancelled_at', 'cancel_reason', 'updated_at'])
+        assessments._audit(actor=actor, company=company, action='trade_in_assessment_cancelled',
+                           assessment=_assessment, request=request, because='quote_cancelled', quote=quote.pk,
+                           has_reason=True)
     return quote
 
 
@@ -317,6 +337,7 @@ def revise(*, actor, company, quote, data=None, request=None) -> TradeInQuote:
                                    today=today)
         _quotable(done['eligibility'])
         needs = done['eligibility'] == assessments.REQUIRES_APPROVAL
+        previous_status = quote.status
         quote.status = TradeInQuote.STATUS_SUPERSEDED
         quote.superseded_at = timezone.now()
         quote.save(update_fields=['status', 'superseded_at', 'updated_at'])
@@ -332,7 +353,7 @@ def revise(*, actor, company, quote, data=None, request=None) -> TradeInQuote:
                                offered=done['offered'], reason=done['reason'], price=done['price'],
                                difference=done['difference']))
         _audit(actor=actor, company=company, action='trade_in_quote_revised', quote=revision, request=request,
-               previous=quote.pk, previous_status=quote.status, offered=str(revision.offered_value),
+               previous=quote.pk, previous_status=previous_status, offered=str(revision.offered_value),
                has_reason=bool(reason))
     return revision
 

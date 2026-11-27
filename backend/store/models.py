@@ -6841,6 +6841,9 @@ class TradeInAssessment(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     approved_at = models.DateTimeField(null=True, blank=True)
     approval_note = models.CharField(max_length=300, blank=True, default='')
+    #: Phase 5a (0198): how it was approved — `approver` (somebody else) or `self` (`approve_own`, with a reason).
+    #: A quote generated from it carries it. `db_default` for the previous release.
+    approval_kind = models.CharField(max_length=10, blank=True, default='', db_default='')
     #: Everyone who shaped this valuation (opened it, changed its details, answered, calculated): none of them
     #: approves it. User ids, written only by the services.
     contributor_ids = models.JSONField(default=list, blank=True)
@@ -6891,7 +6894,10 @@ class TradeInAssessment(models.Model):
                 raise ValidationError({name: ['No pertenece a esta empresa.']})
         if self.pk is not None:
             stored = TradeInAssessment.objects.filter(pk=self.pk).values_list('status', flat=True).first()
-            if stored in (self.STATUS_QUOTED, self.STATUS_CANCELLED):
+            quoted_cancel = (stored == self.STATUS_QUOTED and self.status == self.STATUS_CANCELLED
+                             and set(kwargs.get('update_fields') or [])
+                             <= {'status', 'cancelled_at', 'cancel_reason', 'updated_at'})
+            if stored in (self.STATUS_QUOTED, self.STATUS_CANCELLED) and not quoted_cancel:
                 raise ValidationError('Una evaluación cotizada o anulada no se modifica.')
             if stored == self.STATUS_APPROVED and self.status not in (self.STATUS_QUOTED, self.STATUS_CANCELLED):
                 raise ValidationError('Una evaluación aprobada no se modifica: anúlala y abre otra.')
@@ -6945,10 +6951,14 @@ class TradeInQuote(models.Model):
     SNAPSHOT_FIELDS = frozenset({
         'company', 'company_id', 'branch', 'branch_id', 'assessment', 'assessment_id', 'number', 'revision',
         'origin', 'source_quote', 'source_quote_id', 'tariff_version', 'tariff_version_id', 'rule_set_version',
-        'rule_set_version_id', 'calculation', 'eligibility', 'computed_value', 'offered_value', 'adjustment_reason',
+        'rule_set_version_id', 'calculation', 'eligibility', 'printable_eligibility', 'needs_approval',
+        'computed_value', 'offered_value', 'adjustment_reason',
         'max_reception_value', 'target_price', 'difference', 'refurbishment_cost', 'resale_value', 'target_margin',
         'currency', 'conditions', 'public_uid', 'revision_reason', 'created_by', 'created_by_id',
     })
+
+    APPROVAL_FIELDS = frozenset({'approval_kind', 'approved_by', 'approved_by_id', 'approved_at', 'approval_note'})
+    ISSUE_FIELDS = frozenset({'issued_by', 'issued_by_id', 'issued_at', 'valid_until'})
 
     APPROVAL_APPROVER = 'approver'
     APPROVAL_SELF = 'self'
@@ -6974,6 +6984,10 @@ class TradeInQuote(models.Model):
     rule_set_version = models.ForeignKey('TradeInRuleSetVersion', on_delete=models.PROTECT, related_name='+')
     calculation = models.JSONField(default=dict, blank=True)
     eligibility = models.CharField(max_length=24)
+    #: What a document prints (5b): the verdict WITHOUT the approval flag (APTO / APTO CON DESCUENTOS), frozen now so
+    #: an issued paper never says «requiere aprobación».
+    printable_eligibility = models.CharField(max_length=24)
+    needs_approval = models.BooleanField(default=False)
     computed_value = models.DecimalField(max_digits=12, decimal_places=2)
     offered_value = models.DecimalField(max_digits=12, decimal_places=2)
     adjustment_reason = models.CharField(max_length=300, blank=True, default='')
@@ -7065,6 +7079,14 @@ class TradeInQuote(models.Model):
                     raise ValidationError('Una cotización de recepción no se reescribe: crea una revisión.')
                 if self.status != stored and self.status not in self.TRANSITIONS.get(stored, frozenset()):
                     raise ValidationError('Esa transición de la cotización no existe.')
+                # Written once, in the move that sets them: an approval when it is approved, the issue instant and
+                # the expiry when it is issued. Never after.
+                if allowed & self.APPROVAL_FIELDS and not (stored == self.STATUS_PENDING_APPROVAL
+                                                           and self.status == self.STATUS_APPROVED):
+                    raise ValidationError('La aprobación de una cotización no se reescribe.')
+                if allowed & self.ISSUE_FIELDS and not (stored == self.STATUS_APPROVED
+                                                        and self.status == self.STATUS_ISSUED):
+                    raise ValidationError('La emisión y la vigencia de una cotización no se reescriben.')
         return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
