@@ -146,7 +146,8 @@ const describeMasked = (u: PastedUnit): string => [
  * or a serial and an IMEI of two different devices) is a conflict: it is listed, masked, and never added half-way.
  */
 export function parseUnitPaste(text: string, existing: DraftUnit[]): PastePreview {
-  const lines = text.split(/\r?\n/).map(readLine);
+  // D-SCAN-4: a scanner may end each code with CR, LF or both; a lone CR separates lines too.
+  const lines = text.split(/\r\n?|\n/).map(readLine);
   const tokens = lines.reduce((n, l) => n + l.tokens, 0);
   const empty: PastePreview = {
     tokens, tooMany: false, units: [], imeis: 0, serials: 0, withoutSerial: 0, duplicates: [], already: [], invalid: [],
