@@ -84,6 +84,7 @@ from . import sales_quote_views as sq
 from . import trade_in_tariff_views as tit
 from . import trade_in_rules_views as tir
 from . import trade_in_eligibility_views as tie
+from . import trade_in_assessment_views as tia
 from .pos_views import (
     AdminPosSaleByKeyView,
     AdminPosSaleNotChargedView,
@@ -757,6 +758,22 @@ urlpatterns = [
          name='admin-trade-in-check-record'),
     path('admin/trade-in/checks/<int:pk>/close/', tie.AdminTradeInCheckCloseView.as_view(),
          name='admin-trade-in-check-close'),
+    # TRADE-IN VALUATION PRO · Phase 4 — the assessment and its calculation (adr §7, phase 4).
+    path('admin/trade-in/tariff/match/', tia.AdminTradeInTariffMatchView.as_view(), name='admin-trade-in-tariff-match'),
+    path('admin/trade-in/assessments/', tia.AdminTradeInAssessmentListView.as_view(),
+         name='admin-trade-in-assessments'),
+    path('admin/trade-in/assessments/<int:pk>/', tia.AdminTradeInAssessmentDetailView.as_view(),
+         name='admin-trade-in-assessment'),
+    path('admin/trade-in/assessments/<int:pk>/questions/', tia.AdminTradeInAssessmentQuestionsView.as_view(),
+         name='admin-trade-in-assessment-questions'),
+    path('admin/trade-in/assessments/<int:pk>/answers/', tia.AdminTradeInAssessmentAnswersView.as_view(),
+         name='admin-trade-in-assessment-answers'),
+    path('admin/trade-in/assessments/<int:pk>/calculate/', tia.AdminTradeInAssessmentCalculateView.as_view(),
+         name='admin-trade-in-assessment-calculate'),
+    path('admin/trade-in/assessments/<int:pk>/approve/', tia.AdminTradeInAssessmentApproveView.as_view(),
+         name='admin-trade-in-assessment-approve'),
+    path('admin/trade-in/assessments/<int:pk>/cancel/', tia.AdminTradeInAssessmentCancelView.as_view(),
+         name='admin-trade-in-assessment-cancel'),
 
     # --- C1.4: bulk imports ------------------------------------------------
     path('admin/imports/inspect/', AdminImportInspectView.as_view(), name='admin-import-inspect'),

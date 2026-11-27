@@ -284,6 +284,11 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('sales.tradein.value', 'sales', 'Comprobar y valorizar equipos usados',
          'Registrar un equipo ofrecido, responder sus bloqueos y registrar la consulta manual de su IMEI o serie '
          'en una fuente oficial.', STATUS_ACTIVE),
+    # Phase 4: approving a valuation that needs it (a rule asks for it, or the offer was raised above what the rules
+    # computed, never above the tariff's maximum). Whoever calculated it does not approve it. Explicit grant (D7).
+    _cap('sales.tradein.approve', 'sales', 'Aprobar valorizaciones de equipos usados',
+         'Aprobar una valorización que lo requiere o cuyo valor ofrecido supera el calculado, hasta el máximo del '
+         'tarifario.', STATUS_ACTIVE),
 
     # --- accounting (ACCOUNTING-02, `docs/adr-accounting.md` §6) ---
     # Read-only. `view` opens the three views with the buyer's document masked;
@@ -499,7 +504,8 @@ TRADE_IN_TARIFF_CODES: frozenset[str] = frozenset({
 })
 
 #: TRADE-IN VALUATION PRO · Phase 3: checking and valuing devices, explicit grants too.
-TRADE_IN_ASSESSMENT_CODES: frozenset[str] = frozenset({'sales.tradein.view', 'sales.tradein.value'})
+TRADE_IN_ASSESSMENT_CODES: frozenset[str] = frozenset({'sales.tradein.view', 'sales.tradein.value',
+                                                       'sales.tradein.approve'})
 
 #: Assignable, but never handed out by a preset: somebody grants them on purpose
 #: from Roles (FINANCE-OBLIGATIONS-01, owner's P3, provisional). Neither the
