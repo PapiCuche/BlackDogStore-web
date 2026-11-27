@@ -467,10 +467,11 @@ def _contributed(draft, actor) -> None:
 
 def _catalogue_editors(company, version) -> set:
     """
-    Who edited the company's groups or questions since the last set was proposed (or ever, if none was): those edits
-    change what this set computes even when no draft was open, so they make their authors authors of this set.
+    Who edited the company's groups or questions since the last APPROVED set was proposed (or ever, if none was):
+    those edits change what this set computes even when no draft was open, so they make their authors authors of this
+    set. A rejected or withdrawn proposal in between does not clear them (fourth review of #462).
     """
-    last = (TradeInRuleSetVersion.objects.filter(company=company, proposed_at__isnull=False)
+    last = (TradeInRuleSetVersion.objects.filter(company=company, status=TradeInRuleSetVersion.STATUS_APPROVED)
             .exclude(pk=version.pk).order_by('-proposed_at').values_list('proposed_at', flat=True).first())
     edits = AdminAuditLog.objects.filter(company=company, action__startswith='trade_in_factor_',
                                          actor__isnull=False)

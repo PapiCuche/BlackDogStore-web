@@ -256,7 +256,7 @@ def calculate(*, base: Decimal, maximum: Decimal, answers: dict, groups: dict[st
         line = sorted(pending, key=lambda l: (-capped(l), -l.priority, l.rule_id))[0]
         pending.remove(line)
         if capped(line) <= 0:
-            line.suppressed_by = taken_groups[line.group].factor if line.group in taken_groups else ''
+            line.suppressed_by = 'cap'          # its group's cap is used up: it adds nothing
             continue
         counted.append(line)
         if line.group in remaining:

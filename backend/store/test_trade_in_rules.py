@@ -179,6 +179,17 @@ class CalculationTest(SimpleTestCase):
         lines = {line['factor']: line for line in result['lines']}
         self.assertEqual(lines['screen_replaced']['suppressed_by'], 'screen')
 
+    def test_a_line_past_its_group_cap_is_marked_cap(self):
+        capped = dict(GROUPS, rep=G(key='rep', kind='repairs', name='Rep', combine='sum', cap_percent=D('5')))
+        result = calc({'camera_replaced': 'true', 'screen_replaced': 'true'}, [
+            R(id=3, factor='camera_replaced', effect='fixed', when_outcome='true', amount=D('80')),
+            R(id=4, factor='screen_replaced', effect='fixed', when_outcome='true', amount=D('60')),
+        ], groups=capped)
+        lines = {line['factor']: line for line in result['lines']}
+        self.assertIsNone(lines['camera_replaced']['suppressed_by'])     # takes the whole cap (50)
+        self.assertEqual(lines['screen_replaced']['suppressed_by'], 'cap')
+        self.assertEqual(result['groups'], {'rep': '50.00'})
+
     def test_ties_go_to_the_higher_priority_then_the_lower_rule_id(self):
         def winner(*candidates):
             result = calc({'screen': 'detail', 'frame': 'detail'}, list(candidates))
@@ -581,6 +592,24 @@ class RulesReviewFindingsTest(RulesBase):
         self.assertEqual(self.post(f'versions/{draft["id"]}/approve/', {}, user=self.approver, expect=200)['status'],
                          'approved')
         self.assertNotEqual(version_id, draft['id'])
+
+    def test_a_rejected_or_withdrawn_proposal_does_not_clear_earlier_catalogue_edits(self):
+        """Fourth review of #462: authorship is measured from the last APPROVED set, not from any proposal."""
+        _version_id, cos, screen, _ = self.approved_set()
+        editor_approver = fx.member(self.company, 'tir_edita_antes', [VIEW, MANAGE, APPROVE])
+        self.api(editor_approver).patch(f'{RULES}groups/{cos["id"]}/', {'group_cap_percent': '4'}, format='json')
+        for ending in ('reject', 'withdraw'):
+            with self.subTest(ending=ending):
+                between = self.post('versions/', {})
+                self.post(f'versions/{between["id"]}/propose/', {}, expect=200)
+                if ending == 'reject':
+                    self.post(f'versions/{between["id"]}/reject/', {'note': 'No'}, user=self.approver, expect=200)
+                else:
+                    self.post(f'versions/{between["id"]}/withdraw/', {}, expect=200)
+        draft = self.post('versions/', {})
+        self.post(f'versions/{draft["id"]}/propose/', {}, expect=200)
+        res = self.post(f'versions/{draft["id"]}/approve/', {}, user=editor_approver, expect=403)
+        self.assertEqual(res['code'], 'own_change')
 
     def test_a_partial_range_edit_keeps_the_other_bound(self):
         battery_group = self.post('groups/', {'kind': 'battery', 'name': 'Batería'})
