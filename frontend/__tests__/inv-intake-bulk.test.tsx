@@ -1,6 +1,6 @@
 /**
  * INV-INTAKE-BULK-01 — el paso «Artículos» de «Recibir mercadería» con muchos equipos: «Pegar varios» en una línea
- * por equipo, «Aplicar a todos», +1 al volver a escanear un accesorio y la sugerencia de la «S» de la caja de Apple.
+ * por equipo, «Aplicar a todos», +1 al volver a escanear un accesorio; ningún prefijo de serie se propone quitar (D-SCAN-1).
  * Sin red: el buscador de productos se simula.
  */
 import React, { useState } from 'react';
@@ -110,17 +110,16 @@ describe('«Pegar varios» en una línea por equipo', () => {
     expect(within(card).queryByRole('button', { name: /^Agregar \d+ equipos?$/ })).toBeNull();
   });
 
-  it('la «S» de la caja: se ofrece quitarla en lo pegado, nunca por sí sola', async () => {
+  it('D-SCAN-1: una serie de 13 con «S» se agrega tal cual; no se ofrece quitar nada (sin fuente verificada)', async () => {
     const u = await renderEditor([newLine(NEW_PHONE)]);
     const card = cardOf(NEW_PHONE.name);
     await u.click(within(card).getByRole('button', { name: 'Pegar varios' }));
     fireEvent.change(within(card).getByLabelText(/Series o IMEI/), { target: { value: 'SF2LXK1ABCD12' } });
     await u.click(within(card).getByRole('button', { name: 'Revisar lo pegado' }));
-    const strip = within(card).getByRole('checkbox', { name: /Quitar la «S» inicial de 1 serie/ });
-    expect(strip).not.toBeChecked();
-    await u.click(strip);
+    expect(within(card).queryByRole('checkbox', { name: /Quitar la «S»/ })).toBeNull();
+    expect(card).not.toHaveTextContent(/caja de Apple/);
     await u.click(within(card).getByRole('button', { name: 'Agregar 1 equipo' }));
-    expect(latest[0].units.map((x) => x.serial_number)).toEqual(['F2LXK1ABCD12']);
+    expect(latest[0].units.map((x) => x.serial_number)).toEqual(['SF2LXK1ABCD12']);
   });
 });
 
@@ -192,23 +191,15 @@ describe('«Aplicar a todos»', () => {
   });
 });
 
-describe('la «S» inicial de la caja de Apple en una fila', () => {
-  it('una serie de 13 con S ofrece quitarla con un clic; nunca se quita sola', async () => {
+describe('D-SCAN-1 · la serie de una fila', () => {
+  it('una serie de 13 con «S» queda como se escribió: ningún prefijo de una marca se propone quitar', async () => {
     const u = await renderEditor([newLine(NEW_PHONE)]);
     const card = cardOf(NEW_PHONE.name);
     const serial = serialBoxes(card)[0];
     await u.type(serial, 'SF2LXK1ABCD12');
     expect(serial.value).toBe('SF2LXK1ABCD12');
-    await u.click(within(card).getByRole('button', { name: '¿Quitar la S inicial?' }));
-    expect(serialBoxes(cardOf(NEW_PHONE.name))[0].value).toBe('F2LXK1ABCD12');
-    expect(within(cardOf(NEW_PHONE.name)).queryByRole('button', { name: '¿Quitar la S inicial?' })).toBeNull();
-  });
-
-  it('una serie normal no muestra nada', async () => {
-    const u = await renderEditor([newLine(NEW_PHONE)]);
-    const card = cardOf(NEW_PHONE.name);
-    await u.type(serialBoxes(card)[0], 'F2LXK1ABCD12');
-    expect(within(card).queryByRole('button', { name: '¿Quitar la S inicial?' })).toBeNull();
+    expect(within(card).queryByRole('button', { name: /Quitar la S/ })).toBeNull();
+    expect(card).not.toHaveTextContent(/caja de Apple/);
   });
 });
 

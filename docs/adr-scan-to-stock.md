@@ -153,16 +153,43 @@ espera la variante en la sucursal se resuelve antes de confirmar (su pedido, o s
 - **Un endpoint nuevo de recepción.** Habría duplicado reglas de costo, proveedor, pedidos y variantes.
 - **Usar `/api/admin/pos/...`** tal cual: exige `sales.pos.use`, que el almacén no tiene.
 
-## 5. Decisiones abiertas para el propietario
+## 5. Decisiones del propietario (2026-11-27)
 
-- **D-SCAN-1 · Prefijo de serie en cajas.** Algunos fabricantes codifican la serie de la caja con una letra delante
-  (p. ej. «S» + serie). No se quita sola (sería decidir por marca). Propuesta: una tabla de prefijos por fabricante en
-  `backend/catalog_reference/` (excepción de AGENTS §2), aplicada sólo si el modelo elegido es de ese fabricante.
-- **D-SCAN-2 · Inventario inicial.** Hoy el escaneo registra **compra** (`PURCHASE_ENTRY`), también un seminuevo sin
-  proveedor ni costo, igual que «Llegó el equipo» de la caja (se mantiene por coherencia). El inventario inicial sigue
-  en la carga masiva. ¿Se quiere también aquí?
-- **D-SCAN-4 · Lectores que anteponen un espacio.** Espacio en la página con el campo del lector vacío no se manda al
-  lector (no se roba la tecla a la página). Un lector configurado para empezar cada código con un espacio perdería ese
-  espacio sin efecto, pero si además la página tiene el foco en un botón, Espacio lo pulsaría. ¿Hay lectores así en
-  las tiendas? Si los hay, se configura el lector sin prefijo o se añade una opción.
-- **D-SCAN-3 · EID.** Se reconoce y se rechaza; no hay dónde guardarlo. ¿Se quiere guardar (migración)?
+- **D-SCAN-1 · Sin equivalencias de serie ni de código comercial sin fuente verificada.** Ninguna tabla ni regla
+  del código convierte un prefijo de serie en un modelo, un GTIN en una variante o un IMEI en un modelo. Una
+  equivalencia así sólo existe si tiene una fuente verificada, o si es un dato que la empresa escribe y activa.
+  Revisión del código (master `5acc743e`):
+  - **GTIN → variante.** Sólo por los códigos que la empresa escribió (`ProductBarcode`, `unit_codes.product_code_holding`).
+  - **IMEI → modelo.** No existe; el TAC nunca se lee (`scan_classifier`, que además tiene un test que impide nombrar
+    marcas).
+  - **Números de modelo.** Los «A3090» de `backend/catalog_reference/apple-iphone.json` llevan su fuente (`sources`,
+    `support.apple.com`) y `verified_at`, y sólo describen el catálogo de referencia: no se leen de una serie.
+  - **Sufijos de región** («LL/A», «ZP/A»…) de `inventory-text-stages.ts` e `inventory_ai_payload.py`. Son vocabulario
+    para reconocer cómo está escrito un texto; la opción de la empresa sale de sus propias etiquetas y alias (A2).
+  - **La única regla sin fuente que había: la «S» de la caja de Apple** (`receive-bulk.ts` `appleBoxSerialFix`,
+    `ReceivingUnitsBulk` `SerialPrefixHint` y la casilla «Quitar la «S» inicial»). Su propio comentario decía «NOT
+    VERIFIED». Se quitó: una serie queda como se leyó, y quien ve una «S» de más la corrige a mano.
+
+  Pendiente para el propietario: si quiere prefijos de caja, se diseñan como un dato que la empresa escribe y activa
+  (fabricante, prefijo, longitud). Eso no existe todavía y probablemente pide una migración.
+- **D-SCAN-2 · Inventario inicial.** Sigue abierta: hoy el escaneo registra **compra** (`PURCHASE_ENTRY`), también un
+  seminuevo sin proveedor ni costo, igual que «Llegó el equipo» de la caja. El inventario inicial sigue en la carga
+  masiva.
+- **D-SCAN-3 · EID.** Un EID nunca se guarda como IMEI ni como serie, y no se guarda en ninguna parte: ni `StockUnit`
+  ni `Device` tienen un campo para él, y se mantiene así.
+  - **IMEI.** Nunca pudo entrar: son 15 dígitos con su dígito de control.
+  - **Serie.** La puerta del escaneo ya lo rechazaba (§3.2.1). Las demás puertas (caja, «Registrar equipos», carga
+    masiva, recepción, taller) lo aceptaban. Ahora `device_identity.clean_serial` rechaza la forma de un EID
+    (32 dígitos, agrupados o no) en todas ellas (PR #451).
+  - **MEID.** Una serie que sólo se parece a un MEID (14 hexadecimales, 18 dígitos) se sigue aceptando fuera del
+    escaneo: es la forma de series reales, y sólo el escaneo puede preguntar «¿es la serie?».
+- **D-SCAN-4 · Espacios del lector.** Lo que un lector o un pegado deja en los **bordes** de un código (espacios,
+  tabuladores, CR, LF, NBSP) se quita en todas las puertas. Lo de **dentro** sólo cambia por las reglas que ya
+  existían:
+  - un IMEI se queda con sus dígitos;
+  - una serie pierde sus espacios internos y pasa a mayúsculas;
+  - los guiones, puntos y barras de una serie se conservan.
+
+  Fijado puerta por puerta en `test_scanner_whitespace.py`. El lector de lo pegado de «Recibir mercadería» separa
+  también con un CR solo (PR #452). Un lector que antepone un espacio sigue la regla del §3.6: con el campo del lector
+  vacío, Espacio no se manda al campo. Si las tiendas tienen lectores así, se configuran sin prefijo.

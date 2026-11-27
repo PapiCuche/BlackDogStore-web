@@ -6,7 +6,7 @@
  * - «Pegar varios»: series e IMEI pegados (uno por línea, o «serie IMEI»). Se revisa lo pegado y se confirma antes de
  *   agregar. La vista previa sólo muestra identificadores enmascarados (•••• y los 4 últimos, como la revisión).
  * - «Aplicar a todos»: costo, estado estético, batería y precio propio, con los mismos permisos que cada fila.
- * - La sugerencia «¿Quitar la S inicial?» de una serie leída de la caja de Apple (NO VERIFICADO: nunca se quita sola).
+ * - Las series quedan como se leyeron: ningún prefijo de una marca se quita ni se propone quitar (D-SCAN-1).
  *
  * Todo vive en la memoria de la página; el servidor vuelve a revisarlo en «Revisar y confirmar».
  */
@@ -16,7 +16,7 @@ import { createContext, useContext, useId, useState } from "react";
 import { isUsedLine, MAX_DEVICES, unitsInUse, type DraftLine, type DraftUnit } from "../lib/inventory-receipts";
 import type { CosmeticGradeRow } from "../lib/internal-api";
 import {
-  appleBoxSerialFix, applicableFields, applyProblems, applyToAllUnits, isReviewShortcut, mergePastedUnits, parseUnitPaste,
+  applicableFields, applyProblems, applyToAllUnits, isReviewShortcut, mergePastedUnits, parseUnitPaste,
   PASTE_MAX_TOKENS, type ApplyValues, type PastePreview,
 } from "../lib/receive-bulk";
 import { internalButtonClass, internalInputClass, internalPrimaryButtonClass } from "./internal-ui";
@@ -39,23 +39,6 @@ function usePasteText(lineKey: string): [string, (text: string) => void] {
 const PANEL = "space-y-3 rounded-lg border border-bd-border p-3";
 const LABEL = "block text-xs font-semibold text-foreground";
 
-/** INV-INTAKE-BULK-01 · an Apple box barcode may put an «S» before the serial: offered, never done by itself. */
-export function SerialPrefixHint({ serial, onAccept }: { serial: string; onAccept: (serial: string) => void }) {
-  const fix = appleBoxSerialFix(serial);
-  if (!fix) return null;
-  return (
-    <div className="rounded-lg border border-warning-border bg-warning-surface px-3 py-2 text-xs text-foreground sm:col-span-2 lg:col-span-3">
-      <p>
-        Esta serie tiene 13 caracteres y empieza con «S». El código de barras de la caja de Apple puede anteponer una S
-        a la serie: compárala con la del equipo (Ajustes › General › Información).
-      </p>
-      <button type="button" className={`${internalButtonClass} mt-2 min-h-11`} onClick={() => onAccept(fix)}>
-        ¿Quitar la S inicial?
-      </button>
-    </div>
-  );
-}
-
 function List({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) return null;
   return (
@@ -71,10 +54,9 @@ function PasteUnitsPanel({ line, text, setText, onUnits, onDone }: {
   onUnits: (units: DraftUnit[], focusUnit?: string) => void; onDone: (said: string) => void;
 }) {
   const id = useId();
-  const [stripS, setStripS] = useState(false);
   const [preview, setPreview] = useState<PastePreview | null>(null);
 
-  const read = (strip: boolean) => setPreview(parseUnitPaste(text, line.units, { stripS: strip }));
+  const read = () => setPreview(parseUnitPaste(text, line.units));
   const add = preview?.units.length ?? 0;
   const afterAdd = unitsInUse(line).length + add;
 
@@ -85,7 +67,7 @@ function PasteUnitsPanel({ line, text, setText, onUnits, onDone }: {
         <textarea
           id={id} value={text} rows={6} spellCheck={false} autoComplete="off"
           onChange={(e) => { setText(e.target.value); setPreview(null); }}
-          onKeyDown={(e) => { if (isReviewShortcut(e) && text.trim()) { e.preventDefault(); read(stripS); } }}
+          onKeyDown={(e) => { if (isReviewShortcut(e) && text.trim()) { e.preventDefault(); read(); } }}
           data-review-shortcut="off"
           className={`mt-1.5 font-mono text-xs ${internalInputClass}`}
         />
@@ -94,7 +76,7 @@ function PasteUnitsPanel({ line, text, setText, onUnits, onDone }: {
           misma línea es un solo equipo. Hasta {PASTE_MAX_TOKENS} códigos por vez. Ctrl + Enter (⌘ + Enter) revisa lo pegado.
         </p>
       </div>
-      <button type="button" className={`${internalButtonClass} min-h-11`} disabled={!text.trim()} onClick={() => read(stripS)}>
+      <button type="button" className={`${internalButtonClass} min-h-11`} disabled={!text.trim()} onClick={read}>
         Revisar lo pegado
       </button>
       {preview ? (
@@ -134,20 +116,6 @@ function PasteUnitsPanel({ line, text, setText, onUnits, onDone }: {
                 title="Chocan con un equipo ya anotado (misma serie con otro IMEI, o serie e IMEI de equipos distintos): no se agregan; revísalos."
                 items={preview.conflicts}
               />
-              {preview.sPrefixed > 0 ? (
-                <label className="flex min-h-11 cursor-pointer items-start gap-2 text-foreground">
-                  <input
-                    type="checkbox" className="mt-0.5 h-5 w-5 shrink-0" checked={stripS}
-                    onChange={(e) => { setStripS(e.target.checked); read(e.target.checked); }}
-                  />
-                  <span>
-                    Quitar la «S» inicial de {plural(preview.sPrefixed, "serie", "series")} de 13 caracteres
-                    <span className="block text-muted">
-                      El código de la caja de Apple puede anteponer una S a la serie. No está verificado: compáralo con la serie del equipo.
-                    </span>
-                  </span>
-                </label>
-              ) : null}
               {afterAdd > MAX_DEVICES ? (
                 <p className="text-warning">
                   Esta línea tendría {afterAdd} equipos: se reciben hasta {MAX_DEVICES} por vez. Registra el resto en otra recepción.
@@ -159,7 +127,7 @@ function PasteUnitsPanel({ line, text, setText, onUnits, onDone }: {
                   onClick={() => {
                     const next = mergePastedUnits(line, preview.units);
                     onUnits(next, next[next.length - add]?.key);
-                    setText(""); setPreview(null); setStripS(false);
+                    setText(""); setPreview(null);
                     onDone(`Se ${add === 1 ? "agregó" : "agregaron"} ${plural(add, "equipo", "equipos")}.`);
                   }}
                 >
