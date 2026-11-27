@@ -250,6 +250,26 @@ class EachNoGoCauseTest(_Base):
         self.assert_no_go(self.run_checks(FiscalEnvironment.PRODUCTION), 'series', 'sin serie de factura')
 
     @override_settings(**BETA_READY)
+    def test_an_abandoned_send_is_not_counted_against_the_three_days(self):
+        from store.fiscal_services import STALE_ATTEMPT_MINUTES
+
+        document = self.document(days_ago=4)
+        FiscalSubmissionAttempt.objects.create(
+            document=document, attempt_number=1, environment=document.environment, result='in_progress',
+            started_at=timezone.now() - dt.timedelta(minutes=STALE_ATTEMPT_MINUTES + 1))
+        checks = self.run_checks()
+        self.assertNotIn('más de 3 días', self.details(checks, 'NO-GO'))
+        self.assertIn('abandonado', self.details(checks, 'AVISO'))
+
+    @override_settings(**BETA_READY)
+    def test_a_summary_that_failed_to_leave_is_not_waiting_on_sunat(self):
+        boleta = self.document(document_type=FiscalDocumentType.RECEIPT, series='B001')
+        self.summary(boleta, FiscalSummaryStatus.SUBMISSION_ERROR)
+        warnings = self.details(self.run_checks(), 'AVISO')
+        self.assertIn('1 resumen(es) diario(s) con error de envío (no transmitido)', warnings)
+        self.assertNotIn('sin veredicto de SUNAT', warnings)
+
+    @override_settings(**BETA_READY)
     def test_an_abandoned_attempt_blocks_production_and_warns_in_beta(self):
         from store.fiscal_services import STALE_ATTEMPT_MINUTES
 

@@ -252,7 +252,8 @@ def _queue(company, target: str, now) -> list[Check]:
     attempts = FiscalSubmissionAttempt.objects.filter(
         document__company=company, document__environment=target, finished_at__isnull=True)
     stale = now - timedelta(minutes=STALE_ATTEMPT_MINUTES)
-    abandoned = attempts.filter(started_at__lt=stale).count()
+    abandoned_pks = set(attempts.filter(started_at__lt=stale).values_list('document_id', flat=True))
+    abandoned = len(abandoned_pks)
     running = attempts.filter(started_at__gte=stale).count()
     if abandoned:
         # The process died mid-send: SUNAT may have it. Same as an uncertain send.
@@ -263,13 +264,13 @@ def _queue(company, target: str, now) -> list[Check]:
 
     # Sent one by one: facturas and the notes of a factura. Not yet sent, or sent
     # and refused before SUNAT received them (a SUBMISSION_ERROR that is not
-    # uncertain): the 3 days run for both. An uncertain one may already be in
-    # SUNAT, and is reported above.
+    # uncertain): the 3 days run for both. An uncertain one, or one whose send was
+    # abandoned mid-way, may already be in SUNAT, and is reported above instead.
     individual = documents.filter(
         status__in=(FiscalDocumentStatus.PENDING, FiscalDocumentStatus.GENERATED, FiscalDocumentStatus.SIGNED,
                     FiscalDocumentStatus.SUBMISSION_ERROR),
     ).exclude(document_type=FiscalDocumentType.RECEIPT).exclude(
-        document_type__in=FISCAL_NOTE_TYPES, series__startswith='B').exclude(pk__in=uncertain_pks)
+        document_type__in=FISCAL_NOTE_TYPES, series__startswith='B').exclude(pk__in=uncertain_pks | abandoned_pks)
     late = soon = 0
     for issued_at in individual.values_list('issued_at', flat=True):
         age = (today - timezone.localdate(issued_at)).days
@@ -311,16 +312,22 @@ def _queue(company, target: str, now) -> list[Check]:
     unsent = summaries.filter(status__in=(FiscalSummaryStatus.GENERATED, FiscalSummaryStatus.SIGNED)).count()
     if unsent:
         checks.append(Check(WARN, 'cola', f'{unsent} resumen(es) diario(s) generado(s) o firmado(s) sin enviar'))
-    waiting = summaries.filter(status__in=(FiscalSummaryStatus.SUBMITTED, FiscalSummaryStatus.SUBMISSION_ERROR,
+    # SUBMISSION_ERROR means it was not transmitted (it can be sent again); only
+    # SUBMITTED and SUBMISSION_UNKNOWN are waiting on SUNAT.
+    failed = summaries.filter(status=FiscalSummaryStatus.SUBMISSION_ERROR).count()
+    if failed:
+        checks.append(Check(WARN, 'cola', f'{failed} resumen(es) diario(s) con error de envío (no transmitido)'))
+    waiting = summaries.filter(status__in=(FiscalSummaryStatus.SUBMITTED,
                                            FiscalSummaryStatus.SUBMISSION_UNKNOWN)).count()
     if waiting:
         checks.append(Check(WARN, 'cola', f'{waiting} resumen(es) diario(s) sin veredicto de SUNAT'))
-    voids = FiscalVoidCommunication.objects.filter(
-        company=company, environment=target,
-        status__in=(FiscalVoidStatus.SUBMITTED, FiscalVoidStatus.SUBMISSION_ERROR,
-                    FiscalVoidStatus.SUBMISSION_UNKNOWN)).count()
-    if voids:
-        checks.append(Check(WARN, 'cola', f'{voids} comunicación(es) de baja sin veredicto de SUNAT'))
+    voids = FiscalVoidCommunication.objects.filter(company=company, environment=target)
+    failed = voids.filter(status=FiscalVoidStatus.SUBMISSION_ERROR).count()
+    if failed:
+        checks.append(Check(WARN, 'cola', f'{failed} comunicación(es) de baja con error de envío (no transmitida)'))
+    waiting = voids.filter(status__in=(FiscalVoidStatus.SUBMITTED, FiscalVoidStatus.SUBMISSION_UNKNOWN)).count()
+    if waiting:
+        checks.append(Check(WARN, 'cola', f'{waiting} comunicación(es) de baja sin veredicto de SUNAT'))
     if not checks:
         checks.append(Check(GO, 'cola', 'nada pendiente con SUNAT ni cerca de su plazo'))
     return checks
