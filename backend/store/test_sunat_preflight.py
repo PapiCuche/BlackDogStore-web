@@ -32,8 +32,8 @@ from django.utils import timezone
 
 from store import fiscal_preflight
 from store.models import (
-    FiscalDocument, FiscalDocumentStatus, FiscalDocumentType, FiscalEnvironment, FiscalSeries,
-    FiscalSubmissionAttempt, Order,
+    FiscalDailySummary, FiscalDailySummaryDocument, FiscalDocument, FiscalDocumentStatus, FiscalDocumentType,
+    FiscalEnvironment, FiscalSeries, FiscalSubmissionAttempt, FiscalSummaryStatus, IntegrationConfig, Order,
 )
 from store.tests import _p3_company
 
@@ -101,6 +101,14 @@ class _Base(TestCase):
             customer_doc_number='20000000001', customer_legal_name='CLIENTE SAC', currency='PEN',
             taxable_amount=Decimal('100.00'), tax_amount=Decimal('18.00'), total=Decimal('118.00'),
             tax_rate=Decimal('0.18'), status=status, signed_xml='<Invoice/>')
+
+    def summary(self, boleta, status, number=1):
+        summary = FiscalDailySummary.objects.create(
+            company=self.company, identifier=f'RC-20261127-{number}', correlativo=number,
+            reference_date=timezone.localdate(boleta.issued_at), issue_date=timezone.localdate(),
+            environment=FiscalEnvironment.BETA, status=status)
+        FiscalDailySummaryDocument.objects.create(summary=summary, document=boleta, line_id=1)
+        return summary
 
 
 @override_settings(**BETA_READY)
@@ -182,6 +190,79 @@ class EachNoGoCauseTest(_Base):
         self.assert_no_go(self.run_checks(), 'plazos', 'sin resumen diario')
 
     @override_settings(**BETA_READY)
+    def test_a_boleta_in_a_summary_that_never_left_is_still_pending(self):
+        for status in (FiscalSummaryStatus.GENERATED, FiscalSummaryStatus.SIGNED,
+                       FiscalSummaryStatus.SUBMISSION_ERROR):
+            with self.subTest(status=status):
+                FiscalDailySummary.objects.all().delete()
+                FiscalDocument.objects.all().delete()
+                self.summary(self.document(document_type=FiscalDocumentType.RECEIPT, series='B001', days_ago=8),
+                             status)
+                self.assert_no_go(self.run_checks(), 'plazos', 'sin resumen diario')
+
+    @override_settings(**BETA_READY)
+    def test_a_boleta_in_a_summary_that_reached_sunat_is_informed(self):
+        for status in (FiscalSummaryStatus.SUBMITTED, FiscalSummaryStatus.ACCEPTED,
+                       FiscalSummaryStatus.ACCEPTED_WITH_OBSERVATION, FiscalSummaryStatus.SUBMISSION_UNKNOWN):
+            with self.subTest(status=status):
+                FiscalDailySummary.objects.all().delete()
+                FiscalDocument.objects.all().delete()
+                self.summary(self.document(document_type=FiscalDocumentType.RECEIPT, series='B001', days_ago=8),
+                             status)
+                self.assertNotIn('sin resumen diario', self.details(self.run_checks(), 'NO-GO'))
+
+    @override_settings(**BETA_READY)
+    def test_a_summary_generated_or_signed_but_not_sent_is_listed(self):
+        boleta = self.document(document_type=FiscalDocumentType.RECEIPT, series='B001')
+        self.summary(boleta, FiscalSummaryStatus.SIGNED)
+        self.assertIn('1 resumen(es) diario(s) generado(s) o firmado(s) sin enviar',
+                      self.details(self.run_checks(), 'AVISO'))
+
+    @override_settings(**BETA_READY)
+    def test_the_three_days_also_run_for_pending_and_refused_before_sunat(self):
+        from store.fiscal.provider import ProviderOutcome
+
+        for status, result in ((FiscalDocumentStatus.PENDING, None),
+                               (FiscalDocumentStatus.SUBMISSION_ERROR, ProviderOutcome.TRANSPORT_ERROR.value)):
+            with self.subTest(status=status):
+                FiscalDocument.objects.all().delete()
+                document = self.document(status=status, days_ago=4)
+                if result:
+                    FiscalSubmissionAttempt.objects.create(
+                        document=document, attempt_number=1, environment=document.environment,
+                        started_at=timezone.now(), finished_at=timezone.now(), result=result)
+                self.assert_no_go(self.run_checks(), 'plazos', 'más de 3 días')
+
+    @override_settings(**BETA_READY)
+    def test_an_uncertain_send_is_not_counted_against_the_three_days(self):
+        document = self.document(status=FiscalDocumentStatus.SUBMISSION_ERROR, days_ago=4)
+        FiscalSubmissionAttempt.objects.create(
+            document=document, attempt_number=1, environment=document.environment, started_at=timezone.now(),
+            finished_at=timezone.now(), result='transport_unknown')
+        checks = self.run_checks()
+        self.assertNotIn('más de 3 días', self.details(checks, 'NO-GO'))
+        self.assertIn('1 incierto', self.details(checks, 'AVISO'))
+
+    @override_settings(**BETA_READY)
+    def test_production_without_a_factura_series_is_no_go(self):
+        FiscalSeries.objects.create(company=self.company, document_type=FiscalDocumentType.RECEIPT, series='B001',
+                                    environment=FiscalEnvironment.PRODUCTION)
+        self.assert_no_go(self.run_checks(FiscalEnvironment.PRODUCTION), 'series', 'sin serie de factura')
+
+    @override_settings(**BETA_READY)
+    def test_an_abandoned_attempt_blocks_production_and_warns_in_beta(self):
+        from store.fiscal_services import STALE_ATTEMPT_MINUTES
+
+        document = self.document()
+        FiscalSubmissionAttempt.objects.create(
+            document=document, attempt_number=1, environment=document.environment, result='in_progress',
+            started_at=timezone.now() - dt.timedelta(minutes=STALE_ATTEMPT_MINUTES + 1))
+        self.assertIn('abandonado', self.details(self.run_checks(), 'AVISO'))
+        FiscalDocument.objects.filter(pk=document.pk).update(environment=FiscalEnvironment.PRODUCTION)
+        FiscalSubmissionAttempt.objects.filter(document=document).update(environment=FiscalEnvironment.PRODUCTION)
+        self.assert_no_go(self.run_checks(FiscalEnvironment.PRODUCTION), 'cola', 'abandonado')
+
+    @override_settings(**BETA_READY)
     def test_an_uncertain_send_is_reported_and_blocks_production_only(self):
         document = self.document(status=FiscalDocumentStatus.SUBMISSION_ERROR)
         FiscalSubmissionAttempt.objects.create(
@@ -210,7 +291,9 @@ class EachNoGoCauseTest(_Base):
         self.assertEqual(caught.exception.returncode, 1)
 
 
-@override_settings(**_settings(ruc=OTHER_RUC))
+SUBJECT_NAME = 'TITULAR PERSONA NATURAL'
+
+@override_settings(**_settings(ruc=OTHER_RUC, key_cert=_certificate(ou=RUC, cn=SUBJECT_NAME)))
 class ItReadsOnlyAndSaysNoSecretTest(_Base):
     def outputs(self):
         texts = []
@@ -242,8 +325,9 @@ class ItReadsOnlyAndSaysNoSecretTest(_Base):
 
         key_body = settings.FISCAL_KEY_PEM.splitlines()[1]
         for text in self.outputs():
-            for secret in (SOL_PASSWORD, SOL_USER, key_body, OTHER_RUC):
+            for secret in (SOL_PASSWORD, SOL_USER, key_body, OTHER_RUC, SUBJECT_NAME):
                 self.assertNotIn(secret, text)
+            self.assertIn('RUC de la empresa presente en el certificado: sí', text)
 
     def test_the_json_is_parseable(self):
         out = io.StringIO()
@@ -252,3 +336,50 @@ class ItReadsOnlyAndSaysNoSecretTest(_Base):
         payload = json.loads(out.getvalue())
         self.assertEqual(payload['verdict'], 'NO-GO')
         self.assertEqual(payload['company'], 'preflight')
+
+
+
+CONSOLE_KEY = __import__('cryptography.fernet', fromlist=['Fernet']).Fernet.generate_key().decode()
+
+
+@override_settings(APP_CONFIG_ENCRYPTION_KEY=CONSOLE_KEY, FISCAL_ENABLED=False, FISCAL_SOL_RUC='', FISCAL_SOL_USER='',
+                   FISCAL_SOL_PASSWORD='', FISCAL_CERT_PEM='', FISCAL_KEY_PEM='', FISCAL_CERT_P12_PATH='')
+class TheConsoleConfigurationIsReadTooTest(_Base):
+    """The credentials the MASTER saved in the integrations console: opened in memory, never printed."""
+
+    P12_PASSWORD = 'clave-p12-de-consola-NoEsReal'
+    CONSOLE_SOL_PASSWORD = 'clave-sol-de-consola-NoEsReal'
+
+    def setUp(self):
+        import base64
+
+        from store.integrations import service
+        from store.tests import _fc_build_p12
+
+        super().setUp()
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        row = IntegrationConfig(provider='sunat', slot=IntegrationConfig.SLOT_ACTIVE, enabled=True,
+                                public={'ruc': RUC, 'sol_user': 'USUARIOCONSOLA'})
+        service._seal(row, {
+            'sol_password': self.CONSOLE_SOL_PASSWORD,
+            'certificate_p12': base64.b64encode(_fc_build_p12(key, password=self.P12_PASSWORD.encode())).decode(),
+            'certificate_password': self.P12_PASSWORD,
+        })
+        row.save()
+
+    def test_the_console_row_is_diagnosed_without_writes_or_secrets(self):
+        out = io.StringIO()
+        with CaptureQueriesContext(connection) as queries:
+            try:
+                call_command('fiscal_preflight', '--company', 'preflight', stdout=out)
+            except CommandError:
+                pass
+        text = out.getvalue()
+        self.assertIn('origen: consola de integraciones', text)
+        self.assertIn('el RUC de la Clave SOL es el de la empresa', text)
+        self.assertIn('emisión encendida', text)            # the console row decides, not FISCAL_ENABLED
+        for secret in (self.CONSOLE_SOL_PASSWORD, self.P12_PASSWORD, 'USUARIOCONSOLA'):
+            self.assertNotIn(secret, text)
+        writes = [q['sql'] for q in queries.captured_queries
+                  if not q['sql'].lstrip().upper().startswith(('SELECT', 'SAVEPOINT', 'RELEASE SAVEPOINT'))]
+        self.assertEqual(writes, [])

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict, dataclass
+from datetime import timedelta
 
 from django.conf import settings
 from django.utils import timezone
@@ -45,12 +46,19 @@ WARN = 'AVISO'
 NO_GO = 'NO-GO'
 
 #: Factura and its linked notes: up to 3 calendar days from the day after issue
-#: (RS 000003-2023). The warning comes one day earlier.
+#: (RS 097-2012, art. 12.1 c), as worded by RS 000003-2023, art. 3). The warning comes one day earlier.
 INVOICE_DEADLINE_DAYS = 3
 INVOICE_WARNING_DAYS = 2
-#: Boletas: the daily summary no later than the 7th calendar day (RS 114-2019, 21.1).
+#: Boletas: the daily summary no later than the 7th calendar day after issue (RS 097-2012,
+#: art. 21.1, as worded by RS 114-2019).
 RECEIPT_DEADLINE_DAYS = 7
 RECEIPT_WARNING_DAYS = 5
+#: A summary in one of these states reached SUNAT, or may have: its boletas are informed
+#: (or waiting on a verdict). GENERATED, SIGNED, SUBMISSION_ERROR and REJECTED inform nothing.
+SUMMARY_REACHED_SUNAT = (
+    FiscalSummaryStatus.SUBMITTED, FiscalSummaryStatus.ACCEPTED, FiscalSummaryStatus.ACCEPTED_WITH_OBSERVATION,
+    FiscalSummaryStatus.SUBMISSION_UNKNOWN,
+)
 #: Certificate renewal takes time: under 60 days is worth knowing, under 30 blocks production.
 CERT_WARNING_DAYS = 60
 CERT_BLOCKING_DAYS = 30
@@ -137,9 +145,11 @@ def _credentials_and_certificate(company, target: str, now) -> list[Check]:
         return [*checks, Check(NO_GO, 'certificado', str(exc))]
     # `check_signing_pair` already proved that the PEM reads.
     meta = metadata_from_certificate(x509.load_pem_x509_certificate(credentials['cert_pem']))
+    # Neither the subject nor the issuer is printed: they name people and other
+    # companies. What the operator needs is whether the RUC is there (below), the
+    # dates and a fingerprint to compare with the file in hand.
     checks.append(Check(GO, 'certificado', (
-        f'sujeto «{meta.subject[:120]}», emisor «{meta.issuer[:120]}», serie {meta.serial}, '
-        f'vigente del {meta.not_before:%d/%m/%Y} al {meta.not_after:%d/%m/%Y}, '
+        f'se lee y casa con su clave; vigente del {meta.not_before:%d/%m/%Y} al {meta.not_after:%d/%m/%Y}, '
         f'huella SHA-256 {meta.fingerprint_sha256[:16]}…')))
 
     production = target == FiscalEnvironment.PRODUCTION
@@ -162,10 +172,10 @@ def _credentials_and_certificate(company, target: str, now) -> list[Check]:
             'y registrado en SOL)')))
     ruc = (company.tax_id or '').strip()
     if ruc and ruc in re.findall(r'\d{11}', meta.subject):
-        checks.append(Check(GO, 'certificado', 'el sujeto lleva el RUC de la empresa'))
+        checks.append(Check(GO, 'certificado', 'RUC de la empresa presente en el certificado: sí'))
     else:
         checks.append(Check(NO_GO if production else WARN, 'certificado', (
-            'el sujeto no lleva el RUC de la empresa (SUNAT lo exige en el campo OU; BETA no)')))
+            'RUC de la empresa presente en el certificado: no (SUNAT lo exige en el campo OU; BETA no)')))
     checks.append(Check(WARN, 'certificado', (
         'el registro del certificado en SOL no se puede comprobar desde aquí: lo atestigua el propietario')))
     return checks
@@ -200,13 +210,16 @@ def _series(company, target: str) -> list[Check]:
         if names:
             checks.append(Check(GO, 'series', f'{noun}: {", ".join(names)} ({target})'))
         else:
-            checks.append(Check(WARN, 'series', f'sin serie de {noun} activa en «{target}»: no se emitirá'))
+            # Production without a factura series is not an activation at all.
+            blocking = target == FiscalEnvironment.PRODUCTION and document_type == FiscalDocumentType.INVOICE
+            checks.append(Check(NO_GO if blocking else WARN, 'series',
+                                f'sin serie de {noun} activa en «{target}»: no se emitirá'))
     return checks
 
 
 def _queue(company, target: str, now) -> list[Check]:
     """What is waiting on SUNAT, and what is close to (or past) its legal deadline."""
-    from .fiscal_services import submission_uncertainty
+    from .fiscal_services import STALE_ATTEMPT_MINUTES, submission_uncertainty
 
     checks = []
     today = timezone.localdate(now)
@@ -214,22 +227,33 @@ def _queue(company, target: str, now) -> list[Check]:
     production = target == FiscalEnvironment.PRODUCTION
 
     errors = list(documents.filter(status=FiscalDocumentStatus.SUBMISSION_ERROR)
-                  .only('pk', 'status', 'document_type', 'series'))
-    uncertain = sum(1 for document in errors if submission_uncertainty(document))
+                  .only('pk', 'status', 'document_type', 'series', 'issued_at'))
+    uncertain_pks = {document.pk for document in errors if submission_uncertainty(document)}
     if errors:
         checks.append(Check(NO_GO if production else WARN, 'cola', (
-            f'{len(errors)} comprobante(s) con error de envío; {uncertain} incierto(s): se reconcilian por su CDR, '
-            f'no se reenvían')))
-    open_attempts = FiscalSubmissionAttempt.objects.filter(
-        document__company=company, document__environment=target, finished_at__isnull=True).count()
-    if open_attempts:
-        checks.append(Check(WARN, 'cola', f'{open_attempts} envío(s) sin terminar'))
+            f'{len(errors)} comprobante(s) con error de envío; {len(uncertain_pks)} incierto(s): se reconcilian '
+            f'por su CDR, no se reenvían')))
+    attempts = FiscalSubmissionAttempt.objects.filter(
+        document__company=company, document__environment=target, finished_at__isnull=True)
+    stale = now - timedelta(minutes=STALE_ATTEMPT_MINUTES)
+    abandoned = attempts.filter(started_at__lt=stale).count()
+    running = attempts.filter(started_at__gte=stale).count()
+    if abandoned:
+        # The process died mid-send: SUNAT may have it. Same as an uncertain send.
+        checks.append(Check(NO_GO if production else WARN, 'cola', (
+            f'{abandoned} envío(s) abandonado(s) sin terminar: pudieron llegar a SUNAT, se reconcilian por su CDR')))
+    if running:
+        checks.append(Check(WARN, 'cola', f'{running} envío(s) en curso'))
 
-    # Sent one by one: facturas and the notes of a factura.
+    # Sent one by one: facturas and the notes of a factura. Not yet sent, or sent
+    # and refused before SUNAT received them (a SUBMISSION_ERROR that is not
+    # uncertain): the 3 days run for both. An uncertain one may already be in
+    # SUNAT, and is reported above.
     individual = documents.filter(
-        status__in=(FiscalDocumentStatus.GENERATED, FiscalDocumentStatus.SIGNED),
+        status__in=(FiscalDocumentStatus.PENDING, FiscalDocumentStatus.GENERATED, FiscalDocumentStatus.SIGNED,
+                    FiscalDocumentStatus.SUBMISSION_ERROR),
     ).exclude(document_type=FiscalDocumentType.RECEIPT).exclude(
-        document_type__in=FISCAL_NOTE_TYPES, series__startswith='B')
+        document_type__in=FISCAL_NOTE_TYPES, series__startswith='B').exclude(pk__in=uncertain_pks)
     late = soon = 0
     for issued_at in individual.values_list('issued_at', flat=True):
         age = (today - timezone.localdate(issued_at)).days
@@ -240,14 +264,18 @@ def _queue(company, target: str, now) -> list[Check]:
     if late:
         checks.append(Check(NO_GO, 'plazos', (
             f'{late} factura(s) o nota(s) sin enviar con más de {INVOICE_DEADLINE_DAYS} días: fuera del plazo '
-            f'de la RS 000003-2023 (decisión del contador)')))
+            f'(RS 097-2012, art. 12.1 c), texto de la RS 000003-2023; decisión del contador)')))
     if soon:
         checks.append(Check(WARN, 'plazos', f'{soon} factura(s) o nota(s) sin enviar a punto de vencer su plazo'))
 
-    # Informed by the daily summary: boletas not yet in a live summary line.
-    in_summary = FiscalDailySummaryDocument.objects.filter(superseded=False).values('document_id')
+    # Informed by the daily summary. A boleta counts as informed only when its live
+    # summary line belongs to a summary that reached SUNAT (or may have): one that
+    # is only generated or signed, or that failed before leaving, informs nothing.
+    in_summary = FiscalDailySummaryDocument.objects.filter(
+        superseded=False, summary__status__in=SUMMARY_REACHED_SUNAT).values('document_id')
     pending = documents.filter(
-        document_type=FiscalDocumentType.RECEIPT, status=FiscalDocumentStatus.SIGNED,
+        document_type=FiscalDocumentType.RECEIPT,
+        status__in=(FiscalDocumentStatus.PENDING, FiscalDocumentStatus.GENERATED, FiscalDocumentStatus.SIGNED),
     ).exclude(pk__in=in_summary)
     late = soon = 0
     for issued_at in pending.values_list('issued_at', flat=True):
@@ -258,15 +286,19 @@ def _queue(company, target: str, now) -> list[Check]:
             soon += 1
     if late:
         checks.append(Check(NO_GO, 'plazos', (
-            f'{late} boleta(s) sin resumen diario con más de {RECEIPT_DEADLINE_DAYS} días (RS 114-2019, 21.1)')))
+            f'{late} boleta(s) sin resumen diario con más de {RECEIPT_DEADLINE_DAYS} días '
+            f'(RS 097-2012, art. 21.1, texto de la RS 114-2019)')))
     if soon:
         checks.append(Check(WARN, 'plazos', f'{soon} boleta(s) sin resumen diario a punto de vencer su plazo'))
 
-    waiting = (FiscalSummaryStatus.SUBMITTED, FiscalSummaryStatus.SUBMISSION_ERROR,
-               FiscalSummaryStatus.SUBMISSION_UNKNOWN)
-    summaries = FiscalDailySummary.objects.filter(company=company, environment=target, status__in=waiting).count()
-    if summaries:
-        checks.append(Check(WARN, 'cola', f'{summaries} resumen(es) diario(s) sin veredicto de SUNAT'))
+    summaries = FiscalDailySummary.objects.filter(company=company, environment=target)
+    unsent = summaries.filter(status__in=(FiscalSummaryStatus.GENERATED, FiscalSummaryStatus.SIGNED)).count()
+    if unsent:
+        checks.append(Check(WARN, 'cola', f'{unsent} resumen(es) diario(s) generado(s) o firmado(s) sin enviar'))
+    waiting = summaries.filter(status__in=(FiscalSummaryStatus.SUBMITTED, FiscalSummaryStatus.SUBMISSION_ERROR,
+                                           FiscalSummaryStatus.SUBMISSION_UNKNOWN)).count()
+    if waiting:
+        checks.append(Check(WARN, 'cola', f'{waiting} resumen(es) diario(s) sin veredicto de SUNAT'))
     voids = FiscalVoidCommunication.objects.filter(
         company=company, environment=target,
         status__in=(FiscalVoidStatus.SUBMITTED, FiscalVoidStatus.SUBMISSION_ERROR,
