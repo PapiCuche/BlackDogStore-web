@@ -8,6 +8,8 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
+from django.db.models.functions import Length as _Length
+from django.db.models.lookups import LessThanOrEqual as _LessThanOrEqual
 from django.db.models.functions import Lower, Now
 from django.core.validators import MaxLengthValidator, MinValueValidator, MaxValueValidator
 from django.contrib.postgres.functions import RandomUUID
@@ -10919,8 +10921,15 @@ class FiscalDocumentStatus(models.TextChoices):
     ACCEPTED = 'accepted', 'Aceptado por SUNAT'
     ACCEPTED_WITH_OBSERVATION = 'accepted_observed', 'Aceptado con observaciones'
     REJECTED = 'rejected', 'Rechazado por SUNAT'
-    #: Se intentó enviar y no se sabe qué pasó. Reintentable.
+    #: El envío no llegó a SUNAT (conexión rechazada, excepción 0100-1999 de
+    #: SUNAT): «no informado». Se reintenta EL MISMO documento.
     SUBMISSION_ERROR = 'submission_error', 'Error de envío'
+    #: G5 (docs/sunat-estado-2026-11.md). Se transmitió y no hay veredicto
+    #: utilizable: timeout de lectura, corte, 5xx, respuesta ilegible, fallo del
+    #: adaptador a mitad de envío, intento abandonado o un CDR que no respondía
+    #: por este documento. SUNAT pudo registrarlo: NO se reenvía, se reconcilia
+    #: por su CDR (`getStatusCdr`).
+    SUBMISSION_UNKNOWN = 'submission_unknown', 'Envío con resultado incierto'
 
 
 class FiscalGrantMethod(models.TextChoices):
@@ -11252,7 +11261,18 @@ class FiscalSubmissionAttempt(models.Model):
     request_sha256 = models.CharField(max_length=64, blank=True)
     response_sha256 = models.CharField(max_length=64, blank=True)
 
+    #: H-06/G5. El CDR que SUNAT devolvió y que NO respondía por este documento
+    #: (otro identificador, otro emisor, otro tipo, códigos incoherentes). No es su
+    #: constancia —por eso no va en el documento—, pero sí la prueba de lo que
+    #: llegó, para investigarlo. ACOTADO (`MAX_DISCARDED_CDR_BYTES`, también en la
+    #: base) y nunca expuesto por la API: sólo su huella aparece en un mensaje.
+    discarded_cdr = models.BinaryField(null=True, blank=True, editable=False)
+    discarded_cdr_sha256 = models.CharField(max_length=64, blank=True, default='', db_default='')
+
     created_at = models.DateTimeField(auto_now_add=True)
+
+    #: Un CDR real ocupa unos pocos KB; esto deja margen y acota la fila.
+    MAX_DISCARDED_CDR_BYTES = 256 * 1024
 
     class Meta:
         verbose_name = 'Intento de envío fiscal'
@@ -11262,6 +11282,11 @@ class FiscalSubmissionAttempt(models.Model):
             models.UniqueConstraint(
                 fields=['document', 'attempt_number'],
                 name='fiscal_attempt_unique_number',
+            ),
+            models.CheckConstraint(
+                # NULL (no CDR discarded) passes: a CHECK only refuses FALSE.
+                condition=_LessThanOrEqual(_Length('discarded_cdr'), 256 * 1024),
+                name='fiscal_attempt_discarded_cdr_bounded',
             ),
         ]
 

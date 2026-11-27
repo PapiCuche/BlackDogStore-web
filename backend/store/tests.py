@@ -50503,7 +50503,8 @@ class C22A1DomainTest(TestCase):
             outcome=ProviderOutcome.UNKNOWN_RESPONSE,
             safe_message='Respuesta sin CDR ni fault reconocible',
         )))
-        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_ERROR)
+        # G5 (0199): transmitido sin veredicto utilizable → incierto, no rechazado.
+        self.assertEqual(doc.status, FiscalDocumentStatus.SUBMISSION_UNKNOWN)
 
     def test_a_retry_reuses_the_same_number_and_adds_an_attempt(self):
         """
@@ -51263,11 +51264,12 @@ class C22BAcceptanceEvidenceTest(TestCase):
         """
         from .fiscal_services import OUTCOME_TO_STATUS
 
-        for outcome in (ProviderOutcome.TRANSPORT_ERROR,
-                        ProviderOutcome.UNKNOWN_RESPONSE):
-            self.assertEqual(
-                OUTCOME_TO_STATUS[outcome], FiscalDocumentStatus.SUBMISSION_ERROR,
-            )
+        # G5 (0199): lo que no llegó es SUBMISSION_ERROR; lo transmitido sin
+        # veredicto, SUBMISSION_UNKNOWN. Ninguno se lee como aceptado.
+        self.assertEqual(OUTCOME_TO_STATUS[ProviderOutcome.TRANSPORT_ERROR],
+                         FiscalDocumentStatus.SUBMISSION_ERROR)
+        for outcome in (ProviderOutcome.TRANSPORT_UNKNOWN, ProviderOutcome.UNKNOWN_RESPONSE):
+            self.assertEqual(OUTCOME_TO_STATUS[outcome], FiscalDocumentStatus.SUBMISSION_UNKNOWN)
 
 
 class C22BRejectionPolicyTest(TestCase):
@@ -51422,7 +51424,8 @@ class C22BSubmissionClaimTest(TestCase):
             submit_fiscal_document(self.doc, proveedor)
         self.assertEqual(proveedor.calls, 0)
         self.doc.refresh_from_db()
-        self.assertEqual(self.doc.status, FiscalDocumentStatus.SIGNED)
+        # G5 (0199): la duda se vuelve estado en cuanto alguien pide enviar.
+        self.assertEqual(self.doc.status, FiscalDocumentStatus.SUBMISSION_UNKNOWN)
 
     def test_the_attempt_is_recorded_before_the_network_call(self):
         """
