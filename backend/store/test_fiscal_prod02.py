@@ -846,8 +846,18 @@ def _cdr_zip(xml: bytes, name='R-20100066603-01-F001-1.xml') -> bytes:
 
 
 #: A CDR that is NOT valid UTF-8 (a Latin-1 «Ñ»). Decoding it with 'replace' loses a byte.
+#: It answers for F001-1 of the test company: `sendBill` binds its CDR to the document (H-06).
 LATIN1_CDR = (b'<?xml version="1.0" encoding="ISO-8859-1"?>'
-              b'<ApplicationResponse><Note>CA\xd1ETE</Note></ApplicationResponse>')
+              b'<ar:ApplicationResponse'
+              b' xmlns:ar="urn:oasis:names:specification:ubl:schema:xsd:ApplicationResponse-2"'
+              b' xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2"'
+              b' xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">'
+              b'<cbc:Note>CA\xd1ETE</cbc:Note>'
+              b'<cac:ReceiverParty><cac:PartyIdentification><cbc:ID>20100066603</cbc:ID>'
+              b'</cac:PartyIdentification></cac:ReceiverParty>'
+              b'<cac:DocumentResponse><cac:Response><cbc:ResponseCode>0</cbc:ResponseCode></cac:Response>'
+              b'<cac:DocumentReference><cbc:ID>F001-1</cbc:ID><cbc:DocumentTypeCode>01</cbc:DocumentTypeCode>'
+              b'</cac:DocumentReference></cac:DocumentResponse></ar:ApplicationResponse>')
 
 
 @override_settings(**ON)
