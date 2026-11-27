@@ -152,6 +152,9 @@ beforeEach(() => {
 });
 afterEach(() => jest.restoreAllMocks());
 
+/** The owner's approved help of «Ingreso de inventario existente», the same on every screen that offers it. */
+const EXISTING_HELP = 'Equipos que ya tenías; no es una compra. Vale en cualquier estante, también con ventas o compras; como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige «Inventario inicial».';
+
 describe('paso 1 · Procedencia', () => {
   it('INV-OPENING-01: por defecto es una compra y se envía como tal', async () => {
     const u = await renderWizard();
@@ -181,7 +184,7 @@ describe('paso 1 · Procedencia', () => {
     const u = await renderWizard();
     const existing = screen.getByRole('radio', { name: 'Ingreso de inventario existente' });
     expect(existing).toHaveAccessibleDescription(/no es una compra/);
-    expect(existing).toHaveAccessibleDescription(/^Artículos que ya tenías; no es una compra/);
+    expect(existing).toHaveAccessibleDescription(EXISTING_HELP);
     expect(existing).toHaveAccessibleDescription(/elige «Inventario inicial»/);
     await u.click(existing);
     await toArticles(u);
