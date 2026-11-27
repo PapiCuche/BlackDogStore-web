@@ -212,7 +212,9 @@ test('INV-OPENING-01: a purchase by default, and «Inventario inicial» travels 
   await screen.findByRole('table', { name: 'Equipos del archivo' });
   expect(calls[0].form?.get('entry_kind')).toBe('purchase');
 
-  fireEvent.click(screen.getByRole('radio', { name: /Inventario inicial/ }));
+  const opening = screen.getByRole('radio', { name: 'Inventario inicial' });   // the help is its description, not its name
+  expect(opening).toHaveAccessibleDescription(/^Equipos que ya tenías\. Se pueden cargar en varias tandas/);
+  fireEvent.click(opening);
   expect(screen.queryByRole('table', { name: 'Equipos del archivo' })).toBeNull();   // the old preview is dropped
   fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));
   await waitFor(() => expect(calls).toHaveLength(2));
@@ -221,8 +223,9 @@ test('INV-OPENING-01: a purchase by default, and «Inventario inicial» travels 
 
 test('STOCK-EXISTING-01: «Ingreso de inventario existente» travels as existing', async () => {
   render(<StockUnitImport branches={BRANCHES} />);
-  const existing = screen.getByRole('radio', { name: /Ingreso de inventario existente/ });
-  expect(existing).toHaveAccessibleName(/no es una compra/);
+  const existing = screen.getByRole('radio', { name: 'Ingreso de inventario existente' });
+  expect(existing).toHaveAccessibleDescription(/no es una compra/);
+  expect(existing).toHaveAccessibleDescription(/elige «Inventario inicial»/);
   attach();
   fireEvent.click(existing);
   fireEvent.click(screen.getByRole('button', { name: 'Previsualizar' }));

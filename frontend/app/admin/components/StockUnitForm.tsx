@@ -423,17 +423,18 @@ export function StockUnitForm({
                 <input
                   type="radio" name="unit-entry-kind" value={kind.value} disabled={working}
                   checked={entryKind === kind.value} onChange={() => setEntryKind(kind.value)}
+                  aria-describedby="unit-entry-kind-help"
                   className="h-4 w-4 accent-[var(--primary)]"
                 />
                 {kind.label}
               </label>
             ))}
           </div>
-          <p className="mt-1 text-xs text-muted">
+          <p id="unit-entry-kind-help" className="mt-1 text-xs text-muted">
             {entryKind === "opening"
               ? "Equipos que ya tenías. Se pueden registrar en varias tandas mientras el producto no tenga otros movimientos (ventas, compras, traslados) en esta sucursal."
               : entryKind === "existing"
-                ? "Equipos que ya tenías; no es una compra. Vale para cualquier producto y, como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige inventario inicial."
+                ? "Equipos que ya tenías; no es una compra. Vale para cualquier producto y, como una compra, cierra su inventario inicial en esta sucursal: si aún no tiene movimientos aquí, elige «Inventario inicial»."
                 : "Equipos que llegan comprados. Quedan como compra en el Kardex."}
           </p>
           {errorFor("entry_kind") ? <p role="alert" className="mt-1 text-xs text-danger">{errorFor("entry_kind")}</p> : null}

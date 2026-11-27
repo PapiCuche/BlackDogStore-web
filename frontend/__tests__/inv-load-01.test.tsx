@@ -166,7 +166,7 @@ test('the form asks what the entry is, purchase by default', () => {
   mountForm();
   const group = screen.getByRole('group', { name: 'Tipo de ingreso' });
   expect(within(group).getByRole('radio', { name: /Compra/ })).toBeChecked();
-  expect(within(group).getByRole('radio', { name: /Inventario inicial/ })).not.toBeChecked();
+  expect(within(group).getByRole('radio', { name: /^Inventario inicial/ })).not.toBeChecked();
   expect(screen.getByLabelText(/^Fecha de ingreso/)).toHaveAttribute('type', 'date');
 });
 
@@ -175,7 +175,7 @@ test('an opening entry with supplier and date is sent as such', async () => {
   await pickPhone();
   await screen.findByRole('option', { name: 'Mayorista Sur' });
 
-  fireEvent.click(screen.getByRole('radio', { name: /Inventario inicial/ }));
+  fireEvent.click(screen.getByRole('radio', { name: /^Inventario inicial/ }));
   fireEvent.change(screen.getByLabelText('Proveedor (opcional)'), { target: { value: '8' } });
   fireEvent.change(screen.getByLabelText(/^Fecha de ingreso/), { target: { value: '2026-10-01' } });
   fireEvent.change(screen.getByLabelText(/^IMEI \*/), { target: { value: IMEI_A } });
@@ -194,7 +194,7 @@ test('STOCK-EXISTING-01: «Ingreso de inventario existente» is offered with its
   const group = screen.getByRole('group', { name: 'Tipo de ingreso' });
   const existing = within(group).getByRole('radio', { name: /Ingreso de inventario existente/ });
   fireEvent.click(existing);
-  expect(screen.getByText(/no es una compra/)).toBeInTheDocument();
+  expect(existing).toHaveAccessibleDescription(/no es una compra/);
   fireEvent.change(screen.getByLabelText(/^IMEI \*/), { target: { value: IMEI_A } });
   fireEvent.change(screen.getByLabelText(/^Motivo o documento de ingreso/), { target: { value: 'Vitrina' } });
   fireEvent.click(screen.getByRole('button', { name: 'Guardar equipo' }));

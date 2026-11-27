@@ -155,7 +155,7 @@ afterEach(() => jest.restoreAllMocks());
 describe('paso 1 · Procedencia', () => {
   it('INV-OPENING-01: por defecto es una compra y se envía como tal', async () => {
     const u = await renderWizard();
-    expect(screen.getByRole('radio', { name: /Compra a proveedor/ })).toBeChecked();
+    expect(screen.getByRole('radio', { name: 'Compra a proveedor' })).toBeChecked();
     await toArticles(u);
     await addProduct(u, CABLE);
     await next(u, /Siguiente: revisar/);
@@ -165,8 +165,9 @@ describe('paso 1 · Procedencia', () => {
 
   it('INV-OPENING-01: «Inventario inicial» viaja como opening y la revisión lo dice', async () => {
     const u = await renderWizard();
-    await u.click(screen.getByRole('radio', { name: /Inventario inicial/ }));
-    expect(screen.getByText(/stock que ya tenías/)).toBeInTheDocument();
+    const opening = screen.getByRole('radio', { name: 'Inventario inicial' });   // the help is its description, not its name
+    expect(opening).toHaveAccessibleDescription(/stock que ya tenías/);
+    await u.click(opening);
     await toArticles(u);
     await addProduct(u, CABLE);
     preview.mockImplementation(async (body) => ({ ...previewFor(body), entry_kind: body.entry_kind }));
@@ -178,8 +179,10 @@ describe('paso 1 · Procedencia', () => {
 
   it('STOCK-EXISTING-01: «Ingreso de inventario existente» viaja como existing, con su ayuda, y la revisión lo dice', async () => {
     const u = await renderWizard();
-    const existing = screen.getByRole('radio', { name: /Ingreso de inventario existente/ });
+    const existing = screen.getByRole('radio', { name: 'Ingreso de inventario existente' });
     expect(existing).toHaveAccessibleDescription(/no es una compra/);
+    expect(existing).toHaveAccessibleDescription(/^Artículos que ya tenías; no es una compra/);
+    expect(existing).toHaveAccessibleDescription(/elige «Inventario inicial»/);
     await u.click(existing);
     await toArticles(u);
     await addProduct(u, CABLE);
