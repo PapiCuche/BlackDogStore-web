@@ -144,16 +144,19 @@ Para la «Carga de equipos»:
 9. «Conciliación de equipos» → «Comprobar ahora» confirma que el stock de cada producto es igual a sus equipos
    disponibles.
 
-## 6. Inventario inicial o compra
+## 6. Inventario inicial, inventario existente o compra
 
-En «Tipo de ingreso» hay dos opciones:
+En «Tipo de ingreso» hay tres opciones (desde R15):
 
 - «Compra a proveedor»: mercadería que llega comprada. Es la opción normal.
-- «Inventario inicial»: el stock que la tienda ya tenía antes de usar el sistema.
+- «Inventario inicial»: el stock que la tienda ya tenía antes de usar el sistema, en un artículo **sin movimientos en
+  esa sucursal**.
+- «Ingreso de inventario existente»: stock que la tienda ya tenía, en un artículo que **ya tuvo** movimientos en esa
+  sucursal (una venta, una compra, un traslado, una baja…). No es una compra y el Kardex lo muestra aparte.
 
-«Inventario inicial» sólo se acepta en un artículo **sin movimientos en esa sucursal**. Si el artículo ya tuvo
-cualquier movimiento ahí, el sistema lo rechaza y te pide registrarlo como compra. Si dudas, pregunta al
-responsable antes de usar «Inventario inicial».
+Si el artículo ya tuvo cualquier movimiento en esa sucursal, «Inventario inicial» se rechaza y el sistema te pide
+registrarlo como «Ingreso de inventario existente». No lo registres como compra si no hubo compra. Para cargar el
+stock real de equipos sigue [carga-stock-real.md](carga-stock-real.md) §0. Si dudas, pregunta al responsable.
 
 ## 7. Costos
 
