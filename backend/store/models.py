@@ -11993,6 +11993,8 @@ class PrintJob(models.Model):
         LABEL_BATCH = 'label_batch', 'Lote de etiquetas'
         # SALES-QUOTE-01: a commercial quote on the roll. It has no order: a quote never charged anything.
         SALES_QUOTE_TICKET = 'sales_quote_ticket', 'Cotización (80 mm)'
+        # TRADE-IN VALUATION PRO · 5b: a trade-in quote's roll (no order, no sale).
+        TRADE_IN_QUOTE_TICKET = 'trade_in_quote_ticket', 'Cotización de recepción (80 mm)'
 
     class Status(models.TextChoices):
         PENDING = 'pending', 'En cola'
@@ -12026,6 +12028,10 @@ class PrintJob(models.Model):
     # SALES-QUOTE-01: the quote a `sales_quote_ticket` prints (and nothing else carries one).
     sales_quote = models.ForeignKey(
         'SalesQuote', on_delete=models.PROTECT, null=True, blank=True, db_default=None,
+        related_name='print_jobs')
+    # TRADE-IN VALUATION PRO · 5b: the trade-in quote revision a `trade_in_quote_ticket` prints (nothing else has one).
+    trade_in_quote = models.ForeignKey(
+        'TradeInQuote', on_delete=models.PROTECT, null=True, blank=True, db_default=None,
         related_name='print_jobs')
     idempotency_key = models.CharField(max_length=120)
     #: Identificador que no se repite entre bases de datos. El agente lo apunta
@@ -12066,12 +12072,18 @@ class PrintJob(models.Model):
             # SALES-QUOTE-01: una cotización, de su cotización (sin pedido: no cobró nada).
             models.CheckConstraint(
                 condition=(models.Q(kind='label_batch') & models.Q(label_batch__isnull=False)
-                           & models.Q(order__isnull=True) & models.Q(sales_quote__isnull=True))
+                           & models.Q(order__isnull=True) & models.Q(sales_quote__isnull=True)
+                           & models.Q(trade_in_quote__isnull=True))
                 | (models.Q(kind='sales_quote_ticket') & models.Q(sales_quote__isnull=False)
-                   & models.Q(order__isnull=True) & models.Q(label_batch__isnull=True))
-                | (~models.Q(kind__in=['label_batch', 'sales_quote_ticket']) & models.Q(order__isnull=False)
-                   & models.Q(label_batch__isnull=True) & models.Q(sales_quote__isnull=True)),
-                name='print_job_target_matches_kind_v2'),
+                   & models.Q(order__isnull=True) & models.Q(label_batch__isnull=True)
+                   & models.Q(trade_in_quote__isnull=True))
+                | (models.Q(kind='trade_in_quote_ticket') & models.Q(trade_in_quote__isnull=False)
+                   & models.Q(order__isnull=True) & models.Q(label_batch__isnull=True)
+                   & models.Q(sales_quote__isnull=True))
+                | (~models.Q(kind__in=['label_batch', 'sales_quote_ticket', 'trade_in_quote_ticket'])
+                   & models.Q(order__isnull=False) & models.Q(label_batch__isnull=True)
+                   & models.Q(sales_quote__isnull=True) & models.Q(trade_in_quote__isnull=True)),
+                name='print_job_target_matches_kind_v3'),
         ]
         indexes = [models.Index(fields=['branch', 'status', 'id'])]
 

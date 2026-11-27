@@ -503,6 +503,8 @@ def _job_payload(job: PrintJob) -> dict:
         'label_size': job.label_size,
         # SALES-QUOTE-01, aditivo: el ticket de una cotización no tiene pedido; tiene su cotización.
         'sales_quote': job.sales_quote_id,
+        # TRADE-IN 5b, aditivo: el ticket de una cotización de recepción tiene su revisión.
+        'trade_in_quote': job.trade_in_quote_id,
     }
 
 

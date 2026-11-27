@@ -134,6 +134,15 @@ TRADE_IN_QUOTE_LEGEND = ('Valorización referencial sujeta a inspección; no es 
                          'No es comprobante de pago.')
 
 
+#: TRADE-IN VALUATION PRO · 5b — the trade-in quote's papers: what the shop OFFERS for a used device. Not a purchase,
+#: not a receipt, not a credit (D1-D12); the value holds subject to checking the device when it is received.
+TRADE_IN_RECEPTION_TITLE = 'COTIZACIÓN DE RECEPCIÓN DE EQUIPO USADO'
+TRADE_IN_RECEPTION_LEGEND = 'No es comprobante de pago ni constancia de compra.'
+TRADE_IN_RECEPTION_LEGEND_DETAIL = ('Valor sujeto a la verificación final del equipo al recibirlo. Vigente hasta la '
+                                    'fecha y hora indicadas.')
+TRADE_IN_DIFFERENCE_NOTE = 'La diferencia es referencial: no es un descuento ni un crédito.'
+
+
 def quote_prefix_error(prefix) -> str:
     """Why `prefix` may not number commercial quotes, or '' when it may (never F or B, like the sales note)."""
     if (prefix or '')[:1].upper() in FISCAL_SERIES_INITIALS:

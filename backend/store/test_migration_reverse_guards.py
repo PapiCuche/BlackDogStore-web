@@ -10,7 +10,7 @@ from unittest import mock
 from django.db import migrations
 from django.test import SimpleTestCase
 
-NODES = ('0198_trade_in_quote', '0197_trade_in_assessment', '0196_trade_in_eligibility', '0195_trade_in_rules', '0194_trade_in_tariff', '0193_unit_import_terms_approval', '0192_unit_photo_provenance', '0191_trade_in_quote',
+NODES = ('0200_trade_in_quote_print', '0198_trade_in_quote', '0197_trade_in_assessment', '0196_trade_in_eligibility', '0195_trade_in_rules', '0194_trade_in_tariff', '0193_unit_import_terms_approval', '0192_unit_photo_provenance', '0191_trade_in_quote',
          '0190_supplier_margin', '0189_sales_quote')
 
 
@@ -71,3 +71,35 @@ class EveryNodeSinceTheQuotesCarriesTheGuardTest(SimpleTestCase):
                 last = loader.disk_migrations[('store', node)].operations[-1]
                 self.assertIsInstance(last, migrations.RunPython)
                 self.assertEqual(getattr(last.reverse_code, '__name__', ''), 'refuse_reverse_with_quote_tickets')
+
+
+#: TRADE-IN VALUATION PRO · 5b: from 0200 on, `_v2` refuses trade-in quote tickets too.
+TRADE_IN_NODES = ('0200_trade_in_quote_print',)
+
+
+class TradeInTicketGuardTest(SimpleTestCase):
+    """Every node from 0200 carries `refuse_reverse_with_trade_in_tickets` SECOND to last (the quote guard stays last)."""
+
+    def test_second_to_last_on_every_node_since_0200(self):
+        from django.db.migrations.loader import MigrationLoader
+
+        loader = MigrationLoader(None, ignore_no_migrations=True)
+        nodes = sorted(name for app, name in loader.disk_migrations if app == 'store' and name >= '0200')
+        self.assertEqual(tuple(sorted(TRADE_IN_NODES)), tuple(nodes[:len(TRADE_IN_NODES)]))
+        for node in nodes:
+            with self.subTest(node=node):
+                second = loader.disk_migrations[('store', node)].operations[-2]
+                self.assertIsInstance(second, migrations.RunPython)
+                self.assertIs(second.code, migrations.RunPython.noop)
+                self.assertEqual(getattr(second.reverse_code, '__name__', ''), 'refuse_reverse_with_trade_in_tickets')
+
+    def test_it_refuses_while_a_trade_in_ticket_exists_and_names_the_fix(self):
+        for node in TRADE_IN_NODES:
+            with self.subTest(node=node):
+                apps, PrintJob = _apps_with(1)
+                with self.assertRaises(RuntimeError) as caught:
+                    _module(node).refuse_reverse_with_trade_in_tickets(apps, None)
+                PrintJob.objects.filter.assert_called_once_with(kind='trade_in_quote_ticket')
+                self.assertIn("DELETE FROM store_printjob WHERE kind='trade_in_quote_ticket'", str(caught.exception))
+                apps, _ = _apps_with(0)
+                self.assertIsNone(_module(node).refuse_reverse_with_trade_in_tickets(apps, None))
