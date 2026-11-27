@@ -386,7 +386,7 @@ Entrada: evaluación, instante `t` (ahora), empresa. Salida: instantánea §6.5.
    2. En cada paso se toma, entre las que pueden contar, la de mayor deducción **después del tope que le queda a su
       grupo** (`min(línea, tope restante del grupo)`; la decisión de la tercera revisión de #462); los empates, por
       prioridad de la regla (mayor primero) y después por id de la regla (menor primero). Una línea cuyo grupo ya agotó
-      su tope no suma nada y queda marcada `suppressed_by: cap`.
+      su tope no suma nada y queda marcada `suppressed_by: @cap` (no es un código de pregunta posible).
    3. **Tope de grupo**: lo que cuenta en un grupo, como mucho `group_cap_percent` × base.
    4. **Tope total**: la suma nunca supera el valor base.
 
