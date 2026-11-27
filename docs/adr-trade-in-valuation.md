@@ -378,16 +378,20 @@ Entrada: evaluación, instante `t` (ahora), empresa. Salida: instantánea §6.5.
      (empate: la de mayor deducción, luego el id menor).
 4. **Importe de cada deducción** sobre el **valor base** (no compuesto): `fixed` = `amount`; `percent` =
    `base × percent / 100`; `repair_cost` = `amount`. Cada línea se redondea a 0,01 (`ROUND_HALF_UP`).
-5. **Sin doble penalización**, en este orden fijo (decisión del propietario en la revisión de #462, 2026-11-27):
-   1. **Dentro de cada grupo.** `combine=max`: sólo sobrevive la mayor línea del grupo; `combine=sum`: sobreviven todas.
-   2. **Por componente, entre las supervivientes.** Entre líneas que sobrevivieron a su grupo y comparten `component`
-      (de cualquier grupo), sólo cuenta la mayor; las demás quedan `suppressed_by` esa línea. Así una falla nunca se
-      pierde por una línea que su propio grupo ya había descartado. Ej.: estética (`max`) con «pantalla rota» S/ 150 y
-      «tapa trasera» S/ 200, y reparaciones con «pantalla reemplazada» S/ 120: estética se queda con la tapa (200), la
-      pantalla rota cae con su grupo y la pantalla reemplazada (120) **cuenta**: 320. (Con el orden anterior —componente
-      antes que grupo— la pantalla reemplazada caía por la pantalla rota y ésta por el grupo: 200.)
-   3. **Tope de grupo.** La suma de lo que cuenta en el grupo, como mucho `group_cap_percent` × base.
-   4. **Tope total.** La suma nunca supera el valor base.
+5. **Sin doble penalización: una selección voraz y determinista** (decisión del propietario en la segunda revisión de
+   #462, 2026-11-27):
+   1. Se ordenan las líneas candidatas de mayor a menor deducción; los empates, por prioridad de la regla (mayor
+      primero) y después por id de la regla (menor primero).
+   2. Se recorren en ese orden. Una línea **cuenta** si su `component` todavía no fue tomado **y** su grupo es
+      `combine=sum`, o es `combine=max` y ese grupo todavía no contó ninguna línea. Si no, queda `suppressed_by` la línea
+      que tomó el componente o el grupo.
+   3. **Tope de grupo**: lo que cuenta en un grupo, como mucho `group_cap_percent` × base.
+   4. **Tope total**: la suma nunca supera el valor base.
+
+   Ejemplos (con pruebas): estética (`max`) con «pantalla rota» S/ 150 y «tapa trasera» S/ 200, y reparaciones con
+   «pantalla reemplazada» S/ 120 → cuentan 200 y 120 = **320**. Estética (`max`) con «pantalla rota» S/ 150 y «marco»
+   S/ 100, y reparaciones con «pantalla reemplazada» S/ 200 → cuentan 200 y 100 = **300**. Es una regla simple y
+   estable; no pretende ser la elección óptima en todos los casos.
 6. **Valor calculado** = `max(0, base − deducciones)` (**nunca negativo**). Como sólo se resta, nunca pasa del base.
 7. **Valor ofrecido.** Por omisión = calculado (redondeado hacia abajo a `value_rounding_step`, si existe, V5). Ajuste
    manual: hacia abajo, con motivo, `sales.tradein.value`; hacia arriba, con motivo, **sólo hasta
@@ -576,8 +580,8 @@ Cada PR: rama propia, código separado de docs (commits distintos), entradas en 
   aprobación; aprobar una pendiente con inicio pasado la mueve a hoy; vista previa con entrada desactivada después →
   `preview_stale`.
 - **Cálculo, tabla de casos:** sin deducciones = base; `percent` sobre base no compuesto; todas las reglas de estado
-  aplican aunque una regla de importe de mayor prioridad gane; cada grupo combina primero y después cuenta una línea por
-  componente entre las supervivientes (una falla nunca cae por una línea ya descartada); `combine=max` vs `sum`; tope de grupo; suma > base → 0, nunca negativo; NO ELEGIBLE → valores nulos;
+  aplican aunque una regla de importe de mayor prioridad gane; selección voraz (mayor deducción primero; un componente y,
+  en `max`, un grupo una sola vez) con los dos ejemplos de §6 y los empates; `combine=max` vs `sum`; tope de grupo; suma > base → 0, nunca negativo; NO ELEGIBLE → valores nulos;
   ajuste hacia arriba ≤ máximo y con aprobación; prioridad y empate deterministas; tarifa o reglas faltantes.
 - **Correspondencia del selector (§8.1):** exacta, comodín, sin enlace, ambigua → `tariff_ambiguous`.
 - **Verificación:** IMEI 2 obligatorio si existe; equipo sin IMEI por serie o declaración; registro vencido impide
