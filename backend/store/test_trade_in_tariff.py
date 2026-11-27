@@ -129,6 +129,50 @@ class TariffCapabilitiesTest(TestCase):
         self.assertFalse(TRADE_IN_TARIFF_CODES & admin)
 
 
+class TariffFreshInstallRepairTest(TestCase):
+    """0194 strips the four codes from a fresh install's seeded Administrador (0061 reads the live catalogue)."""
+
+    def run_0194(self):
+        from importlib import import_module
+
+        from django.apps import apps
+
+        import_module('store.migrations.0194_trade_in_tariff').strip(apps, None)
+
+    def test_the_frozen_codes_are_todays_and_the_seeded_administrador_has_none(self):
+        from importlib import import_module
+
+        from store.models import Company, CompanyRole
+
+        self.assertEqual(import_module('store.migrations.0194_trade_in_tariff').CODES, TRADE_IN_TARIFF_CODES)
+        seeded = CompanyRole.objects.get(company=Company.objects.get(slug='black-dog-store'), slug='administrador')
+        self.assertFalse(TRADE_IN_TARIFF_CODES & set(seeded.capabilities))
+
+    def test_the_repair_touches_only_a_fresh_installs_seeded_administrador(self):
+        from store.models import CompanyRole, Membership
+        from store.tests import _p2d_company, _p2d_member
+
+        company = _p2d_company('tiv-0194')
+        admin = CompanyRole.objects.get(company=company, slug='administrador')
+        admin.capabilities = sorted({*admin.capabilities, *TRADE_IN_TARIFF_CODES})
+        admin.save(update_fields=['capabilities'])
+        other = CompanyRole.objects.create(company=company, name='Tarifario', slug='tarifario-0194',
+                                           capabilities=['company.view', VIEW])
+        self.assertFalse(Membership.objects.exists())
+        self.run_0194()
+        admin.refresh_from_db()
+        other.refresh_from_db()
+        self.assertFalse(TRADE_IN_TARIFF_CODES & set(admin.capabilities))
+        self.assertIn(VIEW, other.capabilities)
+        # A database in use: a grant is a decision, and a re-run keeps it.
+        _p2d_member(company, 'tiv-0194-user', ['company.view'])
+        admin.capabilities = sorted({*admin.capabilities, VIEW})
+        admin.save(update_fields=['capabilities'])
+        self.run_0194()
+        admin.refresh_from_db()
+        self.assertIn(VIEW, admin.capabilities)
+
+
 # ---------------------------------------------------------------------------
 # The database holds the rules even without the services
 # ---------------------------------------------------------------------------

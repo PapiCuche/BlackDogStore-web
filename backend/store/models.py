@@ -6187,7 +6187,8 @@ class TradeInTariffVersion(models.Model):
     decision_note = models.CharField(max_length=300, blank=True, default='')
 
     class Meta:
-        ordering = ['entry', '-number']
+        # `entry_id`, not `entry`: ordering by the relation would JOIN the entry (and lock it with a version).
+        ordering = ['entry_id', '-number']
         constraints = [
             models.UniqueConstraint(fields=['entry', 'number'], name='trade_in_tariff_version_number_unique'),
             # ONE change waiting per device: a second one would be decided against stale numbers.

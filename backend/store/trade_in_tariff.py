@@ -477,7 +477,7 @@ def _locked_version(company, version) -> TradeInTariffVersion:
     if version.company_id != company.pk:
         raise TariffError('No encontrado.', code='not_found')
     _locked_entry(version.entry)
-    return TradeInTariffVersion.objects.select_for_update().select_related('entry').get(pk=version.pk)
+    return TradeInTariffVersion.objects.select_for_update(of=('self',)).select_related('entry').get(pk=version.pk)
 
 
 def approve_version(*, actor, company, version, note='', request=None, today: date | None = None):

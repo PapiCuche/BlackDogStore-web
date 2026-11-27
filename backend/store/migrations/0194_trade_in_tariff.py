@@ -1,11 +1,16 @@
 """
 TRADE-IN VALUATION PRO · Phase 1 — the per-company reception tariff (docs/adr-trade-in-valuation.md §3, §9).
 
-Schema only, all additive: four NEW tables (`TradeInPolicy`, `TradeInTariffImport`, `TradeInTariffEntry`,
+Schema, all additive: four NEW tables (`TradeInPolicy`, `TradeInTariffImport`, `TradeInTariffEntry`,
 `TradeInTariffVersion`) with their checks (amounts >= 0, base <= maximum, window ordered, one pending change per
-device, one device key per company). No column is added to an existing table, nothing is written, no capability is
-granted: the four `sales.tradein.tariff.*` capabilities are explicit grants (nobody holds them until somebody grants
-them from Roles; the platform master resolves to everything).
+device, one device key per company). No column is added to an existing table and no capability is granted: the four
+`sales.tradein.tariff.*` capabilities are explicit grants (nobody holds them until somebody grants them from Roles;
+the platform master resolves to everything).
+
+FRESH-INSTALL REPAIR (data), the one 0157 and 0163 do: 0061 builds the seeded `Administrador` from the LIVE
+catalogue, so on a fresh install it already holds the four codes when this node runs. No role of a real database can
+hold them before this node (the codes did not exist), so `strip` only undoes that live read, and only on a database
+nobody works in yet (no `Membership`). The reverse of the repair is a no-op.
 
 NOTHING HERE BUYS, PAYS, CREDITS OR RECEIVES: no `Order`, `PaymentMethod`, `StockMovement`, `StockUnit`, payable or
 fiscal table is touched (D1-D12, docs/decisiones-propietario-trade-in.md).
@@ -20,6 +25,32 @@ import django.utils.timezone
 from decimal import Decimal
 from django.conf import settings
 from django.db import migrations, models
+
+#: The explicit grants this node introduces (FROZEN: `capabilities.TRADE_IN_TARIFF_CODES` today).
+CODES = frozenset({'sales.tradein.tariff.view', 'sales.tradein.tariff.manage', 'sales.tradein.tariff.approve',
+                   'sales.tradein.tariff.approve_own'})
+#: The preset 0061 rebuilds from the live catalogue (FROZEN, as in 0061).
+ADMIN_SLUG = 'administrador'
+
+
+def strip(apps, schema_editor):
+    """A fresh install's seeded Administrador loses the four codes 0061 gave it by reading the live catalogue."""
+    CompanyRole = apps.get_model('store', 'CompanyRole')
+    Membership = apps.get_model('store', 'Membership')
+
+    if Membership.objects.exists():
+        # Somebody works in this database: whoever holds a code was given it on purpose.
+        return
+    stripped = 0
+    for role in CompanyRole.objects.filter(slug=ADMIN_SLUG).iterator():
+        held = frozenset(role.capabilities or [])
+        if not held & CODES:
+            continue
+        role.capabilities = sorted(held - CODES)
+        role.save(update_fields=['capabilities', 'updated_at'])
+        stripped += 1
+    if stripped:
+        print(f'\n  TRADE-IN VALUATION PRO — {stripped} rol(es) de instalación nueva sin el tarifario de parte de pago')
 
 
 def refuse_reverse_with_quote_tickets(apps, schema_editor):
@@ -115,7 +146,7 @@ class Migration(migrations.Migration):
                 ('proposed_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='+', to=settings.AUTH_USER_MODEL)),
             ],
             options={
-                'ordering': ['entry', '-number'],
+                'ordering': ['entry_id', '-number'],
             },
         ),
         migrations.CreateModel(
@@ -184,6 +215,7 @@ class Migration(migrations.Migration):
             model_name='tradeintariffversion',
             constraint=models.CheckConstraint(condition=models.Q(('valid_until__isnull', True), ('valid_until__gte', models.F('valid_from')), _connector='OR'), name='trade_in_tariff_version_window_ordered'),
         ),
+        migrations.RunPython(strip, migrations.RunPython.noop),
         # Last: on reverse it runs FIRST, before any data is undone.
         migrations.RunPython(migrations.RunPython.noop, refuse_reverse_with_quote_tickets),
     ]
