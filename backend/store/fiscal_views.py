@@ -588,7 +588,7 @@ class AdminFiscalDocumentReconcileView(APIView):
             return error
 
         try:
-            provider = resolve_consult_provider(document.company)
+            provider = resolve_consult_provider(document.company, environment=document.environment)
         except FiscalConfigError as exc:
             return Response(
                 {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -975,12 +975,16 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
     if attempt_result != PROVIDER_EXCEPTION_RESULT and result.cdr_xml:
         why = foreign_cdr_reason(document, result)
         if why:
-            logger.error('El CDR de sendBill no corresponde al comprobante %s: %s',
-                         document.pk, why)
+            # Los bytes del CDR descartado no se guardan en el documento —no son su
+            # constancia— y el intento no tiene columna para ellos (pediría una
+            # migración): queda su huella, para cruzarla con la respuesta.
+            discarded = hashlib.sha256(result.cdr_xml).hexdigest()
+            logger.error('El CDR de sendBill no corresponde al comprobante %s: %s (sha256 %s)',
+                         document.pk, why, discarded)
             result = ProviderResult(
                 outcome=ProviderOutcome.UNKNOWN_RESPONSE,
-                safe_message=(f'CDR descartado: {why}. Pudo llegar a SUNAT: consulte '
-                              f'el CDR antes de reintentar.')[:500],
+                safe_message=(f'CDR descartado: {why} (sha256 {discarded}). Pudo llegar a '
+                              f'SUNAT: consulte el CDR antes de reintentar.')[:500],
                 request_sha256=result.request_sha256,
                 response_sha256=result.response_sha256,
             )
@@ -1063,8 +1067,12 @@ def foreign_cdr_reason(document: FiscalDocument, result) -> str:
             rep, document_id=document.document_id,
             issuer_tax_id=document.issuer_tax_id,
             document_type=document.document_type):
-        return (f'responde por {_shown(rep.reference_id)} del RUC '
-                f'{_shown(rep.receiver_ruc)}, no por {document.document_id}')
+        # Nunca se repite el RUC del CDR ajeno: puede ser el de otro contribuyente.
+        if rep.reference_id != document.document_id:
+            return f'responde por {_shown(rep.reference_id)}, no por {document.document_id}'
+        if rep.receiver_ruc != document.issuer_tax_id:
+            return f'responde por {document.document_id} de otro emisor'
+        return f'responde por {document.document_id} de otro tipo de comprobante'
     if rep.response_code != (result.response_code or ''):
         return 'su código de respuesta no es coherente'
     return ''
