@@ -54,7 +54,8 @@ De donde: **`Username` = RUC (11 dígitos) + usuario SOL secundario, concatenado
 sin separador**; `Password` = la Clave SOL de ese usuario.
 
 Confirmado además por el **Anexo N.º 6 de la R.S. 000048-2026** (vigente desde el
-1.1.2027 según la R.S. 000143-2026; antes se citaba el 1.8.2026), `https://www.sunat.gob.pe/legislacion/superin/2026/anexo-000048-2026.pdf`),
+1.1.2027 según la R.S. 000143-2026; antes se citaba el 1.8.2026;
+`https://www.sunat.gob.pe/legislacion/superin/2026/anexo-000048-2026.pdf`),
 numerales 6.1.2 y 6.1.3: «el emisor electrónico debe usar el protocolo de
 seguridad WS-Security, el modelo UsernameToken, y usar como credenciales su
 código de usuario y la Clave SOL».
