@@ -159,7 +159,7 @@
 			}
 		}
 
-		@limit_workbook path_regexp ^/api/admin/(imports/inspect|inventory/import/preview|inventory/units/import/preview|supplier-offers/import/preview)/?$
+		@limit_workbook path_regexp ^/api/admin/(imports/inspect|inventory/import/preview|inventory/units/import/preview|supplier-offers/import/preview|trade-in/tariff/import/preview)/?$
 		handle @limit_workbook {
 			import too_large workbook 11534336
 			request_body {

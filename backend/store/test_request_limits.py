@@ -189,6 +189,8 @@ class LimitTableTest(SimpleTestCase):
             'AdminModelFinishImageListView', 'AdminModelFinishImageOrderView', 'AdminModelFinishImageDetailView',
             'AdminImportInspectView', 'AdminProductImportPreviewView',
             'AdminStockImportPreviewView', 'AdminUnitImportPreviewView',
+            # TRADE-IN VALUATION PRO · Phase 1: the tariff workbook (tier `workbook`).
+            'AdminTradeInTariffImportPreviewView',
         }, 'a view changed its parsers: give its upload route a tier in request_limits')
 
 

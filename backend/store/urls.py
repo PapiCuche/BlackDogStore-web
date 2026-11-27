@@ -81,6 +81,7 @@ from .pos_device_views import (
     AdminPosDeviceReceiveView, AdminPosModelConfigurationsView, AdminPosModelSearchView,
 )
 from . import sales_quote_views as sq
+from . import trade_in_tariff_views as tit
 from .pos_views import (
     AdminPosSaleByKeyView,
     AdminPosSaleNotChargedView,
@@ -691,6 +692,29 @@ urlpatterns = [
          name='admin-sales-quote-convert'),
     path('admin/sales/quotes/<int:pk>/pdf/', sq.AdminSalesQuotePdfView.as_view(), name='admin-sales-quote-pdf'),
     path('admin/sales/quotes/<int:pk>/print/', sq.AdminSalesQuotePrintView.as_view(), name='admin-sales-quote-print'),
+    # TRADE-IN VALUATION PRO · Phase 1 — the per-company reception tariff (docs/adr-trade-in-valuation.md §7).
+    path('admin/trade-in/tariff/', tit.AdminTradeInTariffListView.as_view(), name='admin-trade-in-tariff'),
+    path('admin/trade-in/tariff/export/', tit.AdminTradeInTariffExportView.as_view(),
+         name='admin-trade-in-tariff-export'),
+    path('admin/trade-in/tariff/import/preview/', tit.AdminTradeInTariffImportPreviewView.as_view(),
+         name='admin-trade-in-tariff-import-preview'),
+    path('admin/trade-in/tariff/import/<int:pk>/apply/', tit.AdminTradeInTariffImportApplyView.as_view(),
+         name='admin-trade-in-tariff-import-apply'),
+    path('admin/trade-in/tariff/<int:pk>/', tit.AdminTradeInTariffDetailView.as_view(),
+         name='admin-trade-in-tariff-entry'),
+    path('admin/trade-in/tariff/<int:pk>/versions/', tit.AdminTradeInTariffProposeView.as_view(),
+         name='admin-trade-in-tariff-propose'),
+    path('admin/trade-in/tariff/<int:pk>/deactivate/', tit.AdminTradeInTariffDeactivateView.as_view(),
+         name='admin-trade-in-tariff-deactivate'),
+    path('admin/trade-in/tariff/<int:pk>/reactivate/', tit.AdminTradeInTariffReactivateView.as_view(),
+         name='admin-trade-in-tariff-reactivate'),
+    path('admin/trade-in/tariff/versions/<int:pk>/approve/', tit.AdminTradeInTariffApproveView.as_view(),
+         name='admin-trade-in-tariff-approve'),
+    path('admin/trade-in/tariff/versions/<int:pk>/reject/', tit.AdminTradeInTariffRejectView.as_view(),
+         name='admin-trade-in-tariff-reject'),
+    path('admin/trade-in/tariff/versions/<int:pk>/withdraw/', tit.AdminTradeInTariffWithdrawView.as_view(),
+         name='admin-trade-in-tariff-withdraw'),
+    path('admin/trade-in/policy/', tit.AdminTradeInPolicyView.as_view(), name='admin-trade-in-policy'),
 
     # --- C1.4: bulk imports ------------------------------------------------
     path('admin/imports/inspect/', AdminImportInspectView.as_view(), name='admin-import-inspect'),

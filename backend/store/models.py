@@ -5980,6 +5980,262 @@ class SalesQuoteTradeIn(models.Model):
 
 
 # =============================================================================
+# TRADE-IN VALUATION PRO · Phase 1 — the reception tariff (docs/adr-trade-in-valuation.md §3)
+# =============================================================================
+#
+# WHAT THE SHOP WOULD PAY FOR A USED DEVICE, PER COMPANY, NEVER IN CODE.
+#
+# An entry names a device in the company's own words (brand, model, capacity, SIM, region) and lives forever; its
+# money lives in VERSIONS, append-only. A version is proposed (`pending`), decided by somebody with the approve
+# capability (or approved by the company's own policy when the change is not relevant: it does not raise what the
+# shop pays) and from then on never rewritten: a valuation that used it keeps pointing at exactly those numbers.
+#
+# NOTHING HERE BUYS, PAYS, CREDITS OR RECEIVES ANYTHING. No stock, no payable, no credit, no fiscal document: those
+# stay gated by D1-D12 (docs/decisiones-propietario-trade-in.md).
+
+
+class TradeInPolicy(models.Model):
+    """
+    The company's own rules for its trade-in tariff. One row per company, created on the first change; a company
+    without a row has the defaults below (`trade_in_tariff.policy_of`).
+    """
+
+    APPROVAL_RELEVANT = 'relevant'
+    APPROVAL_ALL = 'all'
+    APPROVAL_CHOICES = [
+        (APPROVAL_RELEVANT, 'Sólo los cambios relevantes'),
+        (APPROVAL_ALL, 'Todos los cambios'),
+    ]
+
+    company = models.OneToOneField(Company, on_delete=models.CASCADE, related_name='trade_in_policy')
+    #: `relevant`: a new entry, a rise of what the shop pays above the tolerance, or a longer validity waits for an
+    #: approver; anything else is approved by the policy itself. `all`: every change waits.
+    tariff_approval_mode = models.CharField(max_length=10, choices=APPROVAL_CHOICES, default=APPROVAL_RELEVANT)
+    #: A rise of the base or maximum reception value up to this percentage is NOT relevant. 0 = any rise is.
+    tariff_increase_tolerance_percent = models.DecimalField(
+        max_digits=5, decimal_places=2, default=Decimal('0.00'))
+    updated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(tariff_increase_tolerance_percent__gte=Decimal('0.00'))
+                & models.Q(tariff_increase_tolerance_percent__lte=Decimal('100.00')),
+                name='trade_in_policy_tolerance_percent'),
+        ]
+
+    def __str__(self):
+        return f'Política de parte de pago · {self.company_id}'
+
+
+class TradeInTariffImport(models.Model):
+    """
+    One spreadsheet of the tariff, from preview to apply. The file is never stored: its SHA-256 and its normalised
+    rows are (what the operator reviewed is exactly what is applied, or nothing is).
+    """
+
+    STATUS_PREVIEWED = 'previewed'
+    STATUS_APPLIED = 'applied'
+    STATUS_CHOICES = [(STATUS_PREVIEWED, 'Previsualizado'), (STATUS_APPLIED, 'Aplicado')]
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='trade_in_tariff_imports')
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PREVIEWED)
+    original_filename = models.CharField(max_length=255, blank=True, default='')
+    file_sha256 = models.CharField(max_length=64)
+    #: The normalised rows with what each one would do (`trade_in_tariff_io.preview`).
+    rows = models.JSONField(default=list, blank=True)
+    summary = models.JSONField(default=dict, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    applied_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    applied_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        indexes = [models.Index(fields=['company', 'created_at'])]
+
+    def __str__(self):
+        return f'Carga de tarifario {self.pk} · {self.status}'
+
+
+class TradeInTariffEntry(models.Model):
+    """
+    One device of the company's reception tariff, in the company's own words. Its identity (`device_key`, the five
+    words folded) never changes: a different device is another entry. Deactivated, never deleted.
+    """
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='trade_in_tariff_entries')
+    #: The company's catalogue model this entry is (the shared device selector finds it through this link). Optional:
+    #: a shop receives models it no longer sells.
+    product_model = models.ForeignKey(
+        'ProductModel', on_delete=models.SET_NULL, null=True, blank=True, related_name='trade_in_tariff_entries')
+    brand = models.CharField(max_length=80)
+    model_name = models.CharField(max_length=160)
+    capacity = models.CharField(max_length=40, blank=True, default='')
+    sim = models.CharField(max_length=40, blank=True, default='')
+    region = models.CharField(max_length=40, blank=True, default='')
+    #: Written only by `trade_in_tariff.device_key`: the five words folded and joined. Unique per company.
+    device_key = models.CharField(max_length=400)
+    is_active = models.BooleanField(default=True)
+    deactivated_at = models.DateTimeField(null=True, blank=True)
+    deactivated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    deactivation_reason = models.CharField(max_length=300, blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['brand', 'model_name', 'capacity', 'sim', 'region', 'pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'device_key'], name='trade_in_tariff_entry_device_unique'),
+            models.CheckConstraint(condition=~models.Q(brand='') & ~models.Q(model_name=''),
+                                   name='trade_in_tariff_entry_names_present'),
+        ]
+        indexes = [
+            models.Index(fields=['company', 'brand', 'model_name']),
+            models.Index(fields=['company', 'is_active']),
+        ]
+
+    def __str__(self):
+        return ' '.join(part for part in (self.brand, self.model_name, self.capacity, self.sim, self.region) if part)
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.product_model_id and self.company_id and self.product_model.company_id != self.company_id:
+            raise ValidationError({'product_model': ['El modelo no pertenece a esta empresa.']})
+        return super().save(*args, **kwargs)
+
+
+class TradeInTariffVersion(models.Model):
+    """
+    The money of one tariff entry from a date on. Append-only: once decided (approved, rejected, withdrawn) its terms
+    never change; a new price is a new version. In force on a day: the APPROVED version with the highest number whose
+    window contains that day (company's local date), of an ACTIVE entry (`trade_in_tariff.effective_version`).
+    """
+
+    STATUS_PENDING = 'pending'
+    STATUS_APPROVED = 'approved'
+    STATUS_REJECTED = 'rejected'
+    STATUS_WITHDRAWN = 'withdrawn'
+    STATUS_CHOICES = [
+        (STATUS_PENDING, 'Pendiente de aprobación'),
+        (STATUS_APPROVED, 'Aprobada'),
+        (STATUS_REJECTED, 'Rechazada'),
+        (STATUS_WITHDRAWN, 'Retirada'),
+    ]
+
+    #: How an approved version was approved.
+    APPROVAL_APPROVER = 'approver'      # by somebody else holding the approve capability
+    APPROVAL_SELF = 'self'              # by its own proposer, holding `approve_own`, with a reason
+    APPROVAL_POLICY = 'policy'          # by the company's policy: the change was not relevant
+    APPROVAL_KIND_CHOICES = [
+        (APPROVAL_APPROVER, 'Aprobación de otra persona'),
+        (APPROVAL_SELF, 'Aprobación propia'),
+        (APPROVAL_POLICY, 'Aprobada por política'),
+    ]
+
+    SOURCE_MANUAL = 'manual'
+    SOURCE_IMPORT = 'import'
+    SOURCE_CHOICES = [(SOURCE_MANUAL, 'Panel'), (SOURCE_IMPORT, 'Carga de Excel')]
+
+    #: The columns that ARE the terms. Once a version is decided none of them changes again.
+    TERMS_FIELDS = frozenset({
+        'company', 'company_id', 'entry', 'entry_id', 'number', 'currency', 'base_reception_value',
+        'refurbishment_cost', 'resale_value', 'target_margin', 'max_reception_value', 'valid_from', 'valid_until',
+        'reason', 'source', 'import_batch', 'import_batch_id', 'previous', 'previous_id', 'approval_reasons',
+        'proposed_by', 'proposed_by_id', 'proposed_at',
+    })
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    entry = models.ForeignKey(TradeInTariffEntry, on_delete=models.PROTECT, related_name='versions')
+    number = models.PositiveIntegerField()
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_PENDING)
+    currency = models.CharField(max_length=3, default='PEN')
+    #: What the shop pays for the device in good order, before the valuation rules.
+    base_reception_value = models.DecimalField(max_digits=12, decimal_places=2)
+    #: Estimates, INTERNAL (never printed, never shown to a customer). Empty = not estimated.
+    refurbishment_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    resale_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    target_margin = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    #: The ceiling: no valuation of this device goes above it, whatever the rules say.
+    max_reception_value = models.DecimalField(max_digits=12, decimal_places=2)
+    #: First and last day (inclusive) in force, in the company's time zone. No end = until replaced.
+    valid_from = models.DateField()
+    valid_until = models.DateField(null=True, blank=True)
+    reason = models.CharField(max_length=300, blank=True, default='')
+    source = models.CharField(max_length=8, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
+    import_batch = models.ForeignKey(
+        TradeInTariffImport, on_delete=models.PROTECT, null=True, blank=True, related_name='versions')
+    #: The version this one was compared with when it was proposed (the latest approved), if any.
+    previous = models.ForeignKey('self', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    #: Why it needed an approver (`new_entry`, `base_increase`, `max_increase`, `validity_extended`, `policy_all`).
+    approval_reasons = models.JSONField(default=list, blank=True)
+    proposed_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    proposed_at = models.DateTimeField(default=timezone.now)
+    approval_kind = models.CharField(max_length=10, choices=APPROVAL_KIND_CHOICES, blank=True, default='')
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decision_note = models.CharField(max_length=300, blank=True, default='')
+
+    class Meta:
+        ordering = ['entry', '-number']
+        constraints = [
+            models.UniqueConstraint(fields=['entry', 'number'], name='trade_in_tariff_version_number_unique'),
+            # ONE change waiting per device: a second one would be decided against stale numbers.
+            models.UniqueConstraint(fields=['entry'], condition=models.Q(status='pending'),
+                                    name='trade_in_tariff_version_one_pending'),
+            models.CheckConstraint(condition=models.Q(number__gte=1), name='trade_in_tariff_version_number_positive'),
+            models.CheckConstraint(
+                condition=models.Q(base_reception_value__gte=Decimal('0.00'))
+                & models.Q(max_reception_value__gte=Decimal('0.00')),
+                name='trade_in_tariff_version_values_non_negative'),
+            models.CheckConstraint(
+                condition=(models.Q(refurbishment_cost__isnull=True) | models.Q(refurbishment_cost__gte=Decimal('0.00')))
+                & (models.Q(resale_value__isnull=True) | models.Q(resale_value__gte=Decimal('0.00')))
+                & (models.Q(target_margin__isnull=True) | models.Q(target_margin__gte=Decimal('0.00'))),
+                name='trade_in_tariff_version_estimates_non_negative'),
+            models.CheckConstraint(condition=models.Q(base_reception_value__lte=models.F('max_reception_value')),
+                                   name='trade_in_tariff_version_base_within_max'),
+            models.CheckConstraint(
+                condition=models.Q(valid_until__isnull=True) | models.Q(valid_until__gte=models.F('valid_from')),
+                name='trade_in_tariff_version_window_ordered'),
+        ]
+        indexes = [models.Index(fields=['company', 'status'])]
+
+    def __str__(self):
+        return f'{self.entry_id} · v{self.number} · {self.status}'
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.entry_id and self.company_id and self.entry.company_id != self.company_id:
+            raise ValidationError('La versión y su entrada tienen que ser de la misma empresa.')
+        if self.pk is not None:
+            stored = TradeInTariffVersion.objects.filter(pk=self.pk).values_list('status', flat=True).first()
+            # Once decided it is evidence: the services stamp its decision through `update_fields`, never its terms.
+            if stored is not None and stored != self.STATUS_PENDING:
+                raise ValidationError('Una versión decidida del tarifario no se modifica: propone una nueva.')
+            allowed = set(kwargs.get('update_fields') or [])
+            if stored == self.STATUS_PENDING and (not allowed or (allowed & self.TERMS_FIELDS)):
+                raise ValidationError('Los importes de una versión propuesta no se modifican: retírala y propone otra.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError('Una versión del tarifario no se borra: queda como historial.')
+
+
+# =============================================================================
 # Bulk import — Commercial Phase C1.4
 # =============================================================================
 #
