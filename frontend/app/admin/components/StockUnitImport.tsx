@@ -554,15 +554,17 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
               {/* INV-OPENING-01 — what these devices ARE in the Kardex. */}
               <legend className="block text-xs font-semibold text-muted">Tipo de ingreso</legend>
               <div className="mt-1 flex flex-wrap gap-4 text-sm text-foreground">
-                <label className="flex items-center gap-2">
+                <label className="flex min-h-11 items-center gap-2">
                   <input type="radio" name="unit-import-entry-kind" value="purchase" disabled={working}
+                    className="h-4 w-4 accent-[var(--primary)]"
                     checked={entryKind === "purchase"} onChange={() => { setEntryKind("purchase"); setJob(null); }} />
                   Compra a proveedor
                 </label>
                 {/* The help sits OUTSIDE the <label> and is linked by aria-describedby, so the radio's name stays short. */}
                 <div className="max-w-md">
-                  <label className="flex items-center gap-2">
+                  <label className="flex min-h-11 items-center gap-2">
                     <input type="radio" name="unit-import-entry-kind" value="opening" disabled={working}
+                      className="h-4 w-4 accent-[var(--primary)]"
                       aria-describedby="unit-import-entry-opening-help"
                       checked={entryKind === "opening"} onChange={() => { setEntryKind("opening"); setJob(null); }} />
                     Inventario inicial
@@ -574,8 +576,9 @@ export function StockUnitImport({ branches, canSeeCost = false }: {
                 </div>
                 {/* STOCK-EXISTING-01 — what the shop already had, on any shelf (it closes the opening, like a purchase). */}
                 <div className="max-w-md">
-                  <label className="flex items-center gap-2">
+                  <label className="flex min-h-11 items-center gap-2">
                     <input type="radio" name="unit-import-entry-kind" value="existing" disabled={working}
+                      className="h-4 w-4 accent-[var(--primary)]"
                       aria-describedby="unit-import-entry-existing-help"
                       checked={entryKind === "existing"} onChange={() => { setEntryKind("existing"); setJob(null); }} />
                     Ingreso de inventario existente

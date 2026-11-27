@@ -423,13 +423,14 @@ export function StockUnitForm({
                 <input
                   type="radio" name="unit-entry-kind" value={kind.value} disabled={working}
                   checked={entryKind === kind.value} onChange={() => setEntryKind(kind.value)}
+                  aria-describedby="unit-entry-kind-help"
                   className="h-4 w-4 accent-[var(--primary)]"
                 />
                 {kind.label}
               </label>
             ))}
           </div>
-          <p className="mt-1 text-xs text-muted">
+          <p id="unit-entry-kind-help" className="mt-1 text-xs text-muted">
             {entryKind === "opening"
               ? "Equipos que ya tenías. Se pueden registrar en varias tandas mientras el producto no tenga otros movimientos (ventas, compras, traslados) en esta sucursal."
               : entryKind === "existing"
