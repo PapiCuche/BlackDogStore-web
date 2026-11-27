@@ -154,7 +154,8 @@ class SunatProvider(Provider):
         elif running and _issued_in_production():
             raise ConfigError({'environment': (
                 'Ya hay comprobantes de PRODUCCIÓN: no se vuelve a BETA, porque sus envíos, notas y bajas '
-                'pendientes quedarían sin ambiente. Para dejar de emitir, desactiva la integración.')})
+                'pendientes quedarían sin ambiente. Para dejar de emitir, ponla en Pausa (lo normal: lo emitido se '
+                'sigue enviando) o desactívala (emergencia).')})
         super().activation_guard(public, secrets, payload)
 
     def guard_change(self, company, *, change, public=None, prepared=None, acknowledged=False):

@@ -319,8 +319,11 @@ producción»): es lo esperado. Se usa siempre `--target production`.
   (boletas: plazo de 7 días).
 
 **Vigilancia hasta C3b.**
-- Un cron horario con `fiscal_preflight --company black-dog-store --target production` que avise al responsable
-  cuando salga con código 1.
+- Un cron horario con el mismo patrón que `healthcheck` en `deploy/crontab.example`: guardar la salida de
+  `fiscal_preflight --company black-dog-store --target production` en `backups/fiscal-preflight.last`,
+  añadirla a `backups/fiscal-preflight.log` y, si sale con código 1, imprimir sus líneas `NO-GO` para que el
+  cron avise por correo (o queden en el log).
+- La pausa bloquea también las **notas** de crédito y débito nuevas, no sólo facturas y boletas.
 - Una revisión diaria de la lista de pendientes: facturas sin enviar, inciertos y boletas sin RC.
 
 **Detener.**
@@ -336,7 +339,15 @@ producción»): es lo esperado. Se usa siempre `--target production`.
 
 **Vuelta atrás de código (R15/R16).** Antes de desplegar un SHA anterior a C3, el kit lee
 `fiscal_production_state`. Con comprobantes de producción o con la consola en producción, un código sin C3 no
-sabe enviarlos, consultarlos ni conciliarlos: no se vuelve atrás sin decisión expresa.
+sabe enviarlos, consultarlos ni conciliarlos: no se vuelve atrás sin decisión expresa. Y si se vuelve:
+- **Antes, Desactivar (no Pausa) la integración SUNAT.** El código anterior a C3 ignora el modo y la pausa:
+  con la consola encendida enviaría los comprobantes de producción al endpoint de **BETA**.
+- Con `earliest_deadline` en el marcador, se vuelve a desplegar C3 (roll forward) **antes** de ese plazo menos un
+  margen de un día; pasado el plazo, el comprobante queda fuera de plazo ante SUNAT.
+- Mientras corra el código anterior, **nadie toca Integraciones › SUNAT**: guardar o activar allí con un código
+  que no conoce el modo producción lo perdería.
+- **Nunca** se edita `deploy/.env.production` como parte de la vuelta atrás: los interruptores se quedan como
+  están y vuelven a valer al volver a C3.
 
 **Lo que C3 no cubre (C3b y otros PR):**
 - envío programado de las facturas pendientes y del Resumen Diario, con sus alertas (fila 15);

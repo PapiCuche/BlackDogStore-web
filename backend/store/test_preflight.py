@@ -322,7 +322,9 @@ class PreflightTest(SimpleTestCase):
         self.attention({**allowed, 'FISCAL_ENABLED': '1'}, 'la consola manda')
         self.attention({**allowed, 'FISCAL_CONSULT_ENDPOINT': 'https://otro.example/billConsultService'},
                        'FISCAL_CONSULT_ENDPOINT')
-        self.attention({**BASE, **IZIPAY, 'FISCAL_ENVIRONMENT': 'production'}, 'FISCAL_ENVIRONMENT=production')
+        result = self.attention({**BASE, **IZIPAY, 'FISCAL_ENVIRONMENT': 'valor-secreto-9z'},
+                                'FISCAL_ENVIRONMENT tiene un valor distinto')
+        self.assertNotIn('valor-secreto-9z', result.stdout)
         self.assertEqual(self.run_preflight({**BASE, **IZIPAY, 'FISCAL_ENVIRONMENT': 'beta'}).returncode, 0)
 
     def test_keys_of_both_products_at_once_are_refused(self):

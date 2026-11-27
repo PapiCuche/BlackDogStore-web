@@ -443,7 +443,7 @@ class WithEverythingGoProductionIsUsedTest(_Base):
         self.assertEqual(self.run_test()['status'], 'ok')
         response = self.activate('EMITIR')
         self.assertEqual(response.status_code, 400, response.content)
-        self.assertIn('desactiva la integración', response.json()['errors']['environment'])
+        self.assertIn('Pausa', response.json()['errors']['environment'])
         self.assertEqual(fiscal_config.resolve_environment(self.company), FiscalEnvironment.PRODUCTION)
 
     def test_renewing_the_certificate_in_production_does_not_wait_on_the_queue(self):

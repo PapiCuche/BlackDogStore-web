@@ -573,7 +573,8 @@ def check_optional(report, values):
         report.ok('SUNAT PRODUCCIÓN: no permitida en esta instalación (FISCAL_PRODUCTION_ENABLED apagado)')
     environment = values.get('FISCAL_ENVIRONMENT', '').strip()
     if environment and environment != 'beta':
-        report.bad(f'FISCAL_ENVIRONMENT={environment}: sólo admite «beta» y la aplicación no arrancará la emisión con otro '
+        # Never the value: a mistyped secret pasted in the wrong line would end up in a log.
+        report.bad('FISCAL_ENVIRONMENT tiene un valor distinto de «beta»: sólo admite «beta» y la aplicación no emitirá con otro '
                    'valor. Producción se elige en Integraciones › SUNAT; quita la variable')
     if flag(values, 'FISCAL_ENABLED'):
         report.bad('FISCAL_ENABLED está encendido: la emisión se enciende en Integraciones › SUNAT (la consola manda), '
