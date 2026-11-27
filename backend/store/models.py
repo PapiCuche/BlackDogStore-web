@@ -6024,6 +6024,10 @@ class TradeInPolicy(models.Model):
     #: Phase 4 (0197). D3 (open): the recommendation (a) — a trade-in assessment names its customer — as the default;
     #: a company may switch it off. `db_default` for the previous release.
     require_identified_customer = models.BooleanField(default=True, db_default=True)
+    #: Phase 5a (0198). How long an issued trade-in quote holds, in hours (96 by default), and the company's own
+    #: conditions printed with it. `db_default` for the previous release.
+    quote_validity_hours = models.PositiveIntegerField(default=96, db_default=96)
+    quote_conditions = models.TextField(max_length=2000, blank=True, default='', db_default='')
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     updated_at = models.DateTimeField(auto_now=True)
@@ -6038,6 +6042,9 @@ class TradeInPolicy(models.Model):
                 condition=models.Q(identity_check_validity_hours__gte=1)
                 & models.Q(identity_check_validity_hours__lte=720),
                 name='trade_in_policy_identity_validity_hours'),
+            models.CheckConstraint(
+                condition=models.Q(quote_validity_hours__gte=1) & models.Q(quote_validity_hours__lte=720),
+                name='trade_in_policy_quote_validity_hours'),
         ]
 
     def __str__(self):
@@ -6834,6 +6841,9 @@ class TradeInAssessment(models.Model):
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     approved_at = models.DateTimeField(null=True, blank=True)
     approval_note = models.CharField(max_length=300, blank=True, default='')
+    #: Phase 5a (0198): how it was approved — `approver` (somebody else) or `self` (`approve_own`, with a reason).
+    #: A quote generated from it carries it. `db_default` for the previous release.
+    approval_kind = models.CharField(max_length=10, blank=True, default='', db_default='')
     #: Everyone who shaped this valuation (opened it, changed its details, answered, calculated): none of them
     #: approves it. User ids, written only by the services.
     contributor_ids = models.JSONField(default=list, blank=True)
@@ -6884,7 +6894,10 @@ class TradeInAssessment(models.Model):
                 raise ValidationError({name: ['No pertenece a esta empresa.']})
         if self.pk is not None:
             stored = TradeInAssessment.objects.filter(pk=self.pk).values_list('status', flat=True).first()
-            if stored in (self.STATUS_QUOTED, self.STATUS_CANCELLED):
+            fields = set(kwargs.get('update_fields') or [])
+            quoted_cancel = (stored == self.STATUS_QUOTED and self.status == self.STATUS_CANCELLED
+                             and fields and fields <= {'status', 'cancelled_at', 'cancel_reason', 'updated_at'})
+            if stored in (self.STATUS_QUOTED, self.STATUS_CANCELLED) and not quoted_cancel:
                 raise ValidationError('Una evaluación cotizada o anulada no se modifica.')
             if stored == self.STATUS_APPROVED and self.status not in (self.STATUS_QUOTED, self.STATUS_CANCELLED):
                 raise ValidationError('Una evaluación aprobada no se modifica: anúlala y abre otra.')
@@ -6894,6 +6907,192 @@ class TradeInAssessment(models.Model):
         from django.core.exceptions import ValidationError
 
         raise ValidationError('Una evaluación no se borra: se anula y queda como historial (y su número no se reusa).')
+
+
+# =============================================================================
+# TRADE-IN VALUATION PRO · Phase 5a — the trade-in quote (docs/adr-trade-in-valuation.md §3.5, §5.3)
+# =============================================================================
+#
+# What the shop OFFERS for a used device, until an exact instant. Revisions, never edits: a revision recomputes with
+# the tariff and rules in force and supersedes the previous one, which keeps its own snapshot. It never buys, receives,
+# pays or credits anything (D1-D12).
+
+
+class TradeInQuote(models.Model):
+    STATUS_PENDING_APPROVAL = 'pending_approval'
+    STATUS_APPROVED = 'approved'
+    STATUS_ISSUED = 'issued'
+    STATUS_ACCEPTED = 'accepted'
+    STATUS_DECLINED = 'declined'
+    STATUS_EXPIRED = 'expired'
+    STATUS_REJECTED = 'rejected'
+    STATUS_CANCELLED = 'cancelled'
+    STATUS_SUPERSEDED = 'superseded'
+    STATUS_CHOICES = [
+        (STATUS_PENDING_APPROVAL, 'Pendiente de aprobación'), (STATUS_APPROVED, 'Aprobada'),
+        (STATUS_ISSUED, 'Emitida'), (STATUS_ACCEPTED, 'Aceptada'), (STATUS_DECLINED, 'Rechazada por el cliente'),
+        (STATUS_EXPIRED, 'Vencida'), (STATUS_REJECTED, 'No aprobada'), (STATUS_CANCELLED, 'Anulada'),
+        (STATUS_SUPERSEDED, 'Reemplazada'),
+    ]
+    #: A new revision may be written from these (the old one becomes `superseded`).
+    REVISABLE = frozenset({STATUS_APPROVED, STATUS_ISSUED, STATUS_ACCEPTED, STATUS_DECLINED, STATUS_EXPIRED,
+                           STATUS_REJECTED})
+    #: The only moves (the services hold the rules; the model refuses any other).
+    TRANSITIONS = {
+        STATUS_PENDING_APPROVAL: frozenset({STATUS_APPROVED, STATUS_REJECTED, STATUS_CANCELLED, STATUS_SUPERSEDED}),
+        STATUS_APPROVED: frozenset({STATUS_ISSUED, STATUS_CANCELLED, STATUS_SUPERSEDED}),
+        STATUS_ISSUED: frozenset({STATUS_ACCEPTED, STATUS_DECLINED, STATUS_EXPIRED, STATUS_SUPERSEDED}),
+        STATUS_ACCEPTED: frozenset({STATUS_SUPERSEDED}),
+        STATUS_DECLINED: frozenset({STATUS_SUPERSEDED}),
+        STATUS_EXPIRED: frozenset({STATUS_SUPERSEDED}),
+        STATUS_REJECTED: frozenset({STATUS_SUPERSEDED}),
+    }
+    #: The offer itself: never rewritten once written.
+    SNAPSHOT_FIELDS = frozenset({
+        'company', 'company_id', 'branch', 'branch_id', 'assessment', 'assessment_id', 'number', 'revision',
+        'origin', 'source_quote', 'source_quote_id', 'tariff_version', 'tariff_version_id', 'rule_set_version',
+        'rule_set_version_id', 'calculation', 'eligibility', 'printable_eligibility', 'needs_approval',
+        'computed_value', 'offered_value', 'adjustment_reason',
+        'max_reception_value', 'target_price', 'difference', 'refurbishment_cost', 'resale_value', 'target_margin',
+        'currency', 'conditions', 'public_uid', 'revision_reason', 'created_by', 'created_by_id',
+    })
+
+    APPROVAL_FIELDS = frozenset({'approval_kind', 'approved_by', 'approved_by_id', 'approved_at', 'approval_note'})
+    ISSUE_FIELDS = frozenset({'issued_by', 'issued_by_id', 'issued_at', 'valid_until'})
+
+    APPROVAL_APPROVER = 'approver'
+    APPROVAL_SELF = 'self'
+    APPROVAL_ASSESSMENT = 'assessment'
+    APPROVAL_NOT_NEEDED = 'not_needed'
+    APPROVAL_KIND_CHOICES = [
+        (APPROVAL_APPROVER, 'Aprobación de otra persona'), (APPROVAL_SELF, 'Aprobación propia'),
+        (APPROVAL_ASSESSMENT, 'Aprobada en la evaluación'), (APPROVAL_NOT_NEEDED, 'No necesitaba aprobación'),
+    ]
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='trade_in_quotes')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='trade_in_quotes')
+    assessment = models.ForeignKey('TradeInAssessment', on_delete=models.PROTECT, related_name='quotes')
+    #: Per company, shared by every revision (`CRE-000001`, `CRE-000001-R2`).
+    number = models.PositiveIntegerField()
+    revision = models.PositiveIntegerField(default=1)
+    origin = models.CharField(max_length=10, default='new')
+    source_quote = models.ForeignKey('self', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    revision_reason = models.CharField(max_length=300, blank=True, default='')
+    status = models.CharField(max_length=18, choices=STATUS_CHOICES)
+    # --- the snapshot ---------------------------------------------------------------------------------------
+    tariff_version = models.ForeignKey('TradeInTariffVersion', on_delete=models.PROTECT, related_name='+')
+    rule_set_version = models.ForeignKey('TradeInRuleSetVersion', on_delete=models.PROTECT, related_name='+')
+    calculation = models.JSONField(default=dict, blank=True)
+    eligibility = models.CharField(max_length=24)
+    #: What a document prints (5b): the verdict WITHOUT the approval flag (APTO / APTO CON DESCUENTOS), frozen now so
+    #: an issued paper never says «requiere aprobación».
+    printable_eligibility = models.CharField(max_length=24)
+    needs_approval = models.BooleanField(default=False)
+    computed_value = models.DecimalField(max_digits=12, decimal_places=2)
+    offered_value = models.DecimalField(max_digits=12, decimal_places=2)
+    adjustment_reason = models.CharField(max_length=300, blank=True, default='')
+    max_reception_value = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3, default='PEN')
+    target_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    difference = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    #: INTERNAL (adr §4): only with `sales.tradein.tariff.view` or `costs.view`; never printed or public.
+    refurbishment_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    resale_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    target_margin = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    #: The company's conditions as they were when this revision was written.
+    conditions = models.TextField(max_length=2000, blank=True, default='')
+    #: One per revision; the public token is this plus a MAC (phase 5c), never stored.
+    public_uid = models.CharField(max_length=32, unique=True)
+    # --- lifecycle -------------------------------------------------------------------------------------------
+    approval_kind = models.CharField(max_length=12, choices=APPROVAL_KIND_CHOICES, blank=True, default='')
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approval_note = models.CharField(max_length=300, blank=True, default='')
+    issued_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    issued_at = models.DateTimeField(null=True, blank=True)
+    #: An absolute instant: issued_at + the company's validity hours (96 by default). The zone only displays it.
+    valid_until = models.DateTimeField(null=True, blank=True)
+    decided_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decision_note = models.CharField(max_length=300, blank=True, default='')
+    expired_at = models.DateTimeField(null=True, blank=True)
+    superseded_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'number', 'revision'], name='trade_in_quote_revision_unique'),
+            models.UniqueConstraint(fields=['company', 'number'], condition=~models.Q(status='superseded'),
+                                    name='trade_in_quote_one_current_revision'),
+            models.CheckConstraint(condition=models.Q(revision__gte=1), name='trade_in_quote_revision_positive'),
+            models.CheckConstraint(
+                condition=models.Q(offered_value__gte=Decimal('0.00')) & models.Q(computed_value__gte=Decimal('0.00'))
+                & models.Q(offered_value__lte=models.F('max_reception_value')),
+                name='trade_in_quote_offer_within_maximum'),
+            models.CheckConstraint(
+                condition=~models.Q(status__in=['issued', 'accepted', 'declined', 'expired'])
+                | (models.Q(issued_at__isnull=False) & models.Q(valid_until__isnull=False)),
+                name='trade_in_quote_issued_has_validity'),
+            models.CheckConstraint(
+                condition=models.Q(valid_until__isnull=True) | models.Q(valid_until__gt=models.F('issued_at')),
+                name='trade_in_quote_validity_after_issue'),
+        ]
+        indexes = [models.Index(fields=['company', 'status']), models.Index(fields=['status', 'valid_until'])]
+
+    def __str__(self):
+        return self.label
+
+    @property
+    def label(self) -> str:
+        base = f'CRE-{self.number:06d}'
+        return base if self.revision <= 1 else f'{base}-R{self.revision}'
+
+    @property
+    def is_expired(self) -> bool:
+        """DERIVED: issued and past its instant. Never written on a read; the cron stamps it."""
+        if self.status == self.STATUS_EXPIRED:
+            return True
+        return (self.status == self.STATUS_ISSUED and self.valid_until is not None
+                and timezone.now() >= self.valid_until)
+
+    @property
+    def effective_status(self) -> str:
+        return self.STATUS_EXPIRED if self.is_expired else self.status
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if self.assessment_id and self.assessment.company_id != self.company_id:
+            raise ValidationError('La cotización y su evaluación tienen que ser de la misma empresa.')
+        if self.pk is not None:
+            stored = TradeInQuote.objects.filter(pk=self.pk).values_list('status', flat=True).first()
+            if stored is not None:
+                allowed = set(kwargs.get('update_fields') or [])
+                if not allowed or allowed & self.SNAPSHOT_FIELDS:
+                    raise ValidationError('Una cotización de recepción no se reescribe: crea una revisión.')
+                if self.status != stored and self.status not in self.TRANSITIONS.get(stored, frozenset()):
+                    raise ValidationError('Esa transición de la cotización no existe.')
+                # Written once, in the move that sets them: an approval when it is approved, the issue instant and
+                # the expiry when it is issued. Never after.
+                if allowed & self.APPROVAL_FIELDS and not (stored == self.STATUS_PENDING_APPROVAL
+                                                           and self.status == self.STATUS_APPROVED):
+                    raise ValidationError('La aprobación de una cotización no se reescribe.')
+                if allowed & self.ISSUE_FIELDS and not (stored == self.STATUS_APPROVED
+                                                        and self.status == self.STATUS_ISSUED):
+                    raise ValidationError('La emisión y la vigencia de una cotización no se reescriben.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        raise ValidationError('Una cotización de recepción no se borra.')
 
 
 class TradeInAssessmentAnswer(models.Model):
@@ -11794,6 +11993,8 @@ class PrintJob(models.Model):
         LABEL_BATCH = 'label_batch', 'Lote de etiquetas'
         # SALES-QUOTE-01: a commercial quote on the roll. It has no order: a quote never charged anything.
         SALES_QUOTE_TICKET = 'sales_quote_ticket', 'Cotización (80 mm)'
+        # TRADE-IN VALUATION PRO · 5b: a trade-in quote's roll (no order, no sale).
+        TRADE_IN_QUOTE_TICKET = 'trade_in_quote_ticket', 'Cotización de recepción (80 mm)'
 
     class Status(models.TextChoices):
         PENDING = 'pending', 'En cola'
@@ -11827,6 +12028,10 @@ class PrintJob(models.Model):
     # SALES-QUOTE-01: the quote a `sales_quote_ticket` prints (and nothing else carries one).
     sales_quote = models.ForeignKey(
         'SalesQuote', on_delete=models.PROTECT, null=True, blank=True, db_default=None,
+        related_name='print_jobs')
+    # TRADE-IN VALUATION PRO · 5b: the trade-in quote revision a `trade_in_quote_ticket` prints (nothing else has one).
+    trade_in_quote = models.ForeignKey(
+        'TradeInQuote', on_delete=models.PROTECT, null=True, blank=True, db_default=None,
         related_name='print_jobs')
     idempotency_key = models.CharField(max_length=120)
     #: Identificador que no se repite entre bases de datos. El agente lo apunta
@@ -11867,12 +12072,18 @@ class PrintJob(models.Model):
             # SALES-QUOTE-01: una cotización, de su cotización (sin pedido: no cobró nada).
             models.CheckConstraint(
                 condition=(models.Q(kind='label_batch') & models.Q(label_batch__isnull=False)
-                           & models.Q(order__isnull=True) & models.Q(sales_quote__isnull=True))
+                           & models.Q(order__isnull=True) & models.Q(sales_quote__isnull=True)
+                           & models.Q(trade_in_quote__isnull=True))
                 | (models.Q(kind='sales_quote_ticket') & models.Q(sales_quote__isnull=False)
-                   & models.Q(order__isnull=True) & models.Q(label_batch__isnull=True))
-                | (~models.Q(kind__in=['label_batch', 'sales_quote_ticket']) & models.Q(order__isnull=False)
-                   & models.Q(label_batch__isnull=True) & models.Q(sales_quote__isnull=True)),
-                name='print_job_target_matches_kind_v2'),
+                   & models.Q(order__isnull=True) & models.Q(label_batch__isnull=True)
+                   & models.Q(trade_in_quote__isnull=True))
+                | (models.Q(kind='trade_in_quote_ticket') & models.Q(trade_in_quote__isnull=False)
+                   & models.Q(order__isnull=True) & models.Q(label_batch__isnull=True)
+                   & models.Q(sales_quote__isnull=True))
+                | (~models.Q(kind__in=['label_batch', 'sales_quote_ticket', 'trade_in_quote_ticket'])
+                   & models.Q(order__isnull=False) & models.Q(label_batch__isnull=True)
+                   & models.Q(sales_quote__isnull=True) & models.Q(trade_in_quote__isnull=True)),
+                name='print_job_target_matches_kind_v3'),
         ]
         indexes = [models.Index(fields=['branch', 'status', 'id'])]
 

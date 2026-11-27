@@ -86,6 +86,7 @@ from . import trade_in_tariff_views as tit
 from . import trade_in_rules_views as tir
 from . import trade_in_eligibility_views as tie
 from . import trade_in_assessment_views as tia
+from . import trade_in_quote_views as tiq
 from .pos_views import (
     AdminPosSaleByKeyView,
     AdminPosSaleNotChargedView,
@@ -778,6 +779,28 @@ urlpatterns = [
          name='admin-trade-in-assessment-approve'),
     path('admin/trade-in/assessments/<int:pk>/cancel/', tia.AdminTradeInAssessmentCancelView.as_view(),
          name='admin-trade-in-assessment-cancel'),
+    # TRADE-IN VALUATION PRO · Phase 5a — the trade-in quote (adr §7, phase 5a).
+    path('admin/trade-in/quotes/', tiq.AdminTradeInQuoteListView.as_view(), name='admin-trade-in-quotes'),
+    path('admin/trade-in/quotes/<int:pk>/', tiq.AdminTradeInQuoteDetailView.as_view(), name='admin-trade-in-quote'),
+    path('admin/trade-in/quotes/<int:pk>/approve/', tiq.AdminTradeInQuoteApproveView.as_view(),
+         name='admin-trade-in-quote-approve'),
+    path('admin/trade-in/quotes/<int:pk>/reject/', tiq.AdminTradeInQuoteRejectView.as_view(),
+         name='admin-trade-in-quote-reject'),
+    path('admin/trade-in/quotes/<int:pk>/issue/', tiq.AdminTradeInQuoteIssueView.as_view(),
+         name='admin-trade-in-quote-issue'),
+    path('admin/trade-in/quotes/<int:pk>/accept/', tiq.AdminTradeInQuoteAcceptView.as_view(),
+         name='admin-trade-in-quote-accept'),
+    path('admin/trade-in/quotes/<int:pk>/decline/', tiq.AdminTradeInQuoteDeclineView.as_view(),
+         name='admin-trade-in-quote-decline'),
+    path('admin/trade-in/quotes/<int:pk>/cancel/', tiq.AdminTradeInQuoteCancelView.as_view(),
+         name='admin-trade-in-quote-cancel'),
+    path('admin/trade-in/quotes/<int:pk>/revise/', tiq.AdminTradeInQuoteReviseView.as_view(),
+         name='admin-trade-in-quote-revise'),
+    # TRADE-IN VALUATION PRO · Phase 5b — papers and the print queue.
+    path('admin/trade-in/quotes/<int:pk>/pdf/', tiq.AdminTradeInQuotePdfView.as_view(),
+         name='admin-trade-in-quote-pdf'),
+    path('admin/trade-in/quotes/<int:pk>/print/', tiq.AdminTradeInQuotePrintView.as_view(),
+         name='admin-trade-in-quote-print'),
 
     # --- C1.4: bulk imports ------------------------------------------------
     path('admin/imports/inspect/', AdminImportInspectView.as_view(), name='admin-import-inspect'),

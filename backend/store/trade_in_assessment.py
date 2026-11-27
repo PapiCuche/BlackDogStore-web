@@ -51,6 +51,7 @@ from .tenancy import has_capability, visible_branches
 CAP_VIEW = eligibility.CAP_VIEW
 CAP_VALUE = eligibility.CAP_VALUE
 CAP_APPROVE = 'sales.tradein.approve'
+CAP_APPROVE_OWN = 'sales.tradein.approve_own'
 CAP_QUOTES_MANAGE = 'sales.quotes.manage'
 
 TariffError = tariff.TariffError
@@ -420,6 +421,76 @@ def _target_price(actor, company, assessment) -> Decimal | None:
     return quote.total
 
 
+def compute(*, actor, company, assessment, check, data, today) -> dict:
+    """
+    The valuation of `assessment` NOW (module docstring, steps 1-6), written nowhere: the caller freezes it (an
+    assessment's calculation, or a new revision of its quote).
+    """
+    if tariff.policy_of(company).require_identified_customer and not assessment.customer_id:
+        raise TariffError('La empresa pide identificar al cliente antes de valorizar.', code='customer_required',
+                          field='customer')
+    security = _security(check)
+    tariff_version = tariff.effective_version(assessment.tariff_entry, on=today)
+    if tariff_version is None:
+        raise TariffStateError('Ese equipo no tiene precio en vigor hoy.', code='tariff_missing')
+    rules_version = rules.effective_rule_set(company, on=today)
+    if rules_version is None:
+        raise TariffStateError('No hay reglas de valorización en vigor hoy.', code='rules_missing')
+    groups, factors, rule_list = rules.inputs_of(company, rules_version)
+    asked = {q['code'] for q in questions(company, assessment, rules_version)}
+    given = {a.factor.code: a.value for a in assessment.answers.select_related('factor')}
+    missing = sorted(asked - set(given))
+    if missing:
+        raise TariffError('Responde todas las preguntas antes de calcular.', code='unanswered',
+                          extra={'questions': missing})
+    ignored = sorted(set(given) - asked)
+    try:
+        result = valuation.calculate(
+            base=tariff_version.base_reception_value, maximum=tariff_version.max_reception_value,
+            answers={code: given[code] for code in asked}, groups=groups, factors=factors, rules=rule_list,
+            device=_device(assessment))
+    except valuation.ValuationError as exc:
+        raise TariffError(str(exc), code='invalid_answer', field=exc.field) from None
+    computed = result['totals']['computed_value']
+    computed = None if computed is None else Decimal(computed)
+    if security['eligibility'] == eligibility.NOT_ELIGIBLE or result['eligibility'] == valuation.NOT_ELIGIBLE:
+        overall = NOT_ELIGIBLE
+    elif (security['eligibility'] == eligibility.PENDING_VERIFICATION
+          or result['eligibility'] == valuation.PENDING_VERIFICATION):
+        overall = PENDING_VERIFICATION
+    else:
+        overall = result['eligibility']
+    offered, reason, raised = _offer(data, overall, computed, tariff_version.max_reception_value, check)
+    needs_approval = overall != NOT_ELIGIBLE and (result['needs_approval'] or raised)
+    if needs_approval and overall not in (NOT_ELIGIBLE, PENDING_VERIFICATION):
+        overall = REQUIRES_APPROVAL
+    if overall == NOT_ELIGIBLE:
+        computed = offered = None
+    price = _target_price(actor, company, assessment)
+    difference = None if price is None or offered is None else max(Decimal('0.00'), price - offered)
+    # The snapshot says the FINAL word: the values and the verdict after security and the person's adjustment.
+    totals = {**result['totals'], 'computed_value': None if computed is None else str(computed),
+              'offered_value': None if offered is None else str(offered)}
+    calculation = {
+        **result,
+        'totals': totals,
+        'rules_eligibility': result['eligibility'],
+        'eligibility': overall,
+        'eligibility_label': LABELS[overall],
+        'needs_approval': needs_approval,
+        'security': security,
+        'tariff': {'version': tariff_version.pk, 'number': tariff_version.number,
+                   'base': str(tariff_version.base_reception_value),
+                   'maximum': str(tariff_version.max_reception_value), 'currency': tariff_version.currency},
+        'rules': {'version': rules_version.pk, 'number': rules_version.number},
+        'ignored_answers': ignored,
+        'computed_on': today.isoformat(),
+    }
+    return {'tariff_version': tariff_version, 'rules_version': rules_version, 'calculation': calculation,
+            'eligibility': overall, 'computed': computed, 'offered': offered, 'reason': reason,
+            'needs_approval': needs_approval, 'price': price, 'difference': difference}
+
+
 def calculate(*, actor, company, assessment, data=None, request=None) -> TradeInAssessment:
     """Compute and freeze the valuation (module docstring, steps 1-6)."""
     _require(actor, company, CAP_VALUE, 'No tienes permiso para valorizar equipos usados.')
@@ -430,67 +501,13 @@ def calculate(*, actor, company, assessment, data=None, request=None) -> TradeIn
         check = assessment.device_check      # locked first by `_editable` (check → assessment)
         if check.status != TradeInDeviceCheck.STATUS_OPEN:
             raise TariffStateError('La comprobación del equipo está cerrada.', code='check_closed')
-        if tariff.policy_of(company).require_identified_customer and not assessment.customer_id:
-            raise TariffError('La empresa pide identificar al cliente antes de valorizar.', code='customer_required',
-                              field='customer')
-        security = _security(check)
-        tariff_version = tariff.effective_version(assessment.tariff_entry, on=today)
-        if tariff_version is None:
-            raise TariffStateError('Ese equipo no tiene precio en vigor hoy.', code='tariff_missing')
-        rules_version = rules.effective_rule_set(company, on=today)
-        if rules_version is None:
-            raise TariffStateError('No hay reglas de valorización en vigor hoy.', code='rules_missing')
-        groups, factors, rule_list = rules.inputs_of(company, rules_version)
-        asked = {q['code'] for q in questions(company, assessment, rules_version)}
-        given = {a.factor.code: a.value for a in assessment.answers.select_related('factor')}
-        missing = sorted(asked - set(given))
-        if missing:
-            raise TariffError('Responde todas las preguntas antes de calcular.', code='unanswered',
-                              extra={'questions': missing})
-        ignored = sorted(set(given) - asked)
-        try:
-            result = valuation.calculate(
-                base=tariff_version.base_reception_value, maximum=tariff_version.max_reception_value,
-                answers={code: given[code] for code in asked}, groups=groups, factors=factors, rules=rule_list,
-                device=_device(assessment))
-        except valuation.ValuationError as exc:
-            raise TariffError(str(exc), code='invalid_answer', field=exc.field) from None
-        computed = result['totals']['computed_value']
-        computed = None if computed is None else Decimal(computed)
-        if security['eligibility'] == eligibility.NOT_ELIGIBLE or result['eligibility'] == valuation.NOT_ELIGIBLE:
-            overall = NOT_ELIGIBLE
-        elif (security['eligibility'] == eligibility.PENDING_VERIFICATION
-              or result['eligibility'] == valuation.PENDING_VERIFICATION):
-            overall = PENDING_VERIFICATION
-        else:
-            overall = result['eligibility']
-        offered, reason, raised = _offer(data, overall, computed, tariff_version.max_reception_value, check)
-        needs_approval = overall != NOT_ELIGIBLE and (result['needs_approval'] or raised)
-        if needs_approval and overall not in (NOT_ELIGIBLE, PENDING_VERIFICATION):
-            overall = REQUIRES_APPROVAL
-        if overall == NOT_ELIGIBLE:
-            computed = offered = None
-        price = _target_price(actor, company, assessment)
-        difference = None if price is None or offered is None else max(Decimal('0.00'), price - offered)
+        done = compute(actor=actor, company=company, assessment=assessment, check=check, data=data, today=today)
+        tariff_version, rules_version = done['tariff_version'], done['rules_version']
+        overall, computed, offered = done['eligibility'], done['computed'], done['offered']
+        reason, needs_approval = done['reason'], done['needs_approval']
+        price, difference = done['price'], done['difference']
         assessment.tariff_version, assessment.rule_set_version = tariff_version, rules_version
-        # The snapshot says the FINAL word: the values and the verdict after security and the person's adjustment.
-        totals = {**result['totals'], 'computed_value': None if computed is None else str(computed),
-                  'offered_value': None if offered is None else str(offered)}
-        assessment.calculation = {
-            **result,
-            'totals': totals,
-            'rules_eligibility': result['eligibility'],
-            'eligibility': overall,
-            'eligibility_label': LABELS[overall],
-            'needs_approval': needs_approval,
-            'security': security,
-            'tariff': {'version': tariff_version.pk, 'number': tariff_version.number,
-                       'base': str(tariff_version.base_reception_value),
-                       'maximum': str(tariff_version.max_reception_value), 'currency': tariff_version.currency},
-            'rules': {'version': rules_version.pk, 'number': rules_version.number},
-            'ignored_answers': ignored,
-            'computed_on': today.isoformat(),
-        }
+        assessment.calculation = done['calculation']
         assessment.eligibility = overall
         assessment.computed_value, assessment.offered_value = computed, offered
         assessment.adjustment_reason, assessment.needs_approval = reason, needs_approval
@@ -498,9 +515,10 @@ def calculate(*, actor, company, assessment, data=None, request=None) -> TradeIn
         assessment.calculated_by, assessment.calculated_at = actor, timezone.now()
         assessment.status = TradeInAssessment.STATUS_CALCULATED
         assessment.approved_by = assessment.approved_at = None
+        assessment.approval_kind = ''
         _contributed(assessment, actor)
         assessment.save(update_fields=['status', *_CALCULATION_FIELDS, 'approved_by', 'approved_at',
-                                       'contributor_ids', 'updated_at'])
+                                       'approval_kind', 'contributor_ids', 'updated_at'])
         _audit(actor=actor, company=company, action='trade_in_assessment_calculated', assessment=assessment,
                request=request, eligibility=overall, tariff_version=tariff_version.pk,
                rule_set_version=rules_version.pk, computed=None if computed is None else str(computed),
@@ -557,9 +575,14 @@ def approve(*, actor, company, assessment, note='', request=None) -> TradeInAsse
             raise TariffStateError('La comprobación del equipo está cerrada.', code='check_closed')
         if assessment.status != TradeInAssessment.STATUS_CALCULATED:
             raise TariffStateError('Sólo se aprueba una evaluación calculada.', code='not_calculated')
-        if getattr(actor, 'pk', None) in _authors(assessment):
-            raise TariffPermissionError('Otra persona con permiso de aprobación tiene que aprobar esta valorización.',
-                                        code='own_change')
+        own = getattr(actor, 'pk', None) in _authors(assessment)
+        if own:
+            if not has_capability(actor, company, CAP_APPROVE_OWN):
+                raise TariffPermissionError('Otra persona con permiso de aprobación tiene que aprobar esta '
+                                            'valorización.', code='own_change')
+            if not note:
+                raise TariffError('Indica el motivo para aprobar una valorización propia.', code='reason_required',
+                                  field='note')
         security = _security(check)
         frozen_security = (assessment.calculation or {}).get('security', {}).get('eligibility')
         if security['eligibility'] != eligibility.ELIGIBLE:
@@ -586,9 +609,11 @@ def approve(*, actor, company, assessment, note='', request=None) -> TradeInAsse
                                  'vuelve a calcular.', code='calculation_stale', extra={'reasons': stale})
         assessment.status = TradeInAssessment.STATUS_APPROVED
         assessment.approved_by, assessment.approved_at, assessment.approval_note = actor, timezone.now(), note
-        assessment.save(update_fields=['status', 'approved_by', 'approved_at', 'approval_note', 'updated_at'])
+        assessment.approval_kind = 'self' if own else 'approver'
+        assessment.save(update_fields=['status', 'approved_by', 'approved_at', 'approval_note', 'approval_kind',
+                                       'updated_at'])
         _audit(actor=actor, company=company, action='trade_in_assessment_approved', assessment=assessment,
-               request=request, offered=str(assessment.offered_value), has_note=bool(note))
+               request=request, offered=str(assessment.offered_value), has_note=bool(note), self_approval=own)
     return assessment
 
 

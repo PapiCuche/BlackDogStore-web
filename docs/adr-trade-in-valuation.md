@@ -374,6 +374,19 @@ approved|issued|accepted|declined|expired|rejected ──revisar──▶ nueva 
 - `accepted` no recibe el equipo: lo hará 01B, que leerá sólo una cotización **viva** (`accepted`, no `superseded`,
   no vencida) y exigirá verificaciones vigentes.
 
+Implementado en la fase 5a (#465):
+- **Aceptar no vuelve a comprobar el equipo** (identidad ni bloqueos): sólo registra la respuesta del cliente sobre una
+  cotización emitida y no vencida. La comprobación final es de **01B**, al recibir.
+- **Anular una cotización** (pendiente o aprobada) **anula también su evaluación**, con el mismo motivo y auditado.
+  Así la comprobación del equipo puede tomar una evaluación nueva.
+- La cotización congela `printable_eligibility` (APTO / APTO CON DESCUENTOS, nunca «requiere aprobación») y
+  `needs_approval`; la 5b imprime desde ahí.
+- Una cotización generada desde una evaluación autoaprobada conserva `approval_kind=self`.
+- **Numeración**: `CRE-000001` (`-R2`… por revisión) sale de un contador propio por empresa (bloqueo consultivo y
+  UNIQUE), como `EVA-`, no de `InternalSequence`.
+- El vencimiento lo estampa `expire_trade_in_quotes`; su línea de crontab se documenta en
+  `docs/despliegue-produccion.md` §6.1.3f y se añade con el GO del despliegue.
+
 ---
 
 ## 6. Algoritmo de cálculo (`trade_in_valuation.calculate`, puro, sin escribir)
@@ -461,7 +474,7 @@ columnas internas (§3.5), nunca en la instantánea pública.
 | 4 | `tariff/match/` (modelo y opciones del selector → entrada, §8.1) | GET | tradein.value |
 | 4 | `assessments/` · `assessments/<id>/` · `…/answers/` · `…/photos/` · `…/calculate/` · `…/cancel/` · `…/quote/` | CRUD | tradein.view · tradein.value |
 | 5a | `quotes/` · `quotes/<id>/` · `…/request-approval/` · `…/approve/` · `…/reject/` · `…/issue/` · `…/accept/` · `…/decline/` · `…/revise/` · `…/cancel/` | GET · POST | tradein.view · value · approve (/approve_own) |
-| 5b | `quotes/<id>/pdf/?format=a4|ticket` · `quotes/<id>/print/` (`Idempotency-Key`) | GET · POST | tradein.view |
+| 5b | `quotes/<id>/pdf/?format=a4|ticket80` · `quotes/<id>/print/` (`Idempotency-Key`) | GET · POST | tradein.view |
 | 5c | Público: `GET /api/trade-in/status/<token>/` | — | ninguna (token opaco; límite por IP; sólo estado y vigencia) |
 
 Errores con `code` legible (`pending_exists`, `own_change`, `retroactive`, `unchanged`, `preview_stale`,
@@ -540,6 +553,34 @@ Una coincidencia: esa entrada. **Varias en el mismo nivel** (p. ej. dos marcas c
   aceptada / anulada) y vigencia.
 - `names_fiscal_document` (guardián de documentos) debe seguir fallando si alguien titula esto boleta o factura.
 
+Implementado en la fase 5b:
+- `trade_in_quote_documents.build_context` lee sólo las columnas congeladas de la revisión y la identidad de la
+  empresa; tarifa, política o reglas que cambien después no mueven el papel (prueba de reimpresión byte a byte).
+- **Sólo se imprime una revisión emitida**: `issued`, `accepted`, `declined`, `expired` o `superseded`. Borrador,
+  pendiente, aprobada sin emitir, rechazada y anulada responden 409 `not_issued`, en PDF y en la cola.
+- Sellos sobre el papel: **VENCIDA** (también cuando el cron aún no la estampó), **REEMPLAZADA** y **NO ACEPTADA**.
+- Veredicto impreso desde `printable_eligibility`: APTO o APTO CON DESCUENTOS; nunca «requiere aprobación».
+- El papel lleva el valor ofrecido; la base, el máximo, las deducciones, el ajuste y su motivo, las notas y el IMEI o la
+  serie completos no salen. El IMEI o la serie van como `****1234`.
+- **El cliente no sale en el papel.** Su nombre es una lectura viva que, sin nombre, cae en su DNI o RUC: filtraría un
+  documento y cambiaría una reimpresión. Renombrar al cliente deja A4, 80 mm y ESC/POS idénticos byte a byte (el A4
+  se genera con `invariant`, sin fecha de creación ni identificador aleatorio).
+- **Precio del equipo que compra y diferencia**: con la regla de la API de la 5a. Si la evaluación está enlazada a una
+  cotización de venta, sólo salen para quien tiene `sales.quotes.manage`. En el PDF cuenta quien descarga; en la cola,
+  quien pidió la impresión (`requested_by`).
+- **Leyenda del propietario**, literal: «Cotización referencial válida durante cuatro días desde su emisión, sujeta a la
+  verificación final del estado, identidad y procedencia del equipo. No constituye aceptación definitiva ni comprobante
+  de pago.», con la línea «Válido por 4 días». Si la política de la empresa da otra vigencia, la frase nombra el final
+  exacto («válida hasta el <fecha hora>») y no hay línea de días. El ESC/POS conserva las tildes (cp858).
+- **Sin QR todavía**: el enlace público es de la 5c; cuando llegue, el QR se añade al mismo contexto.
+- API: `GET quotes/<id>/pdf/?format=a4|ticket80` y `POST quotes/<id>/print/` con `Idempotency-Key`, ambos con
+  `sales.tradein.view`; cada descarga y cada petición de impresión se auditan sin identificadores.
+- Cola: `enqueue_trade_in_quote_ticket` rechaza otra empresa, otra sede, impresora inactiva o de etiquetas; la misma
+  clave devuelve el mismo trabajo, y una clave ya usada para otra cotización o impresora da conflicto (409), también si
+  la otra petición ganó la inserción a la vez. La cola de Impresión muestra «Cotización de recepción CRE-…» en vez de
+  «Pedido #null». La base rechaza un trabajo con el destino equivocado (`print_job_target_matches_kind_v3`).
+- Antes de volver a una imagen sin 0199: `cancel_trade_in_quote_print_jobs --apply` (runbook §6.1.3g).
+
 ---
 
 ## 10. Migraciones
@@ -559,7 +600,7 @@ códigos nuevos; sin la reparación fallan `M121PresetParityTest` y `M12CFreshIn
 | 3 | `019x_trade_in_eligibility` | fuentes, registros de verificación; columnas de política con `db_default`; capacidades `sales.tradein.view/value` (+ reparación) | Segura. |
 | 4 | `019x_trade_in_assessment` | evaluación, respuestas, bloqueos, fotos; kind de `InternalSequence` (sólo choices); `sales.tradein.approve` (+ reparación) | Segura. |
 | 5a | `019x_trade_in_quote` | cotización y revisiones; kind de `InternalSequence`; `sales.tradein.approve_own` (+ reparación); `SalesQuoteTradeIn.trade_in_quote` (nulo) | Segura. |
-| 5b | `019x_trade_in_quote_print` | `PrintJob.trade_in_quote` (nulo, `db_default` NULL), kind `trade_in_quote_ticket`, restricción de destino `_v3` | **Un paso previo**, como 0189: `cancel_trade_in_quote_print_jobs --apply` antes de volver a la imagen anterior. Desde este nodo, cada migración lleva **dos** guardas al final: `refuse_reverse_with_trade_in_tickets` (penúltima; filtra `kind='trade_in_quote_ticket'`) y `refuse_reverse_with_quote_tickets` (última, intacta: `test_migration_reverse_guards` comprueba exactamente `filter(kind='sales_quote_ticket')`). La prueba gana una lista de nodos para la guarda nueva. |
+| 5b | `0199_trade_in_quote_print` | `PrintJob.trade_in_quote` (nulo, `db_default` NULL), kind `trade_in_quote_ticket`, restricción de destino `_v3` | **Un paso previo**, como 0189: `cancel_trade_in_quote_print_jobs --apply` antes de volver a la imagen anterior. Desde este nodo, cada migración lleva **dos** guardas al final: `refuse_reverse_with_trade_in_tickets` (penúltima; filtra `kind='trade_in_quote_ticket'`) y `refuse_reverse_with_quote_tickets` (última, intacta: `test_migration_reverse_guards` comprueba exactamente `filter(kind='sales_quote_ticket')`). La prueba gana una lista de nodos para la guarda nueva. |
 | 5c | (sin esquema: `public_uid` se crea en 5a con la tabla de la cotización) | enlace público | Segura. |
 
 Ninguna migración concede capacidades. Si el propietario decide V1 a favor, se añade un nodo de concesión con la regla
@@ -608,8 +649,8 @@ Cada PR: rama propia, código separado de docs (commits distintos), entradas en 
   vencida antes del cron → 409, el cron la estampa una vez (concurrencia con `TransactionTestCase`), `calculation_stale`
   cuando la versión usada dejó de estar en vigor, revisión recalcula y la anterior conserva su instantánea, revisar una
   aceptada exige motivo, autoaprobación con `approve_own` y motivo.
-- **Documentos (5b):** reimpresión idéntica byte a byte (goldens del ticket y ESC/POS); ticket y PDF sin costos,
-  márgenes, IMEI completo ni «REQUIERE APROBACIÓN»; leyenda «no es comprobante».
+- **Documentos (5b):** reimpresión idéntica byte a byte en A4, 80 mm y ESC/POS; ticket y PDF sin costos, márgenes,
+  IMEI completo, cliente ni «requiere aprobación» (en cualquier mayúscula); leyenda del propietario.
 - **Página pública (5c):** QR → página; token manipulado = 404; revisión reemplazada dice «reemplazada»; sin datos
   internos; `noindex`; límite por IP.
 - **Frontend (6–7):** Jest por componente, `tsc`, lint, build. **E2E (8):** flujo completo en escritorio y 390 px.

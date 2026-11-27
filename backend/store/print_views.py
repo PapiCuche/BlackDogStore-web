@@ -503,7 +503,19 @@ def _job_payload(job: PrintJob) -> dict:
         'label_size': job.label_size,
         # SALES-QUOTE-01, aditivo: el ticket de una cotización no tiene pedido; tiene su cotización.
         'sales_quote': job.sales_quote_id,
+        # TRADE-IN 5b, aditivo: el ticket de una cotización de recepción tiene su revisión.
+        'trade_in_quote': job.trade_in_quote_id,
+        # A quote's ticket names its quote (COT-… / CRE-…-R2), not «Pedido #null».
+        'quote_label': _quote_label(job),
     }
+
+
+def _quote_label(job: PrintJob) -> str:
+    if job.trade_in_quote_id:
+        return job.trade_in_quote.label
+    if job.sales_quote_id:
+        return job.sales_quote.label
+    return ''
 
 
 class AdminPrintJobListView(APIView):
@@ -520,7 +532,7 @@ class AdminPrintJobListView(APIView):
         company, error = _context(request, CAP_OPERATE)
         if error:
             return error
-        jobs = PrintJob.objects.select_related('printer').filter(
+        jobs = PrintJob.objects.select_related('printer', 'sales_quote', 'trade_in_quote').filter(
             company=company, branch__in=visible_branches(request.user, company))
         order = request.query_params.get('order')
         if order and order.isdigit():

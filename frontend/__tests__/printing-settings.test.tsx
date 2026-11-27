@@ -361,6 +361,20 @@ it('cambia el rollo cargado de una impresora de etiquetas', async () => {
   expect(await within(row).findByText(/rollo 50x25 mm/)).toBeInTheDocument();
 });
 
+it('un ticket de cotización en la cola dice su cotización, no «Pedido #null»', async () => {
+  mockApi.fetchPrintJobs.mockResolvedValue([
+    { ...FAILED_JOB, id: 31, kind: 'trade_in_quote_ticket', order: null, trade_in_quote: 4, quote_label: 'CRE-000004-R2',
+      status: 'printed' },
+    { ...FAILED_JOB, id: 32, kind: 'sales_quote_ticket', order: null, sales_quote: 7, quote_label: 'COT-000007',
+      status: 'printed' },
+  ]);
+  mount();
+
+  expect(await screen.findByText('Cotización de recepción CRE-000004-R2')).toBeInTheDocument();
+  expect(screen.getByText('Cotización COT-000007')).toBeInTheDocument();
+  expect(screen.queryByText(/Pedido #null/)).toBeNull();
+});
+
 it('un lote de etiquetas en la cola dice su lote y su rollo, no un pedido', async () => {
   mockApi.fetchPrintJobs.mockResolvedValue([
     { ...FAILED_JOB, id: 30, kind: 'label_batch', order: null, label_batch: 8, label_size: '30x20', status: 'printed' },

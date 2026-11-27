@@ -349,6 +349,36 @@ def enqueue_quote_ticket(*, quote, printer, key: str, actor):
     )
 
 
+def enqueue_trade_in_quote_ticket(*, quote, printer, key: str, actor):
+    """
+    TRADE-IN VALUATION PRO · 5b — the 80 mm roll of a trade-in quote REVISION, asked for by a person.
+
+    A quote is not a sale: no order to check. Only an active ticket printer of the branch that quoted. `key`
+    (`Idempotency-Key`): a double click prints once. A reprint is another key on the same revision: it prints that
+    revision's frozen snapshot, never a recalculation.
+    """
+    if printer.company_id != quote.company_id or not printer.is_active:
+        raise PrintError('Esa impresora no está disponible.')
+    if printer.role != Printer.Role.TICKET:
+        raise PrintError('Esa impresora es de etiquetas: un ticket va a una impresora de tickets.')
+    if quote.branch_id != printer.branch_id:
+        raise PrintError('Esa impresora es de otro local.')
+    key = (key or '').strip()
+    if not key:
+        raise PrintError('Falta la clave de idempotencia.')
+    job = _get_or_create(
+        key=f'tradein:{key}'[:120], company=quote.company, branch=printer.branch, printer=printer,
+        kind=PrintJob.Kind.TRADE_IN_QUOTE_TICKET, reason=PrintJob.Reason.MANUAL, trade_in_quote=quote,
+        requested_by=actor if getattr(actor, 'is_authenticated', False) else None,
+    )
+    # Checked on what came back, not before: a concurrent request with the same key may have won the insert
+    # (`_get_or_create`'s IntegrityError fallback) for another quote or printer.
+    if (job.kind != PrintJob.Kind.TRADE_IN_QUOTE_TICKET or job.trade_in_quote_id != quote.pk
+            or job.printer_id != printer.pk):
+        raise PrintConflict('Esa clave ya se usó para otra impresión.')
+    return job
+
+
 # -- etiquetas (LABEL-04) ----------------------------------------------------------
 
 def _label_key(prefix: str, size: str, part: int) -> str:
@@ -513,8 +543,8 @@ def claim_next(agent, connections=LEGACY_CONNECTIONS, printer_ids=None, kinds=()
                 job.last_error = 'Un ticket sólo se imprime en una impresora de tickets.'
                 job.save(update_fields=['status', 'last_error', 'updated_at'])
                 continue
-            elif job.kind == PrintJob.Kind.SALES_QUOTE_TICKET:
-                pass    # SALES-QUOTE-01: sin pedido; la cotización dice en el papel su estado
+            elif job.kind in (PrintJob.Kind.SALES_QUOTE_TICKET, PrintJob.Kind.TRADE_IN_QUOTE_TICKET):
+                pass    # SALES-QUOTE-01 / TRADE-IN 5b: sin pedido; la cotización dice en el papel su estado
             elif job.order is None:
                 # Un ticket sin pedido de un tipo que esta versión no conoce (p. ej. escrito por una
                 # versión posterior): se cancela en vez de romper la cola de todo el local.
@@ -617,6 +647,12 @@ def render(job) -> bytes:
         from ..sales_quote_documents import escpos_ticket
 
         return escpos_ticket(job.sales_quote, **options)
+    if job.kind == PrintJob.Kind.TRADE_IN_QUOTE_TICKET:
+        from ..trade_in_quote_documents import escpos_ticket as trade_in_ticket, shows_price
+
+        # The price of the device bought only if the person who asked may read it (5a rule of the API).
+        return trade_in_ticket(job.trade_in_quote, show_price=shows_price(job.trade_in_quote, job.requested_by),
+                               **options)
     return escpos.sales_note_ticket(job.sales_note, **options)
 
 
@@ -723,7 +759,8 @@ def _retry_locked(job, *, actor, confirm_not_printed):
         raise PrintError(
             'No se sabe si este ticket salió. Revisa el mostrador y confirma que NO salió '
             'antes de reenviarlo.')
-    if job.kind not in (PrintJob.Kind.LABEL_BATCH, PrintJob.Kind.SALES_QUOTE_TICKET):
+    if job.kind not in (PrintJob.Kind.LABEL_BATCH, PrintJob.Kind.SALES_QUOTE_TICKET,
+                        PrintJob.Kind.TRADE_IN_QUOTE_TICKET):
         if job.order.status == Order.Status.CANCELLED:
             raise PrintError(CANCELLED_REFUSAL)
         if _note_is_void(job):

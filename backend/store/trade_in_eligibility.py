@@ -274,6 +274,21 @@ def clean_policy(data) -> dict:
         if not isinstance(raw, bool):
             raise TariffError('Indica sí o no.', field='require_identified_customer')
         out['require_identified_customer'] = raw
+    if 'quote_validity_hours' in data:
+        raw = data.get('quote_validity_hours')
+        try:
+            hours = int(str(raw).strip())
+        except (TypeError, ValueError):
+            raise TariffError('La vigencia de una cotización son horas (1 a 720).',
+                              field='quote_validity_hours') from None
+        if isinstance(raw, bool) or not 1 <= hours <= 720:
+            raise TariffError('La vigencia de una cotización son horas (1 a 720).', field='quote_validity_hours')
+        out['quote_validity_hours'] = hours
+    if 'quote_conditions' in data:
+        text = str(data.get('quote_conditions') or '').strip()
+        if len(text) > 2000:
+            raise TariffError('Las condiciones admiten hasta 2000 caracteres.', field='quote_conditions')
+        out['quote_conditions'] = text
     if 'extra_blockers' in data:
         raw = data.get('extra_blockers') or []
         if not isinstance(raw, list) or len(raw) > MAX_EXTRA:
