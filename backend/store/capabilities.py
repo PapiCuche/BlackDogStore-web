@@ -289,6 +289,10 @@ CAPABILITY_LIST: tuple[Capability, ...] = (
     _cap('sales.tradein.approve', 'sales', 'Aprobar valorizaciones de equipos usados',
          'Aprobar una valorización que lo requiere o cuyo valor ofrecido supera el calculado, hasta el máximo del '
          'tarifario.', STATUS_ACTIVE),
+    # Phase 5a: the small-team way out (DEC-INV-06 pattern) for valuations and trade-in quotes one took part in.
+    _cap('sales.tradein.approve_own', 'sales', 'Aprobar valorizaciones propias',
+         'Aprobar, indicando un motivo, una valorización o cotización de recepción en la que participaste. Para '
+         'equipos pequeños: queda marcado en la auditoría.', STATUS_ACTIVE),
 
     # --- accounting (ACCOUNTING-02, `docs/adr-accounting.md` §6) ---
     # Read-only. `view` opens the three views with the buyer's document masked;
@@ -505,7 +509,7 @@ TRADE_IN_TARIFF_CODES: frozenset[str] = frozenset({
 
 #: TRADE-IN VALUATION PRO · Phase 3: checking and valuing devices, explicit grants too.
 TRADE_IN_ASSESSMENT_CODES: frozenset[str] = frozenset({'sales.tradein.view', 'sales.tradein.value',
-                                                       'sales.tradein.approve'})
+                                                       'sales.tradein.approve', 'sales.tradein.approve_own'})
 
 #: Assignable, but never handed out by a preset: somebody grants them on purpose
 #: from Roles (FINANCE-OBLIGATIONS-01, owner's P3, provisional). Neither the

@@ -500,6 +500,9 @@ def policy_payload(policy) -> dict:
         'identity_check_validity_hours': policy.identity_check_validity_hours,
         'optional_blockers': list(policy.optional_blockers or []),
         'extra_blockers': list(policy.extra_blockers or []),
+        'require_identified_customer': policy.require_identified_customer,
+        'quote_validity_hours': policy.quote_validity_hours,
+        'quote_conditions': policy.quote_conditions,
         'blockers': _blocker_catalogue(),
     }
 

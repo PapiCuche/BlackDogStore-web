@@ -3,6 +3,25 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 5a: cotización de recepción (rama `feat/trade-in-quote`, sin fusionar ni desplegar)
+
+**Added**
+- Cotización de recepción (`CRE-000001`, revisiones `-R2`…) generada desde una evaluación calculada o aprobada y
+  elegible, que congela la evaluación y copia su instantánea.
+- Estados: pendiente de aprobación, aprobada, emitida, aceptada, rechazada por el cliente, vencida, no aprobada,
+  anulada, reemplazada. Aprobar y emitir rechazan una instantánea desfasada (`calculation_stale`).
+- Vigencia exacta: emitida + horas de la empresa (96 por omisión), un instante absoluto. La zona horaria sólo cambia
+  cómo se muestra. Aceptar rechaza una vencida aunque el cron no haya pasado.
+- `manage.py expire_trade_in_quotes`: estampa las vencidas, idempotente.
+- Revisión que recalcula con lo vigente sin tocar la anterior; revisar una aceptada exige motivo.
+- `sales.tradein.approve_own` (concesión explícita) también para la aprobación de evaluaciones.
+- Migración `0198_trade_in_quote` (una tabla, dos columnas con `db_default`, reparación de instalación nueva, guarda
+  al final).
+
+**Ops**
+- Al desplegar con GO hace falta una línea de crontab para `expire_trade_in_quotes`. Sin ella, la lectura ya muestra
+  «Vencida» y bloquea responder; sólo el estado guardado espera.
+
 ## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 4: evaluación y cálculo (rama `feat/trade-in-assessment`, sin fusionar ni desplegar)
 
 **Added**

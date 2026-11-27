@@ -374,6 +374,19 @@ approved|issued|accepted|declined|expired|rejected ──revisar──▶ nueva 
 - `accepted` no recibe el equipo: lo hará 01B, que leerá sólo una cotización **viva** (`accepted`, no `superseded`,
   no vencida) y exigirá verificaciones vigentes.
 
+Implementado en la fase 5a (#465):
+- **Aceptar no vuelve a comprobar el equipo** (identidad ni bloqueos): sólo registra la respuesta del cliente sobre una
+  cotización emitida y no vencida. La comprobación final es de **01B**, al recibir.
+- **Anular una cotización** (pendiente o aprobada) **anula también su evaluación**, con el mismo motivo y auditado.
+  Así la comprobación del equipo puede tomar una evaluación nueva.
+- La cotización congela `printable_eligibility` (APTO / APTO CON DESCUENTOS, nunca «requiere aprobación») y
+  `needs_approval`; la 5b imprime desde ahí.
+- Una cotización generada desde una evaluación autoaprobada conserva `approval_kind=self`.
+- **Numeración**: `CRE-000001` (`-R2`… por revisión) sale de un contador propio por empresa (bloqueo consultivo y
+  UNIQUE), como `EVA-`, no de `InternalSequence`.
+- El vencimiento lo estampa `expire_trade_in_quotes`; su línea de crontab se documenta en
+  `docs/despliegue-produccion.md` §6.1.3f y se añade con el GO del despliegue.
+
 ---
 
 ## 6. Algoritmo de cálculo (`trade_in_valuation.calculate`, puro, sin escribir)
