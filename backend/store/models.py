@@ -6174,7 +6174,9 @@ class TradeInTariffVersion(models.Model):
     source = models.CharField(max_length=8, choices=SOURCE_CHOICES, default=SOURCE_MANUAL)
     import_batch = models.ForeignKey(
         TradeInTariffImport, on_delete=models.PROTECT, null=True, blank=True, related_name='versions')
-    #: The version this one was compared with when it was proposed (the latest approved), if any.
+    #: The version a RISE of this one was measured against: the last one a PERSON approved (`approver`/`self`), or the
+    #: latest approved when none was (`trade_in_tariff.rise_reference`). The latest approved at proposal time, which
+    #: decides the validity and start reasons, is in the proposal's audit and in the API (`compared_with`).
     previous = models.ForeignKey('self', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
     #: Why it needed an approver (`new_entry`, `base_increase`, `max_increase`, `validity_extended`, `policy_all`).
     approval_reasons = models.JSONField(default=list, blank=True)
@@ -6222,14 +6224,17 @@ class TradeInTariffVersion(models.Model):
         if self.entry_id and self.company_id and self.entry.company_id != self.company_id:
             raise ValidationError('La versión y su entrada tienen que ser de la misma empresa.')
         if self.pk is not None:
-            stored = TradeInTariffVersion.objects.filter(pk=self.pk).values_list('status', flat=True).first()
+            row = TradeInTariffVersion.objects.filter(pk=self.pk).values_list('status', 'valid_from').first()
+            stored, stored_from = row if row else (None, None)
             # Once decided it is evidence: the services stamp its decision through `update_fields`, never its terms.
             if stored is not None and stored != self.STATUS_PENDING:
                 raise ValidationError('Una versión decidida del tarifario no se modifica: propone una nueva.')
             allowed = set(kwargs.get('update_fields') or [])
             terms = self.TERMS_FIELDS
-            if self.status == self.STATUS_APPROVED:
-                # The one term approval may touch: a start that passed while it waited moves to the approval day.
+            if (self.status == self.STATUS_APPROVED and 'status' in allowed and stored_from is not None
+                    and self.valid_from >= stored_from):
+                # The one term approval may touch, in the same save that approves it and only FORWARD: a start that
+                # passed while it waited moves to the approval day. Never earlier, never outside the approval.
                 terms = terms - {'valid_from'}
             if stored == self.STATUS_PENDING and (not allowed or (allowed & terms)):
                 raise ValidationError('Los importes de una versión propuesta no se modifican: retírala y propone otra.')

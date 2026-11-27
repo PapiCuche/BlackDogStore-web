@@ -512,7 +512,8 @@ def propose_version(*, actor, company, entry, data, request=None, source=TradeIn
                                  source=source, batch=batch, policy=policy_of(company))
         _audit(actor=actor, company=company, action='trade_in_tariff_version_proposed', target=version,
                request=request, number=version.number, status=version.status, reasons=version.approval_reasons,
-               previous=previous.number if previous else None, source=source,
+               rise_reference=version.previous.number if version.previous_id else None,
+               latest_approved=previous.number if previous else None, source=source,
                import_id=batch.pk if batch else None, **_money_metadata(version))
     return version
 

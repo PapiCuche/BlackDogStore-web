@@ -100,6 +100,14 @@ def version_payload(version) -> dict:
         'valid_until': version.valid_until.isoformat() if version.valid_until else None,
         'reason': version.reason, 'source': version.source, 'import_id': version.import_batch_id,
         'previous_number': version.previous.number if version.previous_id else None,
+        'compared_with': {
+            # What a rise was measured against (the last person-approved), and the latest approved when proposed.
+            'rise_reference': version.previous.number if version.previous_id else None,
+            'latest_approved': (TradeInTariffVersion.objects
+                                .filter(entry_id=version.entry_id, status=TradeInTariffVersion.STATUS_APPROVED,
+                                        number__lt=version.number, decided_at__lte=version.proposed_at)
+                                .order_by('-number').values_list('number', flat=True).first()),
+        },
         'approval_reasons': [{'code': code, 'label': tariff.REASON_LABELS.get(code, code)}
                              for code in version.approval_reasons or []],
         'approval_kind': version.approval_kind,

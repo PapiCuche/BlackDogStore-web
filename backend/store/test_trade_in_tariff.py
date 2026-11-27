@@ -459,6 +459,34 @@ class TariffReviewFindingsTest(TariffBase):
         audit = AdminAuditLog.objects.get(action='trade_in_tariff_version_approved', target_id=str(version_id))
         self.assertEqual(audit.metadata['start_moved_from'], self.today.isoformat())
 
+    def test_the_start_moves_only_forward_and_only_in_the_approving_save(self):
+        entry = self.create()
+        version = TradeInTariffVersion.objects.get(pk=entry['pending']['id'])
+        version.valid_from = self.today + timedelta(days=2)
+        with self.assertRaises(ValidationError):                     # not approving: a term
+            version.save(update_fields=['valid_from'])
+        version.status = TradeInTariffVersion.STATUS_APPROVED
+        version.valid_from = self.today - timedelta(days=1)
+        with self.assertRaises(ValidationError):                     # approving, but backwards
+            version.save(update_fields=['status', 'valid_from'])
+        version.valid_from = self.today + timedelta(days=2)
+        with self.assertRaises(ValidationError):                     # forward, but without the approval itself
+            version.save(update_fields=['valid_from'])
+        version.save(update_fields=['status', 'valid_from'])         # forward, in the approving save
+        version.refresh_from_db()
+        self.assertEqual(version.valid_from, self.today + timedelta(days=2))
+
+    def test_both_references_are_recorded(self):
+        entry = self.approved_entry(base_reception_value='1000.00', max_reception_value='1000.00',
+                                    refurbishment_cost='', resale_value='', target_margin='')
+        money = {'refurbishment_cost': '', 'resale_value': '', 'target_margin': ''}
+        self.propose(entry.pk, base_reception_value='900.00', max_reception_value='900.00', **money)   # v2, policy
+        third = self.propose(entry.pk, base_reception_value='1200.00', max_reception_value='1200.00', **money)
+        self.assertEqual(third['version']['compared_with'], {'rise_reference': 1, 'latest_approved': 2})
+        audit = AdminAuditLog.objects.get(action='trade_in_tariff_version_proposed',
+                                          target_id=str(third['version']['id']))
+        self.assertEqual((audit.metadata['rise_reference'], audit.metadata['latest_approved']), (1, 2))
+
     def test_dates_are_strict(self):
         for raw in ('2026-12-01junk', '2026-12-1', '01/12/2026', '2026-12-01T00:00:00'):
             with self.subTest(raw=raw):
