@@ -650,6 +650,25 @@ servidor, una vez por hora:
   `deploy/` con su GO.
 - Una vencida no vuelve atrás: se renueva con «Revisar».
 
+### 6.1.3g Tickets de cotización de recepción (TRADE-IN VALUATION PRO, al desplegar `0200`)
+
+`0200_trade_in_quote_print` es aditiva: `PrintJob.trade_in_quote` (nula, `db_default` NULL), el tipo
+`trade_in_quote_ticket` y la regla de destino reescrita como `print_job_target_matches_kind_v3` (toda fila que escribe
+la versión anterior la cumple). No añade líneas al `crontab`.
+
+*Volver atrás desde 0200* — **antes** de cambiar los contenedores, y otra vez justo antes de `$C up -d`:
+
+```sh
+$C exec -T backend python manage.py cancel_trade_in_quote_print_jobs           # cuenta
+$C exec -T backend python manage.py cancel_trade_in_quote_print_jobs --apply   # cancela
+```
+
+- Sólo toca tickets de cotización de recepción **sin terminar** (pendientes o imprimiéndose). Deja una línea de
+  auditoría por empresa. Es idempotente.
+- Si aun así queda alguno, la cola de la versión anterior lo cancela sola (no tiene pedido) y sigue con los demás.
+- La migración **se deja aplicada**. Deshacerla exige que no quede ningún ticket de recepción, ni siquiera cancelado:
+  la guarda `refuse_reverse_with_trade_in_tickets` lo detiene y dice qué fila borrar.
+
 ### 6.1.4 Saber que algo va mal
 
 ```sh
