@@ -232,8 +232,8 @@ completo**. Por eso:
 
 ### 3.4 Fase 4 — Evaluación y cálculo
 
-**`TradeInAssessment`**: `branch` (de las visibles del operador), `number` (`InternalSequence` kind
-`trade_in_assessment`), `status` (§5.1), `purpose` (`valuation_only` \| `trade_towards`), `customer` (FK nulo a
+**`TradeInAssessment`**: `branch` (de las visibles del operador), `number` (contador propio por empresa, `EVA-`; ver
+§5.1), `status` (§5.1), `purpose` (`valuation_only` \| `trade_towards`), `customer` (FK nulo a
 `Customer`; obligatorio si `policy.require_identified_customer`, D3), identidad del equipo (`tariff_entry`,
 `product_model`, las cinco palabras copiadas, `has_imei`, `imei_last4`, `imei_digest`, `imei2_last4`, `imei2_digest`,
 `serial_last4`, `serial_digest`), procedencia (`provenance` cerrado: `own_purchase`, `gift`, `other` + nota), filas de
@@ -314,11 +314,24 @@ auditoría por transición (con la nota o el motivo, si lo hay).
 
 ```
 draft ──calcular──▶ calculated ──(editar)──▶ draft
-calculated ──generar cotización──▶ quoted       (crea la revisión 1 de TradeInQuote en draft; la evaluación se congela)
-draft|calculated ──cancelar──▶ cancelled
+calculated ──aprobar (sólo si REQUIERE APROBACIÓN)──▶ approved
+calculated|approved ──generar cotización──▶ quoted   (crea la revisión 1 de TradeInQuote en draft; la evaluación se congela)
+draft|calculated|approved ──anular──▶ cancelled
 ```
 
 Una evaluación `quoted` no se edita: revisar la cotización copia la evaluación a una nueva en `draft`.
+
+Implementado en la fase 4 (#464):
+- **Aprobar** sólo una evaluación cuya elegibilidad congelada es REQUIERE APROBACIÓN. Se rechaza en estos casos:
+  - el equipo no está limpio ahora;
+  - se calculó con la comprobación pendiente (`calculation_stale` por `security`);
+  - la tarifa o las reglas ya no son las vigentes (`calculation_stale`);
+  - quien aprueba participó en la evaluación (`own_change`): la abrió, cambió sus datos, respondió o la calculó.
+- **Anular una aprobada** está permitido y queda auditado: la aprobación no compromete nada (no hay cotización, compra
+  ni pago). Cerrar la comprobación del equipo anula su evaluación viva, también auditado.
+- **Numeración**: `EVA-000001` sale de un contador propio por empresa (bloqueo consultivo y UNIQUE), no de
+  `InternalSequence`. Así no se añade un tipo de documento a la tabla de secuencias. Una evaluación no se borra y su
+  número no se reusa.
 
 ### 5.2 Elegibilidad (derivada en cada cálculo; precedencia de arriba abajo, gana la primera)
 
