@@ -8,12 +8,196 @@ hacerlo en producción.
 Los nombres entre «comillas» son los que ves en pantalla. La guía general de inventario está en
 [guia-personal-inventario.md](guia-personal-inventario.md).
 
+**Si eres el propietario, empieza por §0:** son los pasos completos, en orden. El resto del documento es el detalle.
+
+## 0. Paso a paso para el propietario: cargar el stock real (nuevos y seminuevos) con R15
+
+Esto describe cómo funciona el sistema **desde R15** (`af23e3b`). Con R14 la opción «Ingreso de inventario
+existente» no existe y no se carga nada.
+
+Lo marcado «lo confirma el operador» lo hace la persona que opera el servidor (no el propietario): ella corre las
+comprobaciones y te envía el resumen del informe para que lo apruebes.
+
+### Paso 1. Comprueba que R15 está en producción
+
+R15 está en producción desde el 2026-11-27 (02:52, Lima). En «Inventario › Más herramientas ›
+Carga de equipos», el «Tipo de ingreso» ofrece **tres** opciones: «Compra a proveedor», «Inventario inicial» e
+«Ingreso de inventario existente». Si sólo ves dos, R15 no está desplegada: no sigas.
+
+### Paso 2. Descarga las plantillas (después del despliegue)
+
+En «Inventario › Más herramientas › Carga de equipos»:
+
+- **«Stock de equipos nuevos»** para los equipos nuevos.
+- **«Stock de seminuevos»** para los seminuevos.
+
+Descárgalas de nuevo aunque tengas otras guardadas: así traen tus sucursales y tu escala de «Estado estético». No uses
+la plantilla combinada ni un archivo exportado con «Revisión (IMEI ocultos)».
+
+### Paso 3. Llena una fila por cada equipo físico
+
+Dos teléfonos iguales son dos filas. Escribe desde la fila 3 (la fila 2 es un ejemplo y no se carga). No cambies los
+encabezados ni el nombre de la hoja.
+
+| Columna | ¿Obligatoria? | Regla |
+|---|---|---|
+| Sucursal | Sí | Tal como está en el sistema. |
+| Modelo, Capacidad, Color, SIM, Versión (región / país de venta) | Modelo sí; las demás si la variante las tiene | Tienen que nombrar una variante que **ya existe** en «Catálogo › Modelos» y en su línea (nuevo o seminuevo). La carga no crea variantes. |
+| IMEI 1 | **Sí, en todo producto marcado «lleva IMEI»** en «Catálogo › Modelos» | 15 dígitos, sin espacios, con su dígito de control. No se repite en ningún equipo de la empresa. Revisa la marca de cada variante en el catálogo antes de llenar: dos variantes de iPhone que no la tenían se marcaron el 2026-11-26. |
+| IMEI 2 | No | El segundo IMEI, si el equipo tiene dos. |
+| Serie | **Opcional si la fila trae un IMEI válido**; obligatoria si el producto no lleva IMEI | No puede ser el IMEI de otro equipo, ni repetirse en la misma variante. |
+| Costo | No | Sólo si tienes «Ver costos y márgenes». Sin ese permiso, una fila con costo es un error. |
+| Proveedor | No | Tal como está en «Productos › Proveedores». Para stock que ya tenías puede quedar vacío. |
+| Precio de venta (nuevos) | No | Es una **propuesta** para el precio de la variante. Nunca cambia sola (§5.1). |
+| Precio de venta (seminuevos) | Recomendado | El precio de **ese** equipo. Sin precio no se vende. |
+| Garantía (días) (seminuevos) | No | Vacía = la política de garantía de la empresa; 0 = sin garantía. |
+| Estado estético, Salud de batería (%), Estado funcional, Defectos, Accesorios, Detalles para el comprador (seminuevos) | Según el equipo | Ver §2.2. Si «Estado funcional» es «Con fallas», llena «Defectos». |
+| Fecha de ingreso, Observaciones (notas internas) | No | Fecha vacía = hoy. |
+
+«Lleva IMEI» (desde R15): no se puede apagar ni cambiar sin «Gestionar productos», y no se enciende mientras un equipo
+del producto no tenga IMEI válido. Si una fila no tiene IMEI, no inventes uno: deja ese equipo fuera y avisa.
+
+**Precios y garantías propios de cada equipo** (precio de un seminuevo, «Garantía (días)»): sólo entran si quien
+registra tiene «Gestionar productos» (`products.manage`), o si alguien con ese permiso **aprueba** los precios y
+garantías de esa carga (§7.1). Sin ese permiso y sin aprobación, el servidor **rechaza** el registro de esa carga,
+salvo que quien registra elija «Registrar sin precios ni garantías»: entonces los equipos entran sin precio propio y
+con la política de garantía de la empresa, y se completan después en su ficha.
+
+### Paso 4. Separa los archivos por tipo de ingreso
+
+Cada archivo se carga con **un solo** tipo de ingreso. Un **estante** es una sucursal × una variante.
+
+| Tipo de ingreso | Para qué estantes | En el Kardex se lee |
+|---|---|---|
+| **«Inventario inicial»** | Estantes **sin ningún movimiento** (ni venta, ni compra, ni traslado, ni ajuste). | «Stock inicial» (`initial_stock`) |
+| **«Ingreso de inventario existente»** | Estantes **con historial**: ya tuvieron una venta, una compra (también «Caja: llegó el equipo» o un escaneo), un traslado, una reserva, una baja o una entrada/salida manual. | «Ingreso de inventario existente» (aparte de las compras) |
+
+- **Nunca** cargues como «Compra a proveedor» un equipo que ya tenías: no hubo compra.
+- **Nunca** uses la caja («Llegó el equipo»), «Registrar equipo por escaneo» ni «Entrada manual» para la carga
+  inicial: escriben compra o no imprimen etiquetas.
+- Un mismo estante no va en los dos tipos. Si una variante de una sucursal ya tuvo movimientos, todos sus equipos de esa
+  sucursal van en el archivo de inventario existente.
+- No tienes que adivinar qué estantes tienen historial. La forma más simple: pon todo en archivos de «Inventario
+  inicial»; la vista previa (Paso 6) lista los **estantes cerrados** y las filas que rechazaría. Esas filas las
+  **mueves** a un archivo aparte de «Ingreso de inventario existente». En la copia de producción del 2026-11-26 21:48
+  había 4 estantes de equipos con historial (y 8 de productos sin número de serie). El informe da la lista vigente.
+- Nombres de archivo: sólo letras, números, `.`, `_` y `-`, con un número delante que fija el orden. Por ejemplo
+  `01-nuevos-tienda.xlsx`, `02-seminuevos-almacen.xlsx` (inventario inicial) y `01-nuevos-tienda-existente.xlsx`
+  (inventario existente).
+
+### Paso 5. Entrega los archivos
+
+Los archivos tienen IMEI reales: no los mandes por chat, correo ni issues, y nunca van al repositorio. Se copian sin
+abrirlos ni retocarlos al servidor de producción (prod-02), dentro de `/srv/blackdogstore/backups/`:
+
+- archivos de **«Inventario inicial»** → `backups/stock-real-inbox/`
+- archivos de **«Ingreso de inventario existente»** → `backups/stock-real-inbox-existente/`
+
+Si no existen, se crean con modo `700` (`mkdir -m 700 …`); el kit avisa si el modo es otro. Ejemplo:
+`scp 01-nuevos-tienda.xlsx prod-02:/srv/blackdogstore/backups/stock-real-inbox/`.
+
+### Paso 6. Vista previa en una copia aislada (no toca producción)
+
+Lo confirma el operador. Antes, decide con él el **motivo** de cada tipo de ingreso, exactamente como lo escribirás
+en el panel en el Paso 9 (por ejemplo «Stock real diciembre 2026»): el informe y la carga real deben usar el mismo.
+El operador corre el kit `backups/stockreal-preview-r15/` (runbook `README-stockreal-preview.md`) una vez por
+carpeta, con el usuario **real** que va a cargar en el panel y sus permisos reales:
+
+```sh
+STOCK_COMPANY=black-dog-store STOCK_ACTOR=<usuario> STOCK_ENTRY_KIND=opening \
+  STOCK_REASON='<motivo exacto del panel>' \
+  STOCK_INBOX_ALSO=/srv/blackdogstore/backups/stock-real-inbox-existente \
+  nohup sh backups/stockreal-preview-r15/stock_real_driver.sh >/dev/null 2>&1 &
+STOCK_COMPANY=black-dog-store STOCK_ACTOR=<usuario> STOCK_ENTRY_KIND=existing \
+  STOCK_REASON='<motivo exacto del panel>' \
+  STOCK_INBOX=/srv/blackdogstore/backups/stock-real-inbox-existente \
+  STOCK_INBOX_ALSO=/srv/blackdogstore/backups/stock-real-inbox \
+  nohup sh backups/stockreal-preview-r15/stock_real_driver.sh >/dev/null 2>&1 &
+```
+
+La segunda se lanza cuando la primera termina: la **última línea** de
+`backups/stockreal-preview-r15/stockreal-driver.log` dice «DRIVER_DONE». El kit toma un backup, lo restaura en una
+copia sin salida a la red, previsualiza y registra en la copia como lo haría el panel, comprueba y **deshace todo**.
+Sólo acepta producción en R15 exacta.
+
+**Duplicados entre las dos carpetas.** Cada ejecución sólo previsualiza su carpeta, así que no vería un mismo IMEI
+escrito en un archivo de cada carpeta. Por eso cada una lee también la otra carpeta con `STOCK_INBOX_ALSO` (sólo sus
+IMEI y series, sin previsualizarla ni registrarla) y lista los identificadores que aparecen en las dos. **El kit se
+detiene sin hacer nada** si `STOCK_INBOX_ALSO` apunta a una carpeta que no existe o que no tiene ningún `.xlsx`. Si
+sólo tienes archivos de una de las dos carpetas, el operador quita esa línea del comando; no hay nada con qué
+comparar.
+
+### Paso 7. Lee el informe
+
+Por cada archivo, en este orden:
+
+1. **«ESTANTES CERRADOS PARA INVENTARIO INICIAL»**: los estantes que ya no admiten «Inventario inicial».
+2. **«FILAS RECHAZADAS POR ESTANTE CERRADO PARA INVENTARIO INICIAL: n (filas …)»** (vista previa de inventario
+   inicial): esas filas pásalas al archivo de inventario existente (Paso 4) y repite la vista previa. Con un solo error,
+   ese archivo entero no se registra.
+3. **«ERRORES»** (con sus filas): corrige el Excel. Los IMEI salen ocultos (`****1234`).
+4. **«SE REGISTRARÍAN por sucursal × variante × línea»**: compáralo con tu **conteo físico**.
+5. **«PRECIOS DE VENTA DEL ARCHIVO»** (nuevos): las propuestas de precio de variante. Dime cuáles apruebas.
+6. **«PRECIOS/GARANTÍAS PROPIOS DE EQUIPOS»** (seminuevos): si quien carga no tiene «Gestionar productos», hará falta
+   tu aprobación en el panel (§7.1).
+7. **«DUPLICADOS»** dentro del archivo, entre archivos, **«DUPLICADOS CON LA OTRA CARPETA»** y ya registrados: tienen
+   que ser 0.
+8. **«INGRESO DE INVENTARIO EXISTENTE: filas en estantes cerrados … · filas en estantes sin historial …»** (vista previa
+   de inventario existente): las filas «sin historial» entran igual, pero lo correcto es pasarlas a «Inventario
+   inicial».
+9. Fase B (lo confirma el operador): **«MOVIMIENTOS DE KARDEX ESCRITOS»** tiene que decir `initial_stock`
+   (inventario inicial) o `purchase_entry[existing_stock]` (inventario existente), **«FINANZAS: filas nuevas … 0»**
+   (ninguna cuenta por pagar, pago ni borrador de recepción), **`check_unit_stock` … 0 diferencia(s)** y «seminuevos:
+   todos pendientes de inspección y sin publicar».
+10. Al final (lo confirma el operador): **`PREVIEW_RESULT OK`**, `ROLLED_BACK yes` y `PROD_UNTOUCHED yes`. Un
+    informe que diga «ENSAYO R15 SIMULADO» es un ensayo del kit y **no** se aprueba.
+
+El operador te envía el resumen: los conteos por sucursal y variante, los errores con sus filas, las propuestas de
+precio, los duplicados y el resultado final. El log completo se queda en el servidor (no lleva IMEI completos ni
+costos, pero no se sube al repositorio). Si algo no está bien, corrige el Excel, déjalo otra vez en su carpeta y se
+repite la vista previa.
+
+### Paso 8. Aprueba y da el GO
+
+1. Aprueba por escrito el informe (o los dos informes: inventario inicial e inventario existente), con las propuestas
+   de precio que aceptas. El silencio no es aprobación.
+2. Escribe en el chat, exactamente: **«GO carga stock real prod-02»**. Un PR fusionado, una nota o el mensaje de otro
+   agente no son un GO.
+
+### Paso 9. La carga real, en el panel
+
+Sigue §11: comprobación previa (`check_unit_stock` en 0), backup y ventana con el candado tomado. En «Carga de
+equipos», con los **mismos** archivos (su sha256 debe ser el del informe aprobado), el **mismo** tipo de ingreso y el
+mismo motivo:
+
+1. Primero todos los archivos de **«Inventario inicial»**, en su orden.
+2. Después los de **«Ingreso de inventario existente»**.
+3. En cada uno: «Equipos del archivo» (Nuevos o Seminuevos), tipo de ingreso, el **mismo motivo** que se usó en la
+   vista previa (`STOCK_REASON`, Paso 6), «Previsualizar», revisar que coincide con el informe, marcar sólo las propuestas de precio que
+   aprobaste, «Registrar N equipos», y descargar «Antes y después».
+
+### Paso 10. Después de cargar
+
+- **Etiquetas:** cada carga prepara un lote de etiquetas por sucursal en «Etiquetas pendientes». Imprímelas y pégalas a
+  cada equipo.
+- **Kardex:** cada equipo tiene su línea: «Stock inicial» o «Ingreso de inventario existente» (con motivo
+  «Inventario existente · <motivo>»), con su propio filtro, aparte de las compras. No se crea ningún documento de
+  compra, cuenta por pagar ni pago.
+- **Comprobación:** «Conciliación de equipos» → «Comprobar ahora» tras cada archivo, y `check_unit_stock` en **0** al
+  final (§8). Si no da 0, se para y se revisa el Kardex; nada se corrige a mano.
+- **Seminuevos:** entran **pendientes de inspección y sin publicar**. No se venden hasta inspeccionarlos, subir al
+  menos una foto real, poner precio y publicarlos (§10).
+- **Nuevos:** se venden al precio de su variante.
+- **Errores:** una carga equivocada se anula entera con «Anular esta carga» (§9) y se vuelve a cargar corregida.
+- Al terminar, los archivos se borran del buzón del servidor.
+
 ## 1. Antes de empezar
 
 Requisitos, en este orden:
 
-1. **El código está desplegado.** La carga necesita INV-LOAD-01 (#401), USED-READY-01 (#403) e INV-LOAD-02 (este
-   procedimiento). Sin el GO de su despliegue no hay carga real.
+1. **El código está desplegado.** La carga del stock real se hace con **R15** (`af23e3b`): trae «Ingreso de
+   inventario existente» (#443) y la protección de «lleva IMEI» (#444), sobre INV-LOAD-01 (#401), USED-READY-01 (#403),
+   INV-LOAD-02 e IMPORT-TERMS-APPROVAL (#434). Sin el GO de su despliegue no hay carga real.
 2. **El catálogo existe.** Cada equipo entra en una **variante**: un modelo con su capacidad, color, SIM y versión
    (región). La variante debe existir en «Catálogo › Modelos», en su línea (nueva o seminueva), marcada «con número de
    serie» y, si corresponde, «lleva IMEI». La carga **no crea** modelos ni variantes.
@@ -100,7 +284,7 @@ Las mismas de arriba, más:
 | Estado funcional | «Sin fallas» o «Con fallas» (entonces llena «Defectos»). |
 | Defectos | Lo que no funciona o está dañado. Lo lee el comprador. |
 | Accesorios | Lo que trae (caja, cargador, cable…). Lo lee el comprador. |
-| Garantía (días) | Vacía = la política de la empresa; 0 = sin garantía. |
+| Garantía (días) | Vacía = la política de garantía de la empresa; 0 = sin garantía. |
 | Detalles para el comprador | Rayones, detalles. Hasta 500 caracteres. |
 
 **No hay columnas de inspección, publicación ni fotos.** La carga nunca inspecciona, publica ni adjunta fotos: todo
@@ -114,8 +298,12 @@ seminuevo entra **pendiente de inspección y sin publicar** (USED-READY-01). Eso
   un código con forma de IMEI como IMEI (SCAN-TO-STOCK-01).
 - La serie no se repite dentro de la misma variante. Si ya existe en **otra** variante, la vista previa lo avisa: si es
   el mismo equipo, no lo cargues dos veces.
-- En una variante que «lleva IMEI», la serie es opcional si la fila trae un IMEI válido. En las demás, la serie es
-  obligatoria.
+- En una variante que «lleva IMEI», el IMEI 1 es **obligatorio** y la serie es opcional si la fila trae un IMEI
+  válido. En las demás, la serie es obligatoria. #22 «iPhone 15 128Gb Negro» y #23 «iPhone 17 Pro JPN 256Gb Plata»
+  llevan IMEI desde el 2026-11-26.
+- «Lleva IMEI» (SERIALIZATION-IMEI-GUARD-01, R15): apagarlo o cambiarlo en un producto ya controlado por equipo, también
+  quitándole la serialización, exige «Gestionar productos» (403); encenderlo se rechaza mientras algún equipo del
+  producto no tenga un IMEI válido (409). La recepción, el alta guiada y la caja nunca lo apagan.
 - Un equipo vendido no se vuelve a cargar. Un equipo **anulado** libera su IMEI y su serie. Un equipo **dado de baja**
   NO los libera: sigue ocupando su IMEI (`unique_stock_unit_imei_per_company` sólo excluye «Anulado»). Si un equipo
   dado de baja vuelve a la tienda, no se carga de nuevo con el mismo IMEI: se resuelve en su ficha.
@@ -181,14 +369,15 @@ La copia de revisión **nunca** entra en una carga: la carga de equipos rechaza 
 sus filas a una plantilla, rechaza todo el archivo si una celda de IMEI o serie trae «•». El asistente «¿Qué archivo
 tengo?» la reconoce como una copia de revisión.
 
-## 4. Inventario inicial o compra
+## 4. Inventario inicial, inventario existente o compra
 
 Al subir el archivo eliges el «Tipo de ingreso»:
 
-- **«Inventario inicial»**: lo que la tienda ya tenía. Es el caso del stock real. Queda en el Kardex como inventario
-  inicial, sin compra ficticia. Se puede cargar **por tandas** (varios archivos) mientras el producto, en esa
-  sucursal, sólo tenga líneas de inventario inicial. Una venta, una compra o un traslado lo cierran: desde ahí, lo
-  que llegue es compra. Anular un ingreso de inventario inicial (un equipo o una carga entera) **no** lo cierra: el
+- **«Inventario inicial»**: lo que la tienda ya tenía, en un estante sin movimientos. Es el caso del stock real.
+  Queda en el Kardex como inventario inicial, sin compra ficticia. Se puede cargar **por tandas** (varios archivos)
+  mientras el producto, en esa sucursal, sólo tenga líneas de inventario inicial. Una venta, una compra o un traslado
+  lo cierran: desde ahí, el stock que ya tenías entra como «Ingreso de inventario existente» (§4.1) y lo que llegue
+  comprado, como compra. Anular un ingreso de inventario inicial (un equipo o una carga entera) **no** lo cierra: el
   archivo corregido se vuelve a cargar como inventario inicial.
 - **«Compra a proveedor»**: mercadería que llega comprada.
 - **«Ingreso de inventario existente»** (STOCK-EXISTING-01): equipos que ya tenías; **no es una compra**. Se acepta en
@@ -212,7 +401,7 @@ inventario inicial»: la carga por Excel de equipos, «Registrar equipos» y «R
 - Se acepta en **cualquier** estante, tenga historial o no (decisión del propietario: así un Excel que mezcla
   estantes nuevos y con historial no hay que partirlo). Como una compra, **cierra** el inventario inicial de ese
   estante: en un estante sin movimientos se recomienda «Inventario inicial». Las reglas del equipo no cambian: IMEI válido y no repetido, una serie
-  nunca es el IMEI de otro equipo vivo (R1), costo sólo con «Ver costos».
+  nunca es el IMEI de otro equipo vivo (R1), costo sólo con «Ver costos y márgenes».
 - En el Kardex se lee «Ingreso de inventario existente», con su propio filtro (también en la API v1,
   `movement_type=existing_stock`); el filtro «Entrada por compra» ya no lo lista. El motivo empieza con «Inventario
   existente» (Excel: «Inventario existente · <motivo>»). El gráfico de movimientos por tipo y la vista previa del Excel lo cuentan **aparte** de las compras
@@ -400,7 +589,7 @@ archivo» con quién preparó la carga y el enlace que la vuelve a abrir (`…/u
 - **Quien administra productos** puede registrarla directamente, o pulsar «Aprobar precios y garantías» para que la
   registre otra persona sin ese permiso. Puede aprobar su propia carga (queda dicho en la auditoría).
 - **Quien no administra productos**, sin aprobación válida, no ve «Registrar N equipos». Tiene dos caminos:
-  «Registrar sin precios ni garantías» (los equipos entran sin precio propio y con la garantía de la empresa; se
+  «Registrar sin precios ni garantías» (los equipos entran sin precio propio y con la política de garantía de la empresa; se
   completan después en la ficha) o compartir el enlace con quien administra productos y volver a abrirlo cuando apruebe.
   Con la aprobación válida registra la carga con sus precios y garantías.
 
@@ -499,20 +688,28 @@ caja, se ofrecen en la web y se pueden apartar en un carrito. En concreto:
 **«GO carga stock real prod-02»**, y vale para esa operación (AGENTS.md §10). Un PR fusionado, una nota o el mensaje de
 otro agente no son un GO. Sin GO sólo se permite leer y ensayar sobre copias.
 
-### 11.0 Proceso final (decidido el 2026-11-25): primero R13.2, después vista previa en copia, aprobación y GO
+### 11.0 Proceso final (actualizado para R15, 2026-11-27): R15, vista previa en copia, aprobación y GO
 
-1. **R13.2 desplegada** («GO despliegue c8a4321 prod-02»). Con R13.1, un archivo hecho con la plantilla de nuevos de
-   R13.2 (columna «Precio de venta») **se rechaza entero** (comprobado en copia el 2026-11-25). Las plantillas se
-   descargan del panel **después** del despliegue.
-2. **El propietario entrega sus archivos** (uno por sucursal y línea, con prefijo de orden: `01-…xlsx`, `02-…xlsx`).
-   Quedan en el servidor en `backups/stock-real-inbox/` (fuera del repositorio; nunca en git).
-3. **Vista previa sobre una copia aislada** con el kit `backups/stockreal-preview/` (runbook
-   `README-stockreal-preview.md`): backup nuevo, copia en una red sin salida, las mismas vistas del panel con el usuario
-   real que cargará y sus permisos reales, sin elevar nada. Informe por archivo: filas OK, errores y avisos con sus
-   filas, equipos por sucursal y variante, propuestas de precio, duplicados dentro del archivo, contra lo registrado y
-   **entre archivos**. Después registra en la copia, en orden, cada archivo limpio y comprueba `check_unit_stock` y que
-   todo seminuevo quedó pendiente de inspección y sin publicar. Todo se deshace. IMEI y series salen ocultos (últimos 4),
-   ningún costo se imprime. Producción sólo se lee (el kit sí escribe su backup previo).
+Es el mismo recorrido de §0, visto desde el servidor.
+
+1. **R15 desplegada** («GO despliegue af23e3b prod-02»). Con R14 no existe «Ingreso de inventario existente» y el kit
+   de vista previa R15 se niega a correr. Las plantillas se descargan del panel **después** del despliegue.
+2. **El propietario entrega sus archivos**, separados por tipo de ingreso (§0, Paso 4) y con prefijo de orden:
+   inventario inicial en `backups/stock-real-inbox/`, inventario existente en `backups/stock-real-inbox-existente/`
+   (fuera del repositorio; nunca en git).
+3. **Vista previa sobre una copia aislada** con el kit `backups/stockreal-preview-r15/` (runbook
+   `README-stockreal-preview.md`), una ejecución por carpeta (`STOCK_ENTRY_KIND=opening` y `existing`), cada una con
+   el motivo exacto del panel (`STOCK_REASON`) y la otra carpeta en `STOCK_INBOX_ALSO` (duplicados entre carpetas; sólo
+   si esa carpeta tiene algún `.xlsx`, si no el kit se detiene):
+   backup nuevo,
+   copia en una red sin salida, las mismas vistas del panel con el usuario real que cargará y sus permisos reales, sin
+   elevar nada. Informe por archivo: estantes cerrados para inventario inicial y filas rechazadas por eso (con la
+   propuesta de pasarlas a «Ingreso de inventario existente»), filas OK, errores y avisos con sus filas, equipos por
+   sucursal y variante, propuestas de precio, duplicados dentro del archivo, contra lo registrado y **entre archivos**.
+   Después registra en la copia, en orden, cada archivo limpio y comprueba el tipo de línea de Kardex
+   (`initial_stock` o `purchase_entry` con la marca `existing_stock`), que no se escribió ninguna fila de finanzas,
+   `check_unit_stock` y que todo seminuevo quedó pendiente de inspección y sin publicar. Todo se deshace. IMEI y series
+   salen ocultos (últimos 4), ningún costo se imprime. Producción sólo se lee (el kit sí escribe su backup previo).
 4. **El propietario aprueba el informe** (o corrige sus archivos y se repite el paso 3). El silencio no es aprobación.
 5. **«GO carga stock real prod-02»** y la carga en el panel con los pasos de abajo, con los mismos archivos (su sha256
    debe coincidir con el del informe aprobado).
@@ -524,7 +721,7 @@ precio y publicación controlada.
 Pasos, en `/srv/blackdogstore`:
 
 1. **Estado real.** `git rev-parse HEAD`, `showmigrations store` y las imágenes en marcha: el código desplegado debe
-   incluir INV-LOAD-02. `sh backups/ops/prod_lock.sh --status`: el candado debe estar libre.
+   ser R15 `af23e3b` (imagen `release-af23e3b`). `sh backups/ops/prod_lock.sh --status`: el candado debe estar libre.
 2. **Comprobación previa** (sólo lectura; `$C` es el `docker compose …` de
    [despliegue-produccion.md](despliegue-produccion.md)):
    `$C exec -T backend python manage.py check_unit_stock --company <slug>` → debe salir con **0**. Si sale con 2, se
@@ -535,9 +732,10 @@ Pasos, en `/srv/blackdogstore`:
 4. **Ventana de carga con el candado tomado** (impide un despliegue, una migración o un backup mientras se carga; no
    bloquea el panel):
    `sh backups/ops/prod_lock.sh "<quién> · carga stock real · <sha>" sh -c 'echo "Carga en curso. Pulsa Enter al terminar."; read _'`
-5. **Cargar en el panel**, por tandas pequeñas (por ejemplo, una sucursal y una línea por archivo), como inventario
-   inicial: previsualizar, revisar, registrar, descargar «Antes y después». Tras cada tanda, «Conciliación» →
-   «Comprobar ahora».
+5. **Cargar en el panel**, por tandas pequeñas (por ejemplo, una sucursal y una línea por archivo): primero los
+   archivos de «Inventario inicial», después los de «Ingreso de inventario existente», cada uno con el tipo de ingreso
+   y el motivo de su informe aprobado: previsualizar, revisar, registrar, descargar «Antes y después». Tras cada tanda,
+   «Conciliación» → «Comprobar ahora».
 6. **Comprobación final:** `check_unit_stock --company <slug>` → **0**. Soltar el candado (Enter).
 7. **Si una tanda salió mal:** «Anular esta carga» (§9) y volver a cargar el archivo corregido. Restaurar la copia
    (`deploy/restore.sh`) es el último recurso y necesita su propio GO: borraría también las ventas hechas después.
@@ -554,7 +752,8 @@ Pasos, en `/srv/blackdogstore`:
 | «El precio de … cambió desde la vista previa» | Otro cambió el precio de la variante: nada se registró. Sube el archivo otra vez. |
 | «Este archivo es la plantilla de … y elegiste cargar …» | Sube la plantilla de la línea correcta. |
 | «… no tiene esa variante» | Crea la variante en Catálogo › Modelos (o corrige capacidad, color, SIM o versión). |
-| «Inventario inicial» rechazado por movimientos | Ese producto ya tuvo una venta, compra o traslado en esa sucursal: cárgalo como compra. |
+| «Inventario inicial» rechazado por movimientos | Ese producto ya tuvo una venta, compra o traslado en esa sucursal: pasa esas filas a un archivo de «Ingreso de inventario existente» (§0, Paso 4). No como compra. |
+| «"…" lleva IMEI: indícalo para cada equipo» | El producto lleva IMEI: escribe el IMEI 1 del equipo (15 dígitos). La serie sola no basta. |
 | «Otra operación estaba usando este stock» | Nada se escribió: vuelve a intentarlo. |
 | La conciliación muestra diferencias | No corrijas a mano: revisa el Kardex del producto y avisa al responsable. |
 | «No se anuló ningún equipo» | Algún equipo de la carga ya se movió: la lista dice cuál. |

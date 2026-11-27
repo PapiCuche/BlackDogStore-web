@@ -17,6 +17,7 @@ ADR por dominio, que no se reescriben.
 | Matriz de conformidad UBL 2.1 | [docs/sunat-factura-ubl21-matriz.md](docs/sunat-factura-ubl21-matriz.md) |
 | Requisitos y catálogos SUNAT | [docs/sunat-cpe-requisitos.md](docs/sunat-cpe-requisitos.md) |
 | Importes escritos (texto, celdas y valores tipados) | [docs/adr-money-input.md](docs/adr-money-input.md) — DEC-INV-MONEY-01 |
+| Valorización de equipos usados (tarifario, reglas, elegibilidad, cotización de recepción) | [docs/adr-trade-in-valuation.md](docs/adr-trade-in-valuation.md) — TRADE-IN VALUATION PRO (PROPUESTA; fase 1 en #457) |
 
 ## Decisiones registradas en esta entrada
 
