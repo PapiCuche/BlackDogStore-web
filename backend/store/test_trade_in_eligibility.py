@@ -102,14 +102,14 @@ class CapabilitiesTest(TestCase):
     def test_two_explicit_grants_nobody_gets_by_default(self):
         from importlib import import_module
 
-        self.assertEqual(TRADE_IN_ASSESSMENT_CODES, {VIEW, VALUE})
+        self.assertTrue({VIEW, VALUE} <= TRADE_IN_ASSESSMENT_CODES)
         for code in TRADE_IN_ASSESSMENT_CODES:
             self.assertEqual(CAPABILITIES[code].status, STATUS_ACTIVE)
         self.assertTrue(TRADE_IN_ASSESSMENT_CODES <= EXPLICIT_GRANT_CODES)
         self.assertFalse(TRADE_IN_ASSESSMENT_CODES & DEFAULT_ADMIN_CAPABILITY_CODES)
         company = fx.company('tie-nueva', 'Nueva')
         self.assertFalse(TRADE_IN_ASSESSMENT_CODES & set(company.roles.get(slug='administrador').capabilities))
-        self.assertEqual(import_module('store.migrations.0196_trade_in_eligibility').CODES, TRADE_IN_ASSESSMENT_CODES)
+        self.assertEqual(import_module('store.migrations.0196_trade_in_eligibility').CODES, {VIEW, VALUE})
 
     def test_the_repair_touches_only_a_fresh_installs_seeded_administrador(self):
         from importlib import import_module

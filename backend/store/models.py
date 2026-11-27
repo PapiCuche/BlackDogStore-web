@@ -6021,6 +6021,9 @@ class TradeInPolicy(models.Model):
     optional_blockers = models.JSONField(default=list, blank=True, db_default=[])
     #: The company's own blockers: [{"code": "...", "label": "..."}]. `blocked` = NOT ELIGIBLE, like the platform's.
     extra_blockers = models.JSONField(default=list, blank=True, db_default=[])
+    #: Phase 4 (0197). D3 (open): the recommendation (a) — a trade-in assessment names its customer — as the default;
+    #: a company may switch it off. `db_default` for the previous release.
+    require_identified_customer = models.BooleanField(default=True, db_default=True)
     updated_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     updated_at = models.DateTimeField(auto_now=True)
@@ -6763,6 +6766,164 @@ class TradeInIdentityRecord(models.Model):
         from django.core.exceptions import ValidationError
 
         raise ValidationError('Un registro de verificación no se borra.')
+
+
+# =============================================================================
+# TRADE-IN VALUATION PRO · Phase 4 — the assessment and its calculation (docs/adr-trade-in-valuation.md §3.4, §5, §6)
+# =============================================================================
+#
+# An ASSESSMENT is one device of one customer valued at one branch: its device check (phase 3: identity and
+# security), its tariff entry, the answers to the company's questions, and a frozen calculation (tariff version, rule
+# set version, lines, values, eligibility). It never buys, receives, pays or credits anything: phase 5 quotes it, and
+# only TRADE-IN-01B (D1-D12) may ever receive the device.
+
+
+class TradeInAssessment(models.Model):
+    STATUS_DRAFT = 'draft'
+    STATUS_CALCULATED = 'calculated'
+    STATUS_APPROVED = 'approved'
+    STATUS_QUOTED = 'quoted'
+    STATUS_CANCELLED = 'cancelled'
+    STATUS_CHOICES = [
+        (STATUS_DRAFT, 'Borrador'), (STATUS_CALCULATED, 'Calculada'), (STATUS_APPROVED, 'Aprobada'),
+        (STATUS_QUOTED, 'Cotizada'), (STATUS_CANCELLED, 'Anulada'),
+    ]
+    #: Answers and the calculation are written only in these.
+    EDITABLE = frozenset({STATUS_DRAFT, STATUS_CALCULATED})
+
+    PURPOSE_VALUATION = 'valuation_only'
+    PURPOSE_TRADE_TOWARDS = 'trade_towards'
+    PURPOSE_CHOICES = [(PURPOSE_VALUATION, 'Sólo valorización'), (PURPOSE_TRADE_TOWARDS, 'Parte de pago')]
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='trade_in_assessments')
+    branch = models.ForeignKey(Branch, on_delete=models.PROTECT, related_name='trade_in_assessments')
+    #: Per company, never reused (`trade_in_assessment.next_number`); shown as EVA-000001.
+    number = models.PositiveIntegerField()
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default=STATUS_DRAFT)
+    purpose = models.CharField(max_length=14, choices=PURPOSE_CHOICES, default=PURPOSE_VALUATION)
+    device_check = models.ForeignKey('TradeInDeviceCheck', on_delete=models.PROTECT, related_name='assessments')
+    customer = models.ForeignKey(Customer, on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    tariff_entry = models.ForeignKey('TradeInTariffEntry', on_delete=models.PROTECT, related_name='assessments')
+    #: The device's words, copied from the tariff entry when the assessment opened.
+    brand = models.CharField(max_length=80)
+    model_name = models.CharField(max_length=160)
+    capacity = models.CharField(max_length=40, blank=True, default='')
+    sim = models.CharField(max_length=40, blank=True, default='')
+    region = models.CharField(max_length=40, blank=True, default='')
+    #: `trade_towards`: the product the customer is buying, or the sales quote it is in (price copied at calculation).
+    target_product = models.ForeignKey('Product', on_delete=models.PROTECT, null=True, blank=True, related_name='+')
+    target_sales_quote = models.ForeignKey('SalesQuote', on_delete=models.PROTECT, null=True, blank=True,
+                                           related_name='+')
+    # --- the frozen calculation (`trade_in_assessment.calculate`) -------------------------------------------
+    tariff_version = models.ForeignKey('TradeInTariffVersion', on_delete=models.PROTECT, null=True, blank=True,
+                                       related_name='+')
+    rule_set_version = models.ForeignKey('TradeInRuleSetVersion', on_delete=models.PROTECT, null=True, blank=True,
+                                         related_name='+')
+    calculation = models.JSONField(default=dict, blank=True)
+    eligibility = models.CharField(max_length=24, blank=True, default='')
+    computed_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    offered_value = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    adjustment_reason = models.CharField(max_length=300, blank=True, default='')
+    needs_approval = models.BooleanField(default=False)
+    target_price = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    difference = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    calculated_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    calculated_at = models.DateTimeField(null=True, blank=True)
+    approved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    approved_at = models.DateTimeField(null=True, blank=True)
+    approval_note = models.CharField(max_length=300, blank=True, default='')
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    cancelled_at = models.DateTimeField(null=True, blank=True)
+    cancel_reason = models.CharField(max_length=300, blank=True, default='')
+
+    class Meta:
+        ordering = ['-created_at', '-pk']
+        constraints = [
+            models.UniqueConstraint(fields=['company', 'number'], name='trade_in_assessment_number_unique'),
+            # One live assessment per device check: a second one would value the same device twice.
+            models.UniqueConstraint(fields=['device_check'], condition=~models.Q(status='cancelled'),
+                                    name='trade_in_assessment_one_live_per_check'),
+            models.CheckConstraint(
+                condition=(models.Q(computed_value__isnull=True) | models.Q(computed_value__gte=Decimal('0.00')))
+                & (models.Q(offered_value__isnull=True) | models.Q(offered_value__gte=Decimal('0.00')))
+                & (models.Q(difference__isnull=True) | models.Q(difference__gte=Decimal('0.00'))),
+                name='trade_in_assessment_values_non_negative'),
+            models.CheckConstraint(
+                condition=models.Q(purpose='trade_towards')
+                | (models.Q(target_product__isnull=True) & models.Q(target_sales_quote__isnull=True)),
+                name='trade_in_assessment_target_only_when_trading'),
+            models.CheckConstraint(
+                condition=models.Q(status='draft') | models.Q(status='cancelled')
+                | (models.Q(tariff_version__isnull=False) & models.Q(rule_set_version__isnull=False)
+                   & models.Q(calculated_at__isnull=False)),
+                name='trade_in_assessment_calculated_has_versions'),
+        ]
+        indexes = [models.Index(fields=['company', 'status'])]
+
+    def __str__(self):
+        return self.label
+
+    @property
+    def label(self) -> str:
+        return f'EVA-{self.number:06d}'
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        for name in ('branch', 'device_check', 'customer', 'tariff_entry', 'target_product', 'target_sales_quote'):
+            related = getattr(self, name, None) if getattr(self, f'{name}_id') else None
+            if related is not None and related.company_id != self.company_id:
+                raise ValidationError({name: ['No pertenece a esta empresa.']})
+        if self.pk is not None:
+            stored = TradeInAssessment.objects.filter(pk=self.pk).values_list('status', flat=True).first()
+            if stored in (self.STATUS_QUOTED, self.STATUS_CANCELLED):
+                raise ValidationError('Una evaluación cotizada o anulada no se modifica.')
+            if stored == self.STATUS_APPROVED and self.status not in (self.STATUS_QUOTED, self.STATUS_CANCELLED):
+                raise ValidationError('Una evaluación aprobada no se modifica: anúlala y abre otra.')
+        return super().save(*args, **kwargs)
+
+
+class TradeInAssessmentAnswer(models.Model):
+    """The answer to one of the company's questions for one assessment. Written only while it is editable."""
+
+    company = models.ForeignKey(Company, on_delete=models.PROTECT, related_name='+')
+    assessment = models.ForeignKey(TradeInAssessment, on_delete=models.PROTECT, related_name='answers')
+    factor = models.ForeignKey('TradeInFactor', on_delete=models.PROTECT, related_name='+')
+    value = models.CharField(max_length=60)
+    answered_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
+    answered_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['factor_id']
+        constraints = [
+            models.UniqueConstraint(fields=['assessment', 'factor'], name='trade_in_assessment_answer_unique'),
+        ]
+
+    def _editable(self):
+        status = TradeInAssessment.objects.filter(pk=self.assessment_id).values_list('status', flat=True).first()
+        return status in (None, *TradeInAssessment.EDITABLE)
+
+    def save(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if not (self.company_id == self.assessment.company_id == self.factor.company_id):
+            raise ValidationError('La respuesta, la evaluación y la pregunta tienen que ser de la misma empresa.')
+        if not self._editable():
+            raise ValidationError('Las respuestas de una evaluación aprobada, cotizada o anulada no cambian.')
+        return super().save(*args, **kwargs)
+
+    def delete(self, *args, **kwargs):
+        from django.core.exceptions import ValidationError
+
+        if not self._editable():
+            raise ValidationError('Las respuestas de una evaluación aprobada, cotizada o anulada no cambian.')
+        return super().delete(*args, **kwargs)
 
 
 # =============================================================================

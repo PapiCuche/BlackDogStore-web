@@ -269,6 +269,11 @@ def clean_policy(data) -> dict:
                               + ', '.join(BLOCKERS[c] for c in floor) + '.', code='mandatory_blocker',
                               field='optional_blockers', extra={'codes': floor})
         out['optional_blockers'] = sorted(set(raw))
+    if 'require_identified_customer' in data:
+        raw = data.get('require_identified_customer')
+        if not isinstance(raw, bool):
+            raise TariffError('Indica sí o no.', field='require_identified_customer')
+        out['require_identified_customer'] = raw
     if 'extra_blockers' in data:
         raw = data.get('extra_blockers') or []
         if not isinstance(raw, list) or len(raw) > MAX_EXTRA:
