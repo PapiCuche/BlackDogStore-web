@@ -283,6 +283,15 @@ class EachNoGoCauseTest(_Base):
         self.assert_no_go(self.run_checks(FiscalEnvironment.PRODUCTION), 'cola', 'abandonado')
 
     @override_settings(**BETA_READY)
+    def test_a_submission_unknown_document_is_uncertain_and_blocks_production(self):
+        self.document(status=FiscalDocumentStatus.SUBMISSION_UNKNOWN, days_ago=4)
+        checks = self.run_checks()
+        self.assertIn('1 incierto', self.details(checks, 'AVISO'))
+        self.assertNotIn('más de 3 días', self.details(checks, 'NO-GO'))
+        FiscalDocument.objects.update(environment=FiscalEnvironment.PRODUCTION)
+        self.assert_no_go(self.run_checks(FiscalEnvironment.PRODUCTION), 'cola', '1 incierto')
+
+    @override_settings(**BETA_READY)
     def test_an_uncertain_send_is_reported_and_blocks_production_only(self):
         document = self.document(status=FiscalDocumentStatus.SUBMISSION_ERROR)
         FiscalSubmissionAttempt.objects.create(

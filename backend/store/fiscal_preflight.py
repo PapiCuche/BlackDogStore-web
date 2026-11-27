@@ -242,13 +242,16 @@ def _queue(company, target: str, now) -> list[Check]:
     documents = FiscalDocument.objects.filter(company=company, environment=target)
     production = target == FiscalEnvironment.PRODUCTION
 
-    errors = list(documents.filter(status=FiscalDocumentStatus.SUBMISSION_ERROR)
+    # G5 (0199): an uncertain send has its own status; a legacy SUBMISSION_ERROR row is
+    # still read from its last attempt.
+    errors = list(documents.filter(status__in=(FiscalDocumentStatus.SUBMISSION_ERROR,
+                                               FiscalDocumentStatus.SUBMISSION_UNKNOWN))
                   .only('pk', 'status', 'document_type', 'series', 'issued_at'))
     uncertain_pks = {document.pk for document in errors if submission_uncertainty(document)}
     if errors:
         checks.append(Check(NO_GO if production else WARN, 'cola', (
-            f'{len(errors)} comprobante(s) con error de envío; {len(uncertain_pks)} incierto(s): se reconcilian '
-            f'por su CDR, no se reenvían')))
+            f'{len(errors)} comprobante(s) con error de envío o envío incierto; {len(uncertain_pks)} incierto(s): '
+            f'se reconcilian por su CDR, no se reenvían')))
     attempts = FiscalSubmissionAttempt.objects.filter(
         document__company=company, document__environment=target, finished_at__isnull=True)
     stale = now - timedelta(minutes=STALE_ATTEMPT_MINUTES)
