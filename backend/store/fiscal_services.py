@@ -78,6 +78,11 @@ OUTCOME_TO_STATUS = {
 #: El `result` del intento cuando el adaptador falla fuera del transporte (H-03).
 PROVIDER_EXCEPTION_RESULT = 'provider_exception'
 
+#: El `result` del intento cuando `sendBill` devolvió un CDR que NO responde por
+#: este comprobante (H-06): otro identificador, otro RUC, otro tipo, o un código
+#: que no cuadra entre las dos lecturas. No se aplica; queda incierto.
+CDR_MISMATCH_RESULT = 'cdr_mismatch'
+
 #: Intentos cuyo final NO dice si SUNAT recibió el comprobante (FISCAL-PROD-02,
 #: H-03/H-04). Tras uno de éstos no se transmite otra vez: se pregunta por el CDR.
 #:
@@ -91,6 +96,7 @@ UNCERTAIN_ATTEMPT_RESULTS = frozenset({
     ProviderOutcome.TRANSPORT_UNKNOWN.value,
     ProviderOutcome.UNKNOWN_RESPONSE.value,
     PROVIDER_EXCEPTION_RESULT,
+    CDR_MISMATCH_RESULT,
 })
 
 
@@ -962,6 +968,24 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         )
         attempt_result = PROVIDER_EXCEPTION_RESULT
 
+    # H-06. El CDR de `sendBill` se VINCULA con el comprobante antes de aplicarlo,
+    # igual que en la reconciliación, el resumen y la baja. Uno que no responde por
+    # ESTE documento no decide su estado: se descarta y el envío queda incierto
+    # (sólo se reconcilia por `getStatusCdr`), porque SUNAT pudo registrarlo.
+    if attempt_result != PROVIDER_EXCEPTION_RESULT and result.cdr_xml:
+        why = foreign_cdr_reason(document, result)
+        if why:
+            logger.error('El CDR de sendBill no corresponde al comprobante %s: %s',
+                         document.pk, why)
+            result = ProviderResult(
+                outcome=ProviderOutcome.UNKNOWN_RESPONSE,
+                safe_message=(f'CDR descartado: {why}. Pudo llegar a SUNAT: consulte '
+                              f'el CDR antes de reintentar.')[:500],
+                request_sha256=result.request_sha256,
+                response_sha256=result.response_sha256,
+            )
+            attempt_result = CDR_MISMATCH_RESULT
+
     attempt.finished_at = timezone.now()
     attempt.result = attempt_result
     attempt.response_code = result.response_code
@@ -1011,6 +1035,39 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
         # Un ZIP que no se pudo abrir se guarda como evidencia, sin inventar CDR (#179).
         keep_unreadable_zip(FiscalDocument, document.pk, result)
     return document
+
+
+def _shown(value: str) -> str:
+    """Un dato leído de un CDR ajeno, apto para un mensaje: sólo [A-Za-z0-9-], acotado."""
+    import re
+
+    return re.sub(r'[^A-Za-z0-9-]', '', value or '')[:20] or '?'
+
+
+def foreign_cdr_reason(document: FiscalDocument, result) -> str:
+    """
+    `''` si el CDR de `result` responde por `document`; si no, por qué. (H-06)
+
+    Las mismas dos lecturas que la reconciliación: el vínculo (identificador, RUC
+    del emisor y tipo) lo ancla `parse_cdr`, la ruta estricta; el veredicto que se
+    aplicaría lo leyó `_read_cdr`. Si los códigos difieren, el CDR está malformado
+    o manipulado y tampoco se aplica.
+    """
+    from .fiscal.cdr import CdrParseError, cdr_matches_document, parse_cdr
+
+    try:
+        rep = parse_cdr(result.cdr_xml)
+    except CdrParseError:
+        return 'la constancia no se pudo leer'
+    if not cdr_matches_document(
+            rep, document_id=document.document_id,
+            issuer_tax_id=document.issuer_tax_id,
+            document_type=document.document_type):
+        return (f'responde por {_shown(rep.reference_id)} del RUC '
+                f'{_shown(rep.receiver_ruc)}, no por {document.document_id}')
+    if rep.response_code != (result.response_code or ''):
+        return 'su código de respuesta no es coherente'
+    return ''
 
 
 # ---------------------------------------------------------------------------

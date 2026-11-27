@@ -484,10 +484,23 @@ def resolve_consult_provider(company):
     # El endpoint por defecto es el de producción documentado; se permite
     # sustituirlo por configuración de servidor (nunca por petición) para pruebas
     # de integración controladas.
-    endpoint = getattr(settings, 'FISCAL_CONSULT_ENDPOINT', PRODUCTION_CONSULT_ENDPOINT)
+    #
+    # H-14. `settings.py` declara la variable con '' por defecto, así que
+    # `getattr(..., CONSTANTE)` encontraba el ajuste VACÍO y nunca la constante: al
+    # encender la consulta, el proveedor recibía una URL vacía y la vista caía en
+    # 500. Vacío significa «la del código».
+    configured = (getattr(settings, 'FISCAL_CONSULT_ENDPOINT', '') or '').strip()
+    endpoint = configured or PRODUCTION_CONSULT_ENDPOINT
     credentials = resolve_credentials(company)
-    return SunatConsultProvider(
-        endpoint=endpoint, ruc=credentials['ruc'],
-        sol_user=credentials['sol_user'],
-        sol_password=credentials['sol_password'],
-    )
+    try:
+        return SunatConsultProvider(
+            endpoint=endpoint, ruc=credentials['ruc'],
+            sol_user=credentials['sol_user'],
+            sol_password=credentials['sol_password'],
+        )
+    except ValueError:
+        # El constructor sólo rechaza un endpoint que no es HTTPS. Es un error de
+        # configuración del servidor: 503, no 500, y sin repetir el valor.
+        raise FiscalConfigError(
+            'El endpoint de consulta configurado no es válido: debe ser HTTPS.'
+        ) from None

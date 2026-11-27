@@ -543,6 +543,11 @@ class AdminFiscalDocumentSubmitView(APIView):
                 'response_code': document.sunat_response_code,
                 'attempts': document.attempts.count(),
                 'cdr_sha256': document.cdr_sha256,
+                # Cómo terminó ESTE envío: un CDR que no respondía por el
+                # comprobante (H-06) queda nombrado en la bitácora, no sólo como
+                # «error de envío».
+                'attempt_result': (document.attempts.order_by('-attempt_number')
+                                   .values_list('result', flat=True).first() or ''),
             },
             request=request, company=document.company,
         )
