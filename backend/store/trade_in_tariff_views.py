@@ -37,6 +37,9 @@ from .throttles import (
 _NOT_FOUND = 'No encontrado.'
 PAGE_SIZE = 50
 EXPORT_FILENAME = 'tarifario-parte-de-pago.xlsx'
+#: The tariff workbook travels on the GENERAL request tier (1 MiB, `request_limits`; no proxy change). Its own cap
+#: leaves room for the multipart envelope; a real tariff is tens of KB.
+MAX_TARIFF_UPLOAD_BYTES = 960 * 1024
 XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 
 
@@ -429,6 +432,10 @@ class AdminTradeInTariffImportPreviewView(APIView):
         upload = request.FILES.get('file')
         if upload is None:
             return Response({'detail': 'Adjunta un archivo .xlsx.'}, status=status.HTTP_400_BAD_REQUEST)
+        if (upload.size or 0) > MAX_TARIFF_UPLOAD_BYTES:
+            return Response({'detail': f'El archivo pesa más de {MAX_TARIFF_UPLOAD_BYTES // 1024} KB, el límite del '
+                                       'tarifario. Quita hojas o formatos que no sean el tarifario y vuelve a subirlo.',
+                             'code': 'file_too_large'}, status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE)
         try:
             batch = tariff_io.preview(actor=request.user, company=company, upload=upload, filename=upload.name,
                                       request=request)

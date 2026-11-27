@@ -17,8 +17,8 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Migración `0194_trade_in_tariff` (cuatro tablas nuevas, aditiva, con la guarda de vuelta atrás de las cotizaciones).
 
 **Ops**
-- `deploy/Caddyfile`: la ruta de vista previa del tarifario entra en el tramo `workbook` (11 MiB), igual que
-  `request_limits`. Sin recargar Caddy, la subida cae en el tramo general de 1 MiB, que basta para un tarifario.
+- Sin cambios en `deploy/` ni en Caddy: el Excel del tarifario usa el tramo general de 1 MiB y la vista lo limita a
+  960 KB (413 `file_too_large`).
 
 ## 2026-11-27 (madrugada) — R15 desplegada
 

@@ -654,6 +654,15 @@ class TariffExcelTest(TariffBase):
         self.apply(preview['id'], user=self.reader, expect=403)
         self.assertFalse(TradeInTariffImport.objects.filter(status='applied').exists())
 
+    def test_a_file_over_the_tariff_cap_is_refused_before_it_is_read(self):
+        from store.trade_in_tariff_views import MAX_TARIFF_UPLOAD_BYTES
+
+        with mock.patch('store.trade_in_tariff_views.MAX_TARIFF_UPLOAD_BYTES', 100):
+            res = self.upload(workbook([row()]), expect=413)
+        self.assertEqual(res['code'], 'file_too_large')
+        self.assertFalse(TradeInTariffImport.objects.exists())
+        self.assertLess(MAX_TARIFF_UPLOAD_BYTES, 1024 * 1024)
+
     def test_a_missing_required_column_or_a_macro_file_is_refused(self):
         res = self.upload(workbook([['Marca Uno', 'Modelo']], headers=['Marca', 'Modelo']), expect=400)
         self.assertEqual(res['code'], 'missing_columns')

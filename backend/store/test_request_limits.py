@@ -158,6 +158,11 @@ class LimitTableTest(SimpleTestCase):
             if 'request.FILES' not in source:
                 continue
             path = sample(pattern)
+            if cls.__name__ in DEFAULT_TIER_UPLOADS:
+                # On the general tier ON PURPOSE: its own cap must fit inside it, multipart overhead included.
+                self.assertEqual(request_limits.limit_for(path), default, cls.__name__)
+                self.assertLess(DEFAULT_TIER_UPLOADS[cls.__name__](), default, cls.__name__)
+                continue
             if request_limits.limit_for(path) <= default:
                 missing.append(f'{cls.__name__} {path}')
         self.assertEqual(missing, [], 'these views read files but their route has no tier in request_limits')
@@ -189,9 +194,24 @@ class LimitTableTest(SimpleTestCase):
             'AdminModelFinishImageListView', 'AdminModelFinishImageOrderView', 'AdminModelFinishImageDetailView',
             'AdminImportInspectView', 'AdminProductImportPreviewView',
             'AdminStockImportPreviewView', 'AdminUnitImportPreviewView',
-            # TRADE-IN VALUATION PRO · Phase 1: the tariff workbook (tier `workbook`).
+            # TRADE-IN VALUATION PRO · Phase 1: the tariff workbook, on the general tier with its own cap
+            # (`DEFAULT_TIER_UPLOADS`).
             'AdminTradeInTariffImportPreviewView',
         }, 'a view changed its parsers: give its upload route a tier in request_limits')
+
+
+def _tariff_upload_cap():
+    from store.trade_in_tariff_views import MAX_TARIFF_UPLOAD_BYTES
+
+    return MAX_TARIFF_UPLOAD_BYTES
+
+
+#: Upload views that stay on the GENERAL tier on purpose (no proxy change: the owner's GO for Caddy is its own), each
+#: with the cap it enforces itself, which must be below the general limit. View name → its cap.
+DEFAULT_TIER_UPLOADS = {
+    # TRADE-IN VALUATION PRO · Phase 1: a tariff workbook is a few hundred rows (tens of KB).
+    'AdminTradeInTariffImportPreviewView': _tariff_upload_cap,
+}
 
 
 class MiddlewareTest(SimpleTestCase):
