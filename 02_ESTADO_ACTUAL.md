@@ -3,6 +3,12 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 4 · PARCIAL (rama `feat/trade-in-assessment`, sin fusionar ni desplegar) · migración `0197_trade_in_assessment`
+
+Evaluación y cálculo (`docs/adr-trade-in-valuation.md` §5–§6, §8.1): del selector al tarifario, respuestas, cálculo
+congelado con el veredicto de seguridad primero, ajuste con motivo y aprobación por otra persona que rechaza un
+cálculo desfasado. Sólo backend; sin fotos (D6) y sin cotización (fase 5). No recibe, compra, paga ni acredita.
+
 ## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 3 · PARCIAL (rama `feat/trade-in-eligibility`, sin fusionar ni desplegar) · migración `0196_trade_in_eligibility`
 
 Elegibilidad de seguridad y verificación asistida de identidad (`docs/adr-trade-in-valuation.md` §3.3, §5.2): bloqueos

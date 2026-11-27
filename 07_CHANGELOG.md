@@ -3,6 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 4: evaluación y cálculo (rama `feat/trade-in-assessment`, sin fusionar ni desplegar)
+
+**Added**
+- Evaluación de un equipo (`EVA-000001`) sobre su comprobación de identidad, una entrada del tarifario (por id o desde
+  el selector: exacta, comodín SIM/región, por nombre; `tariff_ambiguous` / `tariff_missing`), el cliente (obligatorio
+  por omisión, D3) y las respuestas a las preguntas de las reglas en vigor.
+- Cálculo congelado: veredicto de seguridad primero (NO ELEGIBLE = sin valor), todas las preguntas aplicables
+  respondidas, versión de tarifa y de reglas en vigor, valor ofrecido ajustable con motivo (al alza sólo hasta el
+  máximo y con aprobación), diferencia frente al equipo que se compra (nunca descuento).
+- Aprobación por otra persona (`sales.tradein.approve`, concesión explícita) que rechaza un cálculo desfasado
+  (`calculation_stale`) o un equipo que dejó de estar limpio.
+- Migración `0197_trade_in_assessment` (dos tablas, una columna con `db_default`, reparación de instalación nueva,
+  guarda al final).
+
 ## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 3: elegibilidad y verificación asistida de identidad (rama `feat/trade-in-eligibility`, sin fusionar ni desplegar)
 
 **Added**
