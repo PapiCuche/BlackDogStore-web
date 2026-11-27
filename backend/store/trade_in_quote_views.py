@@ -12,6 +12,7 @@ The company comes from the session; a quote is reached only in a branch the call
 """
 from __future__ import annotations
 
+from django.http import HttpResponse
 from rest_framework import permissions, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -212,3 +213,100 @@ class AdminTradeInQuoteReviseView(_Base):
     def post(self, request, pk):
         return _act(request, pk, quotes.CAP_VALUE, lambda c, q: quotes.revise(
             actor=request.user, company=c, quote=q, data=_body(request), request=request))
+
+
+class AdminTradeInQuotePdfView(APIView):
+    """GET /<pk>/pdf/?format=a4|ticket80 — the paper of THIS revision, from its frozen snapshot. Audited."""
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminSalesQuotesThrottle]
+
+    def perform_content_negotiation(self, request, force=False):
+        # `?format=a4|ticket80` names the PAPER, not a DRF renderer.
+        return super().perform_content_negotiation(request, force=True)
+
+    def get(self, request, pk):
+        from . import trade_in_quote_documents as documents
+        from .models import AdminAuditLog
+
+        company, error = _company(request, quotes.CAP_VIEW)
+        if error:
+            return error
+        found = _quotes(request.user, company).filter(pk=pk).first()
+        if found is None:
+            return _not_found()
+        kind = (request.query_params.get('format') or 'a4').strip()
+        if kind not in ('a4', 'ticket80'):
+            return Response({'detail': 'Formato no reconocido: a4 o ticket80.'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            show_price = documents.shows_price(found, request.user)
+            pdf = (documents.render_a4_pdf(found, show_price=show_price) if kind == 'a4'
+                   else documents.render_ticket_pdf(found, show_price=show_price))
+        except documents.DocumentError as exc:
+            return Response({'detail': str(exc), 'code': 'not_issued'}, status=status.HTTP_409_CONFLICT)
+        AdminAuditLog.log(actor=request.user, action='trade_in_quote_pdf_downloaded', target_type='trade_in_quote',
+                          target_id=found.pk, metadata={'company_id': company.pk, 'format': kind,
+                                                        'number': found.label},
+                          request=request, company=company)
+        disposition = 'inline' if request.query_params.get('inline') == '1' else 'attachment'
+        response = HttpResponse(pdf, content_type='application/pdf')
+        response['Content-Disposition'] = f'{disposition}; filename="{documents.filename(found, kind)}"'
+        response['Cache-Control'] = 'no-store'
+        return response
+
+
+class AdminTradeInQuotePrintView(APIView):
+    """
+    POST /<pk>/print/ — this revision's 80 mm roll on the branch's ticket printer, through the print queue.
+    Body `{printer?}`; header `Idempotency-Key` (a double click prints once; a reprint is a new key).
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    throttle_classes = [AdminSalesQuoteWriteThrottle]
+
+    def post(self, request, pk):
+        from . import trade_in_quote_documents as documents
+        from .models import AdminAuditLog, Printer, PrintJob
+        from .printing import services as printing
+
+        company, error = _company(request, quotes.CAP_VIEW)
+        if error:
+            return error
+        found = _quotes(request.user, company).filter(pk=pk).first()
+        if found is None:
+            return _not_found()
+        try:
+            documents.build_context(found)
+        except documents.DocumentError as exc:
+            return Response({'detail': str(exc), 'code': 'not_issued'}, status=status.HTTP_409_CONFLICT)
+        data = _body(request)
+        printers = Printer.objects.filter(company=company, branch=found.branch, is_active=True,
+                                          role=Printer.Role.TICKET)
+        if data.get('printer') not in (None, ''):
+            try:
+                printer = printers.filter(pk=int(data['printer'])).first()
+            except (TypeError, ValueError):
+                printer = None
+        else:
+            printer = printers.filter(auto_print=True).first() or printers.first()
+        if printer is None:
+            return Response({'detail': 'Este local no tiene una impresora de tickets disponible.'},
+                            status=status.HTTP_400_BAD_REQUEST)
+        key = (request.headers.get('Idempotency-Key') or '').strip()
+        if not key:
+            return Response({'detail': 'Falta la cabecera Idempotency-Key.'}, status=status.HTTP_400_BAD_REQUEST)
+        existed = PrintJob.objects.filter(company=company, idempotency_key=f'tradein:{key}'[:120]).exists()
+        try:
+            job = printing.enqueue_trade_in_quote_ticket(quote=found, printer=printer, key=key, actor=request.user)
+        except printing.PrintConflict as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        except printing.PrintError as exc:
+            return Response({'detail': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        if not existed:
+            AdminAuditLog.log(actor=request.user, action='trade_in_quote_print_requested', target_type='print_job',
+                              target_id=job.pk, metadata={'company_id': company.pk, 'quote_id': found.pk,
+                                                          'printer_id': printer.pk},
+                              request=request, company=company)
+        return Response({'id': job.pk, 'status': job.status, 'printer': printer.pk, 'printer_name': printer.name,
+                         'trade_in_quote': found.pk},
+                        status=status.HTTP_200_OK if existed else status.HTTP_201_CREATED)

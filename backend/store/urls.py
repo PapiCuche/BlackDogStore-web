@@ -792,6 +792,11 @@ urlpatterns = [
          name='admin-trade-in-quote-cancel'),
     path('admin/trade-in/quotes/<int:pk>/revise/', tiq.AdminTradeInQuoteReviseView.as_view(),
          name='admin-trade-in-quote-revise'),
+    # TRADE-IN VALUATION PRO · Phase 5b — papers and the print queue.
+    path('admin/trade-in/quotes/<int:pk>/pdf/', tiq.AdminTradeInQuotePdfView.as_view(),
+         name='admin-trade-in-quote-pdf'),
+    path('admin/trade-in/quotes/<int:pk>/print/', tiq.AdminTradeInQuotePrintView.as_view(),
+         name='admin-trade-in-quote-print'),
 
     # --- C1.4: bulk imports ------------------------------------------------
     path('admin/imports/inspect/', AdminImportInspectView.as_view(), name='admin-import-inspect'),
