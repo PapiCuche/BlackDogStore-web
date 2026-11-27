@@ -1,4 +1,4 @@
-# NEXT ACTION — 2026-11-26 (tarde)
+# NEXT ACTION — 2026-11-27
 
 ## PRODUCCIÓN (prod-02) — R14 `c176bfea` desde 2026-11-26 16:52 (Lima), esquema `0193_unit_import_terms_approval`; sana
 Imágenes `release-c176bfe` (backend `795edce8…`, frontend `acf35935…`). Vuelta atrás de código preparada (preflight
@@ -55,18 +55,57 @@ Kit `backups/release-r14-post/`, log `r14post-run.log`, sobre copias aisladas de
 - No usar la caja ni el escaneo para la carga inicial: siempre escriben compra.
 - Pendiente: los archivos del propietario en `backups/stock-real-inbox/`, su aprobación del informe y el GO exacto.
 
-## DESARROLLO EN CURSO (en `master` o en PR; nada desplegado)
-- **#442 fusionado** (`101788a2`): pruebas de navegador de los flujos de R14 en escritorio y teléfono (15/15, cuatro
-  corridas); no corren en CI, sólo en local.
-- **PR #443 «Ingreso de inventario existente»:** etiqueta propia en Kardex, informes y vista previa; sigue escribiendo
-  `purchase_entry`. Revisión sin hallazgos graves; ajustes en curso (filtro de la API v1, texto del rechazo de
-  inventario inicial).
-- **PR #444 «lleva IMEI» protegido:** la revisión encontró y reprodujo un hueco **que también existe en producción**: con
-  sólo `inventory.adjust`, quitar la serialización de un producto sin stock apaga «lleva IMEI» (válido para #22/#23).
-  Corrección en curso en el mismo PR. Hasta desplegarla, vigilar en la auditoría `product_serialization_changed` de
-  #22/#23.
-- Arreglo pendiente de PR: el «Enlace de esta carga» desborda en teléfonos.
-- Cuando estén fusionados, se preparará una release R15 (kit, ensayo, GO propio). No se despliega sin GO.
+## RELEASE R15 — candidata `af23e3b1` PREPARADA Y ENSAYADA · espera **«GO despliegue af23e3b prod-02»**
+
+Un PR fusionado no es un GO. Este GO vale para una operación y para el SHA exacto
+`af23e3b1d39c36f566fede1cc975b3101ed690eb`, imágenes `rc-af23e3b` (backend `9bbaf0cf…`, frontend `b68fd744…`). Sólo
+código: sin migraciones (la hoja sigue en `0193`) y sin cambios de `deploy/` ni compose. Kit
+`backups/release-r15/`, runbook `RUNBOOK-r15-prod02.md`.
+
+### Qué entra (R14 → R15: 34 archivos)
+| PR | Qué |
+|---|---|
+| #443 | «Ingreso de inventario existente» en «Recibir mercadería», «Registrar equipos» y la carga Excel: escribe `purchase_entry` con la marca `entry_kind=existing_stock`, se acepta aunque el estante ya no admita inventario inicial, y en Kardex, informes y vista previa se ve aparte de las compras (filtro propio también en la API v1) |
+| #444 | «lleva IMEI» protegido: apagarlo o cambiarlo, también quitando la serialización, exige `products.manage` (403); encenderlo se rechaza mientras haya equipos sin IMEI válido (409); recepción, alta guiada y caja nunca lo apagan. Cierra el hueco que hoy existe en producción |
+| #445 | El «Enlace de esta carga» ya no desborda en teléfonos |
+| #447 | Textos de ayuda de los tipos de ingreso, accesibilidad (la ayuda es descripción, no nombre) y tamaño táctil de 44 px |
+
+Ya en `master` antes: #442 (pruebas de navegador de R14) y documentación.
+
+### Ensayo (2026-11-26 21:48 → 22:06 Lima) — `R15_REHEARSAL_DONE fails=0`
+Backup nuevo verificado `db-20261126-214810` y dos copias aisladas, sin salida a la red.
+- `migrate --plan` vacío con las dos imágenes; `makemigrations --check` sin cambios.
+- **Mismos datos con los dos códigos:** 0 tablas distintas en filas o columnas; Kardex idéntico (50 líneas, 13 cadenas,
+  0 rupturas); notas `c2be046bf7bce2d8`; #22/#23 serializadas y con «lleva IMEI».
+- Humo 32/32 con R14 y con R15; `check_unit_stock` 0; 368 pruebas en la imagen OK; simulación 19/19.
+- Sondas de R14 sobre R15: 75 OK, 0 fallos, 1 omitida. Sondas de R15: 73 OK, 0 fallos, 1 omitida. Sobre los datos
+  reales de la copia: el producto #8, con el estante cerrado para inventario inicial, acepta el ingreso existente y el
+  Kardex lo separa; en #22/#23 un almacenero recibe 403 al apagar «lleva IMEI» y al quitar la serialización.
+- **Vuelta atrás de código a R14 y vuelta a R15:** plan vacío, rutas, humo 32/32, Kardex, notas y «lleva IMEI» iguales
+  a la línea base.
+- **R14 lee lo que escribió R15:** las líneas de ingreso existente las muestra como «Entrada por compra» y su filtro
+  `existing_stock` responde 400; la marca se conserva y R15 las vuelve a mostrar aparte. Sin filas nuevas de compras ni
+  de finanzas.
+- Producción sin cambios.
+
+### Comprobaciones previas en producción (2026-11-26 23:45, sólo lectura)
+Despliegue `PREFLIGHT OK`, con el `migrate --plan` de `rc-af23e3b` contra la base real vacío. Vuelta atrás
+`ROLLBACK PREFLIGHT OK`.
+
+### Ejecución con el GO
+- Empezar justo después de :51 o de :05, dentro de :51–:29; nunca entre :30 y :50 ni entre 03:10 y 03:59.
+- Lanzar desacoplado con `ssh … 'sh -s'` y `nohup`, como indica el runbook. Un rc=75 del candado no ejecuta nada: es
+  seguro repetir.
+- Corte: sólo el reinicio de backend y frontend. No toca Caddy, CRM, SUNAT ni crontab.
+- Si falla: vuelta atrás de código a R14, contemplada en el mismo GO. Con R14, «lleva IMEI» vuelve a quedar sin
+  protección y las líneas de ingreso existente se ven como compras, sin perder nada.
+- Después: `r15post_driver.sh` debe terminar en `R15POST_DONE fails=0`.
+
+### Aviso al personal (tras el despliegue)
+> «Desde hoy: 1) En **Recibir mercadería**, **Registrar equipos** y la **carga de equipos por Excel** hay un tipo de
+> ingreso nuevo, **«Ingreso de inventario existente»**: úsalo para lo que ya tenías en la tienda. No es una compra y se
+> ve aparte en el Kardex. **«Inventario inicial»** sigue siendo para un producto sin ningún movimiento. 2) **«Lleva
+> IMEI»** sólo lo cambia quien administra productos.»
 
 ### Preguntas abiertas para el propietario
 - Texto de la opción «Ingreso de inventario existente» y su ayuda («Equipos que ya tenías; no es una compra»).

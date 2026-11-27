@@ -3,6 +3,19 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-27 — Release candidata R15 `af23e3b1` (en `master`, sin desplegar)
+
+**Added**
+- «Ingreso de inventario existente» como tipo de ingreso, aparte de las compras en Kardex, informes, vista previa y API v1 (#443).
+
+**Fixed**
+- «Lleva IMEI» sólo lo cambia quien tiene `products.manage`, también al quitar la serialización; no se enciende con equipos sin IMEI (#444).
+- El enlace de una carga de equipos ya no desborda en teléfonos (#445).
+- Textos de ayuda, accesibilidad y tamaño táctil de los tipos de ingreso (#447).
+
+**Ops** (prod-02 `backups/release-r15/`; nada desplegado)
+- Kit R15 fijado a `af23e3b1`, imágenes `rc-af23e3b`, ensayo `fails=0`, comprobaciones previas OK.
+
 ## 2026-11-26 (tarde) — R14 desplegada
 
 **Deployed**

@@ -3,6 +3,10 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-27 — R15 `af23e3b1` ensayada; espera «GO despliegue af23e3b prod-02»
+
+`master` `af23e3b1` reúne #443 («Ingreso de inventario existente»), #444 (protección de «lleva IMEI», que cierra el hueco que hoy existe en producción), #445 y #447. Es una release sólo de código, sin migraciones. El ensayo sobre una copia aislada y reciente de producción terminó sin fallos: los datos son idénticos con los dos códigos, 368 pruebas en la imagen, sondas de R14 y R15 OK, simulación 19/19 y vuelta atrás a R14 ensayada. Las comprobaciones previas en producción salieron OK. Producción sigue en R14, sana. Detalle en `docs/NEXT_ACTION.md`.
+
 ## 2026-11-26 (tarde) — R14 `c176bfea` DESPLEGADA en prod-02; IMEI de #22/#23 y sellos de las 7 notas aplicados
 
 Los tres GO exactos del propietario, en su orden, entre las 16:48 y las 16:53 (Lima), cada uno bajo el candado con backup previo y diff esperado: «lleva IMEI» en #22 y #23 (0 equipos), sellos de generación de las 7 notas desde `db-20261121-222417` (5 y 7 en NULL) y el despliegue de R14 con la migración 0193 (7,4 s, primer intento). Producción sana: Kardex idéntico, 0 errores, Caddy, CRM y crontab sin cambios. La verificación posterior sobre copias aisladas salió sin fallos: el escaneo escribe una línea de Kardex (`purchase_entry`) por equipo y ningún documento de compra, deuda ni pago, la lista de WhatsApp sólo crea las variantes que faltan y ningún equipo comparte identificador. La vista previa del stock real ya funciona con R14 y lista los estantes cerrados para inventario inicial. Hueco conocido, ya existía antes de R14: con sólo `inventory.adjust` se puede apagar «lleva IMEI» quitando la serialización a un producto sin stock (corrección en el PR #444). Detalle en `docs/NEXT_ACTION.md`.
