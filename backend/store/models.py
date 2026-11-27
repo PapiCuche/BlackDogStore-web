@@ -6894,9 +6894,9 @@ class TradeInAssessment(models.Model):
                 raise ValidationError({name: ['No pertenece a esta empresa.']})
         if self.pk is not None:
             stored = TradeInAssessment.objects.filter(pk=self.pk).values_list('status', flat=True).first()
+            fields = set(kwargs.get('update_fields') or [])
             quoted_cancel = (stored == self.STATUS_QUOTED and self.status == self.STATUS_CANCELLED
-                             and set(kwargs.get('update_fields') or [])
-                             <= {'status', 'cancelled_at', 'cancel_reason', 'updated_at'})
+                             and fields and fields <= {'status', 'cancelled_at', 'cancel_reason', 'updated_at'})
             if stored in (self.STATUS_QUOTED, self.STATUS_CANCELLED) and not quoted_cancel:
                 raise ValidationError('Una evaluación cotizada o anulada no se modifica.')
             if stored == self.STATUS_APPROVED and self.status not in (self.STATUS_QUOTED, self.STATUS_CANCELLED):

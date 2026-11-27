@@ -317,6 +317,16 @@ class ReviewFindingsTest(QuoteBase):
                                                      metadata__because='quote_cancelled').exists())
         self.opened(check=check)                                   # a new assessment on the same device check
 
+    def test_a_quoted_assessment_is_cancelled_only_by_that_narrow_save(self):
+        created = self.quote()
+        row = TradeInAssessment.objects.get(pk=created['assessment'])
+        row.status = 'cancelled'
+        with self.assertRaises(ValidationError):
+            row.save()                                            # a full save would rewrite everything
+        with self.assertRaises(ValidationError):
+            row.save(update_fields=['status', 'offered_value'])
+        row.save(update_fields=['status', 'cancelled_at', 'cancel_reason', 'updated_at'])
+
     def test_documents_have_a_frozen_verdict_that_never_asks_for_approval(self):
         done = self.calculated({'pantalla': 'not_working', 'bateria': '90'})
         self.post(f'assessments/{done["id"]}/approve/', {}, user=self.approver, expect=200)
@@ -352,9 +362,6 @@ class ReviewFindingsTest(QuoteBase):
             self.assertEqual(listed('expired'), [created['id']])
 
     def test_stale_at_approval_and_security_or_price_at_issue(self):
-        from store import trade_in_eligibility as eligibility
-        from store.models import Product
-
         pending = self.quote({'pantalla': 'not_working', 'bateria': '90'})
         tariff.propose_version(actor=self.admin, company=self.company, entry=self.entry,
                                data={'base_reception_value': '900.00', 'max_reception_value': '1100.00'})
