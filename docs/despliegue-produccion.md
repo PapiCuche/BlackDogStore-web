@@ -631,6 +631,25 @@ vez por hora:
 - Una cotización marcada «Vencida» no vuelve atrás: se renueva con «Revisar» (escribe la revisión siguiente con
   vigencia nueva y deja la vencida como constancia).
 
+### 6.1.3f Cotizaciones de recepción vencidas (TRADE-IN VALUATION PRO, al desplegar `0198`)
+
+Una cotización de recepción **emitida** vence en un **instante exacto**: la emisión más las horas de la empresa, 96 por
+omisión. Desde ese momento la API ya la muestra «Vencida» y no deja responderla, aunque esta tarea no corra. La tarea
+sólo guarda ese estado, con una línea de auditoría `trade_in_quote_expired` por cotización. **La línea de crontab se
+añade con el GO del despliegue que lleve `0198`**: en `deploy/` no cambia nada; es una línea más del crontab del
+servidor, una vez por hora:
+
+```
+43 * * * * cd /ruta/al/repositorio && mkdir -p backups && docker compose -f docker-compose.prod.yml --env-file deploy/.env.production exec -T backend python manage.py expire_trade_in_quotes >> backups/expire_trade_in_quotes.log 2>&1
+```
+
+- Una línea por pasada: `Cotizaciones de recepción vencidas: <n>`. Es idempotente: dos pasadas a la vez no marcan nada
+  dos veces. Cada cotización es su propia transacción.
+- `--dry-run` sólo cuenta; `--company <slug>` limita a una empresa.
+- `deploy/healthcheck.sh` todavía **no** vigila este registro. Si se quiere vigilar, va en un cambio propio de
+  `deploy/` con su GO.
+- Una vencida no vuelve atrás: se renueva con «Revisar».
+
 ### 6.1.4 Saber que algo va mal
 
 ```sh
