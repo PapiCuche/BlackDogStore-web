@@ -3,7 +3,20 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
-## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 2: reglas de valorización (rama `feat/trade-in-rules`, sin fusionar ni desplegar)
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 3: elegibilidad y verificación asistida de identidad (rama `feat/trade-in-eligibility`, sin fusionar ni desplegar)
+
+**Added**
+- Comprobación de cada equipo ofrecido: identificadores sólo como resumen con clave propia y últimos 4 (nunca enteros en
+  base, respuestas ni auditoría); IMEI con dígito de control inválido = NO ELEGIBLE; duplicado contra el stock vivo y
+  las comprobaciones abiertas de la misma empresa (un equipo vendido por la empresa sólo se informa: D9).
+- Bloqueos con un mínimo obligatorio que ninguna empresa apaga, opcionales y propios por empresa; los calculados
+  (IMEI inválido, duplicado) los decide el servidor.
+- Registro asistido de la consulta manual en una fuente oficial de la empresa (IMEI 1, IMEI 2 y serie; sin API ni
+  scraping; declaración para equipos sin fuente), con vigencia configurable; sin fotos de evidencia hasta D6.
+- Capacidades de concesión explícita `sales.tradein.view` y `sales.tradein.value`; migración `0196_trade_in_eligibility`
+  (cuatro tablas, tres columnas con `db_default` en la política, reparación de instalación nueva, guarda al final).
+
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 2: reglas de valorización (#462, fusionado en `master`, sin desplegar)
 
 **Added**
 - Grupos y preguntas de valorización de cada empresa (batería, estética, funcionamiento, reparaciones, accesorios u
@@ -15,7 +28,7 @@ Este archivo no existía en el baseline. La fuente histórica sigue siendo
 - Migración `0195_trade_in_rules` (cuatro tablas nuevas, aditiva, guarda de vuelta atrás al final). Sin capacidades
   nuevas: usa las del tarifario.
 
-## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 1: tarifario de recepción por empresa (rama `feat/trade-in-tariff-phase1`, sin fusionar ni desplegar)
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 1: tarifario de recepción por empresa (#457, fusionado en `master`, sin desplegar)
 
 **Added**
 - Tarifario de recepción de equipos usados por empresa: entradas con la identidad que usa la empresa (marca, modelo,
