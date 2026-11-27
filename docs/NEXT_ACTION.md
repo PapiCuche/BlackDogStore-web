@@ -111,8 +111,9 @@ Despliegue `PREFLIGHT OK`, con el `migrate --plan` de `rc-af23e3b` contra la bas
 > IMEI»** sólo lo cambia quien administra productos.»
 
 ### Preguntas abiertas para el propietario
-- Texto de la opción «Ingreso de inventario existente» y su ayuda («Equipos que ya tenías; no es una compra»).
-- Escaneo: D-SCAN-1..4 y la prueba en iPad o Android de que el teclado no aparece al escanear.
+- Escaneo: D-SCAN-2 (si el escaneo registra como entrada de compra) y la prueba en iPad o Android de que el teclado no
+  aparece al escanear. D-SCAN-1, D-SCAN-3 y D-SCAN-4 los decidió el propietario el 2026-11-27
+  (`docs/adr-scan-to-stock.md` §5; #451, #452, #453). También aprobó el texto «Equipos que ya tenías; no es una compra» (#450).
 - Selector: valores fijados por el texto de la lista, colores marcados a mano, piezas que nombran otro modelo, límite
   de 40 palabras.
 - Cargas (#434): si `public_notes` y `cosmetic_grade` cuentan como términos comerciales; si un almacenero ve el precio
@@ -181,9 +182,8 @@ GO), o después de reapuntarlos a R14 y reensayarlos. Lo mismo para la vista pre
 archivos reales.
 
 ### Preguntas abiertas para el propietario (ninguna bloquea el despliegue)
-- **Escaneo:** prefijos de serie que conviene reconocer (D-SCAN-1); confirmar que el escaneo registra como entrada de
-  compra (D-SCAN-2); si el EID se guarda (D-SCAN-3); lectores que envían un espacio delante (D-SCAN-4); probar en un
-  iPad o Android que el teclado no aparece al escanear.
+- **Escaneo:** confirmar que el escaneo registra como entrada de compra (D-SCAN-2); probar en un iPad o Android que el
+  teclado no aparece al escanear. D-SCAN-1, D-SCAN-3 y D-SCAN-4 ya están decididos (2026-11-27, `docs/adr-scan-to-stock.md` §5).
 - **Selector:** si capacidad, SIM o región fijadas por el texto de la lista pueden cambiarse a mano; colores marcados a
   mano; que una pieza que nombra otro modelo no herede nada; el límite de 40 palabras por oferta.
 - **Cargas (#434):** si `public_notes` y `cosmetic_grade` cuentan como términos comerciales; si un almacenero puede ver
