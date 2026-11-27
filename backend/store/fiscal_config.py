@@ -282,7 +282,7 @@ def resolve_credentials(company) -> dict:
             'La emisión electrónica no está habilitada en este servidor.'
         )
     if active is not None:
-        return _checked(_console_credentials(active))
+        return _checked(_console_credentials(active), company)
 
     ruc = (getattr(settings, 'FISCAL_SOL_RUC', '') or '').strip()
     user = (getattr(settings, 'FISCAL_SOL_USER', '') or '').strip()
@@ -298,16 +298,17 @@ def resolve_credentials(company) -> dict:
         'ruc': ruc, 'sol_user': user, 'sol_password': password,
         'cert_pem': cert_pem,
         'key_pem': key_pem,
-    })
+    }, company)
 
 
-def _checked(credentials: dict) -> dict:
+def _checked(credentials: dict, company=None) -> dict:
     """
-    El par de firma se lee y casa, o la emisión no está disponible.
+    El par de firma se lee y casa, y es de ESTA empresa, o no hay emisión.
 
     Quien pide credenciales lo hace ANTES de reservar un correlativo (H-01): un
     PEM roto o un certificado de otra clave tiene que fallar aquí, no al firmar
-    con el número ya gastado (revisión de #176).
+    con el número ya gastado (revisión de #176). Lo mismo vale para credenciales
+    de otro contribuyente y para un certificado fuera de vigencia (SUNAT-ISSUER-GATE).
     """
     from .fiscal.certificate import CertificateError, check_signing_pair
 
@@ -315,7 +316,65 @@ def _checked(credentials: dict) -> dict:
         check_signing_pair(credentials['cert_pem'], credentials['key_pem'])
     except CertificateError as exc:
         raise FiscalConfigError(str(exc)) from None
+    if company is not None:
+        problems = issuer_problems(company, credentials, environment=resolve_environment())
+        if problems:
+            raise FiscalConfigError(problems[0])
     return credentials
+
+
+def issuer_problems(company, credentials: dict, *, environment: str, now=None) -> list[str]:
+    """
+    Por qué estas credenciales NO pueden emitir por `company`; `[]` si pueden.
+
+    UNA EMPRESA NUNCA EMITE CON LAS CREDENCIALES NI EL CERTIFICADO DE OTRA
+    (docs/sunat-estado-2026-11.md, G3). Hasta hoy las credenciales son de la
+    instalación y nada comprobaba que su RUC fuese el de la empresa que vende: con
+    dos empresas, la segunda firmaba y enviaba a nombre de la primera.
+
+    1. La empresa tiene RUC, y es el RUC de la Clave SOL. El usuario SOAP es
+       `RUC + usuario` (Anexo 6, 6.1.2) y el archivo lleva el RUC del emisor: los
+       dos tienen que ser el mismo contribuyente, también en BETA (`RUCMODDATOS`).
+    2. El certificado está vigente. Uno vencido o aún no válido se descubría al
+       final, con el correlativo gastado y el rechazo de SUNAT.
+    3. En PRODUCCIÓN, además, el RUC del emisor figura en el sujeto del
+       certificado (Manual del programador, §3.1: «en el campo OU»). En BETA no:
+       SUNAT no exige allí un certificado registrado (§2.3) y se firma con uno
+       autofirmado.
+
+    Los mensajes no llevan secretos ni el RUC de las credenciales: quien opera
+    una empresa no tiene por qué leer el RUC de otra.
+    """
+    from .fiscal.certificate import CertificateError, certificate_metadata_from_pem, subject_values
+
+    ruc = (getattr(company, 'tax_id', '') or '').strip()
+    if not ruc:
+        return ['La empresa no tiene RUC registrado: no se puede emitir a su nombre.']
+    problems = []
+    if (credentials.get('ruc') or '').strip() != ruc:
+        problems.append(
+            'Las credenciales SOL configuradas no son del RUC de esta empresa. Una '
+            'empresa no emite con las credenciales de otro contribuyente.')
+    try:
+        meta = certificate_metadata_from_pem(credentials['cert_pem'])
+    except CertificateError as exc:
+        return [*problems, str(exc)]
+    validity = meta.validity(now=now)
+    if validity == 'expired':
+        problems.append(f'El certificado de firma venció el {meta.not_after:%d/%m/%Y}.')
+    elif validity == 'not_yet_valid':
+        problems.append(
+            f'El certificado de firma todavía no es válido: empieza el {meta.not_before:%d/%m/%Y}.')
+    if environment == FiscalEnvironment.PRODUCTION:
+        import re
+
+        tokens = {token for value in subject_values(credentials['cert_pem'])
+                  for token in re.findall(r'\d{11}', value)}
+        if ruc not in tokens:
+            problems.append(
+                'El certificado de firma no lleva el RUC de esta empresa en su sujeto '
+                '(SUNAT lo exige en el campo OU).')
+    return problems
 
 
 def _resolve_signing_material() -> tuple[bytes, bytes]:
