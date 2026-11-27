@@ -558,6 +558,23 @@ class ReReviewFindingsTest(EligibilityBase):
                                          format='json')
         self.assertEqual(res.status_code, 201, res.content)
 
+    def test_a_serial_is_one_device_however_it_is_separated(self):
+        created = self.check(has_imei=False, imei='', serial='C02-XG0-FDH7JY')
+        for text in ('c02xg0fdh7jy', 'c02x.g0fd.h7jy'):
+            with self.subTest(text=text):
+                res = self.post(f'checks/{created["id"]}/close/', {'reason': f'serie {text}'}, expect=400)
+                self.assertEqual(res['code'], 'identifier_in_text')
+        again = self.check(has_imei=False, imei='', serial='c02xg0fdh7jy')
+        self.assertIn('imei_duplicate', again['blocked'])
+
+    def test_the_first_eleven_digits_with_the_shown_last_four_are_refused(self):
+        created = self.check()
+        text = f'{IMEI_A[:4]} {IMEI_A[4:8]} {IMEI_A[8:11]}'
+        res = self.post(f'checks/{created["id"]}/close/', {'reason': text}, expect=400)
+        self.assertEqual(res['code'], 'identifier_in_text')
+        self.post(f'checks/{created["id"]}/close/', {'reason': 'revisado 10/12 y 25/12, 99:99 no es hora'},
+                  expect=200)
+
     def test_an_empty_frozen_set_never_makes_a_check_eligible(self):
         created = self.check()
         TradeInDeviceCheck.objects.filter(pk=created['id']).update(required_blockers={})

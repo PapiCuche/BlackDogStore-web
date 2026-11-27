@@ -130,8 +130,23 @@ def masked(last4: str) -> str:
 
 _NON_ALNUM = re.compile(r'[\W_]+')
 _LONG_DIGITS = re.compile(r'[0-9]{8,}')
-#: Dates and times people write in notes («27/11/2026», «2026-11-27», «10:30»): not identifiers, removed first.
-_DATES_AND_TIMES = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[/.-][0-9]{1,2}(?:[/.-][0-9]{2,4})?|[0-9]{1,2}:[0-9]{2}')
+#: Dates and times people write in notes («27/11/2026», «2026-11-27», «10:30»), standing on their own (no digit
+#: glued before or after): removed first, and only when they ARE a date or a time (`_real_date_or_time`).
+_DATES_AND_TIMES = re.compile(
+    r'(?<![0-9])(?:(?P<y>[0-9]{4})-(?P<ym>[0-9]{2})-(?P<yd>[0-9]{2})'
+    r'|(?P<d>[0-9]{1,2})[/.-](?P<m>[0-9]{1,2})(?:[/.-](?P<yy>[0-9]{2,4}))?'
+    r'|(?P<h>[0-9]{1,2}):(?P<mi>[0-9]{2}))(?![0-9]|[/.:-][0-9])')
+
+
+def _real_date_or_time(match) -> str:
+    g = match.groupdict()
+    if g['y'] is not None:
+        ok = 1 <= int(g['ym']) <= 12 and 1 <= int(g['yd']) <= 31
+    elif g['d'] is not None:
+        ok = 1 <= int(g['d']) <= 31 and 1 <= int(g['m']) <= 12
+    else:
+        ok = int(g['h']) <= 23 and int(g['mi']) <= 59
+    return ' ' if ok else match.group(0)
 #: A generic serial: a plain run of 10+ UPPER-CASE letters and digits with at least one of each. Mixed case words
 #: («Modelo13Pro») and short codes («SM-G991B», «MQ8T3LL/A») are everyday text.
 _SERIAL_RUN = re.compile(r'[A-Z0-9]{10,}')
@@ -151,7 +166,12 @@ def _imei_window(digits: str) -> bool:
     return False
 
 
-def refuse_identifiers(text: str, field: str, *, company_id=None, digests=(), typed=()) -> None:
+def identity_form(value: str) -> str:
+    """How an identifier is digested: without separators, upper case («C02-XG0-FDH7JY» = «c02xg0fdh7jy»)."""
+    return _NON_ALNUM.sub('', unicodedata.normalize('NFKC', value or '')).upper()
+
+
+def refuse_identifiers(text: str, field: str, *, company_id=None, digests=(), typed=(), last4s=()) -> None:
     """
     A free text (a description, a note, a reason) must never carry an identifier: it would reach the database, the
     screen and the audit in full. NFKC first, dates and times removed, then refused when:
@@ -162,7 +182,8 @@ def refuse_identifiers(text: str, field: str, *, company_id=None, digests=(), ty
       * it has the shape of an EID, or a plain run of 10+ upper-case letters and digits (a generic serial);
       * it repeats an identifier typed in the same request;
       * any word — as typed, without its separators, or each of its parts — is, by its keyed digest, one of THIS
-        check's identifiers.
+        check's identifiers; or any 11 digits in a row that, followed by the last four the screen shows, are one of
+        its IMEIs («3569 3803 564» + «•••• 4380»).
 
     Everyday notes pass: dates, times, capacities, prices, model codes, versions.
     """
@@ -172,7 +193,7 @@ def refuse_identifiers(text: str, field: str, *, company_id=None, digests=(), ty
     normal = unicodedata.normalize('NFKC', text)
     if device_identity.looks_like_eid(normal):
         raise TariffError(message, code='identifier_in_text', field=field)
-    scrubbed = _DATES_AND_TIMES.sub(' ', normal)
+    scrubbed = _DATES_AND_TIMES.sub(_real_date_or_time, normal)
     words = scrubbed.split()
     if any(_LONG_DIGITS.search(word) for word in words):
         raise TariffError(message, code='identifier_in_text', field=field)
@@ -194,6 +215,11 @@ def refuse_identifiers(text: str, field: str, *, company_id=None, digests=(), ty
             candidates.update(part.upper() for part in _NON_ALNUM.split(word) if part)
         if any(len(token) >= 4 and digest(company_id, token) in wanted for token in candidates):
             raise TariffError(message, code='identifier_in_text', field=field)
+        stream = ''.join(ch for ch in normal if ch.isdigit())
+        for start in range(0, len(stream) - 10):
+            head = stream[start:start + 11]
+            if any(last4 and digest(company_id, head + last4) in wanted for last4 in last4s):
+                raise TariffError(message, code='identifier_in_text', field=field)
 
 
 def _free_text(data, key, field, *, check=None, typed=()) -> str:
@@ -202,7 +228,7 @@ def _free_text(data, key, field, *, check=None, typed=()) -> str:
         raise TariffError(f'El texto admite hasta {MAX_TEXT} caracteres.', field=field)
     refuse_identifiers(text, field, company_id=check.company_id if check else None,
                        digests=(check.imei_digest, check.imei2_digest, check.serial_digest) if check else (),
-                       typed=typed)
+                       typed=typed, last4s=(check.imei_last4, check.imei2_last4) if check else ())
     return text
 
 
@@ -346,7 +372,9 @@ def create_check(*, actor, company, data, request=None) -> TradeInDeviceCheck:
         raise TariffError('El IMEI 2 no puede ser igual al IMEI 1.', field='imei2')
     imei_digest = digest(company.pk, imei) if imei else ''
     imei2_digest = digest(company.pk, imei2) if imei2 else ''
-    serial_digest = digest(company.pk, serial) if serial else ''
+    # The serial is digested in its identity form (no separators, upper case): «C02-XG0-FDH7JY» and «c02xg0fdh7jy»
+    # are one device, for the duplicates and for the notes. The stock lookup keeps `clean_serial`'s form.
+    serial_digest = digest(company.pk, identity_form(serial)) if serial else ''
     with transaction.atomic():
         imei_digests = [d for d in (imei_digest, imei2_digest) if d]
         _lock_identifiers(company.pk, imei_digests + ([serial_digest] if serial_digest else []))
