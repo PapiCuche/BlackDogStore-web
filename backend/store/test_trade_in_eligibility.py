@@ -408,7 +408,8 @@ class ReviewFindingsTest(EligibilityBase):
     def test_no_free_text_carries_an_identifier(self):
         created = self.check(imei2=IMEI_B)
         cid = created['id']
-        texts = (IMEI_A, f'IMEI {IMEI_B[:8]} {IMEI_B[8:]}', 'serie C02XG0FDH7JY', '3569-3803-5643')
+        texts = (IMEI_A, f'IMEI {IMEI_B[:8]} {IMEI_B[8:]}', 'serie C02XG0FDH7JY',
+                 f'{IMEI_A[:4]}-{IMEI_A[4:8]}-{IMEI_A[8:12]}-{IMEI_A[12:]}')
         for text in texts:
             with self.subTest(text=text):
                 for path, data in ((f'checks/{cid}/blockers/', {'code': 'activation_lock', 'answer': 'clear',
@@ -419,7 +420,7 @@ class ReviewFindingsTest(EligibilityBase):
                     res = self.post(path, data, expect=400)
                     self.assertEqual(res['code'], 'identifier_in_text')
         res = self.api(self.valuer).post(f'{URL}checks/', {'branch': self.branch.pk, 'imei': IMEI_C,
-                                                           'description': 'Modelo G7XK2PLUS9'}, format='json')
+                                                           'description': 'Modelo G7XK2PLUS9Q'}, format='json')
         self.assertEqual((res.status_code, res.json()['code']), (400, 'identifier_in_text'))
         self.post(f'checks/{cid}/close/', {'reason': 'El cliente se fue, termina en 1234'}, expect=200)
         closed = AdminAuditLog.objects.get(action='trade_in_device_check_closed')
@@ -533,15 +534,29 @@ class ReReviewFindingsTest(EligibilityBase):
 
     def test_separators_and_full_width_do_not_hide_an_identifier(self):
         serial_only = self.check(has_imei=False, imei='', serial='ABCDEFGHJK')
+        hyphened = self.check(has_imei=False, imei='', serial='C02XG0FDH7JY')
         with_imei = self.check(imei=IMEI_C)
         for check_id, text in ((serial_only['id'], 'serie abcd-efgh-jk'),
-                               (serial_only['id'], 'C02-XG0-FDH7JY'),
+                               (hyphened['id'], 'serie c02-xg0-fdh7jy'),
                                (with_imei['id'], 'Ｃ０２ＸＧ０ＦＤＨ７ＪＹ'),
                                (with_imei['id'], '3569|3803|5643|80'),
                                (with_imei['id'], f'#{IMEI_C[:5]}x{IMEI_C[5:]}')):
             with self.subTest(text=text):
                 res = self.post(f'checks/{check_id}/close/', {'reason': text}, expect=400)
                 self.assertEqual(res['code'], 'identifier_in_text')
+
+    def test_everyday_notes_pass(self):
+        created = self.check(imei2=IMEI_B)
+        for text in ('27/11/2026 10:30', 'consultado el 27/11/2026', '2026-11-27', 'consulta 10:30-10:45',
+                     'capacidad 128 256 512', '8GB/256GB', '128GB-negro', 'SM-G991B', 'MQ8T3LL/A', 'iOS17.1.2',
+                     '6.1pulgadas', 'iPhone13Pro', 'Precio S/ 1,250.00'):
+            with self.subTest(text=text):
+                self.post(f'checks/{created["id"]}/blockers/', {'code': 'activation_lock', 'answer': 'clear',
+                                                               'note': text}, expect=200)
+        res = self.api(self.valuer).post(f'{URL}checks/', {'branch': self.branch.pk, 'imei': IMEI_C,
+                                                           'description': 'iPhone13Pro 128GB-negro SM-G991B'},
+                                         format='json')
+        self.assertEqual(res.status_code, 201, res.content)
 
     def test_an_empty_frozen_set_never_makes_a_check_eligible(self):
         created = self.check()

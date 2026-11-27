@@ -130,44 +130,70 @@ def masked(last4: str) -> str:
 
 _NON_ALNUM = re.compile(r'[\W_]+')
 _LONG_DIGITS = re.compile(r'[0-9]{8,}')
+#: Dates and times people write in notes («27/11/2026», «2026-11-27», «10:30»): not identifiers, removed first.
+_DATES_AND_TIMES = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}[/.-][0-9]{1,2}(?:[/.-][0-9]{2,4})?|[0-9]{1,2}:[0-9]{2}')
+#: A generic serial: a plain run of 10+ UPPER-CASE letters and digits with at least one of each. Mixed case words
+#: («Modelo13Pro») and short codes («SM-G991B», «MQ8T3LL/A») are everyday text.
+_SERIAL_RUN = re.compile(r'[A-Z0-9]{10,}')
+IMEI_DIGITS = 15
 
 
-def _looks_like_serial(token: str) -> bool:
-    return len(token) >= 8 and any(c.isdigit() for c in token) and any(c.isalpha() for c in token)
+def _looks_like_serial(run: str) -> bool:
+    return bool(_SERIAL_RUN.fullmatch(run)) and any(c.isdigit() for c in run) and any(c.isalpha() for c in run)
+
+
+def _imei_window(digits: str) -> bool:
+    """Any 15 consecutive digits that pass the IMEI check digit."""
+    for start in range(0, len(digits) - IMEI_DIGITS + 1):
+        window = digits[start:start + IMEI_DIGITS]
+        if device_identity.luhn_check_digit(window[:14]) == window[14]:
+            return True
+    return False
 
 
 def refuse_identifiers(text: str, field: str, *, company_id=None, digests=(), typed=()) -> None:
     """
     A free text (a description, a note, a reason) must never carry an identifier: it would reach the database, the
-    screen and the audit in full. Refused when, separators removed, it holds 8 or more digits in a row, the shape of an
-    EID, a serial-shaped token (8+ letters and digits with at least one of each), an identifier typed in the same
-    request, or any token whose keyed digest is one of this check's identifiers.
+    screen and the audit in full. NFKC first, dates and times removed, then refused when:
+
+      * a single word holds 8 or more digits in a row;
+      * across separators (any non-digit, letters included), the text holds 14 or more digits, or any 15 of them in a
+        row pass the IMEI check digit;
+      * it has the shape of an EID, or a plain run of 10+ upper-case letters and digits (a generic serial);
+      * it repeats an identifier typed in the same request;
+      * any word — as typed, without its separators, or each of its parts — is, by its keyed digest, one of THIS
+        check's identifiers.
+
+    Everyday notes pass: dates, times, capacities, prices, model codes, versions.
     """
     if not text:
         return
-    # NFKC first (full-width digits and letters become plain ones), then every non-alphanumeric is a separator.
-    normal = unicodedata.normalize('NFKC', text)
-    compact = _NON_ALNUM.sub('', normal).upper()
     message = 'Este texto no lleva IMEI, series ni otros identificadores: van en sus campos.'
-    if _LONG_DIGITS.search(compact) or device_identity.looks_like_eid(normal):
+    normal = unicodedata.normalize('NFKC', text)
+    if device_identity.looks_like_eid(normal):
         raise TariffError(message, code='identifier_in_text', field=field)
-    # Each whitespace word, upper-cased, with and without its inner separators («C02-XG0-FDH7JY» is one serial),
-    # and each run of letters and digits.
-    candidates = set()
-    for word in normal.split():
-        candidates.add(word.upper())
-        candidates.add(_NON_ALNUM.sub('', word).upper())
-        candidates.update(part.upper() for part in _NON_ALNUM.split(word) if part)
-    candidates.discard('')
-    if any(_looks_like_serial(token) for token in candidates):
+    scrubbed = _DATES_AND_TIMES.sub(' ', normal)
+    words = scrubbed.split()
+    if any(_LONG_DIGITS.search(word) for word in words):
         raise TariffError(message, code='identifier_in_text', field=field)
+    digits = ''.join(ch for ch in scrubbed if ch.isdigit())
+    if len(digits) >= 14 or _imei_window(digits):
+        raise TariffError(message, code='identifier_in_text', field=field)
+    runs = [run for run in _NON_ALNUM.split(scrubbed) if run]
+    if any(_looks_like_serial(run) for run in runs):
+        raise TariffError(message, code='identifier_in_text', field=field)
+    compact = _NON_ALNUM.sub('', normal).upper()
     if any(value and _NON_ALNUM.sub('', value).upper() in compact for value in typed):
         raise TariffError(message, code='identifier_in_text', field=field)
     wanted = {d for d in digests if d}
     if wanted and company_id is not None:
-        for token in candidates:
-            if len(token) >= 4 and digest(company_id, token) in wanted:
-                raise TariffError(message, code='identifier_in_text', field=field)
+        candidates = set()
+        for word in normal.split():
+            candidates.add(word.upper())
+            candidates.add(_NON_ALNUM.sub('', word).upper())
+            candidates.update(part.upper() for part in _NON_ALNUM.split(word) if part)
+        if any(len(token) >= 4 and digest(company_id, token) in wanted for token in candidates):
+            raise TariffError(message, code='identifier_in_text', field=field)
 
 
 def _free_text(data, key, field, *, check=None, typed=()) -> str:
