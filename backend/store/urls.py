@@ -82,6 +82,7 @@ from .pos_device_views import (
 )
 from . import sales_quote_views as sq
 from . import trade_in_tariff_views as tit
+from . import trade_in_rules_views as tir
 from .pos_views import (
     AdminPosSaleByKeyView,
     AdminPosSaleNotChargedView,
@@ -715,6 +716,33 @@ urlpatterns = [
     path('admin/trade-in/tariff/versions/<int:pk>/withdraw/', tit.AdminTradeInTariffWithdrawView.as_view(),
          name='admin-trade-in-tariff-withdraw'),
     path('admin/trade-in/policy/', tit.AdminTradeInPolicyView.as_view(), name='admin-trade-in-policy'),
+    # TRADE-IN VALUATION PRO · Phase 2 — the valuation rules (docs/adr-trade-in-valuation.md §7, phase 2).
+    path('admin/trade-in/rules/groups/', tir.AdminTradeInFactorGroupListView.as_view(),
+         name='admin-trade-in-rule-groups'),
+    path('admin/trade-in/rules/groups/<int:pk>/', tir.AdminTradeInFactorGroupDetailView.as_view(),
+         name='admin-trade-in-rule-group'),
+    path('admin/trade-in/rules/factors/', tir.AdminTradeInFactorListView.as_view(),
+         name='admin-trade-in-rule-factors'),
+    path('admin/trade-in/rules/factors/<int:pk>/', tir.AdminTradeInFactorDetailView.as_view(),
+         name='admin-trade-in-rule-factor'),
+    path('admin/trade-in/rules/versions/', tir.AdminTradeInRuleSetListView.as_view(),
+         name='admin-trade-in-rule-sets'),
+    path('admin/trade-in/rules/versions/<int:pk>/', tir.AdminTradeInRuleSetDetailView.as_view(),
+         name='admin-trade-in-rule-set'),
+    path('admin/trade-in/rules/versions/<int:pk>/rules/', tir.AdminTradeInRuleAddView.as_view(),
+         name='admin-trade-in-rule-add'),
+    path('admin/trade-in/rules/versions/<int:pk>/propose/', tir.AdminTradeInRuleSetProposeView.as_view(),
+         name='admin-trade-in-rule-set-propose'),
+    path('admin/trade-in/rules/versions/<int:pk>/approve/', tir.AdminTradeInRuleSetApproveView.as_view(),
+         name='admin-trade-in-rule-set-approve'),
+    path('admin/trade-in/rules/versions/<int:pk>/reject/', tir.AdminTradeInRuleSetRejectView.as_view(),
+         name='admin-trade-in-rule-set-reject'),
+    path('admin/trade-in/rules/versions/<int:pk>/withdraw/', tir.AdminTradeInRuleSetWithdrawView.as_view(),
+         name='admin-trade-in-rule-set-withdraw'),
+    path('admin/trade-in/rules/rules/<int:pk>/', tir.AdminTradeInRuleDetailView.as_view(),
+         name='admin-trade-in-rule'),
+    path('admin/trade-in/rules/preview/', tir.AdminTradeInRulesPreviewView.as_view(),
+         name='admin-trade-in-rules-preview'),
 
     # --- C1.4: bulk imports ------------------------------------------------
     path('admin/imports/inspect/', AdminImportInspectView.as_view(), name='admin-import-inspect'),

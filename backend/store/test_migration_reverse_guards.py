@@ -10,7 +10,7 @@ from unittest import mock
 from django.db import migrations
 from django.test import SimpleTestCase
 
-NODES = ('0194_trade_in_tariff', '0193_unit_import_terms_approval', '0192_unit_photo_provenance', '0191_trade_in_quote',
+NODES = ('0195_trade_in_rules', '0194_trade_in_tariff', '0193_unit_import_terms_approval', '0192_unit_photo_provenance', '0191_trade_in_quote',
          '0190_supplier_margin', '0189_sales_quote')
 
 
