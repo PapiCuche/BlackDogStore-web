@@ -178,7 +178,7 @@ function TermsApproval({ job, canApprove, disabled, onApprove, onRegisterWithout
         </>
       ) : null}
       <p className="text-xs">
-        Enlace de esta carga: <span className="font-mono">{link}</span>
+        Enlace de esta carga: <span className="break-all font-mono">{link}</span>
       </p>
     </section>
   );
