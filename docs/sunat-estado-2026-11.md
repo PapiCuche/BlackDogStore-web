@@ -77,7 +77,7 @@ Se leyeron directamente los PDF oficiales; están guardados fuera del repositori
 - El ADR #173 cita unas reglas «24.04.2026». Las vigentes son del **26.08.2026** (F7).
 - La auditoría F1 dejó en NO VERIFICADO el envío individual de boleta. El texto de la RS 114-2019 lo permite hasta 5 días (F4), pero el código no lo implementa (§2, fila 5).
 - F4 responde el hueco 3 de `sunat-cpe-requisitos.md` (§10, «Plazo del resumen diario de boletas»): a más tardar el
-  7.º día calendario siguiente a la emisión (RS 114-2019, art. 21.1).
+  7.º día calendario siguiente a la emisión (RS 097-2012, art. 21.1, en el texto de la RS 114-2019).
 - `sunat-factura-ubl21-matriz.md` daba el Anexo 6 de la RS 000048-2026 como «vigente 1.8.2026»; se corrige en este PR
   (rige el 1-ene-2027, F6).
 

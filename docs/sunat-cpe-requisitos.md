@@ -312,7 +312,7 @@ No se implementará nada sobre estos puntos hasta confirmarlos en fuente oficial
 3. **Plazo del resumen diario de boletas.** Confirmado el de la factura (3 días);
    el del resumen debe verificarse por separado. *Respondido el 2026-11-27*
    (`sunat-estado-2026-11.md`, F4): a más tardar el 7.º día calendario siguiente a
-   la emisión (RS 114-2019, art. 21.1).
+   la emisión (RS 097-2012, art. 21.1, en el texto de la RS 114-2019).
 4. **Algoritmo de hash exigible hoy.** Los ejemplos usan SHA-1; el anexo no lo
    fija. Hay que decidir qué emitir y poder cambiarlo.
 
