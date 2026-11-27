@@ -168,6 +168,17 @@ class CalculationTest(SimpleTestCase):
         lines = {line['factor']: line for line in result['lines']}
         self.assertEqual(lines['screen']['suppressed_by'], 'screen_replaced')     # its component was taken
 
+    def test_lines_are_ranked_by_what_their_group_cap_still_lets_them_deduct(self):
+        """Third review of #462: a replaced part of 120 in a group capped at 50 loses to a broken screen of 100."""
+        capped = dict(GROUPS, rep=G(key='rep', kind='repairs', name='Rep', combine='sum', cap_percent=D('5')))
+        result = calc({'screen': 'not_working', 'screen_replaced': 'true'}, [
+            R(id=1, factor='screen', effect='fixed', when_outcome='not_working', amount=D('100')),    # cos, pantalla
+            R(id=2, factor='screen_replaced', effect='fixed', when_outcome='true', amount=D('120')),  # rep (≤ 50)
+        ], groups=capped)
+        self.assertEqual(result['totals']['deductions'], '100.00')
+        lines = {line['factor']: line for line in result['lines']}
+        self.assertEqual(lines['screen_replaced']['suppressed_by'], 'screen')
+
     def test_ties_go_to_the_higher_priority_then_the_lower_rule_id(self):
         def winner(*candidates):
             result = calc({'screen': 'detail', 'frame': 'detail'}, list(candidates))
@@ -553,6 +564,23 @@ class RulesReviewFindingsTest(RulesBase):
         self.assertNotIn(other.pk, pending.contributor_ids)
         self.assertEqual(self.post(f'versions/{draft["id"]}/approve/', {}, user=other, expect=200)['status'],
                          'approved')
+
+    def test_catalogue_edits_with_no_draft_open_still_make_you_an_author(self):
+        """Third review of #462: edits before the draft is opened change what it computes as much as edits during it."""
+        version_id, cos, screen, _ = self.approved_set()
+        editor_approver = fx.member(self.company, 'tir_edita_sin_borrador', [VIEW, MANAGE, APPROVE])
+        self.assertFalse(TradeInRuleSetVersion.objects.filter(status='draft').exists())
+        res = self.api(editor_approver).patch(f'{RULES}groups/{cos["id"]}/', {'group_cap_percent': '3'},
+                                              format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        draft = self.post('versions/', {})                                       # the editor opens…
+        self.post(f'versions/{draft["id"]}/propose/', {}, expect=200)            # …and proposes
+        res = self.post(f'versions/{draft["id"]}/approve/', {}, user=editor_approver, expect=403)
+        self.assertEqual(res['code'], 'own_change')
+        # Edits before the previous proposal do not count: the first approver approves this one freely.
+        self.assertEqual(self.post(f'versions/{draft["id"]}/approve/', {}, user=self.approver, expect=200)['status'],
+                         'approved')
+        self.assertNotEqual(version_id, draft['id'])
 
     def test_a_partial_range_edit_keeps_the_other_bound(self):
         battery_group = self.post('groups/', {'kind': 'battery', 'name': 'Batería'})

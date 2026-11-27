@@ -363,6 +363,8 @@ def create_draft(*, actor, company, data=None, request=None) -> TradeInRuleSetVe
                     when_percent_gte=rule.when_percent_gte, when_percent_lt=rule.when_percent_lt,
                     effect=rule.effect, amount=rule.amount, percent=rule.percent, priority=rule.priority,
                     owner_id=rule.owner_id, notes=rule.notes)
+        draft.contributor_ids = _add_contributors(draft, _catalogue_editors(company, draft))
+        draft.save(update_fields=['contributor_ids'])
         _version_audit('trade_in_rule_set_draft_created', actor=actor, company=company, version=draft,
                        request=request, source=source.number if source else None, dropped=dropped)
     draft.dropped_rules = dropped
@@ -463,6 +465,25 @@ def _contributed(draft, actor) -> None:
         draft.save(update_fields=['contributor_ids'])
 
 
+def _catalogue_editors(company, version) -> set:
+    """
+    Who edited the company's groups or questions since the last set was proposed (or ever, if none was): those edits
+    change what this set computes even when no draft was open, so they make their authors authors of this set.
+    """
+    last = (TradeInRuleSetVersion.objects.filter(company=company, proposed_at__isnull=False)
+            .exclude(pk=version.pk).order_by('-proposed_at').values_list('proposed_at', flat=True).first())
+    edits = AdminAuditLog.objects.filter(company=company, action__startswith='trade_in_factor_',
+                                         actor__isnull=False)
+    if last is not None:
+        edits = edits.filter(created_at__gte=last)
+    return set(edits.values_list('actor_id', flat=True).distinct())
+
+
+def _add_contributors(draft, ids) -> list:
+    known = list(draft.contributor_ids or [])
+    return known + sorted(pk for pk in ids if pk not in known)
+
+
 def authors(version) -> set:
     """Who wrote this set: whoever opened, edited or proposed it."""
     return {pk for pk in (version.created_by_id, version.proposed_by_id, *(version.contributor_ids or [])) if pk}
@@ -549,8 +570,8 @@ def propose(*, actor, company, version, data, request=None, today: date | None =
         snapshot = snapshot_of(company, draft)
         _check_against_snapshot(draft, snapshot)
         draft.snapshot = snapshot
-        if getattr(actor, 'pk', None) and actor.pk not in (draft.contributor_ids or []):
-            draft.contributor_ids = [*(draft.contributor_ids or []), actor.pk]
+        draft.contributor_ids = _add_contributors(
+            draft, _catalogue_editors(company, draft) | ({actor.pk} if getattr(actor, 'pk', None) else set()))
         draft.valid_from, draft.valid_until, draft.reason = valid_from, valid_until, reason
         draft.status = TradeInRuleSetVersion.STATUS_PENDING
         draft.proposed_by = actor if getattr(actor, 'is_authenticated', False) else None

@@ -10,9 +10,10 @@ THE ORDER (§6):
        * every STATUS rule applies (requires approval, pending verification, not eligible), whatever its priority;
        * ONE money rule per factor: the highest priority (tie: the larger deduction, then the lower id);
   4. each deduction on the BASE value (never compounded), rounded to 0.01 half-up;
-  5. no double penalty, by ONE greedy selection (owner's decision, re-review of #462): candidate lines from the
-     largest deduction down (ties: rule priority, then rule id); a line counts if its component is not taken yet and
-     its group sums or its `max` group has not counted a line yet; then each group's cap; then the base;
+  5. no double penalty, by ONE greedy selection (owner's decisions, reviews of #462): repeatedly take, among the
+     lines that may still count (component not taken; group sums, or its `max` group has not counted yet), the one
+     whose deduction after its group's REMAINING cap is largest (ties: rule priority, then rule id); then each group's
+     cap; then the base. Not optimal in every case: it favours the customer;
   6. computed value = base − deductions, never negative (deductions only: never above the base);
   8. eligibility from the flags; NOT ELIGIBLE has no value at all (null), never zero «on account».
 
@@ -220,28 +221,49 @@ def calculate(*, base: Decimal, maximum: Decimal, answers: dict, groups: dict[st
                                outcome=str(answer), rule_id=chosen.id, effect=chosen.effect,
                                amount=deduction(chosen, base), priority=chosen.priority))
 
-    # 5 — one deterministic greedy selection (owner's decision on the re-review of #462): the candidate lines from the
-    # largest deduction down (ties: the rule's priority, then its id); a line is TAKEN when its component is not taken
-    # yet AND its group sums, or its `max` group has not taken a line yet. Otherwise it is suppressed by the line that
-    # took the component or the group. Simple and stable; it does not claim to be the best choice in every case.
+    # 5 — one deterministic greedy selection (owner's decisions on the reviews of #462). At each step, among the lines
+    # that may still count — their component is not taken yet, and their group sums or their `max` group has not
+    # counted a line yet — take the one whose deduction AFTER its group's remaining cap is largest (ties: the rule's
+    # priority, then its id). A line that may not count is suppressed by the line that took its component or group; one
+    # whose group's cap is used up adds nothing. Simple and stable; not the best choice in every case (it favours the
+    # customer: a larger deduction found later never replaces one already taken).
+    caps = {key: _cents(base * group.cap_percent / HUNDRED) for key, group in groups.items()
+            if group.cap_percent is not None}
+    remaining = dict(caps)
     taken_components: dict[str, _Line] = {}
-    taken_max_groups: dict[str, _Line] = {}
+    taken_groups: dict[str, _Line] = {}
     counted: list[_Line] = []
-    for line in sorted((line for line in lines if line.amount > 0),
-                       key=lambda l: (-l.amount, -l.priority, l.rule_id)):
+    pending = [line for line in lines if line.amount > 0]
+
+    def sums(line) -> bool:
         group = groups.get(line.group)
-        sums = group is not None and group.combine == 'sum'
-        if line.component and line.component in taken_components:
-            line.suppressed_by = taken_components[line.component].factor
-            continue
-        if not sums and line.group in taken_max_groups:
-            line.suppressed_by = taken_max_groups[line.group].factor
+        return group is not None and group.combine == 'sum'
+
+    def capped(line) -> Decimal:
+        return min(line.amount, remaining[line.group]) if line.group in remaining else line.amount
+
+    while pending:
+        for line in list(pending):
+            if line.component and line.component in taken_components:
+                line.suppressed_by = taken_components[line.component].factor
+            elif not sums(line) and line.group in taken_groups:
+                line.suppressed_by = taken_groups[line.group].factor
+            else:
+                continue
+            pending.remove(line)
+        if not pending:
+            break
+        line = sorted(pending, key=lambda l: (-capped(l), -l.priority, l.rule_id))[0]
+        pending.remove(line)
+        if capped(line) <= 0:
+            line.suppressed_by = taken_groups[line.group].factor if line.group in taken_groups else ''
             continue
         counted.append(line)
+        if line.group in remaining:
+            remaining[line.group] -= capped(line)
         if line.component:
             taken_components[line.component] = line
-        if not sums:
-            taken_max_groups[line.group] = line
+        taken_groups.setdefault(line.group, line)
 
     # Each group's total, under its cap.
     group_totals: dict[str, Decimal] = {}
