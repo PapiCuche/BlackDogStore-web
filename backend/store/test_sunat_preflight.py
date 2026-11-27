@@ -278,10 +278,28 @@ class EachNoGoCauseTest(_Base):
         self.assertIn('AVISO', self.levels(checks, 'interruptor'))
 
     @override_settings(**BETA_READY, FISCAL_CONSULT_ENABLED=True, FISCAL_CONSULT_ENDPOINT='')
-    def test_an_empty_consult_endpoint_is_the_one_in_the_code(self):
-        consult = [c for c in self.run_checks() if c.area == 'consulta']
-        self.assertEqual([c.level for c in consult], ['GO'])
-        self.assertIn('e-factura.sunat.gob.pe', consult[0].detail)
+    def test_the_consult_line_uses_the_same_endpoint_as_reconciliation(self):
+        production = [c for c in self.run_checks(FiscalEnvironment.PRODUCTION) if c.area == 'consulta']
+        self.assertEqual([c.level for c in production], ['GO'])
+        self.assertIn('e-factura.sunat.gob.pe', production[0].detail)
+        # BETA has no consult service: without an explicit endpoint, a warning, never production.
+        beta = [c for c in self.run_checks() if c.area == 'consulta']
+        self.assertEqual([c.level for c in beta], ['AVISO'])
+        self.assertIn('BETA', beta[0].detail)
+
+    @override_settings(**BETA_READY, FISCAL_CONSULT_ENABLED=True, FISCAL_CONSULT_ENDPOINT='http://consulta.test/x')
+    def test_a_non_https_consult_endpoint_is_no_go(self):
+        self.assert_no_go(self.run_checks(), 'consulta', 'HTTPS')
+
+    @override_settings(**_settings(ruc=OTHER_RUC, key_cert=_certificate(cn=RUC, days_before=400, days_after=-3)))
+    def test_its_no_go_lines_are_what_issuing_refuses(self):
+        from store.fiscal_config import FiscalConfigError, resolve_credentials
+
+        with self.assertRaises(FiscalConfigError) as refused:
+            resolve_credentials(self.company, signing=True)
+        stops = self.details(self.run_checks(), 'NO-GO')
+        self.assertIn(str(refused.exception), stops)
+        self.assertIn('venció', stops)
 
     @override_settings(**BETA_READY)
     def test_the_command_exits_one_on_no_go(self):

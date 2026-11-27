@@ -123,59 +123,75 @@ def _issuer(company) -> list[Check]:
     return checks
 
 
+def _issuer_problem_area(problem: str) -> str:
+    """Which line a sentence of `fiscal_config.issuer_problems` belongs to."""
+    if problem.startswith('La empresa'):
+        return 'emisor'
+    if problem.startswith('Las credenciales'):
+        return 'credenciales'
+    return 'certificado'
+
+
 def _credentials_and_certificate(company, target: str, now) -> list[Check]:
+    """
+    The RUC, validity and RUC-in-subject rules are `fiscal_config.issuer_problems`, the
+    same function that guards every signature (SUNAT-ISSUER-GATE): what this says NO-GO
+    to is exactly what issuing would refuse. Only the extras live here: how many days
+    are left, and whether the certificate is self-signed.
+    """
     from cryptography import x509
 
-    from .fiscal.certificate import CertificateError, check_signing_pair, metadata_from_certificate
+    from .fiscal.certificate import CertificateError, check_signing_pair, metadata_from_certificate, subject_values
+    from .fiscal_config import _RUC_IN_TEXT, issuer_problems
 
     credentials, origin, problem = _credentials_for_diagnosis()
     if credentials is None:
         return [Check(NO_GO, 'credenciales', f'{problem} (origen: {origin})')]
     checks = [Check(GO, 'credenciales', f'usuario y clave SOL configurados (origen: {origin})')]
-    if credentials['ruc'] == (company.tax_id or '').strip():
-        checks.append(Check(GO, 'credenciales', 'el RUC de la Clave SOL es el de la empresa'))
-    else:
-        checks.append(Check(NO_GO, 'credenciales', (
-            'las credenciales SOL no son del RUC de esta empresa: una empresa no emite con las '
-            'credenciales de otro contribuyente')))
-
     try:
         check_signing_pair(credentials['cert_pem'], credentials['key_pem'])
     except CertificateError as exc:
         return [*checks, Check(NO_GO, 'certificado', str(exc))]
+
+    problems = issuer_problems(company, credentials, environment=target, signing=True, now=now)
+    areas = {_issuer_problem_area(p) for p in problems}
+    checks += [Check(NO_GO, _issuer_problem_area(p), p) for p in problems]
+    if not areas & {'emisor', 'credenciales'}:
+        checks.append(Check(GO, 'credenciales', 'el RUC de la Clave SOL es el de la empresa'))
+
     # `check_signing_pair` already proved that the PEM reads.
     meta = metadata_from_certificate(x509.load_pem_x509_certificate(credentials['cert_pem']))
     # Neither the subject nor the issuer is printed: they name people and other
-    # companies. What the operator needs is whether the RUC is there (below), the
-    # dates and a fingerprint to compare with the file in hand.
+    # companies. What the operator needs is the dates, a fingerprint to compare
+    # with the file in hand, and whether the RUC is there (below).
     checks.append(Check(GO, 'certificado', (
-        f'se lee y casa con su clave; vigente del {meta.not_before:%d/%m/%Y} al {meta.not_after:%d/%m/%Y}, '
-        f'huella SHA-256 {meta.fingerprint_sha256[:16]}…')))
+        f'se lee y casa con su clave; vigente del {timezone.localtime(meta.not_before):%d/%m/%Y} '
+        f'al {timezone.localtime(meta.not_after):%d/%m/%Y}, huella SHA-256 {meta.fingerprint_sha256[:16]}…')))
 
     production = target == FiscalEnvironment.PRODUCTION
-    validity = meta.validity(now=now)
-    days_left = (meta.not_after - now).days
-    if validity == 'expired':
-        checks.append(Check(NO_GO, 'certificado', f'venció el {meta.not_after:%d/%m/%Y}'))
-    elif validity == 'not_yet_valid':
-        checks.append(Check(NO_GO, 'certificado', f'todavía no es válido: empieza el {meta.not_before:%d/%m/%Y}'))
-    elif days_left < CERT_BLOCKING_DAYS:
-        checks.append(Check(NO_GO if production else WARN, 'certificado', f'vence en {days_left} días'))
-    elif days_left < CERT_WARNING_DAYS:
-        checks.append(Check(WARN, 'certificado', f'vence en {days_left} días'))
-    else:
-        checks.append(Check(GO, 'certificado', f'vigente por {days_left} días más'))
+    if meta.validity(now=now) == 'valid':
+        days_left = (meta.not_after - now).days
+        if days_left < CERT_BLOCKING_DAYS:
+            checks.append(Check(NO_GO if production else WARN, 'certificado', f'vence en {days_left} días'))
+        elif days_left < CERT_WARNING_DAYS:
+            checks.append(Check(WARN, 'certificado', f'vence en {days_left} días'))
+        else:
+            checks.append(Check(GO, 'certificado', f'vigente por {days_left} días más'))
 
     if meta.subject == meta.issuer:
         checks.append(Check(NO_GO if production else WARN, 'certificado', (
             'es autofirmado: sirve para BETA, no para producción (SUNAT exige uno emitido a nombre del RUC '
             'y registrado en SOL)')))
+
     ruc = (company.tax_id or '').strip()
-    if ruc and ruc in re.findall(r'\d{11}', meta.subject):
+    present = bool(ruc) and ruc in {token for value in subject_values(credentials['cert_pem'])
+                                    for token in re.findall(_RUC_IN_TEXT, value)}
+    if present:
         checks.append(Check(GO, 'certificado', 'RUC de la empresa presente en el certificado: sí'))
-    else:
-        checks.append(Check(NO_GO if production else WARN, 'certificado', (
-            'RUC de la empresa presente en el certificado: no (SUNAT lo exige en el campo OU; BETA no)')))
+    elif not production:
+        # In production `issuer_problems` already said NO-GO; BETA does not ask for it.
+        checks.append(Check(WARN, 'certificado', (
+            'RUC de la empresa presente en el certificado: no (BETA no lo exige; producción sí)')))
     checks.append(Check(WARN, 'certificado', (
         'el registro del certificado en SOL no se puede comprobar desde aquí: lo atestigua el propietario')))
     return checks
@@ -311,20 +327,25 @@ def _queue(company, target: str, now) -> list[Check]:
 
 
 def _consult(target: str) -> list[Check]:
+    """The same endpoint reconciliation would use: `fiscal_config.consult_endpoint`."""
     from urllib.parse import urlparse
 
     from .fiscal.provider import PRODUCTION_CONSULT_ENDPOINT
+    from .fiscal_config import consult_endpoint
 
     production = target == FiscalEnvironment.PRODUCTION
-    configured = (getattr(settings, 'FISCAL_CONSULT_ENDPOINT', '') or '').strip()
-    endpoint = configured or PRODUCTION_CONSULT_ENDPOINT
     if not fiscal_consult_enabled():
         return [Check(NO_GO if production else WARN, 'consulta', (
             'la consulta de CDR (getStatusCdr) está apagada: es la única salida ante un envío incierto, y en '
             'producción se enciende junto con la emisión. BETA no tiene ese servicio'))]
-    if not endpoint.startswith('https://'):
-        return [Check(NO_GO, 'consulta', 'el endpoint de consulta configurado no es HTTPS')]
-    origin = 'configurado' if configured else 'el del código'
+    configured = (getattr(settings, 'FISCAL_CONSULT_ENDPOINT', '') or '').strip()
+    try:
+        endpoint = consult_endpoint(target)
+    except FiscalConfigError as exc:
+        # A bad endpoint stops everywhere; a BETA target without one is only a fact of BETA.
+        bad = bool(configured) or production
+        return [Check(NO_GO if bad else WARN, 'consulta', str(exc))]
+    origin = 'el del código' if endpoint == PRODUCTION_CONSULT_ENDPOINT and not configured else 'configurado'
     return [Check(GO, 'consulta', f'encendida contra {urlparse(endpoint).hostname} ({origin})')]
 
 
