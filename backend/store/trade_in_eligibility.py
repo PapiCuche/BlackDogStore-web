@@ -31,7 +31,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
-from datetime import timedelta
+import unicodedata
+from datetime import timedelta, timezone as dt_timezone
 
 from django.conf import settings
 from django.db import transaction
@@ -127,9 +128,8 @@ def masked(last4: str) -> str:
     return f'•••• {last4}' if last4 else ''
 
 
-_SEPARATORS = re.compile(r'[\s.\-/,_:;]')
-_TOKEN = re.compile(r'[A-Za-z0-9]+')
-_LONG_DIGITS = re.compile(r'\d{8,}')
+_NON_ALNUM = re.compile(r'[\W_]+')
+_LONG_DIGITS = re.compile(r'[0-9]{8,}')
 
 
 def _looks_like_serial(token: str) -> bool:
@@ -145,20 +145,28 @@ def refuse_identifiers(text: str, field: str, *, company_id=None, digests=(), ty
     """
     if not text:
         return
-    compact = _SEPARATORS.sub('', text)
+    # NFKC first (full-width digits and letters become plain ones), then every non-alphanumeric is a separator.
+    normal = unicodedata.normalize('NFKC', text)
+    compact = _NON_ALNUM.sub('', normal).upper()
     message = 'Este texto no lleva IMEI, series ni otros identificadores: van en sus campos.'
-    if _LONG_DIGITS.search(compact) or device_identity.looks_like_eid(text):
+    if _LONG_DIGITS.search(compact) or device_identity.looks_like_eid(normal):
         raise TariffError(message, code='identifier_in_text', field=field)
-    tokens = _TOKEN.findall(text)
-    if any(_looks_like_serial(token) for token in tokens):
+    # Each whitespace word, upper-cased, with and without its inner separators («C02-XG0-FDH7JY» is one serial),
+    # and each run of letters and digits.
+    candidates = set()
+    for word in normal.split():
+        candidates.add(word.upper())
+        candidates.add(_NON_ALNUM.sub('', word).upper())
+        candidates.update(part.upper() for part in _NON_ALNUM.split(word) if part)
+    candidates.discard('')
+    if any(_looks_like_serial(token) for token in candidates):
         raise TariffError(message, code='identifier_in_text', field=field)
-    upper = compact.upper()
-    if any(value and value.upper() in upper for value in typed):
+    if any(value and _NON_ALNUM.sub('', value).upper() in compact for value in typed):
         raise TariffError(message, code='identifier_in_text', field=field)
     wanted = {d for d in digests if d}
     if wanted and company_id is not None:
-        for token in tokens:
-            if len(token) >= 4 and (digest(company_id, token) in wanted or digest(company_id, token.upper()) in wanted):
+        for token in candidates:
+            if len(token) >= 4 and digest(company_id, token) in wanted:
                 raise TariffError(message, code='identifier_in_text', field=field)
 
 
@@ -265,7 +273,7 @@ def _stock_match(company, *, imeis=(), serial=''):
     if imeis:
         query |= Q(imei__in=imeis) | Q(imei2__in=imeis)
     if serial:
-        query |= Q(serial_number__iexact=serial)
+        query |= Q(serial_number=serial)       # stored by `clean_serial`: upper case, no spaces (uses the index)
     if not query:
         return False, False
     statuses = set(StockUnit.objects.filter(company=company).exclude(status=StockUnit.Status.VOIDED)
@@ -358,7 +366,7 @@ def answer_blocker(*, actor, company, check, data, request=None) -> TradeInBlock
     if code in COMPUTED:
         raise TariffError('Este bloqueo lo decide el sistema con el IMEI: no se responde a mano.', code='computed',
                           field='code')
-    if code not in (check.required_blockers or {}):
+    if code not in due_blockers(check):
         raise TariffError('Bloqueo no reconocido para esta comprobación.', field='code')
     answer = str(data.get('answer') or '').strip()
     if answer not in dict(TradeInBlockerAnswer.ANSWER_CHOICES):
@@ -377,7 +385,11 @@ def answer_blocker(*, actor, company, check, data, request=None) -> TradeInBlock
     return row
 
 
-def _checked_at(raw, company, now):
+def _checked_at(raw, company, now, *, earliest):
+    """
+    The moment of the consultation: readable, not in the future, and not before the check could matter (its opening
+    minus one validity window). A far past or out-of-range value is a 400, never a row that later breaks a read.
+    """
     if raw in (None, ''):
         return now
     try:
@@ -386,9 +398,16 @@ def _checked_at(raw, company, now):
             raise ValueError(raw)
         if timezone.is_naive(value):
             value = timezone.make_aware(value, tariff.company_timezone(company))
-        value.utcoffset()
+        value = value.astimezone(dt_timezone.utc)
+        too_early = value < earliest
+        too_late = value > now + timedelta(minutes=5)
     except (ValueError, TypeError, OverflowError):
         raise TariffError('La fecha y hora de la consulta no es válida.', field='checked_at') from None
+    if too_late:
+        raise TariffError('La consulta no puede ser futura.', field='checked_at')
+    if too_early:
+        raise TariffError('La consulta es anterior a esta comprobación: vuelve a consultar la fuente.',
+                          code='too_old', field='checked_at')
     return value
 
 
@@ -431,11 +450,10 @@ def record_identity(*, actor, company, check, data, request=None, now=None) -> T
                   else TradeInVerificationSource.IDENTIFIER_IMEI)
         if source.identifier != wanted:
             raise TariffError('Esa fuente no consulta ese identificador.', field='source')
-    checked_at = _checked_at(data.get('checked_at'), company, now)
-    if checked_at > now + timedelta(minutes=5):
-        raise TariffError('La consulta no puede ser futura.', field='checked_at')
-    note = _free_text(data, 'note', 'note', check=check)
     hours = tariff.policy_of(company).identity_check_validity_hours
+    checked_at = _checked_at(data.get('checked_at'), company, now,
+                             earliest=check.created_at - timedelta(hours=hours))
+    note = _free_text(data, 'note', 'note', check=check)
     with transaction.atomic():
         check = _open(company, check)
         present = {TradeInIdentityRecord.SLOT_IMEI: bool(check.imei_digest),
@@ -473,6 +491,15 @@ def close_check(*, actor, company, check, reason, request=None):
 # The verdict
 # ---------------------------------------------------------------------------
 
+def due_blockers(check) -> dict[str, str]:
+    """The blockers this check answers: the mandatory floor ALWAYS, plus the ones frozen when it opened. An empty or
+    damaged frozen set never makes a check eligible."""
+    out = {code: BLOCKERS[code] for code in MANDATORY}
+    frozen = check.required_blockers if isinstance(check.required_blockers, dict) else {}
+    out.update(frozen)
+    return out
+
+
 def required_slots(check) -> list[str]:
     if check.has_imei:
         return [TradeInIdentityRecord.SLOT_IMEI] + ([TradeInIdentityRecord.SLOT_IMEI2] if check.imei2_digest else [])
@@ -487,7 +514,7 @@ def evaluate(check, *, now=None) -> dict:
     takes closing the check and opening a new one, both audited.
     """
     now = now or timezone.now()
-    required = dict(check.required_blockers or {})
+    required = due_blockers(check)
     answers = {row.code: row for row in check.blocker_answers.all()}
     for code, row in answers.items():
         required.setdefault(code, BLOCKERS.get(code, code))

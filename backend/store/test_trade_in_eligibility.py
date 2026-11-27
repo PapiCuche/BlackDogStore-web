@@ -237,11 +237,15 @@ class VerdictTest(EligibilityBase):
     def test_an_expired_record_is_no_verification(self):
         created = self.check()
         self.answer_all(created['id'])
-        self.record(created['id'], checked_at=(timezone.now() - timedelta(hours=30)).isoformat())
-        res = self.api(self.valuer).get(f'{URL}checks/{created["id"]}/').json()
-        self.assertEqual((res['eligibility'], res['identifiers'][0]['state']), ('pending_verification', 'expired'))
         self.record(created['id'])
-        self.assertEqual(self.api(self.valuer).get(f'{URL}checks/{created["id"]}/').json()['eligibility'], 'eligible')
+        later = timezone.now() + timedelta(hours=30)
+        with mock.patch('store.trade_in_eligibility.timezone.now', return_value=later):
+            res = self.api(self.valuer).get(f'{URL}checks/{created["id"]}/').json()
+            self.assertEqual((res['eligibility'], res['identifiers'][0]['state']),
+                             ('pending_verification', 'expired'))
+            self.record(created['id'])
+            self.assertEqual(self.api(self.valuer).get(f'{URL}checks/{created["id"]}/').json()['eligibility'],
+                             'eligible')
 
     def test_a_device_without_imei_is_checked_by_serial_or_a_declaration(self):
         created = self.check(has_imei=False, imei='', serial='C02XG0FDH7JY')
@@ -442,10 +446,11 @@ class ReviewFindingsTest(EligibilityBase):
                 TradeInDeviceCheck.objects.filter(status='open').update(status='closed')
                 created = self.check(imei2=IMEI_B)
                 self.answer_all(created['id'])
-                old = (timezone.now() - timedelta(hours=30)).isoformat()
-                self.record(created['id'], slot=slot, result=result, checked_at=old)        # expired by now
-                self.record(created['id'])
-                after = self.record(created['id'], slot='imei2')                             # newer, clean
+                self.record(created['id'], slot=slot, result=result)
+                later = timezone.now() + timedelta(hours=30)                                 # it has expired
+                with mock.patch('store.trade_in_eligibility.timezone.now', return_value=later):
+                    self.record(created['id'])
+                    after = self.record(created['id'], slot='imei2')                         # newer, clean
                 self.assertEqual(after['eligibility'], 'not_eligible')
                 self.assertIn(code, after['blocked'])
 
@@ -508,6 +513,46 @@ class ReviewFindingsTest(EligibilityBase):
         with CaptureQueriesContext(connection) as more:
             self.api(self.reader).get(f'{URL}checks/')
         self.assertEqual(len(few.captured_queries), len(more.captured_queries))
+
+
+class ReReviewFindingsTest(EligibilityBase):
+    """Re-review of #463: consultation time bounds, separators and full width in free text, the mandatory floor."""
+
+    def test_a_consultation_before_the_check_could_matter_is_refused(self):
+        created = self.check()
+        for raw, code in (('0001-01-01T00:00:00+05:00', None),
+                          ((timezone.now() - timedelta(days=3)).isoformat(), 'too_old')):
+            with self.subTest(raw=raw):
+                res = self.record(created['id'], checked_at=raw, expect=400)
+                self.assertEqual(res['field'], 'checked_at')
+                if code:
+                    self.assertEqual(res['code'], code)
+        self.assertFalse(TradeInIdentityRecord.objects.exists())
+        res = self.api(self.reader).get(f'{URL}checks/{created["id"]}/')
+        self.assertEqual(res.status_code, 200)
+
+    def test_separators_and_full_width_do_not_hide_an_identifier(self):
+        serial_only = self.check(has_imei=False, imei='', serial='ABCDEFGHJK')
+        with_imei = self.check(imei=IMEI_C)
+        for check_id, text in ((serial_only['id'], 'serie abcd-efgh-jk'),
+                               (serial_only['id'], 'C02-XG0-FDH7JY'),
+                               (with_imei['id'], 'Ｃ０２ＸＧ０ＦＤＨ７ＪＹ'),
+                               (with_imei['id'], '3569|3803|5643|80'),
+                               (with_imei['id'], f'#{IMEI_C[:5]}x{IMEI_C[5:]}')):
+            with self.subTest(text=text):
+                res = self.post(f'checks/{check_id}/close/', {'reason': text}, expect=400)
+                self.assertEqual(res['code'], 'identifier_in_text')
+
+    def test_an_empty_frozen_set_never_makes_a_check_eligible(self):
+        created = self.check()
+        TradeInDeviceCheck.objects.filter(pk=created['id']).update(required_blockers={})
+        self.record(created['id'])
+        res = self.api(self.valuer).get(f'{URL}checks/{created["id"]}/').json()
+        self.assertEqual(res['eligibility'], 'pending_verification')
+        self.assertTrue({'activation_lock', 'ownership_unproven'} <= set(res['unverified']))
+        self.post(f'checks/{created["id"]}/blockers/', {'code': 'activation_lock', 'answer': 'blocked'}, expect=200)
+        self.assertEqual(self.api(self.valuer).get(f'{URL}checks/{created["id"]}/').json()['eligibility'],
+                         'not_eligible')
 
 
 class TwoChecksOfOneImeiAtOnceTest(TransactionTestCase):
