@@ -262,10 +262,21 @@ def create_assessment(*, actor, company, data, request=None) -> TradeInAssessmen
     return assessment
 
 
+def _lock(assessment) -> tuple[TradeInDeviceCheck, TradeInAssessment]:
+    """
+    ONE LOCK ORDER for everything that touches an assessment and its device check: the CHECK first, then the
+    assessment — the order `trade_in_eligibility.close_check` uses (check, then its assessments). The other order
+    deadlocks a close against an approval.
+    """
+    check = TradeInDeviceCheck.objects.select_for_update(of=('self',)).get(pk=assessment.device_check_id)
+    locked = TradeInAssessment.objects.select_for_update(of=('self',)).get(pk=assessment.pk)
+    return check, locked
+
+
 def _editable(company, assessment) -> TradeInAssessment:
     if assessment.company_id != company.pk:
         raise TariffError('No encontrado.', code='not_found')
-    locked = TradeInAssessment.objects.select_for_update(of=('self',)).get(pk=assessment.pk)
+    _check, locked = _lock(assessment)
     if locked.status not in TradeInAssessment.EDITABLE:
         raise TariffStateError('Esta evaluación ya no se modifica.', code='not_editable')
     return locked
@@ -416,7 +427,7 @@ def calculate(*, actor, company, assessment, data=None, request=None) -> TradeIn
     today = tariff.company_today(company)
     with transaction.atomic():
         assessment = _editable(company, assessment)
-        check = TradeInDeviceCheck.objects.select_for_update(of=('self',)).get(pk=assessment.device_check_id)
+        check = assessment.device_check      # locked first by `_editable` (check → assessment)
         if check.status != TradeInDeviceCheck.STATUS_OPEN:
             raise TariffStateError('La comprobación del equipo está cerrada.', code='check_closed')
         if tariff.policy_of(company).require_identified_customer and not assessment.customer_id:
@@ -541,12 +552,11 @@ def approve(*, actor, company, assessment, note='', request=None) -> TradeInAsse
     with transaction.atomic():
         if assessment.company_id != company.pk:
             raise TariffError('No encontrado.', code='not_found')
-        assessment = TradeInAssessment.objects.select_for_update(of=('self',)).get(pk=assessment.pk)
-        check = TradeInDeviceCheck.objects.select_for_update(of=('self',)).get(pk=assessment.device_check_id)
-        if assessment.status != TradeInAssessment.STATUS_CALCULATED:
-            raise TariffStateError('Sólo se aprueba una evaluación calculada.', code='not_calculated')
+        check, assessment = _lock(assessment)
         if check.status != TradeInDeviceCheck.STATUS_OPEN:
             raise TariffStateError('La comprobación del equipo está cerrada.', code='check_closed')
+        if assessment.status != TradeInAssessment.STATUS_CALCULATED:
+            raise TariffStateError('Sólo se aprueba una evaluación calculada.', code='not_calculated')
         if getattr(actor, 'pk', None) in _authors(assessment):
             raise TariffPermissionError('Otra persona con permiso de aprobación tiene que aprobar esta valorización.',
                                         code='own_change')
@@ -564,9 +574,16 @@ def approve(*, actor, company, assessment, note='', request=None) -> TradeInAsse
         if assessment.eligibility != REQUIRES_APPROVAL:
             raise TariffStateError('Esta valorización no necesita aprobación.', code='not_needed')
         stale = _stale(company, assessment)
+        if assessment.purpose == TradeInAssessment.PURPOSE_TRADE_TOWARDS:
+            try:
+                price_now = _target_price(actor, company, assessment)
+            except TariffError:
+                price_now = None
+            if price_now != assessment.target_price:
+                stale.append('target_price')
         if stale:
-            raise TariffConflict('La tarifa o las reglas con que se calculó ya no son las vigentes: vuelve a '
-                                 'calcular.', code='calculation_stale', extra={'reasons': stale})
+            raise TariffConflict('La tarifa, las reglas o el precio con que se calculó ya no son los vigentes: '
+                                 'vuelve a calcular.', code='calculation_stale', extra={'reasons': stale})
         assessment.status = TradeInAssessment.STATUS_APPROVED
         assessment.approved_by, assessment.approved_at, assessment.approval_note = actor, timezone.now(), note
         assessment.save(update_fields=['status', 'approved_by', 'approved_at', 'approval_note', 'updated_at'])
@@ -602,7 +619,7 @@ def cancel(*, actor, company, assessment, reason, request=None) -> TradeInAssess
     with transaction.atomic():
         if assessment.company_id != company.pk:
             raise TariffError('No encontrado.', code='not_found')
-        assessment = TradeInAssessment.objects.select_for_update(of=('self',)).get(pk=assessment.pk)
+        _check, assessment = _lock(assessment)
         if assessment.status not in (*TradeInAssessment.EDITABLE, TradeInAssessment.STATUS_APPROVED):
             raise TariffStateError('Esta evaluación ya no se anula.', code='not_cancellable')
         assessment.status = TradeInAssessment.STATUS_CANCELLED

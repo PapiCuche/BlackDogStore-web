@@ -409,6 +409,15 @@ class ReviewFindingsTest(AssessmentBase):
         self.assertEqual(self.post(f'assessments/{again["id"]}/approve/', {}, user=self.approver,
                                    expect=200)['status'], 'approved')
 
+    def test_a_changed_price_of_the_device_bought_makes_the_approval_stale(self):
+        product = Product.objects.create(company=self.company, name='Equipo nuevo', slug='nuevo-precio',
+                                         price='4500.00', inventory=0)
+        done = self.calculated({'pantalla': 'not_working', 'bateria': '90'}, purpose='trade_towards',
+                               target_product=product.pk)
+        Product.objects.filter(pk=product.pk).update(price=D('4300.00'))
+        res = self.post(f'assessments/{done["id"]}/approve/', {}, user=self.approver, expect=409)
+        self.assertEqual((res['code'], res['reasons']), ('calculation_stale', ['target_price']))
+
     def test_an_expired_identity_record_or_a_deactivated_entry_stop_the_approval(self):
         done = self.requiring()
         later = timezone.now() + timedelta(hours=30)
@@ -546,3 +555,52 @@ class ConcurrentNumberingTest(TransactionTestCase):
         for thread in threads:
             thread.join(30)
         self.assertEqual(sorted(numbers), [1, 2], numbers)
+
+
+class CloseAgainstApproveTest(TransactionTestCase):
+    """Closing a device check and approving its assessment at the same instant: one lock order, no deadlock."""
+
+    def setUp(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('Only PostgreSQL has the row locks this test is about.')
+        base = AssessmentBase('setUp')
+        base.setUp()
+        self.base = base
+
+    def test_no_deadlock_and_a_consistent_end(self):
+        base = self.base
+        check = base.clear_check()
+        created = assessments.create_assessment(actor=base.valuer, company=base.company, data={
+            'device_check': check.pk, 'tariff_entry': base.entry.pk, 'customer': base.customer.pk})
+        assessments.set_answers(actor=base.valuer, company=base.company, assessment=created,
+                                data={'answers': {'pantalla': 'not_working', 'bateria': '90'}})
+        assessments.calculate(actor=base.valuer, company=base.company,
+                              assessment=TradeInAssessment.objects.get(pk=created.pk))
+        start = threading.Barrier(2)
+        outcomes = {}
+
+        def run(name, task):
+            try:
+                start.wait(5)
+                task()
+                outcomes[name] = 'ok'
+            except Exception as exc:  # noqa: BLE001 — the test reads it
+                outcomes[name] = getattr(exc, 'code', None) or repr(exc)
+            finally:
+                connection.close()
+
+        tasks = {
+            'approve': lambda: assessments.approve(actor=base.approver, company=base.company,
+                                                   assessment=TradeInAssessment.objects.get(pk=created.pk)),
+            'close': lambda: eligibility.close_check(actor=base.valuer, company=base.company,
+                                                     check=check.__class__.objects.get(pk=check.pk),
+                                                     reason='Se fue el cliente'),
+        }
+        threads = [threading.Thread(target=run, args=item) for item in tasks.items()]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        self.assertEqual(outcomes['close'], 'ok', outcomes)
+        self.assertIn(outcomes['approve'], ('ok', 'check_closed'), outcomes)
+        self.assertEqual(TradeInAssessment.objects.get(pk=created.pk).status, 'cancelled')

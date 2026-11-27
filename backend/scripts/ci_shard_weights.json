@@ -75,6 +75,7 @@
   "store.test_supply_lock_scope.SupplyActionAgainstPaymentDeadlockTest",
   "store.test_supply_lock_scope.SupplyActionAgainstPaymentTest",
   "store.test_supply_reception.ReceiveAtTheSameInstantTest",
+  "store.test_trade_in_assessment.CloseAgainstApproveTest",
   "store.test_trade_in_assessment.ConcurrentNumberingTest",
   "store.test_trade_in_eligibility.TwoChecksOfOneImeiAtOnceTest",
   "store.test_trade_in_rules.TwoProposalsOfOneDraftTest",
