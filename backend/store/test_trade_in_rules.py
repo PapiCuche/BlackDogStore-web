@@ -187,7 +187,7 @@ class CalculationTest(SimpleTestCase):
         ], groups=capped)
         lines = {line['factor']: line for line in result['lines']}
         self.assertIsNone(lines['camera_replaced']['suppressed_by'])     # takes the whole cap (50)
-        self.assertEqual(lines['screen_replaced']['suppressed_by'], 'cap')
+        self.assertEqual(lines['screen_replaced']['suppressed_by'], '@cap')
         self.assertEqual(result['groups'], {'rep': '50.00'})
 
     def test_ties_go_to_the_higher_priority_then_the_lower_rule_id(self):
