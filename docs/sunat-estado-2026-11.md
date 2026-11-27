@@ -73,9 +73,13 @@ Se leyeron directamente los PDF oficiales; están guardados fuera del repositori
 | F11 | **Homologación eliminada.** Para ser emisor basta indicarlo en SOL y registrar un certificado y un correo | CONFIRMADO en la auditoría F1 (no se releyó) | RS 287-2017: https://www.sunat.gob.pe/legislacion/superin/2017/287-2017.pdf |
 
 **Correcciones a documentos del repositorio.**
-- `sunat-cpe-requisitos.md` da por vigente la RS 000048-2026 desde el 1.8.2026. Desde la RS 000143-2026 rige el 1-ene-2027.
+- `sunat-cpe-requisitos.md` daba por vigente la RS 000048-2026 desde el 1.8.2026. Desde la RS 000143-2026 rige el 1-ene-2027; se corrige en este PR.
 - El ADR #173 cita unas reglas «24.04.2026». Las vigentes son del **26.08.2026** (F7).
 - La auditoría F1 dejó en NO VERIFICADO el envío individual de boleta. El texto de la RS 114-2019 lo permite hasta 5 días (F4), pero el código no lo implementa (§2, fila 5).
+- F4 responde el hueco 3 de `sunat-cpe-requisitos.md` (§10, «Plazo del resumen diario de boletas»): a más tardar el
+  7.º día calendario siguiente a la emisión (RS 114-2019, art. 21.1).
+- `sunat-factura-ubl21-matriz.md` daba el Anexo 6 de la RS 000048-2026 como «vigente 1.8.2026»; se corrige en este PR
+  (rige el 1-ene-2027, F6).
 
 ---
 
@@ -188,12 +192,28 @@ Ninguno necesita migración. G5, G6, G9 y G10 sí la necesitan o pueden necesita
 
 ## 6. Lista de activación en producción (por empresa)
 
-Ningún punto de esta lista lo puede cerrar un PR. Cada uno es un dato o un acto del propietario, del contador o de SUNAT. La
-activación exige al final un GO escrito y separado, con este texto exacto:
+La lista mezcla tres clases de puntos:
+- **datos o actos** del propietario, del contador o de SUNAT, que ningún PR puede cerrar;
+- **prerrequisitos de código** (filas C1–C3, 7 y 11), que se cierran con PR revisados y fusionados, pero que por sí solos
+  **no activan nada**;
+- **operación** (filas 13 y 15).
+
+La activación exige al final un GO escrito y separado, con este texto exacto:
 
 > **«GO activación SUNAT producción &lt;empresa&gt;»**
 
-Sin ese GO no se toca la tabla de endpoints (`fiscal_config.py:432-438`) ni `ONLY_SUPPORTED_ENVIRONMENT`.
+Sin ese GO no se fusiona ni se despliega el PR de la fila C3, y no se toca la tabla de endpoints
+(`fiscal_config.py:432-438`) ni `ONLY_SUPPORTED_ENVIRONMENT`.
+
+**Prerrequisitos de código**
+
+| # | Requisito | Quién | Cómo se verifica |
+|---|---|---|---|
+| C1 | **#458** (CDR de `sendBill` vinculado; endpoint de consulta), **#461** (RUC de la SOL = RUC de la empresa; certificado vigente; RUC en OU en producción) y **#459** (`fiscal_preflight`), fusionados | Código, con revisión independiente | PR fusionados en `master` |
+| C2 | Esos tres cambios **desplegados en el SHA exacto que se va a activar**, el mismo SHA de la evidencia BETA (fila 9) | Operación, con GO de despliegue propio | SHA en producción = SHA ensayado; `fiscal_preflight --target production` sin NO-GO salvo la línea del ambiente |
+| C3 | Un **PR separado y revisado** que añade el endpoint de producción a la tabla del código y cambia `ONLY_SUPPORTED_ENVIRONMENT` (o lo sustituye por el ambiente por empresa de G6) | Código; se fusiona y despliega **sólo** tras el GO | Revisión independiente; tests del techo de ambiente |
+
+**Datos, actos y operación**
 
 | # | Requisito | Quién | Cómo se verifica |
 |---|---|---|---|
@@ -211,6 +231,7 @@ Sin ese GO no se toca la tabla de endpoints (`fiscal_config.py:432-438`) ni `ONL
 | 12 | **Flujo de contingencia**: qué se hace si SUNAT no responde (comprobantes de contingencia, plazos), quién reconcilia y cada cuánto; consulta `getStatusCdr` encendida **junto** con la emisión | Propietario y código | Procedimiento escrito; `FISCAL_CONSULT_ENABLED` decidido |
 | 13 | **Copias de seguridad**: base con la evidencia fiscal (XML, CDR, ZIP), `APP_CONFIG_ENCRYPTION_KEY` custodiada, restauración ensayada; retención y acceso del adquirente (F9, G11) | Operación | Ensayo de restauración; `fiscal_preflight` |
 | 14 | **Primera emisión real controlada**: qué venta, qué día, quién autoriza, y seguimiento de 7 días | Propietario | **GO «GO activación SUNAT producción &lt;empresa&gt;»** |
+| 15 | **Envío programado y alertas (G7)**: tarea programada que genera y envía el Resumen Diario (o lo deja listo para que una persona confirme, según decida el propietario); alertas de factura o nota sin enviar a +2/+3 días y de boleta sin RC a +5/+7 días; reconciliación periódica de inciertos. Hoy no existe ninguna tarea fiscal en el cron | Operación y código | Línea de cron revisada; `fiscal_preflight` (o `ops_status`) en el cron con aviso al responsable |
 
 ---
 
