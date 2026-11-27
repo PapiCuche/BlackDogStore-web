@@ -1,6 +1,9 @@
 # NEXT ACTION — 2026-11-27
 
 ## PRODUCCIÓN (prod-02) — R14 `c176bfea` desde 2026-11-26 16:52 (Lima), esquema `0193_unit_import_terms_approval`; sana
+**Hueco abierto hasta desplegar R15:** con sólo `inventory.adjust` se puede apagar «lleva IMEI» quitando la
+serialización de un producto sin stock (#22/#23). Vigilar en la auditoría `product_serialization_changed` de #22/#23.
+
 Imágenes `release-c176bfe` (backend `795edce8…`, frontend `acf35935…`). Vuelta atrás de código preparada (preflight
 posterior OK, destino R13.2 `c8a43215`, deja 0193); la de esquema sólo con «GO vuelta atrás esquema 0193 prod-02».
 
@@ -49,8 +52,8 @@ Kit `backups/release-r14-post/`, log `r14post-run.log`, sobre copias aisladas de
 - **Nuevo informe «ESTANTES CERRADOS PARA INVENTARIO INICIAL».** 12 de los 13 estantes con historial ya no admiten
   inventario inicial. Entre los equipos: #7, #19, #24 y #25 (ventas, compras de caja o ajustes). Una fila de inventario
   inicial en esos estantes detiene su archivo entero. Por ahora esas filas van en un archivo aparte como «Compra a
-  proveedor», sin proveedor ni costo. Cuando se despliegue «Ingreso de inventario existente» (PR #443), irán con esa
-  opción.
+  proveedor», sin proveedor ni costo. Cuando se despliegue R15 `af23e3b` (trae «Ingreso de inventario existente», #443), irán con
+  esa opción; antes hay que reapuntar este kit a R15 y revalidarlo (hoy sólo acepta R14).
 - La entrada en una compra es sólo una línea de Kardex: no crea documento de compra, deuda ni asiento.
 - No usar la caja ni el escaneo para la carga inicial: siempre escriben compra.
 - Pendiente: los archivos del propietario en `backups/stock-real-inbox/`, su aprobación del informe y el GO exacto.
