@@ -36,6 +36,7 @@ Every write leaves an `AdminAuditLog` with the company; no IMEI or personal datu
 """
 from __future__ import annotations
 
+import re
 import zoneinfo
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -81,14 +82,19 @@ REASON_NEW_ENTRY = 'new_entry'
 REASON_BASE_INCREASE = 'base_increase'
 REASON_MAX_INCREASE = 'max_increase'
 REASON_VALIDITY_EXTENDED = 'validity_extended'
+REASON_STARTS_EARLIER = 'starts_earlier'
 REASON_POLICY_ALL = 'policy_all'
 REASON_LABELS = {
     REASON_NEW_ENTRY: 'Primer precio del equipo',
     REASON_BASE_INCREASE: 'Sube el valor base de recepción',
     REASON_MAX_INCREASE: 'Sube el valor máximo autorizado',
     REASON_VALIDITY_EXTENDED: 'Amplía la vigencia',
+    REASON_STARTS_EARLIER: 'Adelanta el inicio o pone precio donde no lo hay',
     REASON_POLICY_ALL: 'La política de la empresa pide aprobar todo cambio',
 }
+
+#: Exactly `YYYY-MM-DD`: nothing after it.
+_ISO_DATE = re.compile(r'[0-9]{4}-[0-9]{2}-[0-9]{2}')
 
 #: A device key joins the five folded words with this separator (never typed: «|» is folded out of each word).
 _KEY_SEPARATOR = '|'
@@ -185,11 +191,16 @@ def parse_money(raw, label: str, *, required: bool) -> Decimal | None:
         raise TariffError(f'{label[0].upper()}{label[1:]} no es un importe válido.')
     if value < 0:
         raise TariffError(f'{label[0].upper()}{label[1:]} no puede ser negativo.')
-    if value != value.quantize(Decimal('0.01')):
-        raise TariffError(f'{label[0].upper()}{label[1:]} lleva a lo sumo dos decimales.')
+    # Before quantizing: a value with more digits than the context holds makes `quantize` raise (a 500 otherwise).
     if value > MAX_AMOUNT:
         raise TariffError(f'{label[0].upper()}{label[1:]} es demasiado grande.')
-    return value.quantize(Decimal('0.01'))
+    try:
+        cents = value.quantize(Decimal('0.01'))
+    except InvalidOperation:
+        raise TariffError(f'{label[0].upper()}{label[1:]} no es un importe válido.') from None
+    if value != cents:
+        raise TariffError(f'{label[0].upper()}{label[1:]} lleva a lo sumo dos decimales.')
+    return cents
 
 
 def parse_date(raw, label: str, *, required: bool) -> date | None:
@@ -200,8 +211,11 @@ def parse_date(raw, label: str, *, required: bool) -> date | None:
         return None
     if isinstance(raw, date):
         return raw
+    text = str(raw).strip()
     try:
-        return date.fromisoformat(str(raw).strip()[:10])
+        if not _ISO_DATE.fullmatch(text):
+            raise ValueError(text)
+        return date.fromisoformat(text)
     except ValueError:
         raise TariffError(f'{label[0].upper()}{label[1:]} no es una fecha válida (AAAA-MM-DD).') from None
 
@@ -244,9 +258,13 @@ def clean_terms(data, *, today: date, default_from: date | None = None) -> dict:
     if terms['base_reception_value'] > terms['max_reception_value']:
         raise TariffError('El valor base de recepción no puede superar el valor máximo autorizado.',
                           code='base_above_max', field='base_reception_value')
-    valid_from = parse_date(data.get('valid_from'), 'el inicio de la vigencia', required=False)
-    terms['valid_from'] = valid_from or default_from or today
-    terms['valid_until'] = parse_date(data.get('valid_until'), 'el fin de la vigencia', required=False)
+    for field, label in (('valid_from', 'el inicio de la vigencia'), ('valid_until', 'el fin de la vigencia')):
+        try:
+            terms[field] = parse_date(data.get(field), label, required=False)
+        except TariffError as exc:
+            exc.field = field
+            raise
+    terms['valid_from'] = terms['valid_from'] or default_from or today
     if terms['valid_until'] is not None and terms['valid_until'] < terms['valid_from']:
         raise TariffError('La vigencia termina antes de empezar.', code='window', field='valid_until')
     terms['reason'] = _text(data.get('reason'), MAX_REASON, 'El motivo')
@@ -279,22 +297,32 @@ def _rises(before: Decimal, after: Decimal, tolerance_percent: Decimal) -> bool:
     return after > limit
 
 
-def approval_reasons(previous, terms: dict, policy: TradeInPolicy) -> list[str]:
+def approval_reasons(entry, terms: dict, policy: TradeInPolicy) -> list[str]:
     """
-    Why a change needs an approver; empty = not relevant (the policy approves it). `previous` is the latest
-    approved version of the entry, or None.
+    Why a change of `entry` (None: a new device) needs an approver; empty = not relevant (the policy approves it).
+
+    Decisions of 2026-11-27 (review of #457):
+      * a RISE is measured against the last version a PERSON approved (`approver` or `self`), never against one the
+        policy approved: chained small rises cannot walk the price past the tolerance without an approver;
+      * a longer validity than the latest approved one is relevant;
+      * starting EARLIER than the latest approved one, or putting a price on a day that has none (a gap, or before a
+        future price starts), is relevant — the same amount moved forward is still a new price on those days.
     """
-    if previous is None:
+    if entry is None or latest_approved(entry) is None:
         return [REASON_NEW_ENTRY]
+    latest = latest_approved(entry)
+    reference = rise_reference(entry) or latest
     reasons = []
     tolerance = policy.tariff_increase_tolerance_percent or Decimal('0')
-    if _rises(previous.base_reception_value, terms['base_reception_value'], tolerance):
+    if _rises(reference.base_reception_value, terms['base_reception_value'], tolerance):
         reasons.append(REASON_BASE_INCREASE)
-    if _rises(previous.max_reception_value, terms['max_reception_value'], tolerance):
+    if _rises(reference.max_reception_value, terms['max_reception_value'], tolerance):
         reasons.append(REASON_MAX_INCREASE)
-    before_end, after_end = previous.valid_until, terms['valid_until']
+    before_end, after_end = latest.valid_until, terms['valid_until']
     if before_end is not None and (after_end is None or after_end > before_end):
         reasons.append(REASON_VALIDITY_EXTENDED)
+    if terms['valid_from'] < latest.valid_from or effective_version(entry, on=terms['valid_from']) is None:
+        reasons.append(REASON_STARTS_EARLIER)
     if policy.tariff_approval_mode == TradeInPolicy.APPROVAL_ALL and not reasons:
         reasons.append(REASON_POLICY_ALL)
     return reasons
@@ -323,6 +351,14 @@ def margin_warnings(version_or_terms) -> list[str]:
 
 def latest_approved(entry):
     return entry.versions.filter(status=TradeInTariffVersion.STATUS_APPROVED).order_by('-number').first()
+
+
+def rise_reference(entry):
+    """The last version a PERSON approved: what a rise is measured against."""
+    return (entry.versions.filter(status=TradeInTariffVersion.STATUS_APPROVED,
+                                  approval_kind__in=(TradeInTariffVersion.APPROVAL_APPROVER,
+                                                     TradeInTariffVersion.APPROVAL_SELF))
+            .order_by('-number').first())
 
 
 def pending_version(entry):
@@ -390,7 +426,9 @@ def _linked_model(company, raw):
 
 
 def _write_version(*, actor, company, entry, terms, previous, source, batch, policy) -> TradeInTariffVersion:
-    reasons = approval_reasons(previous, terms, policy)
+    reasons = approval_reasons(None if previous is None else entry, terms, policy)
+    if previous is not None:
+        previous = rise_reference(entry) or previous
     number = (entry.versions.order_by('-number').values_list('number', flat=True).first() or 0) + 1
     now = timezone.now()
     version = TradeInTariffVersion(
@@ -511,14 +549,22 @@ def approve_version(*, actor, company, version, note='', request=None, today: da
             if not note:
                 raise TariffError('Indica el motivo para aprobar un cambio propio.', code='reason_required',
                                   field='note')
+        fields = ['status', 'approval_kind', 'decided_by', 'decided_at', 'decision_note']
+        moved_from = None
+        if version.valid_from < today:
+            # It waited for approval past its start: it starts today, never retroactively (documented, audited).
+            moved_from = version.valid_from.isoformat()
+            version.valid_from = today
+            fields.append('valid_from')
         version.status = TradeInTariffVersion.STATUS_APPROVED
         version.approval_kind = TradeInTariffVersion.APPROVAL_SELF if own else TradeInTariffVersion.APPROVAL_APPROVER
         version.decided_by = actor
         version.decided_at = timezone.now()
         version.decision_note = note
-        version.save(update_fields=['status', 'approval_kind', 'decided_by', 'decided_at', 'decision_note'])
+        version.save(update_fields=fields)
         _audit(actor=actor, company=company, action='trade_in_tariff_version_approved', target=version,
                request=request, number=version.number, self_approval=own, reasons=version.approval_reasons,
+               note=note, start_moved_from=moved_from, valid_from=version.valid_from.isoformat(),
                **_money_metadata(version))
     return version
 
@@ -538,7 +584,7 @@ def reject_version(*, actor, company, version, note, request=None):
         version.decision_note = note
         version.save(update_fields=['status', 'decided_by', 'decided_at', 'decision_note'])
         _audit(actor=actor, company=company, action='trade_in_tariff_version_rejected', target=version,
-               request=request, number=version.number)
+               request=request, number=version.number, note=note)
     return version
 
 
@@ -563,7 +609,7 @@ def _withdraw(*, actor, company, version, note, request):
     version.decision_note = note
     version.save(update_fields=['status', 'decided_by', 'decided_at', 'decision_note'])
     _audit(actor=actor, company=company, action='trade_in_tariff_version_withdrawn', target=version,
-           request=request, number=version.number)
+           request=request, number=version.number, note=note)
 
 
 def deactivate_entry(*, actor, company, entry, reason, request=None):

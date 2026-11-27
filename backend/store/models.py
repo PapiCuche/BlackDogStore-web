@@ -6227,7 +6227,11 @@ class TradeInTariffVersion(models.Model):
             if stored is not None and stored != self.STATUS_PENDING:
                 raise ValidationError('Una versión decidida del tarifario no se modifica: propone una nueva.')
             allowed = set(kwargs.get('update_fields') or [])
-            if stored == self.STATUS_PENDING and (not allowed or (allowed & self.TERMS_FIELDS)):
+            terms = self.TERMS_FIELDS
+            if self.status == self.STATUS_APPROVED:
+                # The one term approval may touch: a start that passed while it waited moves to the approval day.
+                terms = terms - {'valid_from'}
+            if stored == self.STATUS_PENDING and (not allowed or (allowed & terms)):
                 raise ValidationError('Los importes de una versión propuesta no se modifican: retírala y propone otra.')
         return super().save(*args, **kwargs)
 

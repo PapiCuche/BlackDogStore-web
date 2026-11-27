@@ -157,6 +157,17 @@ def entry_detail(user, company, entry) -> dict:
     return row
 
 
+def _entry_for(user, company, pk) -> dict:
+    """
+    The entry as a write answers it: the whole card (history and internal estimates) to whoever may read the tariff;
+    to somebody who may only act on it (e.g. approve, or manage without `view`), just what changed.
+    """
+    entry = _entries(company).get(pk=pk)
+    if has_capability(user, company, tariff.CAP_VIEW):
+        return entry_detail(user, company, entry)
+    return {'id': entry.pk, 'is_active': entry.is_active}
+
+
 def _entries(company):
     return TradeInTariffEntry.objects.filter(company=company).select_related('product_model')
 
@@ -243,7 +254,7 @@ class AdminTradeInTariffListView(APIView):
                                                   request=request)
         except tariff.TariffError as exc:
             return _error(exc)
-        return Response(entry_detail(request.user, company, entry), status=status.HTTP_201_CREATED)
+        return Response(_entry_for(request.user, company, entry.pk), status=status.HTTP_201_CREATED)
 
 
 def _entry(company, pk):
@@ -288,7 +299,7 @@ class AdminTradeInTariffDetailView(APIView):
                                       product_model=body.get('product_model'), request=request)
         except tariff.TariffError as exc:
             return _error(exc)
-        return Response(entry_detail(request.user, company, _entry(company, entry.pk)))
+        return Response(_entry_for(request.user, company, entry.pk))
 
 
 class _EntryAction(APIView):
@@ -321,14 +332,17 @@ class AdminTradeInTariffProposeView(_EntryAction):
     def act(self, request, company, entry):
         version = tariff.propose_version(actor=request.user, company=company, entry=entry, data=_body(request),
                                          request=request)
-        return {'version': version_payload(version), 'entry': entry_detail(request.user, company, _entry(company, entry.pk))}
+        body = {'version': version_payload(version)}
+        if has_capability(request.user, company, tariff.CAP_VIEW):
+            body['entry'] = entry_detail(request.user, company, _entry(company, entry.pk))
+        return body
 
 
 class AdminTradeInTariffDeactivateView(_EntryAction):
     def act(self, request, company, entry):
         tariff.deactivate_entry(actor=request.user, company=company, entry=entry,
                                 reason=_body(request).get('reason'), request=request)
-        return entry_detail(request.user, company, _entry(company, entry.pk))
+        return _entry_for(request.user, company, entry.pk)
 
 
 class AdminTradeInTariffReactivateView(_EntryAction):
@@ -337,7 +351,7 @@ class AdminTradeInTariffReactivateView(_EntryAction):
     def act(self, request, company, entry):
         tariff.reactivate_entry(actor=request.user, company=company, entry=entry,
                                 reason=_body(request).get('reason'), request=request)
-        return entry_detail(request.user, company, _entry(company, entry.pk))
+        return _entry_for(request.user, company, entry.pk)
 
 
 class _VersionAction(APIView):
@@ -361,8 +375,10 @@ class _VersionAction(APIView):
         except tariff.TariffError as exc:
             return _error(exc)
         version = TradeInTariffVersion.objects.select_related('decided_by', 'proposed_by', 'previous').get(pk=pk)
-        return Response({'version': version_payload(version),
-                         'entry': entry_detail(request.user, company, _entry(company, version.entry_id))})
+        body = {'version': version_payload(version)}
+        if has_capability(request.user, company, tariff.CAP_VIEW):
+            body['entry'] = entry_detail(request.user, company, _entry(company, version.entry_id))
+        return Response(body)
 
 
 class AdminTradeInTariffApproveView(_VersionAction):

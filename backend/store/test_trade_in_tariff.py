@@ -9,6 +9,7 @@ receives a device.
 """
 import io
 import pathlib
+import threading
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from unittest import mock
@@ -16,8 +17,8 @@ from zoneinfo import ZoneInfo
 
 from django.core.exceptions import ValidationError
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import IntegrityError, transaction
-from django.test import TestCase, override_settings
+from django.db import IntegrityError, connection, transaction
+from django.test import TestCase, TransactionTestCase, override_settings
 from django.utils import timezone
 
 from store import finance_test_support as fx
@@ -401,6 +402,94 @@ class TariffApprovalFlowTest(TariffBase):
         self.assertEqual(entry['pending']['warnings'], ['margin_below_target'])
 
 
+class TariffReviewFindingsTest(TariffBase):
+    """Review of #457 (2026-11-27): out-of-range amounts, earlier starts, chained rises, late approvals, strict dates."""
+
+    def test_amounts_beyond_any_price_are_a_400_not_a_500(self):
+        entry = self.approved_entry()
+        for raw in ('1e30', '123456789012345678901234567890', '1E+400', '99999999999.00'):
+            with self.subTest(raw=raw):
+                res = self.api(self.editor).post(f'{URL}{entry.pk}/versions/',
+                                                 {**body(), 'max_reception_value': raw}, format='json')
+                self.assertEqual(res.status_code, 400, res.content)
+                self.assertEqual(res.json()['field'], 'max_reception_value')
+        res = self.api(self.approver).put('/api/admin/trade-in/policy/',
+                                          {'tariff_increase_tolerance_percent': '1e30'}, format='json')
+        self.assertEqual(res.status_code, 400, res.content)
+
+    def test_an_earlier_start_of_the_same_price_needs_an_approver(self):
+        later = (self.today + timedelta(days=30)).isoformat()
+        entry = self.approved_entry(base_reception_value='100.00', max_reception_value='100.00',
+                                    refurbishment_cost='', resale_value='', target_margin='', valid_from=later)
+        self.assertIsNone(tariff.effective_version(entry))
+        manager = fx.member(self.company, 'tiv_solo_gestion', [VIEW, MANAGE])
+        res = self.api(manager).post(f'{URL}{entry.pk}/versions/', {
+            'base_reception_value': '100.00', 'max_reception_value': '100.00',
+            'valid_from': self.today.isoformat()}, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        version = res.json()['version']
+        self.assertEqual(version['status'], 'pending')
+        self.assertEqual([r['code'] for r in version['approval_reasons']], ['starts_earlier'])
+        self.assertIsNone(tariff.effective_version(entry))
+
+    def test_chained_small_rises_are_measured_against_the_last_person_approved_price(self):
+        entry = self.approved_entry(base_reception_value='1000.00', max_reception_value='1000.00',
+                                    refurbishment_cost='', resale_value='', target_margin='')
+        self.api(self.approver).put('/api/admin/trade-in/policy/', {'tariff_increase_tolerance_percent': '10'},
+                                    format='json')
+
+        def rise(amount):
+            return self.propose(entry.pk, base_reception_value=amount, max_reception_value=amount,
+                                refurbishment_cost='', resale_value='', target_margin='')['version']
+
+        self.assertEqual(rise('1050.00')['approval_kind'], 'policy')     # +5 % of 1000
+        self.assertEqual(rise('1100.00')['approval_kind'], 'policy')     # +10 % of 1000: within
+        third = rise('1155.00')                                           # +5 % of 1100, +15.5 % of 1000
+        self.assertEqual(third['status'], 'pending')
+        self.assertEqual({r['code'] for r in third['approval_reasons']}, {'base_increase', 'max_increase'})
+        self.assertEqual(third['previous_number'], 1)
+
+    def test_a_late_approval_starts_today_never_retroactively(self):
+        entry = self.create()
+        version_id = entry['pending']['id']
+        later = self.today + timedelta(days=3)
+        with mock.patch('store.trade_in_tariff.company_today', return_value=later):
+            done = self.approve(version_id)
+        self.assertEqual(done['version']['valid_from'], later.isoformat())
+        audit = AdminAuditLog.objects.get(action='trade_in_tariff_version_approved', target_id=str(version_id))
+        self.assertEqual(audit.metadata['start_moved_from'], self.today.isoformat())
+
+    def test_dates_are_strict(self):
+        for raw in ('2026-12-01junk', '2026-12-1', '01/12/2026', '2026-12-01T00:00:00'):
+            with self.subTest(raw=raw):
+                res = self.api(self.editor).post(URL, body(valid_from=raw), format='json')
+                self.assertEqual(res.status_code, 400, res.content)
+                self.assertEqual(res.json()['field'], 'valid_from')
+
+    def test_who_may_act_but_not_read_gets_only_what_changed(self):
+        only_approve = fx.member(self.company, 'tiv_solo_aprueba', [APPROVE])
+        entry = self.create()
+        done = self.approve(entry['pending']['id'], user=only_approve)
+        self.assertEqual(set(done), {'version'})
+        only_manage = fx.member(self.company, 'tiv_solo_edita', [MANAGE])
+        res = self.api(only_manage).post(URL, body(model_name='Otro modelo'), format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertEqual(set(res.json()), {'id', 'is_active'})
+
+    def test_reject_and_withdraw_notes_reach_the_audit(self):
+        first = self.create()
+        self.api(self.approver).post(f'{URL}versions/{first["pending"]["id"]}/reject/', {'note': 'Precio alto'},
+                                     format='json')
+        second = self.create(model_name='Otro')
+        self.api(self.editor).post(f'{URL}versions/{second["pending"]["id"]}/withdraw/', {'note': 'Me equivoqué'},
+                                   format='json')
+        notes = dict(AdminAuditLog.objects.filter(action__in=('trade_in_tariff_version_rejected',
+                                                              'trade_in_tariff_version_withdrawn'))
+                     .values_list('action', 'metadata__note'))
+        self.assertEqual(notes, {'trade_in_tariff_version_rejected': 'Precio alto',
+                                 'trade_in_tariff_version_withdrawn': 'Me equivoqué'})
+
+
 class TariffValidityTest(TariffBase):
     def test_a_future_price_takes_over_on_its_day_and_an_ended_one_stops(self):
         entry = self.approved_entry(valid_until=(self.today + timedelta(days=9)).isoformat())
@@ -666,6 +755,28 @@ class TariffExcelTest(TariffBase):
         self.apply(preview['id'], user=self.reader, expect=403)
         self.assertFalse(TradeInTariffImport.objects.filter(status='applied').exists())
 
+    def test_huge_amounts_in_the_file_are_row_errors(self):
+        preview = self.upload(workbook([row(base='123456789012345678901234567890', max_='1e30'),
+                                        row(capacity='64 GB', base=1e30, max_=1e31)]))
+        self.assertEqual([r['action'] for r in preview['rows']], ['error', 'error'])
+
+    def test_an_empty_start_is_the_day_it_is_applied(self):
+        preview = self.upload(workbook([row()]))
+        self.assertEqual(preview['rows'][0]['terms']['valid_from'], '')
+        tomorrow = self.today + timedelta(days=1)
+        with mock.patch('store.trade_in_tariff.company_today', return_value=tomorrow):
+            self.apply(preview['id'])
+        version = TradeInTariffVersion.objects.get(entry__company=self.company)
+        self.assertEqual(version.valid_from, tomorrow)
+
+    def test_a_device_deactivated_after_the_preview_makes_it_stale(self):
+        entry = self.approved_entry()
+        preview = self.upload(workbook([row(base=1100, max_=1300)]))
+        self.api(self.editor).post(f'{URL}{entry.pk}/deactivate/', {'reason': 'x'}, format='json')
+        res = self.apply(preview['id'], expect=409)
+        self.assertEqual(res['code'], 'preview_stale')
+        self.assertIn('2', res['detail'])
+
     def test_a_file_over_the_tariff_cap_is_refused_before_it_is_read(self):
         from store.trade_in_tariff_views import MAX_TARIFF_UPLOAD_BYTES
 
@@ -724,3 +835,42 @@ class TariffNeverMovesMoneyOrStockTest(TariffBase):
             for word in ('iphone', 'apple', 'samsung', 'xiaomi', 'motorola', 'black dog', 'blackdog', 'icloud'):
                 with self.subTest(file=name, word=word):
                     self.assertNotIn(word, text)
+
+
+class TwoProposalsAtOnceTest(TransactionTestCase):
+    """Two people propose a price for the same device at the same instant: one waits, then gets `pending_exists`."""
+
+    def setUp(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('Only PostgreSQL has the row locks this test is about.')
+        self.company = fx.company('tiv-race', 'Carrera')
+        self.one = fx.member(self.company, 'tiv_race_1', [VIEW, MANAGE])
+        self.two = fx.member(self.company, 'tiv_race_2', [VIEW, MANAGE])
+        self.boss = fx.member(self.company, 'tiv_race_jefe', [VIEW, APPROVE])
+        entry, version = tariff.create_entry(actor=self.one, company=self.company, data=body())
+        tariff.approve_version(actor=self.boss, company=self.company, version=version)
+        self.entry = entry
+
+    def test_only_one_change_waits(self):
+        start = threading.Barrier(2)
+        outcomes = {}
+
+        def propose(name, user, amount):
+            try:
+                start.wait(5)
+                version = tariff.propose_version(actor=user, company=self.company, entry=self.entry, data={
+                    **body(), 'base_reception_value': amount, 'max_reception_value': '1500.00'})
+                outcomes[name] = version.status
+            except Exception as exc:  # noqa: BLE001 — the test reads it
+                outcomes[name] = getattr(exc, 'code', repr(exc))
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=propose, args=('one', self.one, '1300.00')),
+                   threading.Thread(target=propose, args=('two', self.two, '1350.00'))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        self.assertEqual(sorted(outcomes.values()), ['pending', 'pending_exists'], outcomes)
+        self.assertEqual(TradeInTariffVersion.objects.filter(entry=self.entry, status='pending').count(), 1)

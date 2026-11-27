@@ -217,6 +217,10 @@ def _check_row(company, data: dict, *, today: date, policy, seen: dict, row_numb
     seen[key] = row_number
     entry = TradeInTariffEntry.objects.filter(company=company, device_key=key).first()
     out = {'device_key': key, 'identity': identity, 'terms': _terms_json(terms), 'reasons': []}
+    if not data.get('valid_from'):
+        # «Vigente desde» empty means «the day it is applied»: resolved by apply, never frozen at preview (a preview
+        # that crosses midnight must not become retroactive).
+        out['terms']['valid_from'] = ''
     if entry is None:
         tariff.check_not_retroactive(terms, today=today)
         out.update(action=ACTION_CREATE, entry=None, base_version=None, reasons=[tariff.REASON_NEW_ENTRY])
@@ -234,7 +238,7 @@ def _check_row(company, data: dict, *, today: date, policy, seen: dict, row_numb
         raise tariff.TariffError('Este equipo tiene un cambio pendiente de aprobación: decídelo antes de cargar '
                                  'otro precio.', code='pending_exists')
     tariff.check_not_retroactive(terms, today=today)
-    out.update(action=ACTION_UPDATE, reasons=tariff.approval_reasons(previous, terms, policy))
+    out.update(action=ACTION_UPDATE, reasons=tariff.approval_reasons(entry, terms, policy))
     return out
 
 
@@ -299,7 +303,8 @@ def _stale(company, row) -> bool:
     if row['action'] == ACTION_CREATE:
         return TradeInTariffEntry.objects.filter(company=company, device_key=row['device_key']).exists()
     entry = TradeInTariffEntry.objects.select_for_update().filter(company=company, pk=row['entry']).first()
-    return entry is None or _latest_version_id(entry) != row['base_version']
+    # A deactivation writes no version: it is a move of the tariff all the same.
+    return entry is None or not entry.is_active or _latest_version_id(entry) != row['base_version']
 
 
 def apply(*, actor, company, batch, request=None) -> dict:
