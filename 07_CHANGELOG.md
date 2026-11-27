@@ -3,6 +3,35 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 2: reglas de valorización (rama `feat/trade-in-rules`, sin fusionar ni desplegar)
+
+**Added**
+- Grupos y preguntas de valorización de cada empresa (batería, estética, funcionamiento, reparaciones, accesorios u
+  otro; combinar por la mayor o por suma; tope por grupo; componente; filtros por marca o modelo).
+- Reglas por versión del conjunto completo: borrador, propuesta con instantánea congelada de grupos y preguntas,
+  aprobación por otra persona (o propia con `approve_own` y motivo), rechazo, retiro; en vigor la más nueva que ya
+  empezó, si no terminó.
+- Cálculo puro (`trade_in_valuation.calculate`) según el ADR §6 y «Probar un caso» (`/api/admin/trade-in/rules/preview/`).
+- Migración `0195_trade_in_rules` (cuatro tablas nuevas, aditiva, guarda de vuelta atrás al final). Sin capacidades
+  nuevas: usa las del tarifario.
+
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 1: tarifario de recepción por empresa (rama `feat/trade-in-tariff-phase1`, sin fusionar ni desplegar)
+
+**Added**
+- Tarifario de recepción de equipos usados por empresa: entradas con la identidad que usa la empresa (marca, modelo,
+  capacidad, SIM, región, enlace opcional al modelo del catálogo) y versiones de sólo añadir con cinco importes
+  Decimal separados (valor base, costo de reacondicionamiento, reventa estimada, margen, valor máximo), vigencia en el
+  calendario de la empresa, historial con quién y cuándo, búsqueda, filtros, desactivación y reactivación.
+- Aprobación de cambios relevantes (primer precio, subidas por encima de la tolerancia de la empresa, vigencia más
+  larga, o todo cambio si la empresa lo pide), por otra persona o por quien lo propuso con `approve_own` y motivo.
+- Exportación e importación de Excel (la exportación es la plantilla; vista previa y aplicación, todo o nada).
+- Capacidades de concesión explícita `sales.tradein.tariff.{view,manage,approve,approve_own}`; API `/api/admin/trade-in/…`.
+- Migración `0194_trade_in_tariff` (cuatro tablas nuevas, aditiva, con la guarda de vuelta atrás de las cotizaciones).
+
+**Ops**
+- Sin cambios en `deploy/` ni en Caddy: el Excel del tarifario usa el tramo general de 1 MiB y la vista lo limita a
+  960 KB (413 `file_too_large`).
+
 ## 2026-11-27 (madrugada) — R15 desplegada
 
 **Deployed**

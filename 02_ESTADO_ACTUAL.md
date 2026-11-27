@@ -3,6 +3,21 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 2 · PARCIAL (rama `feat/trade-in-rules`, sin fusionar ni desplegar) · migración `0195_trade_in_rules`
+
+Reglas de valorización por empresa sobre el tarifario de la fase 1 (`docs/adr-trade-in-valuation.md` §3.2 y §6):
+grupos y preguntas de la empresa, versiones del conjunto con instantánea congelada y aprobación por otra persona, y el
+cálculo puro (reglas de estado siempre, una de importe por pregunta, sin doble penalización, topes, nunca negativo,
+NO ELEGIBLE sin valor). Sólo backend; las pantallas son la fase 6. No compra, no paga, no acredita ni recibe equipos.
+
+## 2026-11-27 — TRADE-IN VALUATION PRO · Fase 1 · PARCIAL (rama `feat/trade-in-tariff-phase1`, sin fusionar ni desplegar) · migración `0194_trade_in_tariff`
+
+Tarifario de recepción de equipos usados por empresa (diseño en `docs/adr-trade-in-valuation.md`, PR propio): entradas
+con versiones de sólo añadir, cinco importes Decimal, vigencia en el calendario de la empresa, aprobación de cambios
+relevantes con capacidades de concesión explícita (`sales.tradein.tariff.*`, nadie las recibe por defecto: D7),
+aislamiento entre empresas, auditoría con empresa y Excel en los dos sentidos. Sólo backend: no hay pantalla todavía
+(fase 6). No compra, no paga, no acredita ni recibe equipos: D1–D12 siguen bloqueando la liquidación real.
+
 ## 2026-11-27 (madrugada) — R15 `af23e3b1` DESPLEGADA en prod-02
 
 Con el GO exacto del propietario, entre las 02:51 y las 02:52 (Lima): sólo código, sin migraciones, imágenes ensayadas, backup previo `db-20261127-025123`. Datos y Kardex idénticos, #22/#23 siguen exigiendo IMEI, 0 errores, Caddy, CRM, SUNAT y crontab sin cambios. La verificación posterior sobre copias aisladas salió sin fallos (`R15POST_DONE fails=0`). Queda cerrado el hueco de «lleva IMEI» y disponible «Ingreso de inventario existente». Detalle en `docs/NEXT_ACTION.md`.
