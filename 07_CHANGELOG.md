@@ -3,6 +3,15 @@
 Este archivo no existía en el baseline. La fuente histórica sigue siendo
 [CHANGELOG.md](CHANGELOG.md).
 
+## 2026-11-27 (madrugada) — R15 desplegada
+
+**Deployed**
+- R15 `af23e3b1` en prod-02 (#443, #444, #445, #447), sin migraciones.
+
+**Ops** (prod-02 `backups/`)
+- `release-r15/`: despliegue, vuelta atrás y verificación posterior (`R15POST_DONE fails=0`).
+- `stockreal-preview-r15/`: vista previa del stock real para R15 (en revalidación).
+
 ## 2026-11-27 — Release candidata R15 `af23e3b1` (en `master`, sin desplegar)
 
 **Added**

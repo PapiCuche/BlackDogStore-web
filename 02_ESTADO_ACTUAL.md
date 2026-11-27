@@ -3,7 +3,11 @@
 Este archivo no existía en el baseline. Se incorpora como entrada resumida a la
 documentación real, sin reemplazar su historial.
 
-## 2026-11-27 — R15 `af23e3b1` ensayada; espera «GO despliegue af23e3b prod-02»
+## 2026-11-27 (madrugada) — R15 `af23e3b1` DESPLEGADA en prod-02
+
+Con el GO exacto del propietario, entre las 02:51 y las 02:52 (Lima): sólo código, sin migraciones, imágenes ensayadas, backup previo `db-20261127-025123`. Datos y Kardex idénticos, #22/#23 siguen exigiendo IMEI, 0 errores, Caddy, CRM, SUNAT y crontab sin cambios. La verificación posterior sobre copias aisladas salió sin fallos (`R15POST_DONE fails=0`). Queda cerrado el hueco de «lleva IMEI» y disponible «Ingreso de inventario existente». Detalle en `docs/NEXT_ACTION.md`.
+
+## 2026-11-27 — (Histórico) R15 `af23e3b1` ensayada; espera «GO despliegue af23e3b prod-02»
 
 `master` `af23e3b1` reúne #443 («Ingreso de inventario existente»), #444 (protección de «lleva IMEI», que cierra el hueco que hoy existe en producción), #445 y #447. Es una release sólo de código, sin migraciones. El ensayo sobre una copia aislada y reciente de producción terminó sin fallos: los datos son idénticos con los dos códigos, 368 pruebas en la imagen, sondas de R14 y R15 OK, simulación 19/19 y vuelta atrás a R14 ensayada. Las comprobaciones previas en producción salieron OK. Producción sigue en R14, sana. Detalle en `docs/NEXT_ACTION.md`.
 

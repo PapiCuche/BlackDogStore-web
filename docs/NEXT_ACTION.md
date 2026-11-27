@@ -1,13 +1,42 @@
-# NEXT ACTION — 2026-11-27
+# NEXT ACTION — 2026-11-27 (madrugada)
 
-## PRODUCCIÓN (prod-02) — R14 `c176bfea` desde 2026-11-26 16:52 (Lima), esquema `0193_unit_import_terms_approval`; sana
-**Hueco abierto hasta desplegar R15:** con sólo `inventory.adjust` se puede apagar «lleva IMEI» quitando la
-serialización de un producto sin stock (#22/#23). Vigilar en la auditoría `product_serialization_changed` de #22/#23.
+## PRODUCCIÓN (prod-02) — R15 `af23e3b1` desde 2026-11-27 02:51 (Lima), esquema `0193_unit_import_terms_approval`; sana
+Imágenes `release-af23e3b` (backend `9bbaf0cf…`, frontend `b68fd744…`). Vuelta atrás de código preparada hacia R14
+`c176bfea` con `backups/release-r15/rollback_r15_code.sh` (sólo código, lanzado desacoplado como dice el runbook). Con R14,
+las líneas de «Ingreso de inventario existente» se verían como «Entrada por compra» y «lleva IMEI» volvería a quedar sin
+protección.
 
-Imágenes `release-c176bfe` (backend `795edce8…`, frontend `acf35935…`). Vuelta atrás de código preparada (preflight
-posterior OK, destino R13.2 `c8a43215`, deja 0193); la de esquema sólo con «GO vuelta atrás esquema 0193 prod-02».
+## R15 DESPLEGADA (2026-11-27) — «GO despliegue af23e3b prod-02»
+| Paso | Hora (Lima) | Resultado |
+|---|---|---|
+| Verificación previa | 02:40 | Producción en R14, imágenes, kit (MANIFEST), SHA y backup = ensayo; candado libre; sin procesos concurrentes. Preflight `PREFLIGHT OK` (plan de migraciones vacío) |
+| Despliegue | 02:51:05–02:52:35 | Backup previo `db-20261127-025123` (+ evidencias). Plan vacío; `compose up rc=0`; sanos en ~9 s; `VERDICT running R15 images`; esquema sin cambios; huella de datos y Kardex idénticos (50 líneas, 13 cadenas, 0 rupturas); notas `c2be046bf7bce2d8`; #22/#23 siguen con «lleva IMEI»; 0 líneas existentes antes; rutas, healthcheck y reimpresión OK; 0 errores; Caddy, CRM, crontab y enrutamiento sin cambios. Log `backups/d-r15-go.log` |
+| R15POST | 02:52:57–02:55:46 | `R15POST_DONE fails=0` sobre copias aisladas del backup del momento: sondas R14 75 OK y R15 73 OK (0 fallos), simulación 19/19, humo 32/32; en la copia desechable el escaneo (27 OK), la lista de proveedores (13 OK) y el ingreso existente escriben sin romper Kardex ni identificadores; R14 lee lo que escribe R15. Log `backups/release-r15/r15post-run.log` |
 
-## AUTORIZACIONES CONTROLADAS 2026-11-26 — los tres GO del propietario, HECHOS en orden
+Comprobado en R15: «lleva IMEI» sólo cambia con `products.manage` (403 al apagar o al quitar la serialización sin
+permiso; 409 al encenderlo con equipos sin IMEI); el ingreso existente se acepta en estantes con historial, se marca
+`existing_stock` y el Kardex lo separa; no crea compras, deudas ni filas de finanzas; la caja vende lo escaneado y
+rechaza el seminuevo pendiente de inspección; permisos y aislamiento entre empresas OK; ningún identificador compartido
+entre equipos vivos.
+
+## STOCK REAL — kit de vista previa para R15 · espera archivos, aprobación y «GO carga stock real prod-02»
+- Kit `backups/stockreal-preview-r15/` (el de R14 queda como histórico): acepta sólo R15; tipos de ingreso «Inventario
+  inicial», «Ingreso de inventario existente» y compra; informe de estantes cerrados; comprobación de duplicados entre
+  las dos carpetas (`STOCK_INBOX_ALSO`). Revalidación con R15 en curso.
+- Carpetas creadas, vacías y privadas: `backups/stock-real-inbox/` (inventario inicial) y
+  `backups/stock-real-inbox-existente/` (ingreso existente).
+- Guía del propietario: PR #449 (se fusiona tras la revalidación).
+
+## EN DESARROLLO (nada desplegado)
+- **Decisiones funcionales del propietario** (2026-11-27): texto de ayuda aprobado (PR #450), EID nunca como IMEI,
+  limpiar espacios del lector sin alterar identificadores, sin equivalencias de serie o código de barras sin fuente
+  verificada, validaciones de configuración al editar una lista de proveedores. Auditoría y PR en curso.
+- **SUNAT:** auditoría con evidencia de los 17 puntos y checklist de activación; luego PR de brechas sin credenciales
+  reales. La activación productiva necesitará su propio GO.
+- **TRADE-IN VALUATION PRO:** diseño sobre SALES-QUOTE-01 y el ADR de parte de pago, y fase 1 (tarifario de recepción
+  por empresa). La liquidación real sigue sujeta a D1–D12 y a su propio GO.
+
+## (Histórico) AUTORIZACIONES CONTROLADAS 2026-11-26 — los tres GO del propietario, HECHOS en orden
 
 Ejecutor: Claude (sesión principal), cada operación bajo `backups/ops/prod_lock.sh`, con su backup previo, comprobación
 de sólo lectura, huellas y diff esperado.
@@ -31,7 +60,7 @@ esperaba la ficha de #23 en 200; aplicar, repetir, rechazos, vuelta atrás y rea
 - Un agente adaptaba los kits de IMEI y de notas a R14 cuando llegó la autorización. Se detuvo y se repusieron los
   archivos validados (sha256 comprobado); sus borradores quedan en `r14-draft/` y los originales en `pre-r14/`.
 
-## VERIFICACIÓN DESPUÉS DEL DESPLIEGUE (2026-11-26 17:10–17:25) — `R14POST_DONE fails=0`
+## (Histórico) VERIFICACIÓN DESPUÉS DEL DESPLIEGUE DE R14 (2026-11-26 17:10–17:25) — `R14POST_DONE fails=0`
 Kit `backups/release-r14-post/`, log `r14post-run.log`, sobre copias aisladas de `db-20261126-171248` (esquema 0193).
 - **Copia que se deshace:** sondas R14 sobre la empresa real 75 OK, 0 fallos, 1 omitida (no hay cargas de equipos en
   producción todavía): escaneo de un equipo nuevo por un almacenero, repetición idempotente, IMEI duplicado 409,
@@ -45,7 +74,7 @@ Kit `backups/release-r14-post/`, log `r14post-run.log`, sobre copias aisladas de
   Kardex sin rupturas y ningún identificador compartido entre equipos vivos.
 - **Producción, sólo lectura:** 4 equipos vivos, cada uno con identificadores únicos; #22/#23 siguen exigiendo IMEI.
 
-## STOCK REAL — vista previa lista para R14 · espera archivos, aprobación y «GO carga stock real prod-02»
+## (Histórico) STOCK REAL — vista previa para R14 (sustituida por el kit de R15, arriba)
 - Kit `backups/stockreal-preview/` adaptado a R14 (sólo acepta `c176bfea`; imagen elegida por id fijado). Validado con
   archivos sintéticos: inventario inicial escribe `initial_stock`; «compra» escribe `purchase_entry`; todo deshecho,
   producción sin cambios.
@@ -58,7 +87,7 @@ Kit `backups/release-r14-post/`, log `r14post-run.log`, sobre copias aisladas de
 - No usar la caja ni el escaneo para la carga inicial: siempre escriben compra.
 - Pendiente: los archivos del propietario en `backups/stock-real-inbox/`, su aprobación del informe y el GO exacto.
 
-## RELEASE R15 — candidata `af23e3b1` PREPARADA Y ENSAYADA · espera **«GO despliegue af23e3b prod-02»**
+## (Histórico) RELEASE R15 — candidata `af23e3b1` preparada y ensayada; DESPLEGADA el 2026-11-27 (arriba)
 
 Un PR fusionado no es un GO. Este GO vale para una operación y para el SHA exacto
 `af23e3b1d39c36f566fede1cc975b3101ed690eb`, imágenes `rc-af23e3b` (backend `9bbaf0cf…`, frontend `b68fd744…`). Sólo
