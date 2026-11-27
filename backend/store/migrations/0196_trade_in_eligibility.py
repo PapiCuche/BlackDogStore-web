@@ -98,6 +98,7 @@ class Migration(migrations.Migration):
                 ('serial_digest', models.CharField(blank=True, default='', max_length=64)),
                 ('duplicate_of', models.CharField(blank=True, default='', max_length=20)),
                 ('known_to_company', models.BooleanField(default=False)),
+                ('required_blockers', models.JSONField(blank=True, default=dict)),
                 ('created_at', models.DateTimeField(auto_now_add=True)),
                 ('updated_at', models.DateTimeField(auto_now=True)),
                 ('closed_at', models.DateTimeField(blank=True, null=True)),

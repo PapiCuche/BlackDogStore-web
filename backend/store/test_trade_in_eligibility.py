@@ -8,11 +8,13 @@ duplicates are found against the company's own stock and open checks only; nothi
 """
 import json
 import pathlib
+import threading
 from datetime import timedelta
 from unittest import mock
 
 from django.core.exceptions import ValidationError
-from django.test import TestCase
+from django.db import connection
+from django.test import TestCase, TransactionTestCase
 from django.utils import timezone
 
 from store import finance_test_support as fx
@@ -248,7 +250,15 @@ class VerdictTest(EligibilityBase):
         self.record(created['id'], slot='imei', expect=400)
         res = self.record(created['id'], slot='serial', source=self.source['id'], expect=400)   # an IMEI source
         self.assertEqual(res['field'], 'source')
-        done = self.record(created['id'], slot='serial', result='declared_clear', source='')
+        # The company has a source for serials: a declaration is not enough while it does.
+        res = self.record(created['id'], slot='serial', result='declared_clear', source='', expect=400)
+        self.assertEqual(res['code'], 'declaration_not_allowed')
+        self.assertEqual(self.record(created['id'], slot='serial')['eligibility'], 'eligible')
+        self.api(self.manager).patch(f'{URL}verification-sources/{self.serial_source["id"]}/', {'is_active': False},
+                                     format='json')
+        other = self.check(has_imei=False, imei='', serial='F17XG0FDH7JQ')
+        self.answer_all(other['id'])
+        done = self.record(other['id'], slot='serial', result='declared_clear', source='')
         self.assertEqual(done['eligibility'], 'eligible')
 
     def test_records_need_a_source_unless_declared_are_not_future_and_never_change(self):
@@ -386,3 +396,149 @@ class GuardsTest(EligibilityBase):
         later = timezone.now() + timedelta(hours=25)
         with mock.patch('store.trade_in_eligibility.timezone.now', return_value=later):
             self.assertEqual(eligibility.evaluate(check)['eligibility'], 'pending_verification')
+
+
+class ReviewFindingsTest(EligibilityBase):
+    """Review of #463: identifiers in free text, declarations, lasting blocks, live statuses, frozen blockers."""
+
+    def test_no_free_text_carries_an_identifier(self):
+        created = self.check(imei2=IMEI_B)
+        cid = created['id']
+        texts = (IMEI_A, f'IMEI {IMEI_B[:8]} {IMEI_B[8:]}', 'serie C02XG0FDH7JY', '3569-3803-5643')
+        for text in texts:
+            with self.subTest(text=text):
+                for path, data in ((f'checks/{cid}/blockers/', {'code': 'activation_lock', 'answer': 'clear',
+                                                               'note': text}),
+                                   (f'checks/{cid}/identity-records/', {'slot': 'imei', 'result': 'no_report',
+                                                                       'source': self.source['id'], 'note': text}),
+                                   (f'checks/{cid}/close/', {'reason': text})):
+                    res = self.post(path, data, expect=400)
+                    self.assertEqual(res['code'], 'identifier_in_text')
+        res = self.api(self.valuer).post(f'{URL}checks/', {'branch': self.branch.pk, 'imei': IMEI_C,
+                                                           'description': 'Modelo G7XK2PLUS9'}, format='json')
+        self.assertEqual((res.status_code, res.json()['code']), (400, 'identifier_in_text'))
+        self.post(f'checks/{cid}/close/', {'reason': 'El cliente se fue, termina en 1234'}, expect=200)
+        closed = AdminAuditLog.objects.get(action='trade_in_device_check_closed')
+        self.assertNotIn('reason', closed.metadata)
+        self.assertTrue(closed.metadata['has_reason'])
+
+    def test_a_letters_only_serial_of_the_check_is_refused_by_its_digest(self):
+        created = self.check(has_imei=False, imei='', serial='ABCDEFGHJK')
+        res = self.post(f'checks/{created["id"]}/close/', {'reason': 'Serie abcdefghjk ilegible'}, expect=400)
+        self.assertEqual(res['code'], 'identifier_in_text')
+
+    def test_an_imei_is_never_verified_by_declaration(self):
+        created = self.check(imei2=IMEI_B)
+        for slot in ('imei', 'imei2'):
+            with self.subTest(slot=slot):
+                res = self.record(created['id'], slot=slot, result='declared_clear', source='', expect=400)
+                self.assertEqual(res['code'], 'declaration_not_allowed')
+
+    def test_a_reported_or_invalid_record_blocks_for_the_life_of_the_check(self):
+        for slot, result, code in (('imei', 'reported', 'theft_or_loss_report'),
+                                   ('imei2', 'reported', 'theft_or_loss_report'),
+                                   ('imei2', 'invalid', 'imei_invalid')):
+            with self.subTest(slot=slot, result=result):
+                TradeInDeviceCheck.objects.filter(status='open').update(status='closed')
+                created = self.check(imei2=IMEI_B)
+                self.answer_all(created['id'])
+                old = (timezone.now() - timedelta(hours=30)).isoformat()
+                self.record(created['id'], slot=slot, result=result, checked_at=old)        # expired by now
+                self.record(created['id'])
+                after = self.record(created['id'], slot='imei2')                             # newer, clean
+                self.assertEqual(after['eligibility'], 'not_eligible')
+                self.assertIn(code, after['blocked'])
+
+    def test_any_unit_the_company_still_holds_is_a_duplicate(self):
+        product = Product.objects.create(company=self.company, name='P', slug='p-transit', price='1.00', inventory=0)
+        StockUnit.objects.create(company=self.company, branch=self.branch, product=product, imei=IMEI_C,
+                                 status=StockUnit.Status.IN_TRANSIT)
+        StockUnit.objects.create(company=self.company, branch=self.branch, product=product, imei=IMEI_B,
+                                 status=StockUnit.Status.VOIDED, voided_at=timezone.now())
+        self.assertIn('imei_duplicate', self.check(imei=IMEI_C)['blocked'])
+        voided = self.check(imei=IMEI_B)
+        self.assertNotIn('imei_duplicate', voided['blocked'])
+        self.assertFalse(voided['known_to_company'])
+
+    def test_a_serial_only_device_is_checked_for_duplicates_by_serial(self):
+        product = Product.objects.create(company=self.company, name='P', slug='p-serial', price='1.00', inventory=0)
+        StockUnit.objects.create(company=self.company, branch=self.branch, product=product,
+                                 serial_number='C02XG0FDH7JY', status=StockUnit.Status.AVAILABLE)
+        self.assertIn('imei_duplicate', self.check(has_imei=False, imei='', serial='c02xg0fdh7jy')['blocked'])
+        self.check(has_imei=False, imei='', serial='F17XG0FDH7JQ')
+        self.assertIn('imei_duplicate', self.check(has_imei=False, imei='', serial='F17XG0FDH7JQ')['blocked'])
+
+    def test_the_blockers_due_are_frozen_when_the_check_opens(self):
+        created = self.check()
+        self.post(f'checks/{created["id"]}/blockers/', {'code': 'mdm_enrolled', 'answer': 'blocked'}, expect=200)
+        res = self.api(self.manager).put(f'{URL}policy/', {
+            'optional_blockers': ['mdm_enrolled'],
+            'extra_blockers': [{'code': 'caja_abierta', 'label': 'Caja abierta'}]}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        now = self.api(self.valuer).get(f'{URL}checks/{created["id"]}/').json()
+        self.assertIn('mdm_enrolled', now['blocked'])                                  # still blocks
+        self.assertNotIn('caja_abierta', {b['code'] for b in now['blockers']})         # not due on this check
+        self.post(f'checks/{created["id"]}/blockers/', {'code': 'caja_abierta', 'answer': 'clear'}, expect=400)
+
+    def test_the_duplicate_and_invalid_blockers_are_part_of_the_floor(self):
+        res = self.api(self.manager).put(f'{URL}policy/', {'optional_blockers': ['imei_duplicate']}, format='json')
+        self.assertEqual((res.status_code, res.json()['code']), (400, 'mandatory_blocker'))
+
+    def test_an_unreadable_time_is_a_400(self):
+        created = self.check()
+        for raw in ('2026-13-40T99:00:00', 'ayer', '2026-11-27T25:00'):
+            with self.subTest(raw=raw):
+                self.assertEqual(self.record(created['id'], checked_at=raw, expect=400)['field'], 'checked_at')
+
+    def test_a_null_has_imei_means_it_has_one(self):
+        res = self.api(self.valuer).post(f'{URL}checks/', {'branch': self.branch.pk, 'has_imei': None,
+                                                           'imei': IMEI_A}, format='json')
+        self.assertEqual(res.status_code, 201, res.content)
+        self.assertTrue(res.json()['has_imei'])
+
+    def test_a_list_costs_no_query_per_check(self):
+        from django.test.utils import CaptureQueriesContext
+
+        for value in (IMEI_A, IMEI_B, IMEI_C):
+            self.check(imei=value)
+        with CaptureQueriesContext(connection) as few:
+            self.api(self.reader).get(f'{URL}checks/')
+        self.check(imei=imei('35693803564382'))
+        self.check(imei=imei('35693803564383'))
+        with CaptureQueriesContext(connection) as more:
+            self.api(self.reader).get(f'{URL}checks/')
+        self.assertEqual(len(few.captured_queries), len(more.captured_queries))
+
+
+class TwoChecksOfOneImeiAtOnceTest(TransactionTestCase):
+    """Two counters register the same IMEI at the same instant: the advisory lock makes the second see the first."""
+
+    def setUp(self):
+        if connection.vendor != 'postgresql':
+            self.skipTest('Only PostgreSQL has the advisory locks this test is about.')
+        self.company = fx.company('tie-race', 'Carrera elegibilidad')
+        self.branch = fx.branch(self.company, 'Centro')
+        self.one = fx.member(self.company, 'tie_race_1', [VIEW, VALUE])
+        self.two = fx.member(self.company, 'tie_race_2', [VIEW, VALUE])
+
+    def test_the_second_is_a_duplicate(self):
+        start = threading.Barrier(2)
+        outcomes = []
+
+        def register(user):
+            try:
+                start.wait(5)
+                check = eligibility.create_check(actor=user, company=self.company,
+                                                 data={'branch': self.branch.pk, 'imei': IMEI_A})
+                outcomes.append(check.duplicate_of)
+            except Exception as exc:  # noqa: BLE001 — the test reads it
+                outcomes.append(repr(exc))
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=register, args=(user,)) for user in (self.one, self.two)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        self.assertEqual(sorted(outcomes), ['', 'open_check'], outcomes)

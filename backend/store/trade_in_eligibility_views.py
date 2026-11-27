@@ -101,8 +101,10 @@ class AdminTradeInSourceDetailView(_Base):
 
 
 def _checks(user, company):
+    # Answers and records come with the checks: the verdict of a list costs no query per row.
     return (TradeInDeviceCheck.objects.filter(company=company, branch__in=visible_branches(user, company))
-            .select_related('branch', 'created_by', 'company'))
+            .select_related('branch', 'created_by', 'company')
+            .prefetch_related('blocker_answers', 'identity_records'))
 
 
 class AdminTradeInCheckListView(_Base):

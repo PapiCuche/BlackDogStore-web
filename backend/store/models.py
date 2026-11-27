@@ -6623,6 +6623,9 @@ class TradeInDeviceCheck(models.Model):
     duplicate_of = models.CharField(max_length=20, blank=True, default='')
     #: Informative (D9 pending): this company sold or wrote off a unit with this IMEI.
     known_to_company = models.BooleanField(default=False)
+    #: The blockers this check must answer, FROZEN at creation ({code: label}): a later policy change never makes an
+    #: answered block disappear, nor a new requirement appear on a check already under way.
+    required_blockers = models.JSONField(default=dict, blank=True)
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='+')
     created_at = models.DateTimeField(auto_now_add=True)

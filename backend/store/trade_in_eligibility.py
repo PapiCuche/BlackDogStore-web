@@ -73,9 +73,9 @@ BLOCKERS = {
     'identifiers_mismatch': 'Los identificadores no coinciden con el equipo',
     'dangerous_condition': 'Condición física peligrosa',
 }
-#: Required for every company: no policy switches these off.
-MANDATORY = frozenset({'theft_or_loss_report', 'imei_invalid', 'activation_lock', 'ownership_unproven',
-                       'identifiers_mismatch', 'dangerous_condition'})
+#: Required for every company: no policy switches these off (the two computed ones included: review of #463).
+MANDATORY = frozenset({'theft_or_loss_report', 'imei_invalid', 'imei_duplicate', 'activation_lock',
+                       'ownership_unproven', 'identifiers_mismatch', 'dangerous_condition'})
 #: Decided by the server, never answered by hand.
 COMPUTED = frozenset({'imei_invalid', 'imei_duplicate'})
 
@@ -86,9 +86,12 @@ LABELS = {ELIGIBLE: 'APTO', PENDING_VERIFICATION: 'PENDIENTE DE VERIFICACIÓN', 
 
 #: A clear record; a reported one blocks; an invalid one blocks as `imei_invalid`; the rest leave it pending.
 CLEAR_RESULTS = frozenset({TradeInIdentityRecord.RESULT_NO_REPORT, TradeInIdentityRecord.RESULT_DECLARED_CLEAR})
+#: A unit in one of these is no longer a device the company holds: matching it is informative, never a duplicate.
+GONE_STATUSES = (StockUnit.Status.SOLD, StockUnit.Status.WRITTEN_OFF)
 
 _EXTRA_CODE = re.compile(r'^[a-z0-9][a-z0-9_]{1,40}$')
 MAX_EXTRA = 20
+MAX_TEXT = 300
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +100,7 @@ MAX_EXTRA = 20
 
 def _key(company_id: int) -> bytes:
     # Derived, never the secret itself: one use, one key (as `tracking_services._key`). Rotating SECRET_KEY only loses
-    # the duplicate detection against older checks; nothing else depends on it.
+    # the duplicate detection against older checks (docs/despliegue-produccion.md, «Rotar SECRET_KEY»).
     return hashlib.sha256(f'trade-in-identity|{company_id}|'.encode() + settings.SECRET_KEY.encode('utf-8')).digest()
 
 
@@ -122,6 +125,51 @@ def read_imei(raw, label: str) -> tuple[str, bool]:
 
 def masked(last4: str) -> str:
     return f'•••• {last4}' if last4 else ''
+
+
+_SEPARATORS = re.compile(r'[\s.\-/,_:;]')
+_TOKEN = re.compile(r'[A-Za-z0-9]+')
+_LONG_DIGITS = re.compile(r'\d{8,}')
+
+
+def _looks_like_serial(token: str) -> bool:
+    return len(token) >= 8 and any(c.isdigit() for c in token) and any(c.isalpha() for c in token)
+
+
+def refuse_identifiers(text: str, field: str, *, company_id=None, digests=(), typed=()) -> None:
+    """
+    A free text (a description, a note, a reason) must never carry an identifier: it would reach the database, the
+    screen and the audit in full. Refused when, separators removed, it holds 8 or more digits in a row, the shape of an
+    EID, a serial-shaped token (8+ letters and digits with at least one of each), an identifier typed in the same
+    request, or any token whose keyed digest is one of this check's identifiers.
+    """
+    if not text:
+        return
+    compact = _SEPARATORS.sub('', text)
+    message = 'Este texto no lleva IMEI, series ni otros identificadores: van en sus campos.'
+    if _LONG_DIGITS.search(compact) or device_identity.looks_like_eid(text):
+        raise TariffError(message, code='identifier_in_text', field=field)
+    tokens = _TOKEN.findall(text)
+    if any(_looks_like_serial(token) for token in tokens):
+        raise TariffError(message, code='identifier_in_text', field=field)
+    upper = compact.upper()
+    if any(value and value.upper() in upper for value in typed):
+        raise TariffError(message, code='identifier_in_text', field=field)
+    wanted = {d for d in digests if d}
+    if wanted and company_id is not None:
+        for token in tokens:
+            if len(token) >= 4 and (digest(company_id, token) in wanted or digest(company_id, token.upper()) in wanted):
+                raise TariffError(message, code='identifier_in_text', field=field)
+
+
+def _free_text(data, key, field, *, check=None, typed=()) -> str:
+    text = ' '.join(str(data.get(key) or '').split())
+    if len(text) > MAX_TEXT:
+        raise TariffError(f'El texto admite hasta {MAX_TEXT} caracteres.', field=field)
+    refuse_identifiers(text, field, company_id=check.company_id if check else None,
+                       digests=(check.imei_digest, check.imei2_digest, check.serial_digest) if check else (),
+                       typed=typed)
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -172,6 +220,7 @@ def clean_policy(data) -> dict:
             if not _EXTRA_CODE.match(code) or code in BLOCKERS or code in seen or not label or len(label) > 120:
                 raise TariffError('Cada bloqueo propio tiene un código único (minúsculas, números y _) y un texto.',
                                   field='extra_blockers')
+            refuse_identifiers(label, 'extra_blockers')
             seen.add(code)
             extras.append({'code': code, 'label': label})
         out['extra_blockers'] = extras
@@ -188,7 +237,7 @@ def _require(actor, company, capability, message):
 
 
 def _audit(*, actor, company, action, check, request=None, **metadata):
-    # Ids and states only: never an identifier, its last four characters or its digest.
+    # Ids and states only: never an identifier, its last four characters, its digest or a free text.
     AdminAuditLog.log(actor=actor if getattr(actor, 'is_authenticated', False) else None, action=action,
                       target_type='trade_in_device_check', target_id=check.pk,
                       metadata={'company_id': company.pk, 'check_id': check.pk, 'branch_id': check.branch_id,
@@ -207,36 +256,52 @@ def _branch(actor, company, raw):
     return branch
 
 
-def _stock_match(company, imeis: list[str]):
-    """(live, known): a live unit of this company has one of these IMEIs; a sold or written-off one has."""
+def _stock_match(company, *, imeis=(), serial=''):
+    """(live, known): a unit this company still holds (anything but sold, written off or voided) has one of these
+    identifiers; a unit it sold or wrote off has."""
     from django.db.models import Q
 
-    if not imeis:
+    query = Q()
+    if imeis:
+        query |= Q(imei__in=imeis) | Q(imei2__in=imeis)
+    if serial:
+        query |= Q(serial_number__iexact=serial)
+    if not query:
         return False, False
-    units = StockUnit.objects.filter(company=company).filter(Q(imei__in=imeis) | Q(imei2__in=imeis))
-    statuses = set(units.values_list('status', flat=True))
-    live = bool(statuses & {StockUnit.Status.AVAILABLE, StockUnit.Status.RESERVED})
-    known = bool(statuses & {StockUnit.Status.SOLD, StockUnit.Status.WRITTEN_OFF})
-    return live, known
+    statuses = set(StockUnit.objects.filter(company=company).exclude(status=StockUnit.Status.VOIDED)
+                   .filter(query).values_list('status', flat=True))
+    return bool(statuses - set(GONE_STATUSES)), bool(statuses & set(GONE_STATUSES))
+
+
+def _lock_identifiers(company_id: int, digests: list[str]) -> None:
+    """Serialise two checks of the same identifier at once (PostgreSQL advisory lock per company and digest)."""
+    from django.db import connection
+
+    if connection.vendor != 'postgresql':
+        return
+    with connection.cursor() as cursor:
+        for value in sorted(set(digests)):
+            key = int.from_bytes(hashlib.sha256(f'trade-in-check|{company_id}|{value}'.encode()).digest()[:8],
+                                 'big', signed=True)
+            cursor.execute('SELECT pg_advisory_xact_lock(%s)', [key])
 
 
 def create_check(*, actor, company, data, request=None) -> TradeInDeviceCheck:
-    """Register a device offered at a branch: its identifiers as digests, and the server's own findings."""
+    """Register a device offered at a branch: its identifiers as digests, the server's findings, the blockers due."""
     _require(actor, company, CAP_VALUE, 'No tienes permiso para comprobar equipos usados.')
     branch = _branch(actor, company, data.get('branch'))
     has_imei = data.get('has_imei', True)
-    has_imei = has_imei if isinstance(has_imei, bool) else str(has_imei).strip().lower() in ('true', '1', 'si', 'sí')
-    description = ' '.join(str(data.get('description') or '').split())
-    if len(description) > 200:
-        raise TariffError('La descripción admite hasta 200 caracteres.', field='description')
-    if device_identity.looks_like_eid(description) or re.search(r'\d{8}', re.sub(r'[\s.\-/,]', '', description)):
-        raise TariffError('La descripción no lleva identificadores: escríbelos en sus campos.', field='description')
+    if has_imei is None:
+        has_imei = True
+    elif not isinstance(has_imei, bool):
+        has_imei = str(has_imei).strip().lower() in ('true', '1', 'si', 'sí')
     imei, imei_valid = read_imei(data.get('imei'), 'El IMEI')
     imei2, imei2_valid = read_imei(data.get('imei2'), 'El IMEI 2')
     try:
         serial = device_identity.clean_serial(data.get('serial'))
     except device_identity.DeviceIdentityError as exc:
         raise TariffError(str(exc), field='serial') from None
+    description = _free_text(data, 'description', 'description', typed=(imei, imei2, serial))
     if has_imei and not imei:
         raise TariffError('Escribe el IMEI del equipo (o marca que no tiene IMEI).', code='required', field='imei')
     if not has_imei and (imei or imei2):
@@ -245,24 +310,32 @@ def create_check(*, actor, company, data, request=None) -> TradeInDeviceCheck:
         raise TariffError('Un equipo sin IMEI se identifica por su número de serie.', code='required', field='serial')
     if imei and imei == imei2:
         raise TariffError('El IMEI 2 no puede ser igual al IMEI 1.', field='imei2')
+    imei_digest = digest(company.pk, imei) if imei else ''
+    imei2_digest = digest(company.pk, imei2) if imei2 else ''
+    serial_digest = digest(company.pk, serial) if serial else ''
     with transaction.atomic():
-        digests = [digest(company.pk, value) for value in (imei, imei2) if value]
-        duplicate = ''
-        if digests:
-            from django.db.models import Q
+        imei_digests = [d for d in (imei_digest, imei2_digest) if d]
+        _lock_identifiers(company.pk, imei_digests + ([serial_digest] if serial_digest else []))
+        from django.db.models import Q
 
-            if TradeInDeviceCheck.objects.filter(company=company, status=TradeInDeviceCheck.STATUS_OPEN).filter(
-                    Q(imei_digest__in=digests) | Q(imei2_digest__in=digests)).exists():
-                duplicate = 'open_check'
-        live, known = _stock_match(company, [value for value in (imei, imei2) if value])
+        opened = TradeInDeviceCheck.objects.filter(company=company, status=TradeInDeviceCheck.STATUS_OPEN)
+        clash = Q(pk__in=[])
+        if imei_digests:
+            clash |= Q(imei_digest__in=imei_digests) | Q(imei2_digest__in=imei_digests)
+        if not has_imei:
+            clash |= Q(serial_digest=serial_digest)
+        duplicate = 'open_check' if opened.filter(clash).exists() else ''
+        live, known = _stock_match(company, imeis=[v for v in (imei, imei2) if v],
+                                   serial=serial if not has_imei else '')
         if live:
             duplicate = 'stock'
         check = TradeInDeviceCheck.objects.create(
             company=company, branch=branch, description=description, has_imei=has_imei,
-            imei_last4=imei[-4:], imei_digest=digest(company.pk, imei) if imei else '', imei_valid=imei_valid,
-            imei2_last4=imei2[-4:], imei2_digest=digest(company.pk, imei2) if imei2 else '', imei2_valid=imei2_valid,
-            serial_last4=serial[-4:], serial_digest=digest(company.pk, serial) if serial else '',
+            imei_last4=imei[-4:], imei_digest=imei_digest, imei_valid=imei_valid,
+            imei2_last4=imei2[-4:], imei2_digest=imei2_digest, imei2_valid=imei2_valid,
+            serial_last4=serial[-4:], serial_digest=serial_digest,
             duplicate_of=duplicate, known_to_company=known,
+            required_blockers=required_blockers(tariff.policy_of(company)),
             created_by=actor if getattr(actor, 'is_authenticated', False) else None)
         _audit(actor=actor, company=company, action='trade_in_device_check_created', check=check, request=request,
                has_imei=has_imei, has_imei2=bool(imei2), has_serial=bool(serial),
@@ -273,7 +346,7 @@ def create_check(*, actor, company, data, request=None) -> TradeInDeviceCheck:
 def _open(company, check) -> TradeInDeviceCheck:
     if check.company_id != company.pk:
         raise TariffError('No encontrado.', code='not_found')
-    locked = TradeInDeviceCheck.objects.select_for_update().get(pk=check.pk)
+    locked = TradeInDeviceCheck.objects.select_for_update(of=('self',)).get(pk=check.pk)
     if locked.status != TradeInDeviceCheck.STATUS_OPEN:
         raise TariffStateError('Esta comprobación está cerrada.', code='closed')
     return locked
@@ -282,19 +355,15 @@ def _open(company, check) -> TradeInDeviceCheck:
 def answer_blocker(*, actor, company, check, data, request=None) -> TradeInBlockerAnswer:
     _require(actor, company, CAP_VALUE, 'No tienes permiso para comprobar equipos usados.')
     code = str(data.get('code') or '').strip()
-    policy = tariff.policy_of(company)
-    required = required_blockers(policy)
     if code in COMPUTED:
         raise TariffError('Este bloqueo lo decide el sistema con el IMEI: no se responde a mano.', code='computed',
                           field='code')
-    if code not in required:
-        raise TariffError('Bloqueo no reconocido para esta empresa.', field='code')
+    if code not in (check.required_blockers or {}):
+        raise TariffError('Bloqueo no reconocido para esta comprobación.', field='code')
     answer = str(data.get('answer') or '').strip()
     if answer not in dict(TradeInBlockerAnswer.ANSWER_CHOICES):
         raise TariffError('Respuesta no válida (clear, blocked o not_verified).', field='answer')
-    note = ' '.join(str(data.get('note') or '').split())
-    if len(note) > 300:
-        raise TariffError('La nota admite hasta 300 caracteres.', field='note')
+    note = _free_text(data, 'note', 'note', check=check)
     with transaction.atomic():
         check = _open(company, check)
         row = TradeInBlockerAnswer.objects.filter(device_check=check, code=code).first()
@@ -304,8 +373,23 @@ def answer_blocker(*, actor, company, check, data, request=None) -> TradeInBlock
         row.answer, row.note, row.answered_by, row.answered_at = answer, note, actor, timezone.now()
         row.save()
         _audit(actor=actor, company=company, action='trade_in_blocker_answered', check=check, request=request,
-               code=code, answer=answer, before=before)
+               code=code, answer=answer, before=before, has_note=bool(note))
     return row
+
+
+def _checked_at(raw, company, now):
+    if raw in (None, ''):
+        return now
+    try:
+        value = parse_datetime(str(raw))
+        if value is None:
+            raise ValueError(raw)
+        if timezone.is_naive(value):
+            value = timezone.make_aware(value, tariff.company_timezone(company))
+        value.utcoffset()
+    except (ValueError, TypeError, OverflowError):
+        raise TariffError('La fecha y hora de la consulta no es válida.', field='checked_at') from None
+    return value
 
 
 def record_identity(*, actor, company, check, data, request=None, now=None) -> TradeInIdentityRecord:
@@ -320,7 +404,21 @@ def record_identity(*, actor, company, check, data, request=None, now=None) -> T
         raise TariffError('Resultado no reconocido.', field='result')
     source = None
     raw = data.get('source')
-    if raw not in (None, ''):
+    if result == TradeInIdentityRecord.RESULT_DECLARED_CLEAR:
+        # A declaration replaces a consultation only where none is possible: the serial of a device without IMEI, in a
+        # company with no active source for serials. Never for an IMEI (review of #463).
+        if slot != TradeInIdentityRecord.SLOT_SERIAL or check.has_imei:
+            raise TariffError('Un IMEI se verifica en una fuente oficial, no por declaración.',
+                              code='declaration_not_allowed', field='result')
+        if TradeInVerificationSource.objects.filter(
+                company=company, is_active=True, identifier=TradeInVerificationSource.IDENTIFIER_SERIAL).exists():
+            raise TariffError('La empresa tiene una fuente para consultar series: úsala.',
+                              code='declaration_not_allowed', field='result')
+        if raw not in (None, ''):
+            raise TariffError('Una declaración no lleva fuente.', field='source')
+    else:
+        if raw in (None, ''):
+            raise TariffError('Indica la fuente oficial que consultaste.', code='required', field='source')
         try:
             source = TradeInVerificationSource.objects.filter(company=company, pk=int(raw)).first()
         except (TypeError, ValueError):
@@ -333,19 +431,10 @@ def record_identity(*, actor, company, check, data, request=None, now=None) -> T
                   else TradeInVerificationSource.IDENTIFIER_IMEI)
         if source.identifier != wanted:
             raise TariffError('Esa fuente no consulta ese identificador.', field='source')
-    elif result != TradeInIdentityRecord.RESULT_DECLARED_CLEAR:
-        raise TariffError('Indica la fuente oficial que consultaste.', code='required', field='source')
-    checked_raw = data.get('checked_at')
-    checked_at = parse_datetime(str(checked_raw)) if checked_raw not in (None, '') else now
-    if checked_at is None:
-        raise TariffError('La fecha y hora de la consulta no es válida.', field='checked_at')
-    if timezone.is_naive(checked_at):
-        checked_at = timezone.make_aware(checked_at, tariff.company_timezone(company))
+    checked_at = _checked_at(data.get('checked_at'), company, now)
     if checked_at > now + timedelta(minutes=5):
         raise TariffError('La consulta no puede ser futura.', field='checked_at')
-    note = ' '.join(str(data.get('note') or '').split())
-    if len(note) > 300:
-        raise TariffError('La nota admite hasta 300 caracteres.', field='note')
+    note = _free_text(data, 'note', 'note', check=check)
     hours = tariff.policy_of(company).identity_check_validity_hours
     with transaction.atomic():
         check = _open(company, check)
@@ -360,13 +449,13 @@ def record_identity(*, actor, company, check, data, request=None, now=None) -> T
             recorded_by=actor if getattr(actor, 'is_authenticated', False) else None)
         _audit(actor=actor, company=company, action='trade_in_identity_recorded', check=check, request=request,
                record=record.pk, slot=slot, source=source.pk if source else None, result=result,
-               checked_at=checked_at.isoformat())
+               checked_at=checked_at.isoformat(), has_note=bool(note))
     return record
 
 
 def close_check(*, actor, company, check, reason, request=None):
     _require(actor, company, CAP_VALUE, 'No tienes permiso para comprobar equipos usados.')
-    reason = ' '.join(str(reason or '').split())[:300]
+    reason = _free_text({'reason': reason}, 'reason', 'reason', check=check)
     if not reason:
         raise TariffError('Indica por qué se cierra.', code='reason_required', field='reason')
     with transaction.atomic():
@@ -374,8 +463,9 @@ def close_check(*, actor, company, check, reason, request=None):
         check.status = TradeInDeviceCheck.STATUS_CLOSED
         check.closed_at, check.closed_by, check.close_reason = timezone.now(), actor, reason
         check.save(update_fields=['status', 'closed_at', 'closed_by', 'close_reason', 'updated_at'])
+        # Never the reason itself: a free text is not for the audit.
         _audit(actor=actor, company=company, action='trade_in_device_check_closed', check=check, request=request,
-               reason=reason)
+               has_reason=True, reason_length=len(reason))
     return check
 
 
@@ -389,40 +479,44 @@ def required_slots(check) -> list[str]:
     return [TradeInIdentityRecord.SLOT_SERIAL]
 
 
-def evaluate(check, *, now=None, policy=None) -> dict:
+def evaluate(check, *, now=None) -> dict:
     """
-    The security verdict of a check, computed on each read and never stored: per blocker (answered, computed or
-    from the identity records) and per identifier, and the overall NOT ELIGIBLE / PENDING / ELIGIBLE.
+    The security verdict of a check, computed on each read and never stored. The blockers due are the ones frozen
+    when the check was opened; any `blocked` answer blocks, whatever the policy says later; a `reported` or `invalid`
+    record blocks for the whole life of the check, even once expired or followed by a cleaner record — clearing it
+    takes closing the check and opening a new one, both audited.
     """
     now = now or timezone.now()
-    policy = policy or tariff.policy_of(check.company)
-    required = required_blockers(policy)
+    required = dict(check.required_blockers or {})
     answers = {row.code: row for row in check.blocker_answers.all()}
+    for code, row in answers.items():
+        required.setdefault(code, BLOCKERS.get(code, code))
     states: dict[str, dict] = {}
     for code, label in required.items():
         row = answers.get(code)
         states[code] = {'code': code, 'label': label, 'mandatory': code in MANDATORY,
                         'state': row.answer if row else 'unanswered', 'source': 'answer' if row else None}
-    # The server's own findings.
-    if 'imei_invalid' in states:
-        bad = not (check.imei_valid and check.imei2_valid)
-        states['imei_invalid'].update(state='blocked' if bad else 'clear', source='computed')
-    if 'imei_duplicate' in states:
-        states['imei_duplicate'].update(state='blocked' if check.duplicate_of else 'clear', source='computed',
-                                        detail=check.duplicate_of or None)
-    # The identity records: the latest per identifier decides; an expired one is not a verification.
+    for code in COMPUTED:
+        states.setdefault(code, {'code': code, 'label': BLOCKERS[code], 'mandatory': True})
+    bad = not (check.imei_valid and check.imei2_valid)
+    states['imei_invalid'].update(state='blocked' if bad else 'clear', source='computed')
+    states['imei_duplicate'].update(state='blocked' if check.duplicate_of else 'clear', source='computed',
+                                    detail=check.duplicate_of or None)
+    records = sorted(check.identity_records.all(), key=lambda r: (r.checked_at, r.pk), reverse=True)
+    for record in records:
+        if record.result == TradeInIdentityRecord.RESULT_REPORTED:
+            states.setdefault('theft_or_loss_report', {'code': 'theft_or_loss_report',
+                                                       'label': BLOCKERS['theft_or_loss_report'], 'mandatory': True})
+            states['theft_or_loss_report'].update(state='blocked', source='identity_record')
+        elif record.result == TradeInIdentityRecord.RESULT_INVALID:
+            states['imei_invalid'].update(state='blocked', source='identity_record')
     slots = []
-    records = list(check.identity_records.select_related('source').order_by('-checked_at', '-pk'))
     for slot in required_slots(check):
         latest = next((r for r in records if r.slot == slot), None)
         valid = latest is not None and latest.valid_until > now
         state = 'missing' if latest is None else ('expired' if not valid else latest.result)
         slots.append({'slot': slot, 'state': state, 'record': latest.pk if latest else None,
                       'valid_until': latest.valid_until if latest else None})
-        if valid and latest.result == TradeInIdentityRecord.RESULT_REPORTED and 'theft_or_loss_report' in states:
-            states['theft_or_loss_report'].update(state='blocked', source='identity_record')
-        if valid and latest.result == TradeInIdentityRecord.RESULT_INVALID and 'imei_invalid' in states:
-            states['imei_invalid'].update(state='blocked', source='identity_record')
     blocked = sorted(code for code, s in states.items() if s['state'] == 'blocked')
     unverified = sorted(code for code, s in states.items() if s['state'] in ('unanswered', 'not_verified'))
     unchecked = [s['slot'] for s in slots if s['state'] not in CLEAR_RESULTS]
