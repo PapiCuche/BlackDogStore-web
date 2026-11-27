@@ -14,7 +14,7 @@ import { SupplierListAssistant } from '@/app/admin/components/SupplierListAssist
 import { fetchWithAuth } from '@/app/lib/auth';
 import { phraseKey } from '@/app/admin/lib/supplier-list-grammar';
 import {
-  BLACK, BLUE, CHIP, ESIM, G128, G256, GREEN, JA, MODEL, selectorPalette, selectorVocabulary,
+  BLACK, BLUE, CHIP, ESIM, G128, G256, JA, MODEL, selectorPalette, selectorVocabulary,
 } from './support/selector-catalog';
 
 jest.mock('@/app/lib/auth', () => ({ fetchWithAuth: jest.fn() }));
@@ -36,8 +36,6 @@ let resolveFails: () => boolean;
 let otherModelForSelector: boolean;
 /** The palette the server answers (a test may exclude another pair). */
 let palette: () => ReturnType<typeof selectorPalette>;
-/** What reached the official importer's dry run. */
-let drafts: { rows: { key: string; product_id: number }[] }[];
 
 const vocabulary = selectorVocabulary();
 const compact = (text: string) => phraseKey(text).replace(/ /g, '');
@@ -71,7 +69,8 @@ function resolveRow(row: Record<string, string>) {
     if (colourText && !colour) status = 'opcion_desconocida';
     else if (outside) status = 'fuera_de_paleta';
     else if (missing.length) status = 'incompleta';
-    else if (ids.includes(GREEN) && ids.includes(CHIP)) status = 'combinacion_excluida';
+    // The pairs the model excludes are the palette's own (`excluded_pairs`), as the server reads them.
+    else if ((palette().excluded_pairs ?? []).some((pair) => pair.every((id) => ids.includes(id)))) status = 'combinacion_excluida';
     else if (ids.join() === [G128, BLACK, ESIM, JA].sort((a, b) => a - b).join()) { status = 'variante_existente'; product = 900; }
     else if (created.has(ids.join())) { status = 'variante_existente'; product = 950; }
     return {
@@ -94,7 +93,6 @@ beforeEach(() => {
   resolveFails = () => false;
   otherModelForSelector = false;
   palette = () => selectorPalette();
-  drafts = [];
   send.mockImplementation(async (url, init) => {
     const path = String(url);
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
@@ -117,11 +115,6 @@ beforeEach(() => {
       if (resolveFails()) return reply(500, {});
       const rows = body.rows.map(resolveRow);
       return reply(200, { rows, summary: {} });
-    }
-    if (path.includes('/text-preview/offer-draft/')) {
-      drafts.push(body);
-      return reply(200, { dry_run: true, cost_column_ignored: false, summary: {}, rows: body.rows.map((row: { key: string }, index: number) => (
-        { key: row.key, row_number: index + 2, action: 'create', errors: [], warnings: [], data: {} })) });
     }
     return reply(404, {});
   });
@@ -417,8 +410,23 @@ describe('SELECTOR-UX-01 · editar una oferta ya leída vuelve a validar antes d
     // What was typed for the old card does not follow the new ones, and nothing can be rehearsed or saved.
     expect(screen.getByLabelText('Precio comercial · línea 1, configuración 1')).toHaveValue('');
     expect(rehearse()).toBeDisabled();
-    await act(async () => { fireEvent.click(rehearse()); });
-    expect(drafts).toEqual([]);
+  });
+
+  it('cambiar el texto de una oferta lista para guardar borra lo leído, el precio y la selección: hay que volver a leer', async () => {
+    await open();
+    await readList('equipo z 128gb esim j/a negro 2500');
+    setList();
+    fireEvent.change(screen.getByLabelText('Precio comercial · línea 1, configuración 1'), { target: { value: '2999' } });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Incluir en el guardado · línea 1, configuración 1' }));
+    expect(rehearse()).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('Texto de la lista del proveedor'), { target: { value: 'equipo z 128gb chip j/a verde 2500' } });
+    expect(screen.queryByRole('article', { name: 'Línea 1' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Ensayar con el importador oficial' })).toBeNull();
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Leer la lista' })); });
+    const card = within(line(1)).getByRole('article');
+    expect(card).toHaveTextContent('No existe en este modelo');
+    expect(screen.getByLabelText('Precio comercial · línea 1, configuración 1')).toHaveValue('');
+    expect(within(card).getByRole('checkbox', { name: /Incluir en el guardado/ })).toBeDisabled();
   });
 
   it('una opción elegida a mano que choca con lo que el texto fija nunca envía otro valor: queda incompleta', async () => {
@@ -442,6 +450,9 @@ describe('SELECTOR-UX-01 · editar una oferta ya leída vuelve a validar antes d
     expect(sent).toHaveLength(1);
     expect(sent[0].capacity_text).toBe('256 GB');
     expect(sent[0].sim_text).toBeUndefined();
+    // Had the Chip been kept, the server (this stub honours the palette's exclusions) would answer «No existe».
+    expect(sent.some((row) => row.capacity_text === '256 GB' && row.sim_text === 'Chip')).toBe(false);
+    expect(within(line(1)).getByRole('article')).not.toHaveTextContent('No existe en este modelo');
     const card = within(line(1)).getByRole('article');
     expect(card).toHaveTextContent('Incompleta');
     expect(within(card).queryByRole('button', { name: /Crear variante/ })).toBeNull();

@@ -720,6 +720,19 @@ class ExcludedCombinationTest(TestCase):
         self.assertEqual(self.statuses('verde', 'chip'), [('verde', 'combinacion_excluida')])
         self.assertNotIn('combinacion_excluida', resolver.COMPLETE)
 
+    def test_a_capacity_and_a_sim_the_model_excludes_are_never_valid_either(self):
+        # Two common roles (capacity × SIM), not only a colour: the same rule.
+        g128 = device_catalog.create_option(company=self.company, attribute_id=self.size.pk, label='128 GB')
+        model_palette.set_palette(self.model, option_ids=[o.pk for o in (self.g64, g128, self.grey, self.green,
+                                                                         self.chip, self.esim)])
+        model_palette.add_exclusions(self.model, pairs=[[g128.pk, self.chip.pk]])
+        result = resolver.resolve_configuration(resolver.Vocabulary(self.company), model_text='Equipo X',
+                                                capacity_text='128 GB', colour_text='gris', sim_text='chip')
+        self.assertEqual([c['status'] for c in result['configurations']], ['combinacion_excluida'])
+        result = resolver.resolve_configuration(resolver.Vocabulary(self.company), model_text='Equipo X',
+                                                capacity_text='128 GB', colour_text='gris', sim_text='')
+        self.assertEqual([c['status'] for c in result['configurations']], ['incompleta'])
+
     def test_the_other_colours_of_the_same_line_are_not_affected(self):
         self.assertEqual(self.statuses('gris, verde', 'chip'),
                          [('gris', 'combinacion_valida_sin_variante'), ('verde', 'combinacion_excluida')])
@@ -733,7 +746,7 @@ class ExcludedCombinationTest(TestCase):
         model_palette.add_exclusions(self.model, pairs=[[self.green.pk, self.chip.pk]])
         self.assertEqual(self.statuses('verde', 'chip'), [('verde', 'variante_existente')])
 
-    def test_a_hand_edited_selection_is_validated_again_by_the_resolve_endpoint(self):
+    def test_selector_rows_posted_to_resolve_are_judged_again(self):
         # SELECTOR-UX-01 (owner, 2026-11-27): a supplier line edited by hand on the selector travels as the company's
         # labels, one row per colour; the server judges each again. The excluded one is neither saveable nor creatable.
         from rest_framework.test import APIClient
