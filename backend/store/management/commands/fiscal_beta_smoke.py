@@ -95,15 +95,22 @@ class Command(BaseCommand):
         if not fiscal_enabled():
             raise CommandError('La emisión fiscal está deshabilitada (FISCAL_ENABLED).')
 
-        # 2) Sólo BETA. resolve_environment falla cerrado ante cualquier otra cosa.
-        from ...fiscal_config import resolve_environment
-        self.environment = resolve_environment()  # levanta si no es BETA
-
         try:
             self.company = Company.objects.get(tax_id=options['company_tax_id'])
         except Company.DoesNotExist:
             raise CommandError(
                 f'No existe una empresa con RUC {options["company_tax_id"]}.')
+
+        # 2) Sólo BETA. Desde C3 `resolve_environment` puede devolver producción
+        #    (consola en ese modo, FISCAL_PRODUCTION_ENABLED): esta prueba no la toca nunca.
+        from ...fiscal_config import FiscalConfigError as _ConfigError, resolve_environment
+        try:
+            self.environment = resolve_environment(self.company)
+        except _ConfigError as exc:
+            raise CommandError(str(exc)) from None
+        if self.environment != FiscalEnvironment.BETA:
+            raise CommandError(
+                'Esta prueba sólo habla con SUNAT BETA y el servidor opera producción: no se envía nada.')
 
         # 3) Las credenciales y el par de firma ANTES de reservar nada en ningún
         #    modo (FISCAL-PROD-02, revisión de #176): sin ellas no hay qué firmar, y

@@ -886,6 +886,22 @@ def _claim_attempt(document: FiscalDocument) -> FiscalSubmissionAttempt | None:
         )
 
 
+def refuse_other_environment(record, provider) -> None:
+    """
+    El proveedor habla con el ambiente del documento, o no se envía nada (C3).
+
+    `fiscal_config.resolve_provider` ya se niega cuando se le pasa el ambiente del
+    documento; esto es la defensa en profundidad para quien construya un proveedor por
+    otro camino. Sólo se compara cuando el proveedor DECLARA su ambiente (los de
+    `fiscal_config` lo hacen); un proveedor de pruebas sin ambiente no se juzga aquí.
+    """
+    environment = getattr(provider, 'environment', None)
+    if isinstance(environment, str) and environment and environment != record.environment:
+        raise FiscalError(
+            f'Este documento es del ambiente «{record.environment}» y el proveedor habla con «{environment}»: '
+            f'no se envía a otro ambiente de SUNAT.')
+
+
 def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument:
     """
     Envía el documento y registra el intento. FUERA de cualquier transacción.
@@ -896,6 +912,7 @@ def submit_fiscal_document(document: FiscalDocument, provider) -> FiscalDocument
     Un documento ya aceptado no se reenvía: SUNAT lo rechazaría por duplicado y
     el reenvío no aportaría nada.
     """
+    refuse_other_environment(document, provider)
     if not document.signed_xml:
         raise FiscalError('El documento no está firmado.')
     # REVIEW A (H1). Una BOLETA no se envía por `sendBill`: SUNAT no la acepta por

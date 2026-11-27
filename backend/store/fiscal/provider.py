@@ -64,10 +64,20 @@ WSSE_NS = (
 )
 SOAP_NS = 'http://schemas.xmlsoap.org/soap/envelope/'
 
-#: Manual del programador, «Web Services». Producción NO se declara aquí a
-#: propósito: habilitarla es una decisión de otra fase y no debe estar a un
-#: cambio de literal de distancia.
+#: Los endpoints de `billService` (sendBill, sendSummary, getStatus) de SEE-Del
+#: contribuyente. FUENTE OFICIAL: SUNAT, «Manual del programador» v2.1
+#: (12/05/2021), §2.1 «Web Services», pp. 12 y 22
+#: (https://cpe.sunat.gob.pe/sites/default/files/inline-files/manual_programador%20(1).pdf),
+#: y «Servicios Web Disponibles» de cpe.sunat.gob.pe (copia del 2026-06-13); ver
+#: docs/sunat-estado-2026-11.md, F1. Se declaran SIN `?wsdl`: el POST va al servicio.
+#:
+#: SON CONSTANTES DEL CÓDIGO y lo seguirán siendo: ningún ajuste, empresa ni
+#: petición elige la URL a la que se envía un comprobante (`fiscal_config.resolve_provider`).
+#: Que producción esté declarada NO la habilita: `fiscal_config.resolve_environment`
+#: sólo la devuelve con `FISCAL_PRODUCTION_ENABLED`, la consola en modo producción
+#: (activada con el preflight en GO) y el RUC de la empresa igual al de la Clave SOL.
 BETA_ENDPOINT = 'https://e-beta.sunat.gob.pe/ol-ti-itcpfegem-beta/billService'
+PRODUCTION_ENDPOINT = 'https://e-factura.sunat.gob.pe/ol-ti-itcpfegem/billService'
 
 #: `billConsultService` — servicio de CONSULTA de `getStatusCdr`. El Manual del
 #: programador lo publica SÓLO en producción; no hay endpoint beta documentado.
@@ -329,10 +339,14 @@ class _SunatSoapClient:
     """
 
     def __init__(self, *, endpoint: str, ruc: str, sol_user: str, sol_password: str,
-                 timeout: float = 60.0):
+                 timeout: float = 60.0, environment: str | None = None):
         if not endpoint.startswith('https://'):
             raise ValueError('El endpoint fiscal debe ser HTTPS.')
         self._endpoint = endpoint
+        #: El ambiente fiscal del endpoint (`beta`/`production`), cuando lo eligió
+        #: `fiscal_config`. Quien envía compara con el del documento y se niega si
+        #: no coinciden: un comprobante BETA nunca sale hacia producción ni al revés.
+        self.environment = environment
         self._username = f'{ruc}{sol_user}'
         self._password = sol_password
         self._timeout = timeout

@@ -52,6 +52,42 @@ def self_signed_pem(ruc: str = '20100066603') -> tuple[bytes, bytes]:
     )
 
 
+def ca_issued_pem(ruc: str = '20100066603', *, ou: str | None = None, days_after: int = 365,
+                  ca_name: str = 'CA DE PRUEBA') -> tuple[bytes, bytes]:
+    """
+    (clave PEM, certificado PEM) de un certificado EMITIDO por una CA de prueba, con el
+    RUC en el OU (o `ou`), como lo pide SUNAT para producción (Manual §3.1). Sólo para
+    pruebas: la CA nace y muere aquí, y nada la acredita. Sirve para probar las reglas
+    de producción (no autofirmado, RUC en el sujeto) sin un certificado real.
+    """
+    ca_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, 'PE'),
+        x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, ruc if ou is None else ou),
+        x509.NameAttribute(NameOID.COMMON_NAME, 'EMISOR DE PRUEBA SAC'),
+    ])
+    issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, ca_name)])
+    now = dt.datetime.now(dt.timezone.utc)
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject).issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - dt.timedelta(days=1))
+        .not_valid_after(now + dt.timedelta(days=days_after))
+        .sign(ca_key, hashes.SHA256())
+    )
+    return (
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ),
+        cert.public_bytes(serialization.Encoding.PEM),
+    )
+
+
 def minimal_invoice(**overrides) -> InvoiceData:
     """
     El caso mínimo: venta interna gravada, una línea, 100 + 18 = 118.

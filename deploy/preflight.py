@@ -68,7 +68,7 @@ KNOWN = {
     'EVIDENCE_STORAGE_ACCESS_KEY_ID', 'EVIDENCE_STORAGE_SECRET_ACCESS_KEY', 'EVIDENCE_STORAGE_REGION',
     'GOOGLE_OAUTH_CLIENT_ID',
     'WHATSAPP_PROVIDER', 'WHATSAPP_GRAPH_API_VERSION', 'WHATSAPP_SEND_INLINE', 'MEASUREMENT_SEND_INLINE',
-    'DJANGO_LOG_LEVEL', 'FISCAL_ENABLED', 'ADMIN_EXPORT_RATE',
+    'DJANGO_LOG_LEVEL', 'FISCAL_ENABLED', 'FISCAL_PRODUCTION_ENABLED', 'FISCAL_CONSULT_ENABLED', 'ADMIN_EXPORT_RATE',
 }
 
 IZIPAY_KEYS = ('IZIPAY_MERCHANT_CODE', 'IZIPAY_PUBLIC_KEY', 'IZIPAY_API_KEY', 'IZIPAY_HASH_KEY', 'IZIPAY_TOKEN_URL')
@@ -552,10 +552,26 @@ def check_optional(report, values):
         report.ok('WhatsApp: credenciales presentes en el entorno (enlázalas con `manage.py configure_whatsapp`, '
                   'o pásalas a la consola)')
 
+    # SUNAT. C3: producción es un acto aparte, con su GO y su interruptor de instalación
+    # (`FISCAL_PRODUCTION_ENABLED`), y exige la consulta de CDR encendida a la vez.
+    production = flag(values, 'FISCAL_PRODUCTION_ENABLED')
+    if production:
+        if not flag(values, 'FISCAL_CONSULT_ENABLED'):
+            report.bad('FISCAL_PRODUCTION_ENABLED encendido sin FISCAL_CONSULT_ENABLED: en producción la consulta de CDR '
+                       'se enciende junto con la emisión (sin ella un envío incierto no tiene salida). La aplicación '
+                       'no emitirá en producción hasta que esté encendida')
+        else:
+            report.ok('SUNAT PRODUCCIÓN permitida en esta instalación (FISCAL_PRODUCTION_ENABLED y FISCAL_CONSULT_ENABLED). '
+                      'Sólo con el GO del operador posterior a «GO activación SUNAT producción <empresa>»; el modo se '
+                      'elige aparte en Integraciones › SUNAT, con fiscal_preflight --target production en GO')
     if flag(values, 'FISCAL_ENABLED'):
-        report.bad('FISCAL_ENABLED está encendido: emitir a SUNAT es una fase aparte, con certificado y credenciales SOL. '
-                   'Para la primera publicación va en 0')
-    else:
+        if production:
+            report.ok('FISCAL_ENABLED encendido con producción permitida: la emisión la gobierna la consola '
+                      '(Integraciones › SUNAT); esta variable sólo vale para una instalación sin consola')
+        else:
+            report.bad('FISCAL_ENABLED está encendido sin FISCAL_PRODUCTION_ENABLED: emitir a SUNAT se enciende en '
+                       'Integraciones › SUNAT (BETA), y producción es una fase aparte con su GO. Para publicar va en 0')
+    elif not production:
         report.optional_data('facturación electrónica (SUNAT): apagada; encenderla necesita certificado y credenciales SOL, '
                              'que se escriben en Configuración › Integraciones › SUNAT',
                              'FISCAL_ENABLED')

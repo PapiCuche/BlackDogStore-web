@@ -398,8 +398,26 @@ def activate(provider, company, *, actor, version, payload=None, request=None):
     prepared = None
     if draft is not None and draft.validated and version == draft.version:
         prepared = provider.prepare_change(company, change='activate', public=dict(draft.public))
-    return _activate(provider, company, actor=actor, version=version, payload=payload, request=request,
-                     prepared=prepared)
+    try:
+        return _activate(provider, company, actor=actor, version=version, payload=payload, request=request,
+                         prepared=prepared)
+    except ConfigError as exc:
+        _audit_refusal(provider, company, actor, request, exc, change='activate',
+                       mode=provider.mode(dict(draft.public), {}) if draft is not None else '')
+        raise
+
+
+def _audit_refusal(provider, company, actor, request, exc, *, change, mode):
+    """
+    A refused activation, for a provider that declares `audit_refusals`. Written AFTER
+    the transaction that refused it rolled back, or it would roll back with it. Names
+    the fields and the mode; of the sentences, only the environment one (it is the
+    server's own, and carries no value of the configuration).
+    """
+    if not getattr(provider, 'audit_refusals', False):
+        return
+    _audit('integration_activation_refused', provider, company, actor, request, change=change, mode=mode,
+           fields=sorted(exc.errors), detail=str(exc.errors.get('environment', ''))[:300])
 
 
 @transaction.atomic
@@ -434,6 +452,7 @@ def _activate(provider, company, *, actor, version, payload, request, prepared):
 
     active = row(provider.id, company, ACTIVE, lock=True) or IntegrationConfig(
         provider=provider.id, company=company, slot=ACTIVE, version=0)
+    previous_mode = provider.mode(dict(active.public), {}) if active.pk else None
     active.public = dict(draft.public)
     active.secret_meta = dict(draft.secret_meta)
     _seal(active, secrets)
@@ -452,15 +471,26 @@ def _activate(provider, company, *, actor, version, payload, request, prepared):
     active.save()
     draft.delete()
     provider.on_activated(company, dict(active.public))
-    _audit('integration_activated', provider, company, actor, request, mode=provider.mode(active.public, secrets))
+    mode = provider.mode(active.public, secrets)
+    if previous_mode is not None and previous_mode != mode:
+        # A change of mode (test ↔ production) is its own line: it is the act the
+        # owner's GO is about, not a detail of an activation.
+        _audit('integration_mode_changed', provider, company, actor, request, previous=previous_mode, mode=mode)
+    _audit('integration_activated', provider, company, actor, request, mode=mode)
     transaction.on_commit(lambda: provider.after_change(company))
     return active
 
 
 def set_enabled(provider, company, *, actor, enabled: bool, request=None, payload=None):
     prepared = None if enabled else provider.prepare_change(company, change='disable')
-    return _set_enabled(provider, company, actor=actor, enabled=enabled, request=request, payload=payload,
-                        prepared=prepared)
+    try:
+        return _set_enabled(provider, company, actor=actor, enabled=enabled, request=request, payload=payload,
+                            prepared=prepared)
+    except ConfigError as exc:
+        active = row(provider.id, company, ACTIVE)
+        _audit_refusal(provider, company, actor, request, exc, change='enable' if enabled else 'disable',
+                       mode=provider.mode(dict(active.public), {}) if active is not None else '')
+        raise
 
 
 @transaction.atomic
@@ -489,7 +519,8 @@ def _set_enabled(provider, company, *, actor, enabled: bool, request, payload, p
         active.version += 1
         active.updated_by = actor
         active.save(update_fields=['enabled', 'paused', 'version', 'updated_by', 'updated_at'])
-        _audit('integration_enabled' if enabled else 'integration_disabled', provider, company, actor, request)
+        _audit('integration_enabled' if enabled else 'integration_disabled', provider, company, actor, request,
+               mode=provider.mode(dict(active.public), {}))
         transaction.on_commit(lambda: provider.after_change(company))
     return active
 

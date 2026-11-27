@@ -438,7 +438,7 @@ def _fiscal_ctx(company, kind: str, lines, design=None) -> dict:
         # Never «Aceptada por SUNAT»: nothing was sent anywhere.
         'status_text': 'MUESTRA · no emitido, sin validez',
         'is_accepted': False,
-        'is_test': _is_beta(),
+        'is_test': _is_beta(company),
         'qr_payload': SAMPLE_QR_TEXT,
         'qr_png': render_qr_png(SAMPLE_QR_TEXT),
         'logo_png': fiscal_logo.current_png(company),
@@ -448,12 +448,12 @@ def _fiscal_ctx(company, kind: str, lines, design=None) -> dict:
     }
 
 
-def _is_beta() -> bool:
+def _is_beta(company=None) -> bool:
     """«SUNAT BETA» only when the server operates against the BETA environment, as a real document does."""
     from .fiscal_config import FiscalConfigError, resolve_environment
     from .models import FiscalEnvironment
 
     try:
-        return resolve_environment() == FiscalEnvironment.BETA
+        return resolve_environment(company) == FiscalEnvironment.BETA
     except FiscalConfigError:
         return False

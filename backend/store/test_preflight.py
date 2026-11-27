@@ -310,6 +310,15 @@ class PreflightTest(SimpleTestCase):
         self.assertIn(needle, found, result.stdout)
         return result
 
+    def test_sunat_production_is_allowed_only_with_its_switch_and_the_cdr_consult(self):
+        """C3: FISCAL_ENABLED alone is still refused; production asks for the consult on too."""
+        self.attention({**BASE, **IZIPAY, 'FISCAL_ENABLED': '1'}, 'sin FISCAL_PRODUCTION_ENABLED')
+        self.attention({**BASE, **IZIPAY, 'FISCAL_PRODUCTION_ENABLED': '1'}, 'sin FISCAL_CONSULT_ENABLED')
+        result = self.run_preflight({**BASE, **IZIPAY, 'FISCAL_PRODUCTION_ENABLED': '1', 'FISCAL_CONSULT_ENABLED': '1',
+                                     'FISCAL_ENABLED': '1'})
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('GO activación SUNAT producción', '\n'.join(self.lines(result, 'OK')))
+
     def test_keys_of_both_products_at_once_are_refused(self):
         both = {**BASE, **IZIPAY, **{k: v for k, v in MICUENTAWEB.items() if k != 'PAYMENT_PROVIDER'}}
         self.attention(both, 'dos productos')

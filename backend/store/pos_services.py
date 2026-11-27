@@ -198,7 +198,7 @@ def _series_diagnosis(company, branch, document_type, noun):
     from . import fiscal_config
 
     try:
-        environment = fiscal_config.resolve_environment()
+        environment = fiscal_config.resolve_environment(company)
     except fiscal_config.FiscalConfigError:
         return ('UNSUPPORTED_ENVIRONMENT',
                 'El ambiente fiscal configurado en este servidor no está '
@@ -264,11 +264,18 @@ def receipt_options(company, branches, actor):
     # ellos sólo llevaba a un 400. Se mira UNA vez, sin propagar nada: el motivo es
     # un texto fijo, nunca el del error, y no nombra ningún secreto.
     ready = fiscal_on and _issuing_ready(company)
+    # C3: el ambiente real, para que la pantalla no diga «BETA» de un comprobante
+    # real ni al revés. Si no se puede decidir, '' y la opción ya sale explicada.
+    try:
+        environment = fiscal_config.resolve_environment(company)
+    except fiscal_config.FiscalConfigError:
+        environment = ''
+    production = environment == fiscal_config.FiscalEnvironment.PRODUCTION
     for value, noun in Order.ReceiptType.choices:
-        label = f'{noun} electrónica · BETA'
+        label = f'{noun} electrónica' if production else f'{noun} electrónica · BETA'
         if not fiscal_on:
             options.append({
-                'value': value, 'label': label, 'branches': [],
+                'value': value, 'label': label, 'branches': [], 'environment': environment,
                 'enabled': False, 'disabled_code': 'FISCAL_DISABLED',
                 'disabled_reason': ('La emisión electrónica no está habilitada '
                                     'en este servidor.'),
@@ -276,7 +283,7 @@ def receipt_options(company, branches, actor):
             continue
         if not ready:
             options.append({
-                'value': value, 'label': label, 'branches': [],
+                'value': value, 'label': label, 'branches': [], 'environment': environment,
                 'enabled': False, 'disabled_code': 'FISCAL_NOT_CONFIGURED',
                 'disabled_reason': ('La emisión electrónica está encendida pero su '
                                     'configuración de firma no está completa o no es '
@@ -298,7 +305,7 @@ def receipt_options(company, branches, actor):
             allowed.append(branch.pk)
 
         options.append({
-            'value': value, 'label': label, 'branches': allowed,
+            'value': value, 'label': label, 'branches': allowed, 'environment': environment,
             'enabled': bool(allowed),
             'disabled_code': '' if allowed else (code or 'NO_SERIES_FOR_BRANCH'),
             'disabled_reason': '' if allowed else (

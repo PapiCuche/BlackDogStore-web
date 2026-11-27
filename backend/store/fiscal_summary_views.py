@@ -150,7 +150,7 @@ class AdminFiscalSummaryListView(APIView):
         if refused:
             return refused
         try:
-            environment = resolve_environment()
+            environment = resolve_environment(company)
             # Generar y firmar es UN acto: si la firma falla, no queda ningún RC y
             # las boletas vuelven a estar disponibles (revisión de #176).
             signed = generate_and_sign_daily_summaries(
@@ -204,7 +204,7 @@ class AdminFiscalSummarySubmitView(APIView):
             return error
         provider, refused = provider_or_refusal(
             request, company, resolver=resolve_provider, issuer_tax_id=_summary_issuer(summary),
-            endpoint='fiscal_summary',
+            environment=summary.environment, endpoint='fiscal_summary',
             target_type='fiscal_daily_summary', target_id=summary.pk)
         if refused:
             return refused
@@ -243,7 +243,7 @@ class AdminFiscalSummaryStatusView(APIView):
             return error
         provider, refused = provider_or_refusal(
             request, company, resolver=resolve_provider, issuer_tax_id=_summary_issuer(summary),
-            endpoint='fiscal_summary',
+            environment=summary.environment, endpoint='fiscal_summary',
             target_type='fiscal_daily_summary', target_id=summary.pk)
         if refused:
             return refused

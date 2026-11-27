@@ -1,14 +1,26 @@
 """
 SUNAT — facturación electrónica.
 
-    ONE configuration for the installation, and ONE environment: BETA.
+    ONE configuration for the installation; BETA by default, PRODUCTION only gated.
 
-That is what the code can do today (`store.fiscal_config`): the endpoint is a
-table in the code, production fails closed, and `resolve_credentials` hands the
-same credentials to every company. So the console declares platform scope, has
-no environment to choose and no address to type. `fiscal_config` already takes
-`company` everywhere: the day each company has its own, this provider becomes
-company-scoped and the callers do not change.
+The endpoint is a table in the code (`fiscal_config.resolve_provider`) and the console
+has no address to type: it chooses an ENVIRONMENT, and only two exist.
+
+PRODUCTION (C3, docs/sunat-estado-2026-11.md §6) is chosen here by a MASTER, typing
+`PRODUCCION <RUC>`, and only takes effect when:
+
+- the installation allows it: `FISCAL_PRODUCTION_ENABLED` (env, off by default, set by
+  the operator under its own GO);
+- `fiscal_preflight --target production` is GO for the one company with that RUC,
+  judged with the credentials and certificate being activated.
+
+Without the switch, choosing production is refused with the sentence that names the GO.
+Once production runs, going back to BETA is refused while production documents exist:
+the way to stop is switching the integration off, which stops issuing without changing
+the environment of anything already issued.
+
+Credentials are the installation's (`SCOPE_PLATFORM`); `fiscal_config` checks on every
+signature that the company's RUC is the SOL's, so only that company issues.
 
 The signing certificate is the PKCS#12 SUNAT's providers hand out. It travels
 as base64 in the JSON body, is checked before anything is stored, and lives
@@ -26,6 +38,10 @@ from ..registry import ConfigError, Field, Provider, TestOutcome
 
 ID = 'sunat'
 ENABLE_WORD = 'EMITIR'
+#: Typed, followed by the RUC, to switch SUNAT to PRODUCTION: `PRODUCCION 20123456789`.
+PRODUCTION_WORD = 'PRODUCCION'
+BETA = 'beta'
+PRODUCTION = 'production'
 MAX_CERTIFICATE_BYTES = 64 * 1024
 _RUC = re.compile(r'^\d{11}$')
 
@@ -47,10 +63,18 @@ class SunatProvider(Provider):
     label = 'SUNAT · Facturación electrónica'
     category = 'fiscal'
     scope = registry.SCOPE_PLATFORM
-    supported_modes = ('test',)
+    supported_modes = ('test', 'production')
+    #: A refused activation is written to the audit trail too (C3): «somebody tried to
+    #: switch SUNAT to production and could not» is something the owner has to see.
+    audit_refusals = True
     description = ('Las credenciales SOL y el certificado con que se firman y envían los comprobantes. '
-                   'Esta versión opera sólo el entorno BETA (pruebas) de SUNAT.')
+                   'BETA (pruebas) por defecto. PRODUCCIÓN sólo se activa con FISCAL_PRODUCTION_ENABLED '
+                   'en el servidor y fiscal_preflight en GO.')
     fields = (
+        Field('environment', 'Entorno de SUNAT', required=True, kind='choice', default=BETA,
+              choices=((BETA, 'BETA (pruebas, sin validez tributaria)'),
+                       (PRODUCTION, 'PRODUCCIÓN (comprobantes reales)')),
+              help='PRODUCCIÓN exige el GO del propietario, FISCAL_PRODUCTION_ENABLED y el preflight en GO.'),
         Field('ruc', 'RUC del emisor', required=True, help='Once dígitos.'),
         Field('sol_user', 'Usuario SOL', required=True, help='El usuario secundario creado para facturación electrónica.'),
         Field('sol_password', 'Clave SOL', secret=True, required=True),
@@ -62,7 +86,17 @@ class SunatProvider(Provider):
     )
 
     def mode(self, public, secrets):
-        return 'test'
+        from ... import fiscal_config
+
+        production = fiscal_config.console_environment(public) == PRODUCTION
+        return 'production' if production else 'test'
+
+    def health_note(self) -> str:
+        from ... import fiscal_config
+
+        if fiscal_config.production_enabled():
+            return 'Este servidor permite emitir en PRODUCCIÓN (FISCAL_PRODUCTION_ENABLED encendido).'
+        return ''
 
     def clean(self, public, secrets):
         errors = {}
@@ -78,9 +112,35 @@ class SunatProvider(Provider):
             raise ConfigError(errors)
 
     def activation_confirmation(self, public, secrets):
+        if self.mode(public, secrets) == 'production':
+            word = f'{PRODUCTION_WORD} {str(public.get("ruc") or "").strip()}'
+            return word, (
+                'Vas a emitir comprobantes REALES ante SUNAT (PRODUCCIÓN) con este RUC: cada número de serie '
+                'se gasta para siempre y cada comprobante tiene validez tributaria. Sólo procede con el GO '
+                '«GO activación SUNAT producción <empresa>» del propietario. '
+                f'Escribe {word} para confirmarlo.')
         return ENABLE_WORD, (
             'Vas a habilitar la emisión de comprobantes electrónicos hacia SUNAT (entorno BETA, de pruebas) '
             f'en esta instalación. Escribe {ENABLE_WORD} para confirmarlo.')
+
+    def activation_guard(self, public, secrets, payload):
+        """
+        Production first: whatever is typed, it is refused while the installation does not
+        allow it or the preflight is not GO. Then the typed text.
+        """
+        from ... import fiscal_config
+
+        running, staying = _production_running()
+        if self.mode(public, secrets) == 'production':
+            problems = fiscal_config.production_activation_problems(public, secrets, staying=staying)
+            if problems:
+                more = f' (y {len(problems) - 1} más)' if len(problems) > 1 else ''
+                raise ConfigError({'environment': problems[0] + more})
+        elif running and _issued_in_production():
+            raise ConfigError({'environment': (
+                'Ya hay comprobantes de PRODUCCIÓN: no se vuelve a BETA, porque sus envíos, notas y bajas '
+                'pendientes quedarían sin ambiente. Para dejar de emitir, desactiva la integración.')})
+        super().activation_guard(public, secrets, payload)
 
     def test(self, config, **_options) -> TestOutcome:
         """
@@ -102,8 +162,17 @@ class SunatProvider(Provider):
         if validity != 'valid':
             return TestOutcome(False, 'invalid',
                                f'El certificado todavía no es válido: empieza el {metadata.not_before.strftime("%d/%m/%Y")}.')
+        if self.mode(config.public, config.secrets) == 'production':
+            problems = fiscal_config.production_activation_problems(
+                config.public, config.secrets, staying=_production_running()[1])
+            if problems:
+                return TestOutcome(False, 'unavailable', problems[0])
+            return TestOutcome(True, 'ok', (
+                f'Certificado «{metadata.subject[:120]}» vigente hasta el {until}. Entorno PRODUCCIÓN de SUNAT: '
+                'FISCAL_PRODUCTION_ENABLED encendido y fiscal_preflight --target production en GO. '
+                'La clave SOL se comprueba al emitir: no se envió nada a SUNAT.'))
         try:
-            fiscal_config.resolve_environment()
+            fiscal_config.intended_environment()
         except fiscal_config.FiscalConfigError as exc:
             return TestOutcome(False, 'unavailable', str(exc))
         return TestOutcome(True, 'ok', (
@@ -130,6 +199,27 @@ class SunatProvider(Provider):
                 secrets['certificate_p12'] = base64.b64encode(data).decode()
                 secrets['certificate_password'] = getattr(settings, 'FISCAL_CERT_P12_PASSWORD', '') or ''
         return {'ruc': ruc, 'sol_user': user}, secrets
+
+
+def _production_running() -> tuple[bool, bool]:
+    """
+    `(chosen, running)`: whether the active configuration is in production mode, and
+    whether it is also switched on — then a new draft only replaces its keys.
+    """
+    from ... import fiscal_config
+    from .. import service
+
+    active = service.row(ID)
+    chosen = active is not None and fiscal_config.console_environment(active.public) == PRODUCTION
+    return chosen, chosen and active.enabled
+
+
+def _issued_in_production() -> bool:
+    """Whether anything was ever issued against SUNAT PRODUCTION from this installation."""
+    from ...models import FiscalDailySummary, FiscalDocument, FiscalEnvironment, FiscalVoidCommunication
+
+    return any(model.objects.filter(environment=FiscalEnvironment.PRODUCTION).exists()
+               for model in (FiscalDocument, FiscalDailySummary, FiscalVoidCommunication))
 
 
 registry.register(SunatProvider())

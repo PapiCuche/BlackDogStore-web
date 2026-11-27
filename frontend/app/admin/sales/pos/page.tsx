@@ -1660,7 +1660,7 @@ function PosContent({ ctx, deviceRequest, deviceWanted, onDeviceHandled }: {
               received={isCash ? received : null}
               document={(() => {
                 const option = (context.receipt_options ?? []).find((o) => o.value === receiptType);
-                return option ? { value: option.value, label: option.label } : null;
+                return option ? { value: option.value, label: option.label, environment: option.environment } : null;
               })()}
             />
 

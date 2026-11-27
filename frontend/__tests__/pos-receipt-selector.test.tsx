@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { PosReceiptSelector, isSelectable, type ReceiptOption } from '@/app/admin/sales/pos/PosReceiptSelector';
+import { PosReceiptSelector, fiscalBadge, isSelectable, type ReceiptOption } from '@/app/admin/sales/pos/PosReceiptSelector';
 
 /**
  * El selector de comprobante de la caja (ERP-FISCAL-6 §20/§30).
@@ -124,6 +124,18 @@ describe('SALES-UX-02 · the kind of document is said out loud', () => {
     expect(note).toHaveAttribute('data-document-kind', 'fiscal');
     expect(note).toHaveTextContent('Comprobante electrónico · BETA');
     expect(note).not.toHaveTextContent('Interno · no fiscal');
+  });
+
+  it('does not say BETA once the server operates SUNAT production (C3)', () => {
+    const real = { ...BOLETA, label: 'Boleta electrónica', environment: 'production' };
+    const { unmount } = render(<PosReceiptSelector branch={1} value="boleta" onChange={jest.fn()} options={[NOTE, real]} />);
+    expect(screen.getByRole('note')).toHaveTextContent('Comprobante electrónico · SUNAT');
+    expect(screen.getByRole('note')).not.toHaveTextContent('BETA');
+    unmount();
+    render(<PosReceiptSelector branch={1} value="" onChange={jest.fn()} options={[NOTE, real]} />);
+    expect(screen.getByRole('note')).toHaveTextContent('con validez ante SUNAT');
+    expect(screen.getByRole('note')).not.toHaveTextContent('BETA');
+    expect(fiscalBadge(undefined)).toBe('Comprobante electrónico · BETA');
   });
 
   it('before choosing, tells the three documents apart', () => {

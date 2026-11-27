@@ -13,7 +13,8 @@ the cash desk — asks `resolve_credentials(company)`, which now also checks:
 1. the company has a RUC and it is the RUC of the SOL credentials;
 2. the certificate is in force;
 3. in PRODUCTION only, the company's RUC is in the certificate's subject (SUNAT asks for
-   it in OU). Production stays closed in this version; the check is tested directly.
+   it in OU), and the certificate is not self-signed (C3). Tested directly here; the
+   whole production path is in `test_sunat_production.py`.
 
 No test here talks to SUNAT. Certificates are self-signed and generated at test time.
 """
@@ -43,21 +44,26 @@ RUC = '20100066603'
 OTHER_RUC = '20999999991'
 
 
-def _certificate(*, ou=None, cn=RUC, days_before=1, days_after=365):
-    """(key PEM, certificate PEM), self-signed, with the validity and subject asked for."""
+def _certificate(*, ou=None, cn=RUC, days_before=1, days_after=365, ca=False):
+    """
+    (key PEM, certificate PEM) with the validity and subject asked for: self-signed, or
+    issued by a throwaway test CA (`ca=True`), which is what production signs with (C3).
+    """
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    signer = rsa.generate_private_key(public_exponent=65537, key_size=2048) if ca else key
     attributes = [x509.NameAttribute(NameOID.COUNTRY_NAME, 'PE'),
                   x509.NameAttribute(NameOID.ORGANIZATION_NAME, 'ENTORNO DE PRUEBAS')]
     if ou is not None:
         attributes.append(x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, ou))
     attributes.append(x509.NameAttribute(NameOID.COMMON_NAME, cn))
     name = x509.Name(attributes)
+    issuer = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'CA DE PRUEBA')]) if ca else name
     now = dt.datetime.now(dt.timezone.utc)
-    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(issuer).public_key(key.public_key())
             .serial_number(x509.random_serial_number())
             .not_valid_before(now - dt.timedelta(days=days_before))
             .not_valid_after(now + dt.timedelta(days=days_after))
-            .sign(key, hashes.SHA256()))
+            .sign(signer, hashes.SHA256()))
     return (key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                               serialization.NoEncryption()),
             cert.public_bytes(serialization.Encoding.PEM))
@@ -242,7 +248,10 @@ class ACertificateOutOfForceNeverSignsTest(_Base):
 
 
 class TheProductionCertificateNamesTheIssuerTest(SimpleTestCase):
-    """Production is closed in this version (`resolve_environment`): the rule is tested directly."""
+    """
+    The production rules, tested directly. Certificates come from a test CA unless the
+    test is about a self-signed one: production refuses those too (C3).
+    """
 
     class Company:
         tax_id = RUC
@@ -251,16 +260,37 @@ class TheProductionCertificateNamesTheIssuerTest(SimpleTestCase):
         _key, cert = key_cert
         return issuer_problems(self.Company(), {'ruc': ruc, 'cert_pem': cert}, environment=environment)
 
+    def test_production_refuses_a_self_signed_certificate(self):
+        problems = self.problems(_certificate(ou=RUC, cn='EMPRESA GATE SAC'))
+        self.assertEqual(len(problems), 1)
+        self.assertIn('autofirmado', problems[0])
+
+    def test_renaming_the_issuer_does_not_hide_a_self_signed_certificate(self):
+        """Its signature verifies with its own key: still self-signed, whatever the issuer is called."""
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        now = dt.datetime.now(dt.timezone.utc)
+        cert = (x509.CertificateBuilder()
+                .subject_name(x509.Name([x509.NameAttribute(NameOID.ORGANIZATIONAL_UNIT_NAME, RUC)]))
+                .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'CA QUE NO EXISTE')]))
+                .public_key(key.public_key()).serial_number(x509.random_serial_number())
+                .not_valid_before(now - dt.timedelta(days=1)).not_valid_after(now + dt.timedelta(days=365))
+                .sign(key, hashes.SHA256()))
+        problems = self.problems((None, cert.public_bytes(serialization.Encoding.PEM)))
+        self.assertTrue(any('autofirmado' in p for p in problems), problems)
+
+    def test_beta_still_signs_with_a_self_signed_certificate(self):
+        self.assertEqual(self.problems(_certificate(cn=RUC), FiscalEnvironment.BETA), [])
+
     def test_production_needs_the_ruc_in_the_subject(self):
-        problems = self.problems(_certificate(cn='PRUEBA SIN RUC'))
+        problems = self.problems(_certificate(cn='PRUEBA SIN RUC', ca=True))
         self.assertEqual(len(problems), 1)
         self.assertIn('sujeto del certificado', problems[0])
 
     def test_the_ruc_in_ou_satisfies_production(self):
-        self.assertEqual(self.problems(_certificate(ou=RUC, cn='EMPRESA GATE SAC')), [])
+        self.assertEqual(self.problems(_certificate(ou=RUC, cn='EMPRESA GATE SAC', ca=True)), [])
 
     def test_a_ruc_in_ou_with_its_label_satisfies_production(self):
-        self.assertEqual(self.problems(_certificate(ou=f'RUC {RUC}', cn='EMPRESA GATE SAC')), [])
+        self.assertEqual(self.problems(_certificate(ou=f'RUC {RUC}', cn='EMPRESA GATE SAC', ca=True)), [])
 
     def test_another_companys_certificate_does_not_satisfy_production(self):
         problems = self.problems(_certificate(ou=OTHER_RUC, cn='EMPRESA B SAC'))
@@ -281,5 +311,5 @@ class TheProductionCertificateNamesTheIssuerTest(SimpleTestCase):
         self.assertEqual(self.problems(_certificate(cn='PRUEBA SIN RUC'), FiscalEnvironment.BETA), [])
 
     def test_every_problem_is_reported_at_once(self):
-        problems = self.problems(_certificate(cn='X', days_before=400, days_after=-1), ruc=OTHER_RUC)
+        problems = self.problems(_certificate(cn='X', days_before=400, days_after=-1, ca=True), ruc=OTHER_RUC)
         self.assertEqual(len(problems), 3)

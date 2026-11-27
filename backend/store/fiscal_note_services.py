@@ -154,6 +154,12 @@ def create_fiscal_note(original: FiscalDocument, *, note_type: str,
     series = resolve_note_series(
         original.company, branch=original.order.fulfillment_branch,
         note_type=note_type, original_type=original.document_type)
+    if series.environment != original.environment:
+        # C3: una nota modifica un comprobante DE SU AMBIENTE. Una nota de producción
+        # sobre una factura de BETA citaría un número que SUNAT no conoce.
+        raise FiscalError(
+            f'El comprobante {original.document_id} es del ambiente «{original.environment}» y la nota '
+            f'se emitiría en «{series.environment}»: los ambientes no se mezclan.')
 
     try:
         with transaction.atomic():

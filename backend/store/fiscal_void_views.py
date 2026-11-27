@@ -318,7 +318,7 @@ class AdminFiscalVoidSubmitView(APIView):
 
         provider, refused = provider_or_refusal(
             request, void.company, resolver=resolve_provider, issuer_tax_id=_void_issuer(void),
-            endpoint='fiscal_void',
+            environment=void.environment, endpoint='fiscal_void',
             target_type='fiscal_void_communication', target_id=void.pk)
         if refused:
             return refused
@@ -357,7 +357,7 @@ class AdminFiscalVoidStatusView(APIView):
 
         provider, refused = provider_or_refusal(
             request, void.company, resolver=resolve_provider, issuer_tax_id=_void_issuer(void),
-            endpoint='fiscal_void',
+            environment=void.environment, endpoint='fiscal_void',
             target_type='fiscal_void_communication', target_id=void.pk)
         if refused:
             return refused

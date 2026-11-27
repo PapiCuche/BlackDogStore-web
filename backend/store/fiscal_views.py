@@ -80,16 +80,20 @@ def issuing_credentials(request, company, *, endpoint, target_type='', target_id
             {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
 
-def provider_or_refusal(request, company, *, resolver, issuer_tax_id, endpoint, target_type, target_id):
+def provider_or_refusal(request, company, *, resolver, issuer_tax_id, endpoint, target_type, target_id,
+                        environment=None):
     """
     El proveedor de envío para un documento YA firmado (RC, RA), o la respuesta 503
     que lo niega, auditada con la empresa. Compara las credenciales con el RUC del
     documento (`issuer_tax_id`) y no exige certificado vigente: no se firma nada.
     `resolver` es el `resolve_provider` del módulo que llama, para que una prueba
     pueda sustituirlo donde se usa. Devuelve `(proveedor, None)` o `(None, respuesta)`.
+
+    `environment`: el del documento. El proveedor se niega si el servidor opera otro (C3):
+    un RC o una RA de BETA no salen hacia producción, ni al revés.
     """
     try:
-        return resolver(company, issuer_tax_id=issuer_tax_id or None), None
+        return resolver(company, issuer_tax_id=issuer_tax_id or None, environment=environment), None
     except FiscalConfigError as exc:
         audit_refusal(request, company, action='fiscal_submit_refused', reason='issuing_unavailable',
                       endpoint=endpoint, detail=str(exc), target_type=target_type, target_id=target_id)
@@ -530,7 +534,8 @@ class AdminFiscalDocumentSubmitView(APIView):
             return Response(document_payload(document))
 
         try:
-            provider = resolve_provider(document.company, issuer_tax_id=document.issuer_tax_id)
+            provider = resolve_provider(document.company, issuer_tax_id=document.issuer_tax_id,
+                                        environment=document.environment)
         except FiscalConfigError as exc:
             audit_refusal(request, document.company, action='fiscal_submit_refused',
                           reason='issuing_unavailable', endpoint='fiscal_document_submit',

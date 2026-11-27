@@ -820,6 +820,8 @@ export type PosReceiptOption = {
   /** `FISCAL_DISABLED` · `FISCAL_NOT_CONFIGURED` · `NO_SERIES_FOR_BRANCH` · `AMBIGUOUS_SERIES` · `UNSUPPORTED_ENVIRONMENT` · `NO_BRANCH`, o vacío. */
   disabled_code: string;
   disabled_reason: string;
+  /** C3 — en una opción fiscal, el ambiente SUNAT en que se emitiría («beta» · «production»), o vacío. */
+  environment?: string;
 };
 
 export type PosContext = {
