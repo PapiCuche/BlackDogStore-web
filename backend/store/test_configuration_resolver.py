@@ -720,6 +720,19 @@ class ExcludedCombinationTest(TestCase):
         self.assertEqual(self.statuses('verde', 'chip'), [('verde', 'combinacion_excluida')])
         self.assertNotIn('combinacion_excluida', resolver.COMPLETE)
 
+    def test_a_capacity_and_a_sim_the_model_excludes_are_never_valid_either(self):
+        # Two common roles (capacity × SIM), not only a colour: the same rule.
+        g128 = device_catalog.create_option(company=self.company, attribute_id=self.size.pk, label='128 GB')
+        model_palette.set_palette(self.model, option_ids=[o.pk for o in (self.g64, g128, self.grey, self.green,
+                                                                         self.chip, self.esim)])
+        model_palette.add_exclusions(self.model, pairs=[[g128.pk, self.chip.pk]])
+        result = resolver.resolve_configuration(resolver.Vocabulary(self.company), model_text='Equipo X',
+                                                capacity_text='128 GB', colour_text='gris', sim_text='chip')
+        self.assertEqual([c['status'] for c in result['configurations']], ['combinacion_excluida'])
+        result = resolver.resolve_configuration(resolver.Vocabulary(self.company), model_text='Equipo X',
+                                                capacity_text='128 GB', colour_text='gris', sim_text='')
+        self.assertEqual([c['status'] for c in result['configurations']], ['incompleta'])
+
     def test_the_other_colours_of_the_same_line_are_not_affected(self):
         self.assertEqual(self.statuses('gris, verde', 'chip'),
                          [('gris', 'combinacion_valida_sin_variante'), ('verde', 'combinacion_excluida')])
@@ -732,6 +745,25 @@ class ExcludedCombinationTest(TestCase):
                                    option_ids=[self.g64.pk, self.green.pk, self.chip.pk])
         model_palette.add_exclusions(self.model, pairs=[[self.green.pk, self.chip.pk]])
         self.assertEqual(self.statuses('verde', 'chip'), [('verde', 'variante_existente')])
+
+    def test_selector_rows_posted_to_resolve_are_judged_again(self):
+        # SELECTOR-UX-01 (owner, 2026-11-27): a supplier line edited by hand on the selector travels as the company's
+        # labels, one row per colour; the server judges each again. The excluded one is neither saveable nor creatable.
+        from rest_framework.test import APIClient
+
+        staff, _ = _p2d_member(self.company, 'sel-excl-staff', ['products.view'])
+        client = APIClient()
+        client.force_authenticate(user=staff)
+        row = {'model_text': 'Equipo X', 'capacity_text': '64 GB', 'sim_text': 'Chip', 'region_text': ''}
+        res = client.post(f'/api/admin/catalog/resolve/?company={self.company.pk}', {'rows': [
+            {**row, 'key': f'L1-S{self.grey.pk}', 'colour_text': 'Gris'},
+            {**row, 'key': f'L1-S{self.green.pk}', 'colour_text': 'Verde'}]}, format='json')
+        self.assertEqual(res.status_code, 200, res.content)
+        found = {r['key']: r['configurations'] for r in res.json()['rows']}
+        [grey] = found[f'L1-S{self.grey.pk}']
+        [green] = found[f'L1-S{self.green.pk}']
+        self.assertEqual((grey['status'], grey['complete']), ('combinacion_valida_sin_variante', True))
+        self.assertEqual((green['status'], green['complete'], green['product_id']), ('combinacion_excluida', False, None))
 
     def test_the_statuses_list_and_the_summary_name_it(self):
         self.assertIn('combinacion_excluida', resolver.STATUSES)

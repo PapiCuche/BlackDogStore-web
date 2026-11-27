@@ -94,3 +94,20 @@ registro lleva su propia `Idempotency-Key` y el servidor sigue rechazando un IME
 - «Recibir mercadería» (`ReceivingWizard`) elige un **artículo** (variante) por búsqueda; no se tocó.
 - Defectos y accesorios de un seminuevo como campos propios: no existen en el modelo de datos (hoy van en «Detalles para
   el comprador» y en la inspección de `UsedUnitsPanel`). Decisión del propietario.
+
+## 7. Decisión del propietario (2026-11-27): editar una oferta ya leída sigue validando
+
+Cuando una persona corrige a mano una oferta ya leída (capacidad, SIM, región o colores, sea lo que el texto fija o lo
+elegido a mano), la validación de la combinación vuelve a correr **antes** de guardar o de crear una variante, en el
+navegador y en el servidor. La revisión del 2026-11-27 confirmó que ya se cumplía. Cada regla, con la prueba que la fija:
+
+| Regla | Prueba |
+|---|---|
+| Cambiar el texto borra lo leído, el precio y lo marcado; hay que volver a leer | `supplier-list-selector-screen.test.tsx` · «cambiar el texto de una oferta lista para guardar…» |
+| Cambiar la selección vuelve a pasar por `/resolve`; las tarjetas anteriores, su precio y su selección se descartan; una combinación excluida no se guarda ni ofrece «Crear variante» | `supplier-list-selector-screen.test.tsx` · «una oferta lista para guardar que se cambia a mano a una combinación excluida…» y «una combinación que el modelo excluye no se puede crear ni guardar» |
+| Sólo una configuración con variante (`variante_existente`) se puede elegir para guardar | `supplier-list-assistant.test.tsx` · «sólo una configuración limpia con variante se puede elegir…» |
+| Lo que el texto fija no se cambia a mano; si una elección lo hace imposible, la fila va sin ese paso y queda incompleta, nunca con otro valor | `supplier-list-selector-screen.test.tsx` · «una opción elegida a mano que choca con lo que el texto fija…» |
+| El servidor juzga otra vez las filas del selector; un par excluido (color × SIM o capacidad × SIM) es `combinacion_excluida`; un rol sin decir es `incompleta` | `test_configuration_resolver.ExcludedCombinationTest` · `test_selector_rows_posted_to_resolve_are_judged_again`, `test_a_capacity_and_a_sim_the_model_excludes_are_never_valid_either` |
+| Crear una variante excluida se rechaza (`check_variant`) | `test_model_option_exclusions` · `test_an_excluded_pair_is_refused_when_a_variant_is_created` |
+| En la lista semanal en Excel, una fila con un par excluido es un error sin propuesta de «Crear variante» | `test_supply_weekly.ExcludedCombinationRowTest` |
+| Editar una oferta en el panel nunca cambia su proveedor ni su variante | `test_supplier_offers.OfferRulesTest` · `test_editing_an_offer_never_changes_its_supplier_or_variant` |
