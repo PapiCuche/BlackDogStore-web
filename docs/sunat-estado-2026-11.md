@@ -135,10 +135,10 @@ Por eso «aceptado en BETA» no equivale a «listo para producción».
 
 | ID | Prioridad | Brecha | ¿Necesita credenciales reales? | ¿Necesita migración? | Plan |
 |---|---|---|---|---|---|
-| G1 | P1 | **H-06**: el CDR de `sendBill` se aplica sin comprobar que corresponde al documento (RUC, serie-número y tipo) | No | No | PR de implementación A |
-| G2 | P1 | **H-14**: un endpoint de consulta vacío anula la constante de producción, y la excepción no se captura | No | No | PR A |
-| G3 | P1 | **Mezcla de credenciales entre empresas.**<br>• No se comprueba RUC de la SOL == RUC del emisor.<br>• Tampoco certificado vigente al firmar ni RUC en el OU (F8). | No | No | PR de implementación B |
-| G4 | P2 | Sin diagnóstico GO/NO-GO de sólo lectura por empresa (FP-1) | No | No | PR de implementación C |
+| G1 | P1 | **H-06**: el CDR de `sendBill` se aplica sin comprobar que corresponde al documento (RUC, serie-número y tipo) | No | No | #458 |
+| G2 | P1 | **H-14**: un endpoint de consulta vacío anula la constante de producción, y la excepción no se captura | No | No | #458 |
+| G3 | P1 | **Mezcla de credenciales entre empresas.**<br>• No se comprueba RUC de la SOL == RUC del emisor.<br>• Tampoco certificado vigente al firmar ni RUC en el OU (F8). | No | No | #461 |
+| G4 | P2 | Sin diagnóstico GO/NO-GO de sólo lectura por empresa (FP-1) | No | No | #459 |
 | G5 | P2 | La factura incierta no tiene estado propio (`SUBMISSION_UNKNOWN`) | No | **Sí**: opción nueva en `FiscalDocumentStatus` | Pedir número de migración antes de escribirla |
 | G6 | P2 | Credenciales y certificado **por empresa** (consola `SCOPE_COMPANY`, FP-2) y un ambiente por empresa | No para escribirla; sí para activarla | Probable (`CompanyFiscalProfile`) | Fase propia, con ADR |
 | G7 | P2 | Plazos y alertas: factura a +3 días, RC a +7, certificado por vencer | No | No | Parte en C (lectura); el bloqueo, aparte |
@@ -162,17 +162,17 @@ Por eso «aceptado en BETA» no equivale a «listo para producción».
 
 ## 5. Implementación propuesta sin credenciales reales (máximo 3 PR, en este orden)
 
-1. **A — SUNAT-CDR-BIND** (G1 y G2):
+1. **A — SUNAT-CDR-BIND** (G1 y G2), PR #458:
    - el CDR de `sendBill` se vincula con el documento mediante `cdr_matches_document`;
    - si no coincide, **no** se aplica ningún estado terminal, el intento queda incierto (sólo se reconcilia) y se audita;
    - un `FISCAL_CONSULT_ENDPOINT` vacío usa la constante del código, y uno inválido falla cerrado con 503.
-2. **B — SUNAT-ISSUER-GATE** (G3). Antes de reservar un correlativo, y otra vez antes de enviar:
+2. **B — SUNAT-ISSUER-GATE** (G3), PR #461. Antes de reservar un correlativo, y otra vez antes de enviar:
    - RUC de la SOL == RUC de la empresa emisora;
    - certificado vigente;
    - en producción, además, RUC del emisor en el OU del certificado.
 
    Falla cerrado con 503, sin gastar números, y se audita.
-3. **C — SUNAT-PREFLIGHT** (G4 y parte de G7): `manage.py fiscal_preflight --company <slug>`. Es de sólo lectura: no escribe, no usa la red y no imprime secretos. Revisa:
+3. **C — SUNAT-PREFLIGHT** (G4 y parte de G7), PR #459: `manage.py fiscal_preflight --company <slug>`. Es de sólo lectura: no escribe, no usa la red y no imprime secretos. Revisa:
    - el interruptor y el ambiente;
    - el RUC;
    - las credenciales «configuradas» (nunca su valor);
@@ -203,7 +203,7 @@ Sin ese GO no se toca la tabla de endpoints (`fiscal_config.py:432-438`) ni `ONL
 | 4 | **Alta como emisor en SOL** e indicación del correo (RS 287-2017) | Propietario | Constancia de SOL |
 | 5 | **Usuario SOL secundario** con perfil de envío (F8), sólo para la emisión | Propietario | SOL; se carga en la consola, cifrado |
 | 6 | **Certificado digital válido**: X.509 v3 con el RUC en OU, vigente, registrado en SOL. Puede ser el CDT gratuito de SUNAT si la empresa califica (no confirmado) | Propietario | Botón «Probar» y `fiscal_preflight`; constancia de registro en SOL |
-| 7 | **Credenciales y certificado POR EMPRESA** (G6): ninguna empresa usa los de otra | Código, antes de activar | `fiscal_preflight` comprueba que el RUC de la SOL sea el del emisor (PR B) |
+| 7 | **Credenciales y certificado POR EMPRESA** (G6): ninguna empresa usa los de otra | Código, antes de activar | `fiscal_preflight` comprueba que el RUC de la SOL sea el del emisor (#459, #461) |
 | 8 | **Series de producción**: filas nuevas `environment=production`, nombres decididos por el propietario, una activa por tipo, sucursal y ambiente; `next_number` empieza en 1 | Propietario y código | `fiscal_preflight` |
 | 9 | **Evidencia BETA reciente** sobre el `master` que se va a activar: factura, NC, ND, RC y RA aceptados, con sus CDR archivados | Operador, con el GO del propietario para tocar BETA | `fiscal_beta_smoke` + acta |
 | 10 | **Validación contable**: afectación IGV del catálogo (G10), NC parciales, huecos de numeración, política para factura a +3 días y RC a +7 días | Contador | Acta del contador |
