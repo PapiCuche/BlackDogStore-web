@@ -529,7 +529,7 @@ códigos nuevos; sin la reparación fallan `M121PresetParityTest` y `M12CFreshIn
 | 4 | `019x_trade_in_assessment` | evaluación, respuestas, bloqueos, fotos; kind de `InternalSequence` (sólo choices); `sales.tradein.approve` (+ reparación) | Segura. |
 | 5a | `019x_trade_in_quote` | cotización y revisiones; kind de `InternalSequence`; `sales.tradein.approve_own` (+ reparación); `SalesQuoteTradeIn.trade_in_quote` (nulo) | Segura. |
 | 5b | `019x_trade_in_quote_print` | `PrintJob.trade_in_quote` (nulo, `db_default` NULL), kind `trade_in_quote_ticket`, restricción de destino `_v3` | **Un paso previo**, como 0189: `cancel_trade_in_quote_print_jobs --apply` antes de volver a la imagen anterior. Desde este nodo, cada migración lleva **dos** guardas al final: `refuse_reverse_with_trade_in_tickets` (penúltima; filtra `kind='trade_in_quote_ticket'`) y `refuse_reverse_with_quote_tickets` (última, intacta: `test_migration_reverse_guards` comprueba exactamente `filter(kind='sales_quote_ticket')`). La prueba gana una lista de nodos para la guarda nueva. |
-| 5c | (sin esquema, o `public_uid` si no entró en 5a) | enlace público | Segura. |
+| 5c | (sin esquema: `public_uid` se crea en 5a con la tabla de la cotización) | enlace público | Segura. |
 
 Ninguna migración concede capacidades. Si el propietario decide V1 a favor, se añade un nodo de concesión con la regla
 de 0189 y la cadena de `ADMIN_PREVIOUS`. En producción: `PGOPTIONS='-c lock_timeout=5s -c statement_timeout=30s'`.

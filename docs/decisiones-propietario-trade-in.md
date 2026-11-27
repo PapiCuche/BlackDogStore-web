@@ -154,7 +154,8 @@ vinculante dentro de una cotización comercial**. No decide ninguna de las doce 
   mientras **D4** no se decida; no la decide.
 - Fija el bloque quien elabora cotizaciones (`sales.quotes.manage`) y lo aprueba, con el resto de la cotización,
   quien aprueba cotizaciones (`sales.quotes.approve`). **No** crea `sales.tradein.value` ni `sales.tradein.approve`:
-  eso sigue siendo **D7**.
+  eso sigue siendo **D7**. (TRADE-IN VALUATION PRO sí los crea, como concesiones explícitas; ver V1/D7 en
+  `docs/adr-trade-in-valuation.md` §13.)
 - Las revisiones y las copias llevan el bloque; cambiarlo en una cotización ya ofrecida crea una revisión.
 - A4, 80 mm y ESC/POS imprimen «Equipo ofrecido en parte de pago (referencial)», «Valorización estimada», «Saldo
   estimado a pagar» y «Valorización referencial sujeta a inspección; no es crédito, pago ni compra. No es comprobante
@@ -183,7 +184,7 @@ explícita, como recomienda D7-b), y V2–V7.
 ## Estado
 
 **TRADE-IN-01 sigue en PROPUESTA y BLOQUEADO POR DECISIÓN.** (TRADE-IN-QUOTE-00, arriba, es sólo la valoración
-referencial en la cotización y no cambia esta lista.) TRADE-IN-01B (recepción y valorización) no se construye mientras no estén aprobadas D2, D3, D6, D7, D9 y D10; TRADE-IN-01C (crédito en caja, documentos y reversión) tampoco mientras no lo estén D1, D4, D5, D8 y D11. La caja anuncia «Equipo como parte de pago» **deshabilitado** (SALES-UX-02): no registra ningún crédito, ningún stock ni ningún pago.
+referencial en la cotización y no cambia esta lista.) TRADE-IN-01B (recepción y aplicación de la valoración) no se construye mientras no estén aprobadas D2, D3, D6, D7, D9 y D10; TRADE-IN-01C (crédito en caja, documentos y reversión) tampoco mientras no lo estén D1, D4, D5, D8 y D11. La caja anuncia «Equipo como parte de pago» **deshabilitado** (SALES-UX-02): no registra ningún crédito, ningún stock ni ningún pago.
 
 ## Orden en que conviene decidir
 
