@@ -43,6 +43,13 @@ NO_ENV = dict(
 )
 
 
+def _issuer(ruc=PUBLIC['ruc']):
+    """The company the credentials are asked for: since SUNAT-ISSUER-GATE, its RUC must be theirs."""
+    from store.models import Company
+
+    return Company.objects.get_or_create(slug=f'emisor-{ruc}', defaults={'name': f'Emisor {ruc}', 'tax_id': ruc})[0]
+
+
 def p12(key=KEY, password=P12_PASSWORD, **kwargs) -> str:
     return base64.b64encode(_fc_build_p12(key, password=password.encode() if password else None, **kwargs)).decode()
 
@@ -98,20 +105,20 @@ class RuntimeTest(_Base):
     def test_with_nothing_configured_nothing_can_be_emitted(self):
         self.assertFalse(fiscal_config.fiscal_enabled())
         with self.assertRaises(fiscal_config.FiscalConfigError):
-            fiscal_config.resolve_credentials(None)
+            fiscal_config.resolve_credentials(_issuer(), signing=True)
 
     def test_an_emission_is_handed_the_credentials_and_the_certificate_of_the_console(self):
         uploaded = p12()
         self.go_live(secret_values=secrets(certificate_p12=uploaded))
 
         self.assertTrue(fiscal_config.fiscal_enabled())
-        credentials = fiscal_config.resolve_credentials(None)
+        credentials = fiscal_config.resolve_credentials(_issuer(), signing=True)
         self.assertEqual((credentials['ruc'], credentials['sol_user'], credentials['sol_password']),
                          ('20123456789', 'USUARIO1', SOL_PASSWORD))
         self.assertEqual(fingerprint(credentials['cert_pem']), fingerprint_of_p12(uploaded))
         self.assertIn(b'PRIVATE KEY', credentials['key_pem'])
 
-        provider = fiscal_config.resolve_provider(None)
+        provider = fiscal_config.resolve_provider(_issuer())
         self.assertEqual((provider._endpoint, provider._username, provider._password),
                          (BETA_ENDPOINT, '20123456789USUARIO1', SOL_PASSWORD))
 
@@ -119,14 +126,14 @@ class RuntimeTest(_Base):
         with override_settings(FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603', FISCAL_SOL_USER='MODDATOS',
                                FISCAL_SOL_PASSWORD='moddatos'):
             self.go_live()
-            self.assertEqual(fiscal_config.resolve_credentials(None)['ruc'], '20123456789')
+            self.assertEqual(fiscal_config.resolve_credentials(_issuer(), signing=True)['ruc'], '20123456789')
 
     def test_replacing_the_certificate_changes_the_next_emission_without_a_restart(self):
         self.go_live()
-        before = fingerprint(fiscal_config.resolve_credentials(None)['cert_pem'])
+        before = fingerprint(fiscal_config.resolve_credentials(_issuer(), signing=True)['cert_pem'])
         renewed = p12(OTHER_KEY)
         self.go_live(secret_values={'certificate_p12': renewed, 'certificate_password': P12_PASSWORD})
-        after = fiscal_config.resolve_credentials(None)
+        after = fiscal_config.resolve_credentials(_issuer(), signing=True)
         self.assertNotEqual(fingerprint(after['cert_pem']), before)
         self.assertEqual(fingerprint(after['cert_pem']), fingerprint_of_p12(renewed))
         self.assertEqual(after['sol_password'], SOL_PASSWORD)        # what was not replaced is kept
@@ -138,7 +145,7 @@ class RuntimeTest(_Base):
             self.console.post(URL + 'disable/', {}, format='json')
             self.assertFalse(fiscal_config.fiscal_enabled())
             with self.assertRaises(fiscal_config.FiscalConfigError):
-                fiscal_config.resolve_credentials(None)
+                fiscal_config.resolve_credentials(_issuer(), signing=True)
 
     def test_a_configuration_this_server_cannot_read_emits_nothing_and_says_so(self):
         with override_settings(FISCAL_ENABLED=True, FISCAL_SOL_RUC='20100066603', FISCAL_SOL_USER='MODDATOS',
@@ -146,7 +153,7 @@ class RuntimeTest(_Base):
             self.go_live()
             with override_settings(APP_CONFIG_ENCRYPTION_KEY=Fernet.generate_key().decode()):
                 with self.assertRaises(fiscal_config.FiscalConfigError) as refused:
-                    fiscal_config.resolve_credentials(None)
+                    fiscal_config.resolve_credentials(_issuer(), signing=True)
         self.assertIn('consola', str(refused.exception))
 
     def test_the_signing_certificate_can_be_inspected_without_its_key(self):
@@ -196,7 +203,7 @@ class ExplicitEnablingTest(_Base):
         self.go_live()
         with override_settings(FISCAL_ENVIRONMENT='production'):
             with self.assertRaises(fiscal_config.FiscalConfigError):
-                fiscal_config.resolve_provider(None)
+                fiscal_config.resolve_provider(_issuer())
 
 
 class CertificateTest(_Base):
@@ -294,7 +301,7 @@ class LegacyEnvironmentTest(_Base):
     def test_an_installation_configured_by_environment_keeps_emitting_and_shows_as_environment(self):
         with override_settings(**self.ENV):
             self.assertTrue(fiscal_config.fiscal_enabled())
-            self.assertEqual(fiscal_config.resolve_credentials(None)['ruc'], '20100066603')
+            self.assertEqual(fiscal_config.resolve_credentials(_issuer('20100066603'), signing=True)['ruc'], '20100066603')
             detail = self.detail()
         self.assertEqual((detail['state'], detail['source']), ('ACTIVE', 'env'))
         self.assertEqual(detail['env']['public'], {'ruc': '20100066603', 'sol_user': 'MODDATOS'})

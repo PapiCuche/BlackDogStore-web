@@ -29,7 +29,9 @@ from .fiscal_summary_services import (
     FiscalSummaryInProgress, generate_and_sign_daily_summaries, poll_daily_summary,
     submit_daily_summary,
 )
-from .fiscal_views import CAP_FISCAL_ISSUE, CAP_FISCAL_VIEW, _NO_LEGACY_BRIDGE, issuing_credentials
+from .fiscal_views import (
+    CAP_FISCAL_ISSUE, CAP_FISCAL_VIEW, _NO_LEGACY_BRIDGE, issuing_credentials, provider_or_refusal,
+)
 from .inventory_views import _company_context
 from .models import AdminAuditLog, FiscalDailySummary
 
@@ -38,6 +40,16 @@ EVIDENCE_BLOBS = ('cdr_raw', 'cdr_zip')
 from .throttles import FiscalIssueThrottle, FiscalReadThrottle
 
 logger = logging.getLogger(__name__)
+
+
+def _summary_issuer(summary: FiscalDailySummary) -> str:
+    """El RUC emisor de las boletas del resumen; vacío si no tiene (entonces, el de la empresa)."""
+    from .fiscal_summary_services import _issuer_ruc
+
+    try:
+        return _issuer_ruc(summary)
+    except FiscalError:
+        return ''
 
 
 def summary_payload(summary: FiscalDailySummary) -> dict:
@@ -190,11 +202,12 @@ class AdminFiscalSummarySubmitView(APIView):
         company, summary, error = _summary(request, pk, CAP_FISCAL_ISSUE)
         if error:
             return error
-        try:
-            provider = resolve_provider(company)
-        except FiscalConfigError as exc:
-            return Response(
-                {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        provider, refused = provider_or_refusal(
+            request, company, resolver=resolve_provider, issuer_tax_id=_summary_issuer(summary),
+            endpoint='fiscal_summary',
+            target_type='fiscal_daily_summary', target_id=summary.pk)
+        if refused:
+            return refused
         try:
             summary = submit_daily_summary(summary, provider)
         except FiscalSummaryInProgress as exc:
@@ -228,11 +241,12 @@ class AdminFiscalSummaryStatusView(APIView):
         company, summary, error = _summary(request, pk, CAP_FISCAL_ISSUE)
         if error:
             return error
-        try:
-            provider = resolve_provider(company)
-        except FiscalConfigError as exc:
-            return Response(
-                {'detail': str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        provider, refused = provider_or_refusal(
+            request, company, resolver=resolve_provider, issuer_tax_id=_summary_issuer(summary),
+            endpoint='fiscal_summary',
+            target_type='fiscal_daily_summary', target_id=summary.pk)
+        if refused:
+            return refused
         try:
             outcome = poll_daily_summary(summary, provider)
         except FiscalError as exc:
